@@ -1,0 +1,15 @@
+# Jupyter Notebooks (Local Only)
+GNOT_Colab_Runner.ipynb
+
+# Data files
+*.h5
+*.pkl
+data/
+
+# Python caching
+__pycache__/
+*.py[cod]
+
+# IDE settings
+.vscode/
+.idea/
