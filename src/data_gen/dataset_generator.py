@@ -6,11 +6,18 @@ from skfem.models.poisson import laplace, mass
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
-# Settings
-H5_FILENAME = "rf_cavity_1000_dataset.h5"
-PLOT_DIR = "dataset_plots"
-N_TOTAL = 1000
-N_PLOT = 100
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate 2D RF Cavity Dataset.")
+    parser.add_argument("--h5_filename", type=str, default="rf_cavity_1000_dataset.h5", help="Output H5 filename.")
+    parser.add_argument("--plot_dir", type=str, default="dataset_plots", help="Directory to save plots.")
+    parser.add_argument("--n_total", type=int, default=1000, help="Total number of samples to generate.")
+    parser.add_argument("--n_plot", type=int, default=100, help="Number of samples to plot.")
+    return parser.parse_args()
+
+# Global settings placeholder
+ARGS = None
 
 def generate_sample_data(s_id):
     try:
@@ -93,14 +100,17 @@ def save_sample_plot(data, save_path):
     plt.close()
 
 if __name__ == '__main__':
-    os.makedirs(PLOT_DIR, exist_ok=True)
-    print(f"🚀 Generating {N_TOTAL} samples using {cpu_count()} cores...")
+    global ARGS
+    ARGS = parse_args()
+    
+    os.makedirs(ARGS.plot_dir, exist_ok=True)
+    print(f"🚀 Generating {ARGS.n_total} samples using {cpu_count()} cores...")
 
-    with h5py.File(H5_FILENAME, "w") as f_h5:
+    with h5py.File(ARGS.h5_filename, "w") as f_h5:
         with Pool(cpu_count()) as pool:
             # Process in chunks to manage memory
-            for i in tqdm(range(0, N_TOTAL, 50), desc="Batch Generation"):
-                chunk_range = range(i, min(i + 50, N_TOTAL))
+            for i in tqdm(range(0, ARGS.n_total, 50), desc="Batch Generation"):
+                chunk_range = range(i, min(i + 50, ARGS.n_total))
                 chunk_results = pool.map(generate_sample_data, chunk_range)
 
                 for res in chunk_results:
@@ -114,8 +124,8 @@ if __name__ == '__main__':
                     grp.create_dataset("vecs", data=res['vecs'], compression="gzip", compression_opts=4)
 
                     # Plot first N_PLOT
-                    if res['id'] < N_PLOT:
-                        plot_path = os.path.join(PLOT_DIR, f"sample_{res['id']:03d}.png")
+                    if res['id'] < ARGS.n_plot:
+                        plot_path = os.path.join(ARGS.plot_dir, f"sample_{res['id']:03d}.png")
                         save_sample_plot(res, plot_path)
 
-    print(f"\n✅ Completed! \n📦 File: {H5_FILENAME} \n🖼️ Plots: {PLOT_DIR}/")
+    print(f"\n✅ Completed! \n📦 File: {ARGS.h5_filename} \n🖼️ Plots: {ARGS.plot_dir}/")

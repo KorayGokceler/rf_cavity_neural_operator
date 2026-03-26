@@ -7,46 +7,53 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
 
-# Configuration
-OUTPUT_PKL = "data/gnot_dataset.pkl"
-LOG_DIR = "training_logs"
-EXP_NAME = "gnot_training"
+import argparse
 
-BATCH_SIZE = 16
-MAX_EPOCHS = 50
-HIDDEN_DIM = 256
-N_LAYERS = 6
-LEARNING_RATE = 1e-3
-FREQ_WEIGHT = 0.5
-GRID_DIM = 2
-VAL_DIM = 6
-THETA_DIM = 1
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train GNOT Model.")
+    parser.add_argument("--output_pkl", type=str, default="data/gnot_dataset.pkl", help="Path to input PKL dataset.")
+    parser.add_argument("--log_dir", type=str, default="training_logs", help="Directory for logs and checkpoints.")
+    parser.add_argument("--exp_name", type=str, default="gnot_training", help="Name of the experiment.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training.")
+    parser.add_argument("--max_epochs", type=int, default=50, help="Maximum number of epochs to train.")
+    parser.add_argument("--hidden_dim", type=int, default=256, help="Hidden dimension size of the model.")
+    parser.add_argument("--n_layers", type=int, default=6, help="Number of GNOT layers.")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate.")
+    parser.add_argument("--freq_weight", type=float, default=0.5, help="Weight for frequency loss component.")
+    parser.add_argument("--fast_dev_run", action="store_true", help="Run 1 epoch to verify pipeline.")
+    
+    # Model architecture constants (usually not changed frequently)
+    parser.add_argument("--grid_dim", type=int, default=2, help="Grid dimension size.")
+    parser.add_argument("--val_dim", type=int, default=6, help="Value dimension size.")
+    parser.add_argument("--theta_dim", type=int, default=1, help="Theta dimension size.")
+    
+    return parser.parse_args()
 
-def main():
+def main(args):
     print("Loading datasets...")
     # NOTE: Before running training, make sure data/gnot_dataset.pkl exists
     # Running data generation and conversion is required prior to training.
     
-    train_dataset = GNOTDataset(OUTPUT_PKL, split='train')
-    val_dataset = GNOTDataset(OUTPUT_PKL, split='val')
+    train_dataset = GNOTDataset(args.output_pkl, split='train')
+    val_dataset = GNOTDataset(args.output_pkl, split='val')
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE,
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
                             collate_fn=gnot_collate_fn, num_workers=0)
 
     model = GNOTLightning(
-        val_dim=VAL_DIM,
-        grid_dim=GRID_DIM,
-        theta_dim=THETA_DIM,
-        hidden_dim=HIDDEN_DIM,
-        n_layers=N_LAYERS,
-        lr=LEARNING_RATE,
-        freq_weight=FREQ_WEIGHT
+        val_dim=args.val_dim,
+        grid_dim=args.grid_dim,
+        theta_dim=args.theta_dim,
+        hidden_dim=args.hidden_dim,
+        n_layers=args.n_layers,
+        lr=args.learning_rate,
+        freq_weight=args.freq_weight
     )
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{LOG_DIR}/{EXP_NAME}",
+        dirpath=f"{args.log_dir}/{args.exp_name}",
         filename="best-{epoch:02d}-{val/loss:.4f}",
         save_top_k=1,
         monitor="val/loss",
@@ -55,10 +62,10 @@ def main():
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    tb_logger = TensorBoardLogger(save_dir=LOG_DIR, name=EXP_NAME)
+    tb_logger = TensorBoardLogger(save_dir=args.log_dir, name=args.exp_name)
 
     trainer = pl.Trainer(
-        max_epochs=MAX_EPOCHS,
+        max_epochs=args.max_epochs,
         accelerator="auto",
         devices=1,
         gradient_clip_val=1.0,
@@ -67,13 +74,16 @@ def main():
         log_every_n_steps=10,
         enable_progress_bar=True,
         enable_model_summary=True,
-        fast_dev_run=True  # Ensure it runs correctly for 1 step
+        fast_dev_run=args.fast_dev_run
     )
 
-    print("Starting fast_dev_run training to verify pipeline...")
+    if args.fast_dev_run:
+        print("Starting fast_dev_run training to verify pipeline...")
     trainer.fit(model, train_loader, val_loader)
     
-    print("Verification complete! To run full training, set fast_dev_run=False inside train.py.")
+    if args.fast_dev_run:
+        print("Verification complete! To run full training, do not use --fast_dev_run flag.")
 
 if __name__ == '__main__':
-    main()
+    args = parse_args()
+    main(args)
