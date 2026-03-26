@@ -100,7 +100,6 @@ def save_sample_plot(data, save_path):
     plt.close()
 
 if __name__ == '__main__':
-    global ARGS
     ARGS = parse_args()
     
     os.makedirs(ARGS.plot_dir, exist_ok=True)
