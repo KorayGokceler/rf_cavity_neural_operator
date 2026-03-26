@@ -1,0 +1,173 @@
+import h5py
+import numpy as np
+import pickle
+from pathlib import Path
+from tqdm import tqdm
+from scipy.spatial import cKDTree
+from collections import defaultdict
+
+class RFCavityToGNOT:
+    def __init__(self, h5_filepath: str):
+        self.h5_filepath = h5_filepath
+        self.geometry_pool = {}
+        self.samples = []
+        self.stats = {
+            'n_geometries': 0,
+            'n_samples': 0,
+            'freq_range': [float('inf'), float('-inf')],
+            'mesh_sizes': [],
+            'freq_by_mode': defaultdict(list),
+        }
+
+    def _find_boundary_nodes(self, elements):
+        edge_count = {}
+        for tri in elements:
+            edges = [
+                tuple(sorted((tri[0], tri[1]))),
+                tuple(sorted((tri[1], tri[2]))),
+                tuple(sorted((tri[2], tri[0])))
+            ]
+            for e in edges:
+                edge_count[e] = edge_count.get(e, 0) + 1
+
+        boundary_nodes = {node for edge, count in edge_count.items()
+                         if count == 1 for node in edge}
+        return np.array(list(boundary_nodes))
+
+    def _estimate_local_curvature(self, nodes, elements):
+        n_nodes = len(nodes)
+        curvature = np.zeros((n_nodes, 1))
+
+        neighbors = [set() for _ in range(n_nodes)]
+        for tri in elements:
+            for i in range(3):
+                for j in range(3):
+                    if i != j:
+                        neighbors[tri[i]].add(tri[j])
+
+        for i in range(n_nodes):
+            if len(neighbors[i]) > 1:
+                neighbor_list = list(neighbors[i])
+                vectors = nodes[neighbor_list] - nodes[i]
+                angles = np.arctan2(vectors[:, 1], vectors[:, 0])
+                curvature[i] = np.std(angles)
+
+        if curvature.max() > 0:
+            curvature = curvature / (curvature.max() + 1e-10)
+
+        return curvature.astype(np.float32)
+
+    def extract_geometry_features(self, nodes, elements):
+        # Isotropic scaling
+        scale_factor = nodes.max() + 1e-10
+        nodes_norm = nodes / scale_factor
+
+        # Boundary
+        boundary_indices = self._find_boundary_nodes(elements)
+        tree = cKDTree(nodes_norm[boundary_indices])
+        dist_to_boundary, _ = tree.query(nodes_norm)
+
+        boundary_mask = np.zeros((len(nodes), 1))
+        boundary_mask[boundary_indices] = 1.0
+
+        # Center
+        center = nodes_norm.mean(axis=0)
+        dist_to_center = np.linalg.norm(nodes_norm - center, axis=1, keepdims=True)
+
+        # Curvature
+        curvature = self._estimate_local_curvature(nodes_norm, elements)
+
+        # Combine
+        geom_features = np.concatenate([
+            nodes_norm,
+            dist_to_boundary.reshape(-1, 1),
+            boundary_mask,
+            dist_to_center,
+            curvature,
+        ], axis=1).astype(np.float32)
+
+        return {
+            'X': nodes_norm.astype(np.float32),
+            'Input_funcs': (geom_features,),
+            'elements': elements,
+        }
+
+    def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None):
+        print(f"Converting: {self.h5_filepath}")
+
+        with h5py.File(self.h5_filepath, 'r') as f:
+            sample_keys = sorted(f.keys())
+            if max_samples:
+                sample_keys = sample_keys[:max_samples]
+
+            for key in tqdm(sample_keys, desc="Converting"):
+                grp = f[key]
+                sample_id = int(key.split('_')[-1])
+
+                nodes = grp['nodes'][:]
+                elements = grp['elements'][:]
+                freqs = grp['freqs'][:]
+                vecs = grp['vecs'][:len(nodes), :]
+
+                if sample_id not in self.geometry_pool:
+                    self.geometry_pool[sample_id] = self.extract_geometry_features(nodes, elements)
+                    self.stats['n_geometries'] += 1
+                    self.stats['mesh_sizes'].append(len(nodes))
+
+                for m_idx in mode_indices:
+                    if m_idx >= len(freqs):
+                        continue
+
+                    Y = vecs[:, m_idx].reshape(-1, 1).astype(np.float32)
+
+                    # Sign alignment
+                    max_idx = np.argmax(np.abs(Y))
+                    sign = np.sign(Y[max_idx]) if np.sign(Y[max_idx]) != 0 else 1
+                    Y = Y * sign
+
+                    # Normalize
+                    Y_max = np.abs(Y).max()
+                    if Y_max > 1e-10:
+                        Y = Y / Y_max
+
+                    freq = float(freqs[m_idx])
+                    theta = np.array([float(m_idx), freq, float(sample_id)], dtype=np.float32)
+
+                    self.samples.append({
+                        'geom_id': sample_id,
+                        'Y': Y,
+                        'Theta': theta
+                    })
+
+                    self.stats['n_samples'] += 1
+                    self.stats['freq_range'][0] = min(self.stats['freq_range'][0], freq)
+                    self.stats['freq_range'][1] = max(self.stats['freq_range'][1], freq)
+                    self.stats['freq_by_mode'][m_idx].append(freq)
+
+        # Save
+        dataset = {
+            'geometry_pool': self.geometry_pool,
+            'samples': self.samples,
+            'metadata': {
+                'mode_indices': mode_indices,
+                'n_geometries': self.stats['n_geometries'],
+                'n_samples': self.stats['n_samples'],
+            }
+        }
+
+        with open(output_filepath, 'wb') as f:
+            pickle.dump(dataset, f)
+
+        self._print_stats()
+        print(f"\n✅ Saved: {output_filepath}")
+        return dataset
+
+    def _print_stats(self):
+        print(f"\n{'='*50}")
+        print("DATASET STATISTICS")
+        print(f"{'='*50}")
+        print(f"Geometries: {self.stats['n_geometries']}")
+        print(f"Samples:    {self.stats['n_samples']}")
+        print(f"Mesh sizes: {min(self.stats['mesh_sizes'])} - {max(self.stats['mesh_sizes'])}")
+        print(f"Freq range: {self.stats['freq_range'][0]:.2f} - {self.stats['freq_range'][1]:.2f} GHz")
+        print(f"{'='*50}")

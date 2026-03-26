@@ -1,0 +1,10 @@
+torch
+pytorch-lightning
+h5py
+scipy
+numpy
+matplotlib
+scikit-fem[all]
+gmsh
+seaborn
+tqdm
