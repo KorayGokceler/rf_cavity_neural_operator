@@ -14,6 +14,7 @@ def parse_args():
     parser.add_argument("--plot_dir", type=str, default="dataset_plots", help="Directory to save plots.")
     parser.add_argument("--n_total", type=int, default=1000, help="Total number of samples to generate.")
     parser.add_argument("--n_plot", type=int, default=100, help="Number of samples to plot.")
+    parser.add_argument("--mode", type=str, default="random", choices=["random", "calibration"], help="Generation mode: random shapes or calibration shapes (square/circle).")
     return parser.parse_args()
 
 # Global settings placeholder
@@ -27,16 +28,32 @@ def generate_sample_data(s_id):
         L, cx, cy = 0.1, 0.05, 0.05
 
         # Geometric Diversity: Sharp corners and chaotic blobs
-        method = np.random.choice(['sharp', 'smooth'])
-        if method == 'sharp':
-            n_pts = np.random.randint(7, 13)
-            angles = np.sort(np.random.uniform(0, 2*np.pi, n_pts))
-            r = np.random.uniform(0.02, 0.046, n_pts)
-            pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
+        if ARGS.mode == 'calibration':
+            # Calibration: Square or Circle
+            shape_type = 'square' if s_id % 2 == 0 else 'circle'
+            if shape_type == 'square':
+                side = 0.08
+                pts_c = [
+                    (cx - side/2, cy - side/2),
+                    (cx + side/2, cy - side/2),
+                    (cx + side/2, cy + side/2),
+                    (cx - side/2, cy + side/2)
+                ]
+            else:
+                radius = 0.04
+                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
+                pts_c = [(cx + radius*np.cos(ti), cy + radius*np.sin(ti)) for ti in t]
         else:
-            t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-            r = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
-            pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
+            method = np.random.choice(['sharp', 'smooth'])
+            if method == 'sharp':
+                n_pts = np.random.randint(7, 13)
+                angles = np.sort(np.random.uniform(0, 2*np.pi, n_pts))
+                r = np.random.uniform(0.02, 0.046, n_pts)
+                pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
+            else:
+                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
+                r = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
 
         pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
         lines = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
@@ -74,7 +91,8 @@ def generate_sample_data(s_id):
 
         return {
             'id': s_id, 'nodes': nodes, 'elements': elements,
-            'freqs': freqs.real, 'vecs': vecs.real, 'n_nodes': len(nodes)
+            'freqs': freqs.real, 'vecs': vecs.real, 'n_nodes': len(nodes),
+            'shape_type': 'calibration' if ARGS.mode == 'calibration' else 'random'
         }
     except Exception as e:
         return None
@@ -121,6 +139,7 @@ if __name__ == '__main__':
                     grp.create_dataset("elements", data=res['elements'], compression="gzip", compression_opts=4)
                     grp.create_dataset("freqs", data=res['freqs'])
                     grp.create_dataset("vecs", data=res['vecs'], compression="gzip", compression_opts=4)
+                    grp.attrs['shape_type'] = res['shape_type']
 
                     # Plot first N_PLOT
                     if res['id'] < ARGS.n_plot:
