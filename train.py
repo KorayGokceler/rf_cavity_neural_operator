@@ -1,7 +1,8 @@
 import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
+from src.training.callbacks import FieldVisualizationCallback
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.data.dataset import GNOTDataset, gnot_collate_fn
@@ -20,6 +21,10 @@ def parse_args():
     parser.add_argument("--n_layers", type=int, default=6, help="Number of GNOT layers.")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate.")
     parser.add_argument("--freq_weight", type=float, default=0.5, help="Weight for frequency loss component.")
+    parser.add_argument("--scheduler", type=str, default="onecycle", choices=["onecycle", "cosine"], help="LR scheduler type.")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for AdamW.")
+    parser.add_argument("--patience", type=int, default=10, help="Patience for EarlyStopping.")
+    parser.add_argument("--viz_every_n_epochs", type=int, default=5, help="Visualize mode shapes every N epochs.")
     parser.add_argument("--fast_dev_run", action="store_true", help="Run 1 epoch to verify pipeline.")
     
     # Model architecture constants (usually not changed frequently)
@@ -49,7 +54,9 @@ def main(args):
         hidden_dim=args.hidden_dim,
         n_layers=args.n_layers,
         lr=args.learning_rate,
-        freq_weight=args.freq_weight
+        freq_weight=args.freq_weight,
+        scheduler=args.scheduler,
+        weight_decay=args.weight_decay
     )
     
     # Pass frequency statistics to the model for physical units logging
@@ -66,6 +73,9 @@ def main(args):
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
+    early_stop = EarlyStopping(monitor="val/loss", patience=args.patience, mode="min")
+    viz_callback = FieldVisualizationCallback(log_every_n_epochs=args.viz_every_n_epochs)
+    
     tb_logger = TensorBoardLogger(save_dir=args.log_dir, name=args.exp_name)
 
     trainer = pl.Trainer(
@@ -73,7 +83,7 @@ def main(args):
         accelerator="auto",
         devices=1,
         gradient_clip_val=1.0,
-        callbacks=[checkpoint_callback, lr_monitor],
+        callbacks=[checkpoint_callback, lr_monitor, early_stop, viz_callback],
         logger=tb_logger,
         log_every_n_steps=10,
         enable_progress_bar=True,

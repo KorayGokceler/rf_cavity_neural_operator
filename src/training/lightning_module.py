@@ -5,7 +5,8 @@ import torchmetrics
 from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=128, n_layers=4, lr=1e-3, freq_weight=0.1):
+    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=128, n_layers=4, lr=1e-3, freq_weight=0.1, 
+                 scheduler='onecycle', weight_decay=1e-4):
         super().__init__()
         self.save_hyperparameters()
         self.model = GNOTModel(
@@ -75,8 +76,32 @@ class GNOTLightning(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=self.hparams.lr, total_steps=self.trainer.estimated_stepping_batches
-        )
-        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        
+        if self.hparams.scheduler == 'onecycle':
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer, 
+                max_lr=self.hparams.lr, 
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.3,
+                div_factor=25,
+                final_div_factor=1e4
+            )
+            interval = 'step'
+        elif self.hparams.scheduler == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, 
+                T_max=self.trainer.max_epochs, 
+                eta_min=1e-6
+            )
+            interval = 'epoch'
+        else:
+            return optimizer
+
+        return {
+            "optimizer": optimizer, 
+            "lr_scheduler": {
+                "scheduler": scheduler, 
+                "interval": interval
+            }
+        }
