@@ -28,6 +28,11 @@ class GNOTDataset(Dataset):
         else:
             self.samples = all_samples[n_train+n_val:]
 
+        # Normalization Stats
+        self.stats = data.get('metadata', {}).get('freq_stats', None)
+        if self.stats:
+            print(f"Freq Stats: mean={self.stats['mean']:.4f}, std={self.stats['std']:.4f}")
+
         print(f"Split: {split}, Count: {len(self.samples)}")
 
     def __len__(self):
@@ -39,11 +44,19 @@ class GNOTDataset(Dataset):
         input_features = geom['Input_funcs'][0]
         raw_theta = sample['Theta']
 
+        # Y_freq is the second element of Theta (index 1)
+        # Apply normalization if stats are available
+        raw_freq = raw_theta[1]
+        if self.stats:
+            norm_freq = (raw_freq - self.stats['mean']) / self.stats['std']
+        else:
+            norm_freq = raw_freq
+
         return {
             'X': torch.from_numpy(geom['X']),
             'Input_funcs': torch.from_numpy(input_features),
             'Y_field': torch.from_numpy(sample['Y']),
-            'Y_freq': torch.from_numpy(np.array([raw_theta[1]], dtype=np.float32)),
+            'Y_freq': torch.from_numpy(np.array([norm_freq], dtype=np.float32)),
             'Theta_in': torch.from_numpy(np.array([raw_theta[0]], dtype=np.float32))
         }
 

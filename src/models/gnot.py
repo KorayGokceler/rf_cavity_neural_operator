@@ -22,8 +22,9 @@ class LinearAttention(nn.Module):
         k = self.k_proj(key).view(b, n_k, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = self.v_proj(value).view(b, n_k, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        q = F.softmax(q, dim=-1)
-        k = F.softmax(k, dim=-1)
+        # Use ELU+1 kernel for more stable linear attention
+        q = F.elu(q) + 1.0
+        k = F.elu(k) + 1.0
 
         kv = torch.einsum('bhnd,bhne->bhde', k, v)
         z = torch.einsum('bhnd,bhde->bhne', q, kv)
@@ -35,6 +36,21 @@ class LinearAttention(nn.Module):
         output = output.permute(0, 2, 1, 3).contiguous().reshape(b, n_q, d)
 
         return self.out_proj(output)
+
+class AttentionPool(nn.Module):
+    """Learned summary token for global pooling."""
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(1, 1, embed_dim))
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, x):
+        # x: [B, N, D]
+        b = x.shape[0]
+        q = self.query.expand(b, -1, -1)
+        out, _ = self.attn(q, x, x)
+        return self.norm(out).squeeze(1)
 
 class GeometricGatingFFN(nn.Module):
     def __init__(self, embed_dim, coords_dim, num_experts=4, dropout=0.1):
@@ -107,6 +123,8 @@ class GNOTModel(nn.Module):
             for _ in range(n_layers)
         ])
 
+        self.pooler = AttentionPool(embed_dim, n_heads)
+
         self.field_decoder = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim),
@@ -135,7 +153,7 @@ class GNOTModel(nn.Module):
             x_emb = block(x_emb, condition_emb, X)
 
         field_pred = self.field_decoder(x_emb)
-        global_feat = x_emb.mean(dim=1)
+        global_feat = self.pooler(x_emb)
         freq_pred = self.freq_decoder(global_feat)
 
         return {'field': field_pred, 'freq': freq_pred}

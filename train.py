@@ -51,6 +51,10 @@ def main(args):
         lr=args.learning_rate,
         freq_weight=args.freq_weight
     )
+    
+    # Pass frequency statistics to the model for physical units logging
+    if hasattr(train_dataset, 'stats') and train_dataset.stats:
+        model.freq_stats = train_dataset.stats
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"{args.log_dir}/{args.exp_name}",
@@ -80,6 +84,11 @@ def main(args):
     if args.fast_dev_run:
         print("Starting fast_dev_run training to verify pipeline...")
     trainer.fit(model, train_loader, val_loader)
+    
+    print("Running final evaluation to measure model success...")
+    # Verify the model using test step metrics over validation dataset
+    ckpt_path = "best" if not args.fast_dev_run else None
+    trainer.test(dataloaders=val_loader, ckpt_path=ckpt_path)
     
     if args.fast_dev_run:
         print("Verification complete! To run full training, do not use --fast_dev_run flag.")

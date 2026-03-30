@@ -8,3 +8,4 @@ scikit-fem[all]
 gmsh
 seaborn
 tqdm
+torchmetrics

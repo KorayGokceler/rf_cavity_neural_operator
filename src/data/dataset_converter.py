@@ -152,6 +152,14 @@ class RFCavityToGNOT:
                 'mode_indices': mode_indices,
                 'n_geometries': self.stats['n_geometries'],
                 'n_samples': self.stats['n_samples'],
+                'freq_stats': {
+                    'mean': np.mean([f for l in self.stats['freq_by_mode'].values() for f in l]),
+                    'std': np.std([f for l in self.stats['freq_by_mode'].values() for f in l]) + 1e-10,
+                    'mode_stats': {
+                        m: {'mean': np.mean(l), 'std': np.std(l) + 1e-10}
+                        for m, l in self.stats['freq_by_mode'].items()
+                    }
+                }
             }
         }
 
