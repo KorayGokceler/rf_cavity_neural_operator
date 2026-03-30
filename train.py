@@ -12,7 +12,7 @@ import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train GNOT Model.")
-    parser.add_argument("--output_pkl", type=str, default="data/gnot_dataset.pkl", help="Path to input PKL dataset.")
+    parser.add_argument("--data_path", type=str, default="data/gnot_dataset.pkl", help="Path to input PKL or H5 dataset.")
     parser.add_argument("--log_dir", type=str, default="training_logs", help="Directory for logs and checkpoints.")
     parser.add_argument("--exp_name", type=str, default="gnot_training", help="Name of the experiment.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training.")
@@ -26,6 +26,7 @@ def parse_args():
     parser.add_argument("--patience", type=int, default=10, help="Patience for EarlyStopping.")
     parser.add_argument("--viz_every_n_epochs", type=int, default=5, help="Visualize mode shapes every N epochs.")
     parser.add_argument("--use_checkpoint", action="store_true", help="Use gradient checkpointing to save GPU VRAM.")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of workers for DataLoader.")
     parser.add_argument("--fast_dev_run", action="store_true", help="Run 1 epoch to verify pipeline.")
     
     # Model architecture constants (usually not changed frequently)
@@ -40,13 +41,13 @@ def main(args):
     # NOTE: Before running training, make sure data/gnot_dataset.pkl exists
     # Running data generation and conversion is required prior to training.
     
-    train_dataset = GNOTDataset(args.output_pkl, split='train')
-    val_dataset = GNOTDataset(args.output_pkl, split='val')
+    train_dataset = GNOTDataset(args.data_path, split='train')
+    val_dataset = GNOTDataset(args.data_path, split='val')
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                              collate_fn=gnot_collate_fn, num_workers=0)
+                              collate_fn=gnot_collate_fn, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
-                            collate_fn=gnot_collate_fn, num_workers=0)
+                            collate_fn=gnot_collate_fn, num_workers=args.num_workers)
 
     model = GNOTLightning(
         val_dim=args.val_dim,
