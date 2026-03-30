@@ -1,7 +1,7 @@
 import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping, DeviceStatsMonitor
 from src.training.callbacks import FieldVisualizationCallback
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -75,6 +75,7 @@ def main(args):
     lr_monitor = LearningRateMonitor(logging_interval='step')
     early_stop = EarlyStopping(monitor="val/loss", patience=args.patience, mode="min")
     viz_callback = FieldVisualizationCallback(log_every_n_epochs=args.viz_every_n_epochs)
+    gpu_stats = DeviceStatsMonitor()
     
     tb_logger = TensorBoardLogger(save_dir=args.log_dir, name=args.exp_name)
 
@@ -83,7 +84,7 @@ def main(args):
         accelerator="auto",
         devices=1,
         gradient_clip_val=1.0,
-        callbacks=[checkpoint_callback, lr_monitor, early_stop, viz_callback],
+        callbacks=[checkpoint_callback, lr_monitor, early_stop, viz_callback, gpu_stats],
         logger=tb_logger,
         log_every_n_steps=10,
         enable_progress_bar=True,
