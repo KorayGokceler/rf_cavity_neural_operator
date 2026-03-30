@@ -17,7 +17,20 @@ class FieldVisualizationCallback(pl.Callback):
             return
 
         # Get a batch from validation dataloader
-        val_loader = trainer.datamodule.val_dataloader() if hasattr(trainer, 'datamodule') and trainer.datamodule else trainer.val_dataloaders[0]
+        val_loaders = trainer.val_dataloaders
+        if val_loaders is None:
+            return
+            
+        if isinstance(val_loaders, list):
+            val_loader = val_loaders[0]
+        else:
+            val_loader = val_loaders
+        
+        # In modern Lightning, if trainer.datamodule exists, use it
+        if hasattr(trainer, 'datamodule') and trainer.datamodule is not None:
+            db_loader = trainer.datamodule.val_dataloader()
+            if db_loader: val_loader = db_loader
+
         batch = next(iter(val_loader))
         
         # Move to device

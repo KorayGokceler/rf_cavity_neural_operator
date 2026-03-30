@@ -118,9 +118,25 @@ class GNOTModel(nn.Module):
         self.input_func_encoder = MLPEncoder(val_dim, embed_dim)
         self.theta_encoder = MLPEncoder(theta_dim, embed_dim)
 
-        self.blocks = nn.ModuleList([
+        # Architecture division: Shared -> [Field Branch, Freq Branch]
+        # We split the total n_layers. Recommended: 1/3 shared, 1/3 field, 1/3 freq.
+        # Minimal set: 2 shared, 2 field, 2 freq.
+        shared_layers = max(1, n_layers // 2)
+        task_layers = max(1, n_layers // 2)
+        
+        self.shared_blocks = nn.ModuleList([
             GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
-            for _ in range(n_layers)
+            for _ in range(shared_layers)
+        ])
+        
+        self.field_blocks = nn.ModuleList([
+            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
+            for _ in range(task_layers)
+        ])
+        
+        self.freq_blocks = nn.ModuleList([
+            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
+            for _ in range(task_layers)
         ])
 
         self.pooler = AttentionPool(embed_dim, n_heads)
@@ -149,11 +165,21 @@ class GNOTModel(nn.Module):
 
         condition_emb = torch.cat([y_emb, theta_emb], dim=1)
 
-        for block in self.blocks:
+        # Shared processing
+        for block in self.shared_blocks:
             x_emb = block(x_emb, condition_emb, X)
 
-        field_pred = self.field_decoder(x_emb)
-        global_feat = self.pooler(x_emb)
+        # Task-specific branching
+        x_field = x_emb
+        for block in self.field_blocks:
+            x_field = block(x_field, condition_emb, X)
+            
+        x_freq = x_emb
+        for block in self.freq_blocks:
+            x_freq = block(x_freq, condition_emb, X)
+
+        field_pred = self.field_decoder(x_field)
+        global_feat = self.pooler(x_freq)
         freq_pred = self.freq_decoder(global_feat)
 
         return {'field': field_pred, 'freq': freq_pred}
