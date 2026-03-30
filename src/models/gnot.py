@@ -112,17 +112,20 @@ class MLPEncoder(nn.Module):
         return self.net(x)
 
 class GNOTModel(nn.Module):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, n_layers=4, n_heads=4, num_experts=4):
+    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, n_layers=6, n_heads=4, num_experts=4, use_checkpoint=False):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.query_encoder = MLPEncoder(grid_dim, embed_dim)
         self.input_func_encoder = MLPEncoder(val_dim, embed_dim)
         self.theta_encoder = MLPEncoder(theta_dim, embed_dim)
 
-        # Architecture division: Shared -> [Field Branch, Freq Branch]
-        # We split the total n_layers. Recommended: 1/3 shared, 1/3 field, 1/3 freq.
-        # Minimal set: 2 shared, 2 field, 2 freq.
-        shared_layers = max(1, n_layers // 2)
-        task_layers = max(1, n_layers // 2)
+        # Architecture division into Shared -> [Field Branch, Freq Branch]
+        # Total n_layers is distributed as: shared, task_field, task_freq.
+        # Minimal set: 1 shared, 1 field, 1 freq.
+        shared_layers = max(1, n_layers // 3)
+        remaining = n_layers - shared_layers
+        field_field_layers = max(1, remaining // 2)
+        field_freq_layers = max(1, remaining - field_field_layers)
         
         self.shared_blocks = nn.ModuleList([
             GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
@@ -131,12 +134,12 @@ class GNOTModel(nn.Module):
         
         self.field_blocks = nn.ModuleList([
             GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
-            for _ in range(task_layers)
+            for _ in range(field_field_layers)
         ])
         
         self.freq_blocks = nn.ModuleList([
             GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
-            for _ in range(task_layers)
+            for _ in range(field_freq_layers)
         ])
 
         self.pooler = AttentionPool(embed_dim, n_heads)
@@ -165,18 +168,27 @@ class GNOTModel(nn.Module):
 
         condition_emb = torch.cat([y_emb, theta_emb], dim=1)
 
-        # Shared processing
+        # Shared processing with checkpointing option
         for block in self.shared_blocks:
-            x_emb = block(x_emb, condition_emb, X)
+            if self.use_checkpoint and self.training:
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, X, use_reentrant=False)
+            else:
+                x_emb = block(x_emb, condition_emb, X)
 
         # Task-specific branching
         x_field = x_emb
         for block in self.field_blocks:
-            x_field = block(x_field, condition_emb, X)
+            if self.use_checkpoint and self.training:
+                x_field = torch.utils.checkpoint.checkpoint(block, x_field, condition_emb, X, use_reentrant=False)
+            else:
+                x_field = block(x_field, condition_emb, X)
             
         x_freq = x_emb
         for block in self.freq_blocks:
-            x_freq = block(x_freq, condition_emb, X)
+            if self.use_checkpoint and self.training:
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, use_reentrant=False)
+            else:
+                x_freq = block(x_freq, condition_emb, X)
 
         field_pred = self.field_decoder(x_field)
         global_feat = self.pooler(x_freq)

@@ -92,8 +92,8 @@ class RFCavityToGNOT:
             'elements': elements,
         }
 
-    def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None):
-        print(f"Converting: {self.h5_filepath}")
+    def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None, format='pkl'):
+        print(f"Converting: {self.h5_filepath} to {format.upper()}")
 
         with h5py.File(self.h5_filepath, 'r') as f:
             sample_keys = sorted(f.keys())
@@ -144,31 +144,55 @@ class RFCavityToGNOT:
                     self.stats['freq_range'][1] = max(self.stats['freq_range'][1], freq)
                     self.stats['freq_by_mode'][m_idx].append(freq)
 
-        # Save
-        dataset = {
-            'geometry_pool': self.geometry_pool,
-            'samples': self.samples,
-            'metadata': {
-                'mode_indices': mode_indices,
-                'n_geometries': self.stats['n_geometries'],
-                'n_samples': self.stats['n_samples'],
-                'freq_stats': {
-                    'mean': np.mean([f for l in self.stats['freq_by_mode'].values() for f in l]),
-                    'std': np.std([f for l in self.stats['freq_by_mode'].values() for f in l]) + 1e-10,
-                    'mode_stats': {
-                        m: {'mean': np.mean(l), 'std': np.std(l) + 1e-10}
-                        for m, l in self.stats['freq_by_mode'].items()
-                    }
+        # Dataset Metadata
+        metadata = {
+            'mode_indices': mode_indices,
+            'n_geometries': self.stats['n_geometries'],
+            'n_samples': self.stats['n_samples'],
+            'freq_stats': {
+                'mean': float(np.mean([f for l in self.stats['freq_by_mode'].values() for f in l])),
+                'std': float(np.std([f for l in self.stats['freq_by_mode'].values() for f in l]) + 1e-10),
+                'mode_stats': {
+                    str(m): {'mean': float(np.mean(l)), 'std': float(np.std(l) + 1e-10)}
+                    for m, l in self.stats['freq_by_mode'].items()
                 }
             }
         }
 
-        with open(output_filepath, 'wb') as f:
-            pickle.dump(dataset, f)
+        if format == 'pkl':
+            dataset = {
+                'geometry_pool': self.geometry_pool,
+                'samples': self.samples,
+                'metadata': metadata
+            }
+            with open(output_filepath, 'wb') as f:
+                pickle.dump(dataset, f)
+        else:
+            # Save to H5 (Memory Efficient)
+            with h5py.File(output_filepath, 'w') as f_out:
+                # Store metadata as attributes or JSON
+                import json
+                f_out.attrs['metadata'] = json.dumps(metadata)
+                
+                # Geometries
+                geom_grp = f_out.create_group('geometry_pool')
+                for g_id, g_data in self.geometry_pool.items():
+                    g_sub = geom_grp.create_group(str(g_id))
+                    g_sub.create_dataset('X', data=g_data['X'], compression="gzip")
+                    # Input_funcs is a tuple, we take the first element (geom_features)
+                    g_sub.create_dataset('Input_funcs', data=g_data['Input_funcs'][0], compression="gzip")
+                
+                # Samples
+                samp_grp = f_out.create_group('samples')
+                for i, s in enumerate(self.samples):
+                    s_sub = samp_grp.create_group(str(i))
+                    s_sub.attrs['geom_id'] = s['geom_id']
+                    s_sub.create_dataset('Y', data=s['Y'], compression="gzip")
+                    s_sub.create_dataset('Theta', data=s['Theta'])
 
         self._print_stats()
-        print(f"\n✅ Saved: {output_filepath}")
-        return dataset
+        print(f"\n✅ Saved ({format.upper()}): {output_filepath}")
+        return output_filepath
 
     def _print_stats(self):
         print(f"\n{'='*50}")

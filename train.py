@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for AdamW.")
     parser.add_argument("--patience", type=int, default=10, help="Patience for EarlyStopping.")
     parser.add_argument("--viz_every_n_epochs", type=int, default=5, help="Visualize mode shapes every N epochs.")
+    parser.add_argument("--use_checkpoint", action="store_true", help="Use gradient checkpointing to save GPU VRAM.")
     parser.add_argument("--fast_dev_run", action="store_true", help="Run 1 epoch to verify pipeline.")
     
     # Model architecture constants (usually not changed frequently)
@@ -56,7 +57,8 @@ def main(args):
         lr=args.learning_rate,
         freq_weight=args.freq_weight,
         scheduler=args.scheduler,
-        weight_decay=args.weight_decay
+        weight_decay=args.weight_decay,
+        use_checkpoint=args.use_checkpoint
     )
     
     # Pass frequency statistics to the model for physical units logging

@@ -17,21 +17,25 @@ class FieldVisualizationCallback(pl.Callback):
             return
 
         # Get a batch from validation dataloader
-        val_loaders = trainer.val_dataloaders
-        if val_loaders is None:
-            return
+        try:
+            val_loaders = trainer.val_dataloaders
+            if val_loaders is None:
+                return
             
-        if isinstance(val_loaders, list):
-            val_loader = val_loaders[0]
-        else:
-            val_loader = val_loaders
-        
-        # In modern Lightning, if trainer.datamodule exists, use it
-        if hasattr(trainer, 'datamodule') and trainer.datamodule is not None:
-            db_loader = trainer.datamodule.val_dataloader()
-            if db_loader: val_loader = db_loader
-
-        batch = next(iter(val_loader))
+            # If it's a list or sequence, take first one
+            if isinstance(val_loaders, (list, tuple)):
+                val_loader = val_loaders[0]
+            else:
+                val_loader = val_loaders
+                
+            # If we have a datamodule, it's often more reliable to get it from there
+            if hasattr(trainer, 'datamodule') and trainer.datamodule:
+                val_loader = trainer.datamodule.val_dataloader()
+                
+            batch = next(iter(val_loader))
+        except Exception as e:
+            print(f"Warning: Could not get validation batch for visualization: {e}")
+            return
         
         # Move to device
         batch = {k: v.to(pl_module.device) for k, v in batch.items()}

@@ -5,8 +5,8 @@ import torchmetrics
 from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=128, n_layers=4, lr=1e-3, freq_weight=0.1, 
-                 scheduler='onecycle', weight_decay=1e-4):
+    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=128, n_layers=6, lr=1e-3, freq_weight=0.1, 
+                 scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False):
         super().__init__()
         self.save_hyperparameters()
         self.model = GNOTModel(
@@ -14,7 +14,8 @@ class GNOTLightning(pl.LightningModule):
             grid_dim=grid_dim,
             theta_dim=theta_dim,
             embed_dim=hidden_dim,
-            n_layers=n_layers
+            n_layers=n_layers,
+            use_checkpoint=use_checkpoint
         )
         self.freq_weight = freq_weight
         self.freq_stats = None # Will be set by the dataloader or manually

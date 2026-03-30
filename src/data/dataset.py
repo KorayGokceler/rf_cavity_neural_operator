@@ -5,47 +5,81 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
 class GNOTDataset(Dataset):
-    def __init__(self, pkl_path, split='train', train_ratio=0.8, val_ratio=0.1):
-        print(f"Loading dataset from {pkl_path}...")
-        with open(pkl_path, 'rb') as f:
-            data = pickle.load(f)
+    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1):
+        print(f"Loading dataset from {data_path}...")
+        self.data_path = data_path
+        self.is_h5 = str(data_path).endswith('.h5')
 
-        self.geometry_pool = data['geometry_pool']
-        all_samples = data['samples']
+        if self.is_h5:
+            import h5py, json
+            with h5py.File(data_path, 'r') as f:
+                metadata = json.loads(f.attrs['metadata'])
+                self.stats = metadata.get('freq_stats', None)
+                self.n_samples_total = metadata['n_samples']
+                # Store sample indices for subsetting
+                self.indices = list(range(self.n_samples_total))
+        else:
+            with open(data_path, 'rb') as f:
+                data = pickle.load(f)
+            self.geometry_pool = data['geometry_pool']
+            all_samples = data['samples']
+            self.stats = data.get('metadata', {}).get('freq_stats', None)
+            self.indices = list(range(len(all_samples)))
+            # We still need to keep the light samples list for PKL
+            self.samples_metadata = all_samples
 
-        n_total = len(all_samples)
+        n_total = len(self.indices)
         n_train = int(n_total * train_ratio)
         n_val = int(n_total * val_ratio)
 
         np.random.seed(42)
         perm = np.random.permutation(n_total)
-        all_samples = [all_samples[i] for i in perm]
+        self.indices = [self.indices[i] for i in perm]
 
         if split == 'train':
-            self.samples = all_samples[:n_train]
+            self.active_indices = self.indices[:n_train]
         elif split == 'val':
-            self.samples = all_samples[n_train:n_train+n_val]
+            self.active_indices = self.indices[n_train:n_train+n_val]
         else:
-            self.samples = all_samples[n_train+n_val:]
+            self.active_indices = self.indices[n_train+n_val:]
 
-        # Normalization Stats
-        self.stats = data.get('metadata', {}).get('freq_stats', None)
         if self.stats:
             print(f"Freq Stats: mean={self.stats['mean']:.4f}, std={self.stats['std']:.4f}")
+        print(f"Split: {split}, Count: {len(self.active_indices)}")
 
-        print(f"Split: {split}, Count: {len(self.samples)}")
+        self.h5_handle = None
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.active_indices)
+
+    def _get_h5_handle(self):
+        import h5py
+        if self.h5_handle is None:
+            self.h5_handle = h5py.File(self.data_path, 'r')
+        return self.h5_handle
 
     def __getitem__(self, idx):
-        sample = self.samples[idx]
-        geom = self.geometry_pool[sample['geom_id']]
-        input_features = geom['Input_funcs'][0]
-        raw_theta = sample['Theta']
+        real_idx = self.active_indices[idx]
+        
+        if self.is_h5:
+            f = self._get_h5_handle()
+            sample = f['samples'][str(real_idx)]
+            geom_id = sample.attrs['geom_id']
+            geom = f['geometry_pool'][str(geom_id)]
+            
+            x = geom['X'][:]
+            input_features = geom['Input_funcs'][:]
+            y_field = sample['Y'][:]
+            raw_theta = sample['Theta'][:]
+        else:
+            sample = self.samples_metadata[real_idx]
+            geom = self.geometry_pool[sample['geom_id']]
+            x = geom['X']
+            input_features = geom['Input_funcs'][0]
+            y_field = sample['Y']
+            raw_theta = sample['Theta']
 
-        # Y_freq is the second element of Theta (index 1)
-        # Apply normalization if stats are available
+        # raw_theta format: [m_idx, freq, sample_id]
         raw_freq = raw_theta[1]
         if self.stats:
             norm_freq = (raw_freq - self.stats['mean']) / self.stats['std']
@@ -53,9 +87,9 @@ class GNOTDataset(Dataset):
             norm_freq = raw_freq
 
         return {
-            'X': torch.from_numpy(geom['X']),
-            'Input_funcs': torch.from_numpy(input_features),
-            'Y_field': torch.from_numpy(sample['Y']),
+            'X': torch.from_numpy(x).float(),
+            'Input_funcs': torch.from_numpy(input_features).float(),
+            'Y_field': torch.from_numpy(y_field).float(),
             'Y_freq': torch.from_numpy(np.array([norm_freq], dtype=np.float32)),
             'Theta_in': torch.from_numpy(np.array([raw_theta[0]], dtype=np.float32))
         }
