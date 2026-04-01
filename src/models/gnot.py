@@ -115,9 +115,19 @@ class GNOTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ffn = GeometricGatingFFN(embed_dim, coords_dim, num_experts, dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
+        
+        # FiLM modulation: generates scale (gamma) and shift (beta) from the mode embedding
+        self.modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(embed_dim, 2 * embed_dim)
+        )
 
-    def forward(self, x, condition_emb, coords, mask=None, condition_mask=None):
-        # Pre-norm: normalize inputs BEFORE attention/FFN (more stable for deep nets)
+    def forward(self, x, condition_emb, coords, theta_emb, mask=None, condition_mask=None):
+        # Apply mode modulation before processing
+        mod = self.modulation(theta_emb) # [B, 1, 2*D]
+        gamma, beta = torch.chunk(mod, 2, dim=-1)
+        
+        # Cross Attention
         attn_out = self.cross_attn(
             query=self.norm1(x),
             key=self.norm1(condition_emb),
@@ -125,7 +135,11 @@ class GNOTBlock(nn.Module):
             mask=condition_mask
         )
         x = x + attn_out
+        
+        # Initial modulation
+        x = x * (1 + gamma) + beta
 
+        # Self Attention
         attn_out = self.self_attn(
             query=self.norm2(x),
             key=self.norm2(x),
@@ -135,11 +149,18 @@ class GNOTBlock(nn.Module):
         x = x + attn_out
         if mask is not None:
             x = x * mask.unsqueeze(-1)
+            
+        # Refine modulation
+        x = x * (1 + gamma) + beta
 
+        # FFN
         ffn_out = self.ffn(self.norm3(x), coords)
         x = x + ffn_out
         if mask is not None:
             x = x * mask.unsqueeze(-1)
+            
+        # Final block-level modulation
+        x = x * (1 + gamma) + beta
         return x
 
 class MLPEncoder(nn.Module):
@@ -232,24 +253,25 @@ class GNOTModel(nn.Module):
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, X, mask, condition_mask, use_reentrant=False)
+                # Note: checkpointing requires passing all non-kWarg inputs as args
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, X, theta_emb_expand, mask, condition_mask, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, X, mask, condition_mask)
+                x_emb = block(x_emb, condition_emb, X, theta_emb_expand, mask, condition_mask)
 
         # Task-specific branching
         x_field = x_emb
         for block in self.field_blocks:
             if self.use_checkpoint and self.training:
-                x_field = torch.utils.checkpoint.checkpoint(block, x_field, condition_emb, X, mask, condition_mask, use_reentrant=False)
+                x_field = torch.utils.checkpoint.checkpoint(block, x_field, condition_emb, X, theta_emb_expand, mask, condition_mask, use_reentrant=False)
             else:
-                x_field = block(x_field, condition_emb, X, mask, condition_mask)
+                x_field = block(x_field, condition_emb, X, theta_emb_expand, mask, condition_mask)
             
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, mask, condition_mask, use_reentrant=False)
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, theta_emb_expand, mask, condition_mask, use_reentrant=False)
             else:
-                x_freq = block(x_freq, condition_emb, X, mask, condition_mask)
+                x_freq = block(x_freq, condition_emb, X, theta_emb_expand, mask, condition_mask)
 
         field_pred = self.field_decoder(x_field)
         global_feat = self.pooler(x_freq, mask)
