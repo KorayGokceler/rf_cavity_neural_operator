@@ -126,10 +126,17 @@ def gnot_collate_fn(batch):
     Y_freq_stacked = torch.stack(batch_y_freq)
     Theta_in_stacked = torch.stack(batch_theta_in)
 
+    lengths = [len(x) for x in batch_x]
+    max_len = X_padded.size(1)
+    mask = torch.zeros(len(batch), max_len, dtype=torch.bool)
+    for i, l in enumerate(lengths):
+        mask[i, :l] = True
+
     return {
         'X': X_padded,
         'Input_funcs': Inputs_padded,
         'Y_field': Y_field_padded,
         'Y_freq': Y_freq_stacked,
-        'Theta_in': Theta_in_stacked
+        'Theta_in': Theta_in_stacked,
+        'Mask': mask
     }

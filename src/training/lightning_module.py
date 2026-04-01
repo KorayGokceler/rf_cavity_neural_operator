@@ -33,50 +33,82 @@ class GNOTLightning(pl.LightningModule):
 
     def _compute_loss(self, batch, prefix):
         outputs = self.model(batch)
-        loss_field = F.mse_loss(outputs['field'], batch['Y_field'])
+        mask = batch.get('Mask', None)  # [B, N] boolean
+
+        pred_field = outputs['field']      # [B, N, 1]
+        true_field = batch['Y_field']      # [B, N, 1]
+
+        if mask is not None:
+            # Expand mask to match field shape [B, N, 1]
+            mask_exp = mask.unsqueeze(-1).float()  # [B, N, 1]
+            n_valid = mask_exp.sum().clamp(min=1.0)
+
+            # Masked MSE for field: only penalize real nodes
+            loss_field = ((pred_field - true_field) ** 2 * mask_exp).sum() / n_valid
+        else:
+            loss_field = F.mse_loss(pred_field, true_field)
+
         loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
         total_loss = loss_field + (self.freq_weight * loss_freq)
 
-        self.log(f'{prefix}/loss', total_loss, prog_bar=True)
-        self.log(f'{prefix}/field_loss', loss_field, prog_bar=False)
-        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False)
+        self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=pred_field.shape[0])
+        self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=pred_field.shape[0])
+        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=pred_field.shape[0])
         
         # Denormalized Freq MAE for better tracking
         if self.freq_stats:
             freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
-            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True)
+            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=pred_field.shape[0])
 
-        # Calculate per-sample Relative L2 Error for field, then average over the batch.
-        # Flattening each sample independently avoids large samples dominating the metric.
-        B = outputs['field'].shape[0]
-        pred_flat = outputs['field'].view(B, -1)
-        true_flat = batch['Y_field'].view(B, -1)
-        rel_l2 = (torch.norm(pred_flat - true_flat, dim=1) /
-                  (torch.norm(true_flat, dim=1) + 1e-8)).mean()
-        self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True)
+        # Per-sample Relative L2 Error for field (masked)
+        B = pred_field.shape[0]
+        if mask is not None:
+            rel_l2_list = []
+            for i in range(B):
+                m = mask[i]  # [N]
+                p = pred_field[i, m, :]  # [valid_nodes, 1]
+                t = true_field[i, m, :]  # [valid_nodes, 1]
+                rel = torch.norm(p - t) / (torch.norm(t) + 1e-8)
+                rel_l2_list.append(rel)
+            rel_l2 = torch.stack(rel_l2_list).mean()
+        else:
+            pred_flat = pred_field.view(B, -1)
+            true_flat = true_field.view(B, -1)
+            rel_l2 = (torch.norm(pred_flat - true_flat, dim=1) /
+                      (torch.norm(true_flat, dim=1) + 1e-8)).mean()
+        self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B)
 
-        return total_loss, outputs['field'], batch['Y_field']
+        # Extract valid-only flat tensors for torchmetrics (R2, MAE)
+        if mask is not None:
+            mask_flat = mask.unsqueeze(-1).expand_as(pred_field)  # [B, N, 1]
+            preds_valid = pred_field[mask_flat].contiguous()
+            targets_valid = true_field[mask_flat].contiguous()
+        else:
+            preds_valid = pred_field.contiguous().view(-1)
+            targets_valid = true_field.contiguous().view(-1)
+
+        return total_loss, preds_valid, targets_valid
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
-        self.train_r2(preds.contiguous().view(-1), targets.contiguous().view(-1))
+        self.train_r2(preds, targets)
         self.log('train/r2', self.train_r2, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "val")
-        self.val_r2(preds.contiguous().view(-1), targets.contiguous().view(-1))
-        self.val_mae(preds.contiguous().view(-1), targets.contiguous().view(-1))
+        self.val_r2(preds, targets)
+        self.val_mae(preds, targets)
         self.log('val/r2', self.val_r2, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val/mae', self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
         return loss
         
     def test_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "test")
-        self.test_r2(preds.contiguous().view(-1), targets.contiguous().view(-1))
-        self.test_mae(preds.contiguous().view(-1), targets.contiguous().view(-1))
+        self.test_r2(preds, targets)
+        self.test_mae(preds, targets)
         self.log('test/r2', self.test_r2, on_step=False, on_epoch=True)
         self.log('test/mae', self.test_mae, on_step=False, on_epoch=True)
         return loss
