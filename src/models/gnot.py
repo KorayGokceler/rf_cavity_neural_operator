@@ -234,13 +234,18 @@ class GNOTModel(nn.Module):
         enhanced_inputs = torch.cat([inputs, x_fourier], dim=-1)
         y_emb = self.input_func_encoder(enhanced_inputs)
         
-        theta_emb = self.theta_encoder(theta).unsqueeze(1)
-
-        condition_emb = torch.cat([y_emb, theta_emb], dim=1)
+        theta_emb_expand = self.theta_encoder(theta).unsqueeze(1) # [B, 1, D]
         
+        # Inject mode directly into spatial coordinates
+        x_emb = x_emb + theta_emb_expand
+        y_emb = y_emb + theta_emb_expand
+        
+        # The condition targets are simply the y_emb now
+        condition_emb = y_emb
+
         if mask is not None:
-            theta_mask = torch.ones(mask.shape[0], 1, dtype=torch.bool, device=mask.device)
-            condition_mask = torch.cat([mask, theta_mask], dim=1)
+            # Mask remains the same shape as y_emb
+            condition_mask = mask
         else:
             condition_mask = None
 
