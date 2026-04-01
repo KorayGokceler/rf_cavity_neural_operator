@@ -55,11 +55,13 @@ class FieldVisualizationCallback(pl.Callback):
             valid_targets = targets[i, m].cpu().numpy()
             valid_preds = preds[i, m].cpu().numpy()
 
+            m_idx = batch['Theta_in'][i].item()
+            
             fig = self._plot_comparison(
                 valid_coords,
                 valid_targets,
                 valid_preds,
-                title=f"Epoch {trainer.current_epoch} - Sample {i}"
+                title=f"Epoch {trainer.current_epoch} - Mode {int(m_idx)} - Sample {i}"
             )
             
             # Log to TensorBoard (guard against missing logger)
