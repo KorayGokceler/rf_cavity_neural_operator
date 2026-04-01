@@ -48,8 +48,13 @@ class GNOTLightning(pl.LightningModule):
             mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
             self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True)
 
-        # Calculate Relative L2 Error for field
-        rel_l2 = torch.norm(outputs['field'] - batch['Y_field'], p=2) / (torch.norm(batch['Y_field'], p=2) + 1e-8)
+        # Calculate per-sample Relative L2 Error for field, then average over the batch.
+        # Flattening each sample independently avoids large samples dominating the metric.
+        B = outputs['field'].shape[0]
+        pred_flat = outputs['field'].view(B, -1)
+        true_flat = batch['Y_field'].view(B, -1)
+        rel_l2 = (torch.norm(pred_flat - true_flat, dim=1) /
+                  (torch.norm(true_flat, dim=1) + 1e-8)).mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True)
 
         return total_loss, outputs['field'], batch['Y_field']

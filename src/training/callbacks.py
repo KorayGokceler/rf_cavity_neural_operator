@@ -54,10 +54,11 @@ class FieldVisualizationCallback(pl.Callback):
                 title=f"Epoch {trainer.current_epoch} - Sample {i}"
             )
             
-            # Log to TensorBoard
-            trainer.logger.experiment.add_figure(
-                f"Validation/Field_Comparison_{i}", fig, global_step=trainer.global_step
-            )
+            # Log to TensorBoard (guard against missing logger)
+            if trainer.logger and hasattr(trainer.logger, 'experiment'):
+                trainer.logger.experiment.add_figure(
+                    f"Validation/Field_Comparison_{i}", fig, global_step=trainer.global_step
+                )
             plt.close(fig)
 
     def _plot_comparison(self, coords, target, pred, title=""):

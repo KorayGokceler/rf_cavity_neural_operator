@@ -42,12 +42,18 @@ def main(args):
     # Running data generation and conversion is required prior to training.
     
     train_dataset = GNOTDataset(args.data_path, split='train')
-    val_dataset = GNOTDataset(args.data_path, split='val')
+    val_dataset   = GNOTDataset(args.data_path, split='val')
+    test_dataset  = GNOTDataset(args.data_path, split='test')
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                              collate_fn=gnot_collate_fn, num_workers=args.num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
-                            collate_fn=gnot_collate_fn, num_workers=args.num_workers)
+                              collate_fn=gnot_collate_fn, num_workers=args.num_workers,
+                              pin_memory=True)
+    val_loader   = DataLoader(val_dataset,   batch_size=args.batch_size,
+                              collate_fn=gnot_collate_fn, num_workers=args.num_workers,
+                              pin_memory=True)
+    test_loader  = DataLoader(test_dataset,  batch_size=args.batch_size,
+                              collate_fn=gnot_collate_fn, num_workers=args.num_workers,
+                              pin_memory=True)
 
     model = GNOTLightning(
         val_dim=args.val_dim,
@@ -100,10 +106,10 @@ def main(args):
         print("Starting fast_dev_run training to verify pipeline...")
     trainer.fit(model, train_loader, val_loader)
     
-    print("Running final evaluation to measure model success...")
-    # Verify the model using test step metrics over validation dataset
+    print("Running final evaluation on held-out test split...")
+    # Use the true test split (not val) so evaluation is unbiased
     ckpt_path = "best" if not args.fast_dev_run else None
-    trainer.test(dataloaders=val_loader, ckpt_path=ckpt_path)
+    trainer.test(dataloaders=test_loader, ckpt_path=ckpt_path)
     
     if args.fast_dev_run:
         print("Verification complete! To run full training, do not use --fast_dev_run flag.")

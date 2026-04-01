@@ -71,13 +71,29 @@ class GeometricGatingFFN(nn.Module):
 
     def forward(self, x, coords):
         gate_logits = self.gating_net(coords)
-        gate_weights = F.softmax(gate_logits, dim=-1)
+        gate_weights = F.softmax(gate_logits, dim=-1)  # [B, N, num_experts]
+
+        # Top-2 sparse routing: only compute the 2 highest-weight experts
+        top2_weights, top2_idx = gate_weights.topk(2, dim=-1)  # [B, N, 2]
+        # Re-normalize so the two weights sum to 1
+        top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
+
+        # Find which experts are actually needed (avoid computing unused ones)
+        active_experts = set(top2_idx.unique().tolist())
+
+        # Pre-compute only active expert outputs
+        expert_outputs = {}
+        for i in active_experts:
+            expert_outputs[i] = self.experts[i](x)
 
         final_output = torch.zeros_like(x)
-        for i, expert in enumerate(self.experts):
-            expert_out = expert(x)
-            weight = gate_weights[:, :, i].unsqueeze(-1)
-            final_output += weight * expert_out
+        for k in range(2):
+            idx = top2_idx[..., k]   # [B, N] — which expert each token picks
+            w   = top2_weights[..., k].unsqueeze(-1)  # [B, N, 1]
+            for i in active_experts:
+                mask = (idx == i).float().unsqueeze(-1)  # [B, N, 1]
+                if mask.any():
+                    final_output = final_output + w * mask * expert_outputs[i]
         return final_output
 
 class GNOTBlock(nn.Module):
@@ -91,12 +107,23 @@ class GNOTBlock(nn.Module):
         self.norm3 = nn.LayerNorm(embed_dim)
 
     def forward(self, x, condition_emb, coords):
-        attn_out = self.cross_attn(query=x, key=condition_emb, value=condition_emb)
-        x = self.norm1(x + attn_out)
-        attn_out = self.self_attn(query=x, key=x, value=x)
-        x = self.norm2(x + attn_out)
-        ffn_out = self.ffn(x, coords)
-        x = self.norm3(x + ffn_out)
+        # Pre-norm: normalize inputs BEFORE attention/FFN (more stable for deep nets)
+        attn_out = self.cross_attn(
+            query=self.norm1(x),
+            key=self.norm1(condition_emb),
+            value=self.norm1(condition_emb)
+        )
+        x = x + attn_out
+
+        attn_out = self.self_attn(
+            query=self.norm2(x),
+            key=self.norm2(x),
+            value=self.norm2(x)
+        )
+        x = x + attn_out
+
+        ffn_out = self.ffn(self.norm3(x), coords)
+        x = x + ffn_out
         return x
 
 class MLPEncoder(nn.Module):

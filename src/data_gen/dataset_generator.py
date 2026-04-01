@@ -77,7 +77,6 @@ def generate_sample_data(s_id):
         _, _, conns = gmsh.model.mesh.getElements(2)
         nodes = np.ascontiguousarray(coords.reshape(-1, 3)[:, :2])
         elements = np.ascontiguousarray((conns[0].reshape(-1, 3) - 1).astype(np.int32))
-        gmsh.finalize()
 
         # Physics Solver (P2 Precision)
         m = MeshTri(nodes.T, elements.T)
@@ -96,6 +95,11 @@ def generate_sample_data(s_id):
         }
     except Exception as e:
         return None
+    finally:
+        try:
+            gmsh.finalize()
+        except Exception:
+            pass
 
 def save_sample_plot(data, save_path):
     fig, axes = plt.subplots(1, 4, figsize=(20, 5))

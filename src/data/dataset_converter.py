@@ -58,9 +58,10 @@ class RFCavityToGNOT:
         return curvature.astype(np.float32)
 
     def extract_geometry_features(self, nodes, elements):
-        # Isotropic scaling
-        scale_factor = nodes.max() + 1e-10
-        nodes_norm = nodes / scale_factor
+        # Per-axis normalization: map each axis independently to [0, 1]
+        min_val = nodes.min(axis=0)
+        max_val = nodes.max(axis=0)
+        nodes_norm = (nodes - min_val) / (max_val - min_val + 1e-10)
 
         # Boundary
         boundary_indices = self._find_boundary_nodes(elements)
@@ -77,7 +78,7 @@ class RFCavityToGNOT:
         # Curvature
         curvature = self._estimate_local_curvature(nodes_norm, elements)
 
-        # Combine
+        # Combine: [x_norm, y_norm, dist_to_boundary, boundary_mask, dist_to_center, curvature]
         geom_features = np.concatenate([
             nodes_norm,
             dist_to_boundary.reshape(-1, 1),
@@ -88,7 +89,7 @@ class RFCavityToGNOT:
 
         return {
             'X': nodes_norm.astype(np.float32),
-            'Input_funcs': (geom_features,),
+            'Input_funcs': geom_features,  # numpy array directly, no tuple wrapping
             'elements': elements,
         }
 
@@ -179,8 +180,8 @@ class RFCavityToGNOT:
                 for g_id, g_data in self.geometry_pool.items():
                     g_sub = geom_grp.create_group(str(g_id))
                     g_sub.create_dataset('X', data=g_data['X'], compression="gzip")
-                    # Input_funcs is a tuple, we take the first element (geom_features)
-                    g_sub.create_dataset('Input_funcs', data=g_data['Input_funcs'][0], compression="gzip")
+                    # Input_funcs is now a plain numpy array
+                    g_sub.create_dataset('Input_funcs', data=g_data['Input_funcs'], compression="gzip")
                 
                 # Samples
                 samp_grp = f_out.create_group('samples')

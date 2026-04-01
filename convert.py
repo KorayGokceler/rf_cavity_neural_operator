@@ -8,7 +8,9 @@ def main():
     parser.add_argument("--output_pkl", type=str, default="data/gnot_dataset.pkl", help="Path to output PKL file.")
     args = parser.parse_args()
 
-    os.makedirs(os.path.dirname(args.output_pkl), exist_ok=True)
+    output_dir = os.path.dirname(args.output_pkl)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     
     print(f"Starting conversion from {args.h5_filepath} to {args.output_pkl}...")
     converter = RFCavityToGNOT(args.h5_filepath)

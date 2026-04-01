@@ -53,10 +53,29 @@ class GNOTDataset(Dataset):
         return len(self.active_indices)
 
     def _get_h5_handle(self):
+        """Returns a worker-local H5 file handle.
+        
+        Each DataLoader worker (or the main process) opens its own handle
+        so that multi-process access is safe.  The handle is opened lazily
+        on first access and kept alive for the lifetime of the worker.
+        """
         import h5py
-        if self.h5_handle is None:
-            self.h5_handle = h5py.File(self.data_path, 'r')
-        return self.h5_handle
+        import os
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else 'main'
+        attr = f'_h5_handle_{worker_id}'
+        if not hasattr(self, attr) or getattr(self, attr) is None:
+            setattr(self, attr, h5py.File(self.data_path, 'r', swmr=True))
+        return getattr(self, attr)
+
+    def __del__(self):
+        """Close any open H5 handles when the dataset object is garbage collected."""
+        for attr in list(vars(self)):
+            if attr.startswith('_h5_handle_'):
+                try:
+                    getattr(self, attr).close()
+                except Exception:
+                    pass
 
     def __getitem__(self, idx):
         real_idx = self.active_indices[idx]
@@ -75,7 +94,7 @@ class GNOTDataset(Dataset):
             sample = self.samples_metadata[real_idx]
             geom = self.geometry_pool[sample['geom_id']]
             x = geom['X']
-            input_features = geom['Input_funcs'][0]
+            input_features = geom['Input_funcs']  # plain numpy array, no tuple
             y_field = sample['Y']
             raw_theta = sample['Theta']
 
