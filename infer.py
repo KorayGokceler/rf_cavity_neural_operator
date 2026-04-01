@@ -86,6 +86,10 @@ def main(args):
                 # Extraction of mode index
                 m_idx = int(batch['Theta_in'][i].item())
                 
+                # Calculate relative L2 for just this sample
+                rel_l2 = torch.norm(preds[i, m] - targets[i, m]) / (torch.norm(targets[i, m]) + 1e-8)
+                rel_l2 = rel_l2.item()
+                
                 title = f"Mode {m_idx} | Sample {samples_plotted} | Freq True: {f_true:.2f}GHz, Pred: {f_pred:.2f}GHz (Err: {f_err:.3f})\nField Rel L2: {rel_l2:.3f}"
                 save_path = os.path.join(args.output_dir, f"{args.split}_mode{m_idx}_sample_{samples_plotted}.png")
                 
