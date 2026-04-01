@@ -45,12 +45,20 @@ class FieldVisualizationCallback(pl.Callback):
             preds = outputs['field']
             targets = batch['Y_field']
             coords = batch['X']
+            mask = batch.get('Mask', None)
 
         for i in range(min(self.num_samples, len(preds))):
+            m = mask[i] if mask is not None else slice(None)
+            
+            # Extract only valid nodes for visualization
+            valid_coords = coords[i, m].cpu().numpy()
+            valid_targets = targets[i, m].cpu().numpy()
+            valid_preds = preds[i, m].cpu().numpy()
+
             fig = self._plot_comparison(
-                coords[i].cpu().numpy(),
-                targets[i].cpu().numpy(),
-                preds[i].cpu().numpy(),
+                valid_coords,
+                valid_targets,
+                valid_preds,
                 title=f"Epoch {trainer.current_epoch} - Sample {i}"
             )
             
