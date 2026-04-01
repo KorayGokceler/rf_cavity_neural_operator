@@ -176,10 +176,10 @@ class GNOTModel(nn.Module):
         self.rff_dim = 64
         self.rff = RandomFourierFeatures(in_dim=grid_dim, out_dim=self.rff_dim, scale=1.0)
 
-        # Query points (represented in Fourier space)
-        self.query_encoder = MLPEncoder(self.rff_dim, embed_dim)
-        # Input features + Query point RFF context
-        self.input_func_encoder = MLPEncoder(val_dim + self.rff_dim, embed_dim)
+        # Query points (represented in raw space + Fourier space)
+        self.query_encoder = MLPEncoder(grid_dim + self.rff_dim, embed_dim)
+        # Input features + Query point Raw Context + Query point RFF context
+        self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
         self.theta_encoder = MLPEncoder(theta_dim, embed_dim)
 
         # Architecture division into Shared -> [Field Branch, Freq Branch]
@@ -226,12 +226,13 @@ class GNOTModel(nn.Module):
         theta = batch['Theta_in']
         mask = batch.get('Mask', None)
 
-        # Inject Geometric Fourier features
+        # Inject Geometric Fourier features alongside Raw Grid
         x_fourier = self.rff(X)
-        x_emb = self.query_encoder(x_fourier)
+        x_enhanced = torch.cat([X, x_fourier], dim=-1)
+        x_emb = self.query_encoder(x_enhanced)
         
-        # Give functional inputs local RFF awareness
-        enhanced_inputs = torch.cat([inputs, x_fourier], dim=-1)
+        # Give functional inputs local RFF and explicit coordinates awareness
+        enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
         y_emb = self.input_func_encoder(enhanced_inputs)
         
         theta_emb_expand = self.theta_encoder(theta).unsqueeze(1) # [B, 1, D]
