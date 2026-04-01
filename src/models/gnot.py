@@ -142,19 +142,6 @@ class GNOTBlock(nn.Module):
             x = x * mask.unsqueeze(-1)
         return x
 
-class RandomFourierFeatures(nn.Module):
-    def __init__(self, in_dim, out_dim, scale=1.0):
-        super().__init__()
-        assert out_dim % 2 == 0, "out_dim for RandomFourierFeatures must be even."
-        # Fixed random frequencies 
-        self.B = nn.Parameter(torch.randn(in_dim, out_dim // 2) * scale, requires_grad=False)
-        
-    def forward(self, x):
-        # x shape: [B, N, in_dim]
-        # x_proj shape: [B, N, out_dim // 2]
-        x_proj = 2 * torch.pi * (x @ self.B)
-        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
-
 class MLPEncoder(nn.Module):
     def __init__(self, in_dim, out_dim):
         super().__init__()
@@ -172,14 +159,8 @@ class GNOTModel(nn.Module):
         super().__init__()
         self.use_checkpoint = use_checkpoint
 
-        # --- Random Fourier Features for positional encoding ---
-        self.rff_dim = 64
-        self.rff = RandomFourierFeatures(in_dim=grid_dim, out_dim=self.rff_dim, scale=1.0)
-
-        # Query points (represented in raw space + Fourier space)
-        self.query_encoder = MLPEncoder(grid_dim + self.rff_dim, embed_dim)
-        # Input features + Query point Raw Context + Query point RFF context
-        self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
+        self.query_encoder = MLPEncoder(grid_dim, embed_dim)
+        self.input_func_encoder = MLPEncoder(val_dim, embed_dim)
         self.theta_encoder = MLPEncoder(theta_dim, embed_dim)
 
         # Architecture division into Shared -> [Field Branch, Freq Branch]
@@ -226,14 +207,8 @@ class GNOTModel(nn.Module):
         theta = batch['Theta_in']
         mask = batch.get('Mask', None)
 
-        # Inject Geometric Fourier features alongside Raw Grid
-        x_fourier = self.rff(X)
-        x_enhanced = torch.cat([X, x_fourier], dim=-1)
-        x_emb = self.query_encoder(x_enhanced)
-        
-        # Give functional inputs local RFF and explicit coordinates awareness
-        enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
-        y_emb = self.input_func_encoder(enhanced_inputs)
+        x_emb = self.query_encoder(X)
+        y_emb = self.input_func_encoder(inputs)
         
         theta_emb_expand = self.theta_encoder(theta).unsqueeze(1) # [B, 1, D]
         
