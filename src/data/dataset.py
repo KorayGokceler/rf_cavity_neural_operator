@@ -110,7 +110,7 @@ class GNOTDataset(Dataset):
             'Input_funcs': torch.from_numpy(input_features).float(),
             'Y_field': torch.from_numpy(y_field).float(),
             'Y_freq': torch.from_numpy(np.array([norm_freq], dtype=np.float32)),
-            'Theta_in': torch.from_numpy(np.array([raw_theta[0]], dtype=np.float32))
+            'Theta_in': torch.tensor([int(raw_theta[0])], dtype=torch.long)
         }
 
 def gnot_collate_fn(batch):

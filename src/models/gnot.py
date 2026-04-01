@@ -161,7 +161,9 @@ class GNOTModel(nn.Module):
 
         self.query_encoder = MLPEncoder(grid_dim, embed_dim)
         self.input_func_encoder = MLPEncoder(val_dim, embed_dim)
-        self.theta_encoder = MLPEncoder(theta_dim, embed_dim)
+        
+        # Categorical embedding ensures absolutely separate representations for each mode
+        self.theta_encoder = nn.Embedding(num_embeddings=20, embedding_dim=embed_dim)
 
         # Architecture division into Shared -> [Field Branch, Freq Branch]
         # Total n_layers is distributed as: shared, task_field, task_freq.
@@ -210,7 +212,9 @@ class GNOTModel(nn.Module):
         x_emb = self.query_encoder(X)
         y_emb = self.input_func_encoder(inputs)
         
-        theta_emb_expand = self.theta_encoder(theta).unsqueeze(1) # [B, 1, D]
+        # Squeeze the trailing 1 (from [B, 1]), output gives [B, D], then we restore the unsqueeze [B, 1, D]
+        theta_int = theta.squeeze(-1) # [B]
+        theta_emb_expand = self.theta_encoder(theta_int).unsqueeze(1) # [B, 1, D]
         
         # Inject mode directly into spatial coordinates
         x_emb = x_emb + theta_emb_expand
