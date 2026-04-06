@@ -71,8 +71,9 @@ def main():
     dc = cfg.dataset
 
     print(f"Config loaded from: {args.config}")
-    print(f"Model: embed_dim={mc.embed_dim}, n_layers={mc.n_layers}, n_heads={mc.n_heads}, "
-          f"num_experts={mc.num_experts}, num_field_modes={mc.num_field_modes}")
+    print(f"Model: embed_dim={mc.embed_dim}, heads={mc.n_heads}, "
+          f"L_shared={mc.n_shared_layers}, L_mode={mc.n_mode_layers}, L_freq={mc.n_freq_layers}")
+    print(f"Experts={mc.num_experts}, num_field_modes={mc.num_field_modes}")
     print(f"Training: lr={tc.learning_rate}, batch_size={tc.batch_size}, epochs={tc.max_epochs}, "
           f"scheduler={tc.scheduler}")
 
