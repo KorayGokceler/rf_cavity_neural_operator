@@ -107,7 +107,7 @@ class GeometricGatingFFN(nn.Module):
         return final_output
 
 class GNOTBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, coords_dim=2, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
+    def __init__(self, embed_dim, num_heads, fourier_dim=64, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
         super().__init__()
         self.use_film = use_film
         self.cross_attn = LinearAttention(embed_dim, num_heads, dropout)
@@ -115,7 +115,7 @@ class GNOTBlock(nn.Module):
         self.norm1_kv = nn.LayerNorm(embed_dim)
         self.self_attn = LinearAttention(embed_dim, num_heads, dropout)
         self.norm2 = nn.LayerNorm(embed_dim)
-        self.ffn = GeometricGatingFFN(embed_dim, coords_dim, num_experts, dropout)
+        self.ffn = GeometricGatingFFN(embed_dim, fourier_dim, num_experts, dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
         # Per-block FiLM: her blok sonunda mode sinyalini yenile.
         # Mode-specific bloklar için zorunlu, shared bloklar için mode-blind olmalı.
@@ -124,7 +124,7 @@ class GNOTBlock(nn.Module):
         else:
             self.block_film = None
 
-    def forward(self, x, condition_emb, coords, mode_idx, mask=None, condition_mask=None):
+    def forward(self, x, condition_emb, fourier_coords, mode_idx, mask=None, condition_mask=None):
         attn_out = self.cross_attn(
             query=self.norm1_q(x),
             key=self.norm1_kv(condition_emb),
@@ -143,7 +143,7 @@ class GNOTBlock(nn.Module):
         if mask is not None:
             x = x * mask.unsqueeze(-1)
 
-        ffn_out = self.ffn(self.norm3(x), coords)
+        ffn_out = self.ffn(self.norm3(x), fourier_coords)
         x = x + ffn_out
 
         # Mode conditioning: sadece fizik öğrenen şubelerde aktif
@@ -231,7 +231,7 @@ class GNOTModel(nn.Module):
         freq_layers   = n_freq_layers
         
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts, use_film=False)
+            GNOTBlock(embed_dim, n_heads, self.rff_dim, num_experts, use_film=False)
             for _ in range(shared_layers)
         ])
         
@@ -239,13 +239,13 @@ class GNOTModel(nn.Module):
         # Her modun artık 2 katmanlı özel fizik kapasitesi var.
         self.mode_field_blocks = nn.ModuleList([
             nn.ModuleList([
-                 GNOTBlock(embed_dim, n_heads, grid_dim, num_experts, use_film=True)
+                 GNOTBlock(embed_dim, n_heads, self.rff_dim, num_experts, use_film=True)
                  for _ in range(mode_layers)
             ]) for _ in range(num_field_modes)
         ])
         
         self.freq_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts, use_film=True)
+            GNOTBlock(embed_dim, n_heads, self.rff_dim, num_experts, use_film=True)
             for _ in range(freq_layers)
         ])
 
@@ -298,9 +298,9 @@ class GNOTModel(nn.Module):
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, X, theta_int, mask, condition_mask)
+                x_emb = block(x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask)
 
         # Mode-specific field branch: sort → process → cat → unsort
         # In-place assignment (field_pred[mask] = ...) yerine gradient-safe yöntem
@@ -310,9 +310,9 @@ class GNOTModel(nn.Module):
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask, use_reentrant=False)
             else:
-                x_freq = block(x_freq, condition_emb, X, theta_int, mask, condition_mask)
+                x_freq = block(x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask)
 
         # Sample'ları mode'a göre sırala
         sort_idx = theta_int.argsort()
@@ -321,6 +321,7 @@ class GNOTModel(nn.Module):
         x_sorted = x_emb[sort_idx]
         cond_sorted = condition_emb[sort_idx]
         X_sorted = X[sort_idx]
+        x_fourier_sorted = x_fourier[sort_idx]
         theta_sorted = theta_int[sort_idx]
         mask_sorted = mask[sort_idx] if mask is not None else None
         cmask_sorted = condition_mask[sort_idx] if condition_mask is not None else None
@@ -345,8 +346,10 @@ class GNOTModel(nn.Module):
             cm_m = cmask_sorted[start:end] if cmask_sorted is not None else None
 
             # Mode-specific PHYSICS branch (Multiple blocks)
+            # Pass x_fourier instead of X to each block here as well
+            x_f_m = x_fourier_sorted[start:end]
             for m_block in self.mode_field_blocks[mode_val]:
-                x_m = m_block(x_m, c_m, X_m, th_m, mk_m, cm_m)
+                x_m = m_block(x_m, c_m, x_f_m, th_m, mk_m, cm_m)
             
             field_parts.append(self.field_heads[mode_val](x_m))
             start = end
