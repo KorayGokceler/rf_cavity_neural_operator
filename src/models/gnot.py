@@ -124,7 +124,7 @@ class GNOTBlock(nn.Module):
         else:
             self.block_film = None
 
-    def forward(self, x, condition_emb, fourier_coords, mode_idx, mask=None, condition_mask=None):
+    def forward(self, x, condition_emb, fourier_coords, mode_idx, mask=None, condition_mask=None, global_context=None):
         attn_out = self.cross_attn(
             query=self.norm1_q(x),
             key=self.norm1_kv(condition_emb),
@@ -132,6 +132,12 @@ class GNOTBlock(nn.Module):
             mask=condition_mask
         )
         x = x + attn_out
+
+        # Global Context Injection: Kavitenin "Büyük Resmini" her noktaya aşıla.
+        # Bu, yön-duyarlı (dipol vb.) fiziklerin asimetrisini anlamak için kritiktir.
+        if global_context is not None:
+            # global_context: [B, D] -> [B, 1, D]
+            x = x + global_context.unsqueeze(1)
 
         attn_out = self.self_attn(
             query=self.norm2(x),
@@ -310,12 +316,15 @@ class GNOTModel(nn.Module):
         else:
             condition_mask = None
 
+        # Global Context Extraction: Kavitenin "Büyük Resmini" bir kere çıkarıp tüm bloklara dağıtacağız.
+        global_context = self.pooler(condition_emb, condition_mask)
+
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask)
+                x_emb = block(x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context)
 
         # Mode-specific field branch: sort → process → cat → unsort
         # In-place assignment (field_pred[mask] = ...) yerine gradient-safe yöntem
@@ -325,9 +334,9 @@ class GNOTModel(nn.Module):
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask, use_reentrant=False)
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_freq = block(x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask)
+                x_freq = block(x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context)
 
         # Sample'ları mode'a göre sırala
         sort_idx = theta_int.argsort()
@@ -338,6 +347,7 @@ class GNOTModel(nn.Module):
         X_sorted = X[sort_idx]
         x_fourier_sorted = x_fourier[sort_idx]
         theta_sorted = theta_int[sort_idx]
+        global_context_sorted = global_context[sort_idx]
         mask_sorted = mask[sort_idx] if mask is not None else None
         cmask_sorted = condition_mask[sort_idx] if condition_mask is not None else None
 
@@ -359,12 +369,16 @@ class GNOTModel(nn.Module):
             th_m = theta_sorted[start:end]
             mk_m = mask_sorted[start:end] if mask_sorted is not None else None
             cm_m = cmask_sorted[start:end] if cmask_sorted is not None else None
+            g_m = global_context_sorted[start:end]
 
             # Mode-specific PHYSICS branch (Multiple blocks)
             # Pass x_fourier instead of X to each block here as well
             x_f_m = x_fourier_sorted[start:end]
             for m_block in self.mode_field_blocks[mode_val]:
-                x_m = m_block(x_m, c_m, x_f_m, th_m, mk_m, cm_m)
+                if self.use_checkpoint and self.training:
+                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, x_f_m, th_m, mk_m, cm_m, g_m, use_reentrant=False)
+                else:
+                    x_m = m_block(x_m, c_m, x_f_m, th_m, mk_m, cm_m, g_m)
             
             field_parts.append(self.field_heads[mode_val](x_m))
             start = end
