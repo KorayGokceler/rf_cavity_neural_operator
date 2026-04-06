@@ -123,21 +123,18 @@ class RFCavityToGNOT:
 
                     Y = vecs[:, m_idx].reshape(-1, 1).astype(np.float32)
 
-                    # Spatial Sign Alignment: İşareti en güçlü aksis ile mekansal olarak sabitle.
-                    # Bu, dipol/kuadrupol gibi simetrik alanlardaki rastgele işaret taklalarını engeller.
-                    nodes_y = nodes[:, 1].reshape(-1, 1)
-                    nodes_x = nodes[:, 0].reshape(-1, 1)
-                    sum_y = (Y * nodes_y).sum()
-                    sum_x = (Y * nodes_x).sum()
 
-                    # En güçlü korelasyon olan ekseni seç ve pozitif yöne zorla
-                    if abs(sum_y) > abs(sum_x):
-                        sign = np.sign(sum_y) if abs(sum_y) > 1e-12 else 1
-                    else:
-                        sign = np.sign(sum_x) if abs(sum_x) > 1e-12 else 1
+
+                    # Robust Vectorial Sign Alignment: Alanın yönelimini (Vx, Vy) hesaplayarak pozitif yöne sabitle.
+                    # İzotropik normalizasyon (merkezi 0'da) sayesinde atan2 her zaman doğru açıyı verir.
+                    nodes_norm = self.geometry_pool[sample_id]['X']
+                    v_x = (Y * nodes_norm[:, 0:1]).sum()
+                    v_y = (Y * nodes_norm[:, 1:2]).sum()
                     
-                    Y = Y * sign
-                    if sign == 0: Y = Y * 1.0 # fallback for zero case
+                    # atan2(y, x) ile açıyı bul ve sağ yarım küreye [-pi/2, pi/2] sabitle.
+                    angle = np.arctan2(v_y, v_x)
+                    if angle < -np.pi/2 or angle > np.pi/2:
+                        Y = Y * -1.0
 
                     # Normalize
                     Y_max = np.abs(Y).max()
