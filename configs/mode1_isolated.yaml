@@ -30,8 +30,9 @@ model:
   num_film_modes: 5             # Sadece bir mod için küçük bir tablo yeterli
   
   # Spektral Çözünürlük (Dipolün loblarını net görmek için)
+  use_rff: false                # Kullanıcı isteği: RFF çıkarıldı.
   rff_dim: 64
-  rff_scale: 20.0               # 5.0 -> 20.0 (High frequency perception)
+  rff_scale: 20.0               # RFF kapalıyken bu değer etkisizdir.
   
   use_checkpoint: true
 

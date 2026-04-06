@@ -214,14 +214,20 @@ class MLPEncoder(nn.Module):
 class GNOTModel(nn.Module):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
                  n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
-                 n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, use_checkpoint=False):
+                 n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
+                 use_rff=True, use_checkpoint=False):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
+        self.use_rff = use_rff
 
         # --- Random Fourier Features for high spatial frequency encoding ---
-        self.rff_dim = 64
-        self.rff = RandomFourierFeatures(in_dim=grid_dim, out_dim=self.rff_dim, scale=rff_scale)
+        if use_rff:
+            self.rff_dim = 64
+            self.rff = RandomFourierFeatures(in_dim=grid_dim, out_dim=self.rff_dim, scale=rff_scale)
+        else:
+            self.rff_dim = 0
+            self.rff = None
 
         # Query points (represented in raw space + Fourier space)
         self.query_encoder = MLPEncoder(grid_dim + self.rff_dim, embed_dim)
@@ -294,13 +300,19 @@ class GNOTModel(nn.Module):
         theta = batch['Theta_in']
         mask = batch.get('Mask', None)
 
-        # Inject Geometric Fourier features alongside Raw Grid
-        x_fourier = self.rff(X)
-        x_enhanced = torch.cat([X, x_fourier], dim=-1)
+        # Inject Geometric Fourier features alongside Raw Grid (Optional)
+        if self.use_rff and self.rff is not None:
+            x_fourier = self.rff(X)
+            # Query embedding uses [Raw, RFF]
+            x_enhanced = torch.cat([X, x_fourier], dim=-1)
+            # Functional inputs use [Raw_Features, Raw_Coords, RFF]
+            enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
+        else:
+            x_fourier = None
+            x_enhanced = X
+            enhanced_inputs = torch.cat([inputs, X], dim=-1)
+
         x_emb = self.query_encoder(x_enhanced)
-        
-        # Give functional inputs local RFF and explicit coordinates awareness
-        enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
         y_emb = self.input_func_encoder(enhanced_inputs)
         
         # NOTE: Giriş seviyesinde mode conditioning (film_query/cond) kaldırıldı.
@@ -310,11 +322,11 @@ class GNOTModel(nn.Module):
         # The condition targets are simply the y_emb now
         condition_emb = y_emb
 
-        if mask is not None:
-            # Mask remains the same shape as y_emb
-            condition_mask = mask
-        else:
-            condition_mask = None
+        condition_mask = mask if mask is not None else None
+        
+        # If RFF is off, we still want blocks to have some spatial awareness for gating.
+        # Use Raw X as the 'fourier' input to blocks if RFF is disabled.
+        x_f_pass = x_fourier if x_fourier is not None else X
 
         # Global Context Extraction: Kavitenin "Büyük Resmini" bir kere çıkarıp tüm bloklara dağıtacağız.
         global_context = self.pooler(condition_emb, condition_mask)
@@ -322,9 +334,9 @@ class GNOTModel(nn.Module):
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context)
+                x_emb = block(x_emb, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context)
 
         # Mode-specific field branch: sort → process → cat → unsort
         # In-place assignment (field_pred[mask] = ...) yerine gradient-safe yöntem
@@ -334,9 +346,9 @@ class GNOTModel(nn.Module):
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context, use_reentrant=False)
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_freq = block(x_freq, condition_emb, x_fourier, theta_int, mask, condition_mask, global_context)
+                x_freq = block(x_freq, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context)
 
         # Sample'ları mode'a göre sırala
         sort_idx = theta_int.argsort()
@@ -345,7 +357,7 @@ class GNOTModel(nn.Module):
         x_sorted = x_emb[sort_idx]
         cond_sorted = condition_emb[sort_idx]
         X_sorted = X[sort_idx]
-        x_fourier_sorted = x_fourier[sort_idx]
+        x_f_pass_sorted = x_f_pass[sort_idx] if x_f_pass is not None else None
         theta_sorted = theta_int[sort_idx]
         global_context_sorted = global_context[sort_idx]
         mask_sorted = mask[sort_idx] if mask is not None else None
@@ -372,8 +384,9 @@ class GNOTModel(nn.Module):
             g_m = global_context_sorted[start:end]
 
             # Mode-specific PHYSICS branch (Multiple blocks)
-            # Pass x_fourier instead of X to each block here as well
-            x_f_m = x_fourier_sorted[start:end]
+            # Use x_f_pass_sorted instead of x_fourier_sorted
+            x_f_m = x_f_pass_sorted[start:end] if x_f_pass_sorted is not None else None
+            
             for m_block in self.mode_field_blocks[mode_val]:
                 if self.use_checkpoint and self.training:
                     x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, x_f_m, th_m, mk_m, cm_m, g_m, use_reentrant=False)

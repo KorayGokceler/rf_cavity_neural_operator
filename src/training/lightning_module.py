@@ -10,7 +10,7 @@ class GNOTLightning(pl.LightningModule):
                  n_heads=4, num_experts=4, num_field_modes=3,
                  lr=1e-3, freq_weight=0.5, mode_loss_weights=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
-                 rff_scale=1.0,
+                 rff_scale=1.0, use_rff=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6):
         super().__init__()
@@ -27,6 +27,7 @@ class GNOTLightning(pl.LightningModule):
             num_experts=num_experts,
             num_field_modes=num_field_modes,
             rff_scale=rff_scale,
+            use_rff=use_rff,
             use_checkpoint=use_checkpoint
         )
         self.freq_weight = freq_weight
