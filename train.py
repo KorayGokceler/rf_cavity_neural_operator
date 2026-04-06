@@ -112,11 +112,11 @@ def main():
         scheduler=tc.scheduler,
         weight_decay=tc.weight_decay,
         use_checkpoint=mc.use_checkpoint,
-        # Scheduler-specific params
-        onecycle_pct_start=tc.onecycle_pct_start,
-        onecycle_div_factor=tc.onecycle_div_factor,
-        onecycle_final_div_factor=tc.onecycle_final_div_factor,
-        cosine_eta_min=tc.cosine_eta_min,
+        # Scheduler-specific params (using getattr for flexibility with different configs)
+        onecycle_pct_start=getattr(tc, 'onecycle_pct_start', 0.3),
+        onecycle_div_factor=getattr(tc, 'onecycle_div_factor', 25.0),
+        onecycle_final_div_factor=getattr(tc, 'onecycle_final_div_factor', 1e4),
+        cosine_eta_min=getattr(tc, 'cosine_eta_min', 1.0e-6),
     )
     
     # Pass frequency statistics to the model for physical units logging
