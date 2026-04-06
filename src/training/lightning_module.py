@@ -123,7 +123,43 @@ class GNOTLightning(pl.LightningModule):
         self.log('val/r2', self.val_r2, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val/mae', self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
         return loss
-        
+
+    def on_validation_epoch_end(self):
+        metrics = self.trainer.logged_metrics
+        epoch = self.trainer.current_epoch
+
+        # Tüm mode_X_rel_l2 metriklerini topla
+        mode_errors = {
+            k: v for k, v in metrics.items()
+            if k.startswith('val/mode_') and k.endswith('_rel_l2')
+        }
+
+        if not mode_errors:
+            return
+
+        # Başlık
+        print(f"\n{'─'*50}")
+        print(f"  Epoch {epoch:>3d} │ Val Per-Mode Field Error")
+        print(f"{'─'*50}")
+
+        # Her modu sıralı bas
+        for key in sorted(mode_errors.keys()):
+            mode_num = key.split('mode_')[1].split('_')[0]
+            val = mode_errors[key]
+            # Basit durum çubuğu (0.0 = iyi, 1.0+ = kötü)
+            bar_len = int(min(val * 20, 20))
+            bar = '█' * bar_len + '░' * (20 - bar_len)
+            status = '✅' if val < 0.1 else ('⚠️ ' if val < 0.3 else '❌')
+            print(f"  Mode {mode_num}  [{bar}]  {val:.4f}  {status}")
+
+        # Global özet
+        val_loss = metrics.get('val/loss', None)
+        val_r2   = metrics.get('val/r2',   None)
+        print(f"{'─'*50}")
+        if val_loss is not None:
+            print(f"  Total Loss: {val_loss:.4f}   R²: {val_r2:.4f}" if val_r2 is not None else f"  Total Loss: {val_loss:.4f}")
+        print(f"{'─'*50}\n")
+
     def test_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "test")
         self.test_r2(preds, targets)
