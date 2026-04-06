@@ -298,34 +298,55 @@ class GNOTModel(nn.Module):
             else:
                 x_emb = block(x_emb, condition_emb, X, theta_int, mask, condition_mask)
 
-        # Mode-specific field branch: her mod kendi blok + head'ından geçiyor
+        # Mode-specific field branch: sort → process → cat → unsort
+        # In-place assignment (field_pred[mask] = ...) yerine gradient-safe yöntem
         B, N, D = x_emb.shape
-        field_pred = torch.zeros(B, N, 1, device=x_emb.device, dtype=x_emb.dtype)
 
-        # Freq branch: shared freq blocks (moddan bağımsız frekans tahmini)
+        # Freq branch: shared freq blocks
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
                 x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
             else:
                 x_freq = block(x_freq, condition_emb, X, theta_int, mask, condition_mask)
+
+        # Sample'ları mode'a göre sırala
+        sort_idx = theta_int.argsort()
+        unsort_idx = sort_idx.argsort()
+
+        x_sorted = x_emb[sort_idx]
+        cond_sorted = condition_emb[sort_idx]
+        X_sorted = X[sort_idx]
+        theta_sorted = theta_int[sort_idx]
+        mask_sorted = mask[sort_idx] if mask is not None else None
+        cmask_sorted = condition_mask[sort_idx] if condition_mask is not None else None
+
+        # Her modun kaç sample'ı var
+        mode_counts = [(theta_int == m).sum().item() for m in range(self.num_field_modes)]
+
+        # Sıralı işle ve sonuçları topla
+        field_parts = []
+        start = 0
         for mode_val in range(self.num_field_modes):
-            mode_mask = (theta_int == mode_val)  # [B] boolean
-            if mode_mask.any():
-                # Bu modun sample'ını seç
-                x_mode = x_emb[mode_mask]
-                cond_mode = condition_emb[mode_mask]
-                X_mode = X[mode_mask]
-                mask_mode = mask[mode_mask] if mask is not None else None
-                cmask_mode = condition_mask[mode_mask] if condition_mask is not None else None
-                theta_mode = theta_int[mode_mask]
-                
-                # Mode-specific GNOTBlock
-                x_mode = self.mode_field_blocks[mode_val](
-                    x_mode, cond_mode, X_mode, theta_mode, mask_mode, cmask_mode
-                )
-                # Mode-specific head
-                field_pred[mode_mask] = self.field_heads[mode_val](x_mode)
+            count = mode_counts[mode_val]
+            if count == 0:
+                # Bu mod batch'te yok — sıfır placeholder
+                continue
+            end = start + count
+            x_m = x_sorted[start:end]
+            c_m = cond_sorted[start:end]
+            X_m = X_sorted[start:end]
+            th_m = theta_sorted[start:end]
+            mk_m = mask_sorted[start:end] if mask_sorted is not None else None
+            cm_m = cmask_sorted[start:end] if cmask_sorted is not None else None
+
+            x_m = self.mode_field_blocks[mode_val](x_m, c_m, X_m, th_m, mk_m, cm_m)
+            field_parts.append(self.field_heads[mode_val](x_m))
+            start = end
+
+        # Birleştir ve orijinal sıraya geri dön — NO in-place ops
+        field_pred_sorted = torch.cat(field_parts, dim=0)  # [B, N, 1]
+        field_pred = field_pred_sorted[unsort_idx]          # orijinal batch sırası
 
         global_feat = self.pooler(x_freq, mask)
         freq_pred = self.freq_decoder(global_feat)
