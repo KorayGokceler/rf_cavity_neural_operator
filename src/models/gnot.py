@@ -215,12 +215,9 @@ class GNOTModel(nn.Module):
         # Input features + Query point Raw Context + Query point RFF context
         self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
         
-        # FiLM conditioner — additive mode injection yerine affine transform.
+        # FiLM conditioner — giriş seviyesinde mode modülasyonu
         self.film_query    = FiLMConditioner(embed_dim, num_modes=20)  # encoder girişi
         self.film_cond     = FiLMConditioner(embed_dim, num_modes=20)  # condition girişi
-        # FIX (late injection): Decoder'dan hemen önce mode sinyali yeniden enjekte ediliyor.
-        # 6 katman + LayerNorm mode bilgisini eritiyor; bunu burada telafi ediyoruz.
-        self.film_predecode = FiLMConditioner(embed_dim, num_modes=20)
 
         # Architecture division into Shared -> [Field Branch, Freq Branch]
         # Total n_layers is distributed as: shared, task_field, task_freq.
@@ -235,9 +232,11 @@ class GNOTModel(nn.Module):
             for _ in range(shared_layers)
         ])
         
-        self.field_blocks = nn.ModuleList([
+        # Mode-specific field blocks: her mod kendi GNOTBlock'ından geçiyor.
+        # Shared field_blocks yerine — gradient izolasyonu blok seviyesinde.
+        self.mode_field_blocks = nn.ModuleList([
             GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
-            for _ in range(field_field_layers)
+            for _ in range(num_field_modes)
         ])
         
         self.freq_blocks = nn.ModuleList([
@@ -299,31 +298,34 @@ class GNOTModel(nn.Module):
             else:
                 x_emb = block(x_emb, condition_emb, X, theta_int, mask, condition_mask)
 
-        # Task-specific branching
-        x_field = x_emb
-        for block in self.field_blocks:
-            if self.use_checkpoint and self.training:
-                x_field = torch.utils.checkpoint.checkpoint(block, x_field, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
-            else:
-                x_field = block(x_field, condition_emb, X, theta_int, mask, condition_mask)
-            
+        # Mode-specific field branch: her mod kendi blok + head'ından geçiyor
+        B, N, D = x_emb.shape
+        field_pred = torch.zeros(B, N, 1, device=x_emb.device, dtype=x_emb.dtype)
+
+        # Freq branch: shared freq blocks (moddan bağımsız frekans tahmini)
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
                 x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
             else:
                 x_freq = block(x_freq, condition_emb, X, theta_int, mask, condition_mask)
-
-        # Late injection: decoder'a girmeden önce mode sinyalini güçlendir
-        x_field = self.film_predecode(x_field, theta_int)
-
-        # Mode-specific routing: her sample kendi modunun head'ine gidiyor
-        B, N, D = x_field.shape
-        field_pred = torch.zeros(B, N, 1, device=x_field.device, dtype=x_field.dtype)
         for mode_val in range(self.num_field_modes):
             mode_mask = (theta_int == mode_val)  # [B] boolean
             if mode_mask.any():
-                field_pred[mode_mask] = self.field_heads[mode_val](x_field[mode_mask])
+                # Bu modun sample'ını seç
+                x_mode = x_emb[mode_mask]
+                cond_mode = condition_emb[mode_mask]
+                X_mode = X[mode_mask]
+                mask_mode = mask[mode_mask] if mask is not None else None
+                cmask_mode = condition_mask[mode_mask] if condition_mask is not None else None
+                theta_mode = theta_int[mode_mask]
+                
+                # Mode-specific GNOTBlock
+                x_mode = self.mode_field_blocks[mode_val](
+                    x_mode, cond_mode, X_mode, theta_mode, mask_mode, cmask_mode
+                )
+                # Mode-specific head
+                field_pred[mode_mask] = self.field_heads[mode_val](x_mode)
 
         global_feat = self.pooler(x_freq, mask)
         freq_pred = self.freq_decoder(global_feat)
