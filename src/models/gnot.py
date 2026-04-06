@@ -201,9 +201,10 @@ class MLPEncoder(nn.Module):
         return self.net(x)
 
 class GNOTModel(nn.Module):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, n_layers=6, n_heads=4, num_experts=4, use_checkpoint=False):
+    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, n_layers=6, n_heads=4, num_experts=4, num_field_modes=3, use_checkpoint=False):
         super().__init__()
         self.use_checkpoint = use_checkpoint
+        self.num_field_modes = num_field_modes
 
         # --- Random Fourier Features for high spatial frequency encoding ---
         self.rff_dim = 64
@@ -246,13 +247,15 @@ class GNOTModel(nn.Module):
 
         self.pooler = AttentionPool(embed_dim, n_heads)
 
-        self.field_decoder = nn.Sequential(
-            # LayerNorm burada KALDIRILDI — film_predecode'dan gelen mode sinyalini
-            # hemen normalizasyon ile silmemek için.
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, 1)
-        )
+        # Mode-specific field heads: her mod kendi decoder'ından geçiyor.
+        # Gradient çakışması yok — Mode 0'ın gradyanı Head 1'e dokunmuyor.
+        self.field_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, 1)
+            ) for _ in range(num_field_modes)
+        ])
         self.freq_decoder = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.LayerNorm(embed_dim),
@@ -313,7 +316,15 @@ class GNOTModel(nn.Module):
 
         # Late injection: decoder'a girmeden önce mode sinyalini güçlendir
         x_field = self.film_predecode(x_field, theta_int)
-        field_pred = self.field_decoder(x_field)
+
+        # Mode-specific routing: her sample kendi modunun head'ine gidiyor
+        B, N, D = x_field.shape
+        field_pred = torch.zeros(B, N, 1, device=x_field.device, dtype=x_field.dtype)
+        for mode_val in range(self.num_field_modes):
+            mode_mask = (theta_int == mode_val)  # [B] boolean
+            if mode_mask.any():
+                field_pred[mode_mask] = self.field_heads[mode_val](x_field[mode_mask])
+
         global_feat = self.pooler(x_freq, mask)
         freq_pred = self.freq_decoder(global_feat)
 
