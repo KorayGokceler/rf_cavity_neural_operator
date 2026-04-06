@@ -5,7 +5,8 @@ import torchmetrics
 from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, n_layers=6,
+    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, 
+                 n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3,
                  lr=1e-3, freq_weight=0.5, mode_loss_weights=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
@@ -18,7 +19,9 @@ class GNOTLightning(pl.LightningModule):
             grid_dim=grid_dim,
             theta_dim=theta_dim,
             embed_dim=hidden_dim,
-            n_layers=n_layers,
+            n_shared_layers=n_shared_layers,
+            n_mode_layers=n_mode_layers,
+            n_freq_layers=n_freq_layers,
             n_heads=n_heads,
             num_experts=num_experts,
             num_field_modes=num_field_modes,

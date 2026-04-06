@@ -107,8 +107,9 @@ class GeometricGatingFFN(nn.Module):
         return final_output
 
 class GNOTBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, coords_dim=2, num_experts=4, dropout=0.0, num_modes=20):
+    def __init__(self, embed_dim, num_heads, coords_dim=2, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
         super().__init__()
+        self.use_film = use_film
         self.cross_attn = LinearAttention(embed_dim, num_heads, dropout)
         self.norm1_q  = nn.LayerNorm(embed_dim)
         self.norm1_kv = nn.LayerNorm(embed_dim)
@@ -117,8 +118,11 @@ class GNOTBlock(nn.Module):
         self.ffn = GeometricGatingFFN(embed_dim, coords_dim, num_experts, dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
         # Per-block FiLM: her blok sonunda mode sinyalini yenile.
-        # DiT (Diffusion Transformer) yaklaşımı — mode bilgisi katmanlar boyunca erimez.
-        self.block_film = FiLMConditioner(embed_dim, num_modes)
+        # Mode-specific bloklar için zorunlu, shared bloklar için mode-blind olmalı.
+        if use_film:
+            self.block_film = FiLMConditioner(embed_dim, num_modes)
+        else:
+            self.block_film = None
 
     def forward(self, x, condition_emb, coords, mode_idx, mask=None, condition_mask=None):
         attn_out = self.cross_attn(
@@ -142,8 +146,9 @@ class GNOTBlock(nn.Module):
         ffn_out = self.ffn(self.norm3(x), coords)
         x = x + ffn_out
 
-        # Mode conditioning: her blok sonunda mode sinyalini tazele
-        x = self.block_film(x, mode_idx)
+        # Mode conditioning: sadece fizik öğrenen şubelerde aktif
+        if self.block_film is not None:
+            x = self.block_film(x, mode_idx)
 
         if mask is not None:
             x = x * mask.unsqueeze(-1)
@@ -201,7 +206,9 @@ class MLPEncoder(nn.Module):
         return self.net(x)
 
 class GNOTModel(nn.Module):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, n_layers=6, n_heads=4, num_experts=4, num_field_modes=3, use_checkpoint=False):
+    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
+                 n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
+                 n_heads=4, num_experts=4, num_field_modes=3, use_checkpoint=False):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
@@ -215,33 +222,31 @@ class GNOTModel(nn.Module):
         # Input features + Query point Raw Context + Query point RFF context
         self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
         
-        # FiLM conditioner — giriş seviyesinde mode modülasyonu
-        self.film_query    = FiLMConditioner(embed_dim, num_modes=20)  # encoder girişi
-        self.film_cond     = FiLMConditioner(embed_dim, num_modes=20)  # condition girişi
+        # NOTE: Entrance FiLM (film_query/film_cond) kaldırıldı.
+        # Trunk'ı başlangıçta mode-blind olmaya zorluyoruz; sadece geometriyi temsil etmeli.
 
-        # Architecture division into Shared -> [Field Branch, Freq Branch]
-        # Total n_layers is distributed as: shared, task_field, task_freq.
-        # Minimal set: 1 shared, 1 field, 1 freq.
-        shared_layers = max(1, n_layers // 3)
-        remaining = n_layers - shared_layers
-        field_field_layers = max(1, remaining // 2)
-        field_freq_layers = max(1, remaining - field_field_layers)
+        # Minimal architecture: Shared -> [Mode-Specific (Deep), Freq (Deep)]
+        shared_layers = n_shared_layers
+        mode_layers   = n_mode_layers  # Her modun özel fizik derinliği
+        freq_layers   = n_freq_layers
         
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
+            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts, use_film=False)
             for _ in range(shared_layers)
         ])
         
-        # Mode-specific field blocks: her mod kendi GNOTBlock'ından geçiyor.
-        # Shared field_blocks yerine — gradient izolasyonu blok seviyesinde.
+        # Mode-specific field branches: her mode_val için n_mode_layers derinliğinde bir dikey
+        # Her modun artık 2 katmanlı özel fizik kapasitesi var.
         self.mode_field_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
-            for _ in range(num_field_modes)
+            nn.ModuleList([
+                 GNOTBlock(embed_dim, n_heads, grid_dim, num_experts, use_film=True)
+                 for _ in range(mode_layers)
+            ]) for _ in range(num_field_modes)
         ])
         
         self.freq_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts)
-            for _ in range(field_freq_layers)
+            GNOTBlock(embed_dim, n_heads, grid_dim, num_experts, use_film=True)
+            for _ in range(freq_layers)
         ])
 
         self.pooler = AttentionPool(embed_dim, n_heads)
@@ -277,11 +282,10 @@ class GNOTModel(nn.Module):
         enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
         y_emb = self.input_func_encoder(enhanced_inputs)
         
-        # FIX 2: FiLM ile mode conditioning — LayerNorm mode sinyalini silemiyor
-        theta_int = theta.squeeze(-1)  # [B, 1] -> [B]
-        x_emb = self.film_query(x_emb, theta_int)   # affine: x * (1 + gamma) + beta
-        y_emb = self.film_cond(y_emb,  theta_int)
-
+        # NOTE: Giriş seviyesinde mode conditioning (film_query/cond) kaldırıldı.
+        # Shared trunk sadece geometriye (X, RFF) ve query contextine odaklanır.
+        theta_int = theta.squeeze(-1)  # [B]
+        
         # The condition targets are simply the y_emb now
         condition_emb = y_emb
 
@@ -340,7 +344,10 @@ class GNOTModel(nn.Module):
             mk_m = mask_sorted[start:end] if mask_sorted is not None else None
             cm_m = cmask_sorted[start:end] if cmask_sorted is not None else None
 
-            x_m = self.mode_field_blocks[mode_val](x_m, c_m, X_m, th_m, mk_m, cm_m)
+            # Mode-specific PHYSICS branch (Multiple blocks)
+            for m_block in self.mode_field_blocks[mode_val]:
+                x_m = m_block(x_m, c_m, X_m, th_m, mk_m, cm_m)
+            
             field_parts.append(self.field_heads[mode_val](x_m))
             start = end
 

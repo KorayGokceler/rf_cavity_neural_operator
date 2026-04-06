@@ -68,7 +68,9 @@ model:
 
   # Core architecture
   embed_dim: 256                # Hidden dimension (ana boyut parametresi)
-  n_layers: 6                   # Toplam GNOT bloğu sayısı
+  n_shared_layers: 2            # Geometrik trunk derinliği (mode-blind)
+  n_mode_layers: 2              # Her modun kendi fizik branch derinliği
+  n_freq_layers: 2              # Frekans branch derinliği
   n_heads: 4                    # Attention head sayısı (embed_dim % n_heads == 0 olmalı)
   num_experts: 4                # GeometricGatingFFN expert sayısı
 
