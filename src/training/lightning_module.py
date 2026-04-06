@@ -204,7 +204,7 @@ class GNOTLightning(pl.LightningModule):
         if self.hparams.scheduler == 'onecycle':
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer, 
-                max_lr=[self.hparams.lr, self.hparams.lr * mode_lr_multiplier], 
+                max_lr=self.hparams.lr, 
                 total_steps=self.trainer.estimated_stepping_batches,
                 pct_start=self.hparams.onecycle_pct_start,
                 div_factor=self.hparams.onecycle_div_factor,
