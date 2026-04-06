@@ -156,8 +156,9 @@ class FiLMConditioner(nn.Module):
         super().__init__()
         # Her mod için ayrı gamma ve beta üretiyor (2 * embed_dim)
         self.emb = nn.Embedding(num_modes, embed_dim * 2)
-        # gamma başlangıçta ~1, beta ~0 olsun ki eğitim başında kararlı olsun
-        nn.init.zeros_(self.emb.weight)
+        # FIX: zeros yerine küçük random init — modlar baştan birbirinden ayrışıyor.
+        # zeros ile tüm modlar aynı başlangıç noktasından geldiği için model Mode 0'a kilitleniyor.
+        nn.init.normal_(self.emb.weight, mean=0.0, std=0.02)
 
     def forward(self, x, mode_idx):
         # mode_idx: [B] veya [B, 1] — her ikisini de destekle
@@ -209,10 +210,12 @@ class GNOTModel(nn.Module):
         # Input features + Query point Raw Context + Query point RFF context
         self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
         
-        # FIX 2: FiLM conditioner — additive mode injection yerine affine transform.
-        # Ayrı FiLM'ler: biri query stream'i (x_emb), biri condition stream'i (y_emb) için.
-        self.film_query = FiLMConditioner(embed_dim, num_modes=20)
-        self.film_cond  = FiLMConditioner(embed_dim, num_modes=20)
+        # FiLM conditioner — additive mode injection yerine affine transform.
+        self.film_query    = FiLMConditioner(embed_dim, num_modes=20)  # encoder girişi
+        self.film_cond     = FiLMConditioner(embed_dim, num_modes=20)  # condition girişi
+        # FIX (late injection): Decoder'dan hemen önce mode sinyali yeniden enjekte ediliyor.
+        # 6 katman + LayerNorm mode bilgisini eritiyor; bunu burada telafi ediyoruz.
+        self.film_predecode = FiLMConditioner(embed_dim, num_modes=20)
 
         # Architecture division into Shared -> [Field Branch, Freq Branch]
         # Total n_layers is distributed as: shared, task_field, task_freq.
@@ -240,7 +243,8 @@ class GNOTModel(nn.Module):
         self.pooler = AttentionPool(embed_dim, n_heads)
 
         self.field_decoder = nn.Sequential(
-            nn.LayerNorm(embed_dim),
+            # LayerNorm burada KALDIRILDI — film_predecode'dan gelen mode sinyalini
+            # hemen normalizasyon ile silmemek için.
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, 1)
@@ -303,6 +307,8 @@ class GNOTModel(nn.Module):
             else:
                 x_freq = block(x_freq, condition_emb, X, mask, condition_mask)
 
+        # Late injection: decoder'a girmeden önce mode sinyalini güçlendir
+        x_field = self.film_predecode(x_field, theta_int)
         field_pred = self.field_decoder(x_field)
         global_feat = self.pooler(x_freq, mask)
         freq_pred = self.freq_decoder(global_feat)
