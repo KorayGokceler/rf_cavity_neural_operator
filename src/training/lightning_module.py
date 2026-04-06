@@ -196,26 +196,10 @@ class GNOTLightning(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        # Differential learning rates: mode-specific bileşenler 10× daha hızlı öğrenir.
-        # Mode 1/2'nin gradyanları Mode 0'a göre ~3× küçük (gradient cancellation),
-        # bu yüzden efektif öğrenme hızını eşitlemek için lr_multiplier kullanıyoruz.
-        mode_specific_params = []
-        shared_params = []
-        for name, param in self.model.named_parameters():
-            if 'mode_field_blocks' in name or 'field_heads' in name:
-                mode_specific_params.append(param)
-            else:
-                shared_params.append(param)
+        # Differential learning rates kaldırıldı, tüm model aynı lr ile eğitilir.
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
         
-        mode_lr_multiplier = 10.0
-        optimizer = torch.optim.AdamW([
-            {'params': shared_params, 'lr': self.hparams.lr},
-            {'params': mode_specific_params, 'lr': self.hparams.lr * mode_lr_multiplier,
-             'name': 'mode_specific'},
-        ], weight_decay=self.hparams.weight_decay)
-        
-        print(f"Optimizer: {len(shared_params)} shared params (lr={self.hparams.lr}), "
-              f"{len(mode_specific_params)} mode-specific params (lr={self.hparams.lr * mode_lr_multiplier})")
+        print(f"Optimizer: All params trained with lr={self.hparams.lr}")
         
         if self.hparams.scheduler == 'onecycle':
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
