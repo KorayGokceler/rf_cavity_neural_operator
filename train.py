@@ -25,10 +25,19 @@ def parse_args():
     return parser.parse_args()
 
 def parse_overrides(override_list):
-    """Parse CLI overrides like ['model.embed_dim=128', 'training.batch_size=32']."""
+    """Parse CLI overrides like ['model.embed_dim=128', 'training.mode_loss_weights=[1.0,2.0,2.0]']."""
+    import json
     overrides = {}
     for item in override_list:
         key, val_str = item.split("=", 1)
+        # JSON list/dict desteği: [1.0, 2.0] veya {"a": 1}
+        if val_str.startswith("[") or val_str.startswith("{"):
+            try:
+                val = json.loads(val_str)
+                overrides[key] = val
+                continue
+            except json.JSONDecodeError:
+                pass
         # Otomatik tip dönüşümü
         try:
             val = int(val_str)
