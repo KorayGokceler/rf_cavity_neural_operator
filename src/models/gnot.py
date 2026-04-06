@@ -266,6 +266,21 @@ class GNOTModel(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, 1)
         )
+        
+        # Initialize heads with small weights to prevent early training explosion
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.field_heads.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.trunc_normal_(m.weight, std=0.01)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+        for m in self.freq_decoder.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.trunc_normal_(m.weight, std=0.01)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, batch):
         X = batch['X']
