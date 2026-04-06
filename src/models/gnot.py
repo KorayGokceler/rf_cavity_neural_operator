@@ -107,20 +107,20 @@ class GeometricGatingFFN(nn.Module):
         return final_output
 
 class GNOTBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, coords_dim=2, num_experts=4, dropout=0.0):
+    def __init__(self, embed_dim, num_heads, coords_dim=2, num_experts=4, dropout=0.0, num_modes=20):
         super().__init__()
         self.cross_attn = LinearAttention(embed_dim, num_heads, dropout)
-        # FIX 1: Ayrı normlar — query ve key/value farklı dağılımda olabilir.
-        # Aynı norm kullanmak cross-attention'ın condition sinyalini ezmesine yol açıyordu.
-        self.norm1_q  = nn.LayerNorm(embed_dim)   # query (x) için
-        self.norm1_kv = nn.LayerNorm(embed_dim)   # key/value (condition_emb) için
+        self.norm1_q  = nn.LayerNorm(embed_dim)
+        self.norm1_kv = nn.LayerNorm(embed_dim)
         self.self_attn = LinearAttention(embed_dim, num_heads, dropout)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ffn = GeometricGatingFFN(embed_dim, coords_dim, num_experts, dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
+        # Per-block FiLM: her blok sonunda mode sinyalini yenile.
+        # DiT (Diffusion Transformer) yaklaşımı — mode bilgisi katmanlar boyunca erimez.
+        self.block_film = FiLMConditioner(embed_dim, num_modes)
 
-    def forward(self, x, condition_emb, coords, mask=None, condition_mask=None):
-        # Pre-norm cross-attention: query ve key/value ayrı normlardan geçiyor
+    def forward(self, x, condition_emb, coords, mode_idx, mask=None, condition_mask=None):
         attn_out = self.cross_attn(
             query=self.norm1_q(x),
             key=self.norm1_kv(condition_emb),
@@ -141,6 +141,10 @@ class GNOTBlock(nn.Module):
 
         ffn_out = self.ffn(self.norm3(x), coords)
         x = x + ffn_out
+
+        # Mode conditioning: her blok sonunda mode sinyalini tazele
+        x = self.block_film(x, mode_idx)
+
         if mask is not None:
             x = x * mask.unsqueeze(-1)
         return x
@@ -288,24 +292,24 @@ class GNOTModel(nn.Module):
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, X, mask, condition_mask, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, X, mask, condition_mask)
+                x_emb = block(x_emb, condition_emb, X, theta_int, mask, condition_mask)
 
         # Task-specific branching
         x_field = x_emb
         for block in self.field_blocks:
             if self.use_checkpoint and self.training:
-                x_field = torch.utils.checkpoint.checkpoint(block, x_field, condition_emb, X, mask, condition_mask, use_reentrant=False)
+                x_field = torch.utils.checkpoint.checkpoint(block, x_field, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
             else:
-                x_field = block(x_field, condition_emb, X, mask, condition_mask)
+                x_field = block(x_field, condition_emb, X, theta_int, mask, condition_mask)
             
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, mask, condition_mask, use_reentrant=False)
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, X, theta_int, mask, condition_mask, use_reentrant=False)
             else:
-                x_freq = block(x_freq, condition_emb, X, mask, condition_mask)
+                x_freq = block(x_freq, condition_emb, X, theta_int, mask, condition_mask)
 
         # Late injection: decoder'a girmeden önce mode sinyalini güçlendir
         x_field = self.film_predecode(x_field, theta_int)
