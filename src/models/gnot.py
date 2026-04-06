@@ -242,22 +242,24 @@ class GNOTModel(nn.Module):
         mode_layers   = n_mode_layers  # Her modun özel fizik derinliği
         freq_layers   = n_freq_layers
         
+        # Bloc-specific coordinate dimension: RFF kapalıysa raw (x, y) kullanılır.
+        block_coords_dim = self.rff_dim if use_rff else grid_dim
+
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, self.rff_dim, num_experts, use_film=False)
+            GNOTBlock(embed_dim, n_heads, block_coords_dim, num_experts, use_film=False)
             for _ in range(shared_layers)
         ])
         
-        # Mode-specific field branches: her mode_val için n_mode_layers derinliğinde bir dikey
-        # Her modun artık 2 katmanlı özel fizik kapasitesi var.
+        # Mode-specific field branches
         self.mode_field_blocks = nn.ModuleList([
             nn.ModuleList([
-                 GNOTBlock(embed_dim, n_heads, self.rff_dim, num_experts, use_film=True)
+                 GNOTBlock(embed_dim, n_heads, block_coords_dim, num_experts, use_film=True)
                  for _ in range(mode_layers)
             ]) for _ in range(num_field_modes)
         ])
         
         self.freq_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, self.rff_dim, num_experts, use_film=True)
+            GNOTBlock(embed_dim, n_heads, block_coords_dim, num_experts, use_film=True)
             for _ in range(freq_layers)
         ])
 
