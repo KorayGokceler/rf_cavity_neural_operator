@@ -31,7 +31,7 @@ model:
   
   # Spektral Çözünürlük (Dipolün loblarını net görmek için)
   rff_dim: 64
-  rff_scale: 5.0                # 1.0 -> 5.0 (Vurgulanmış mekansal çözünürlük)
+  rff_scale: 20.0               # 5.0 -> 20.0 (High frequency perception)
   
   use_checkpoint: true
 
@@ -39,7 +39,7 @@ model:
 #  3. TRAINING
 # ─────────────────────────────────────────────────────
 training:
-  learning_rate: 5.0e-4         # Daha stabil bir başlangıç
+  learning_rate: 4.0e-4         # 5e-4 -> 4e-4 (More stable)
   weight_decay: 1.0e-4
   batch_size: 16
   max_epochs: 100               # Dipol'ün tek başına mükemmelleşmesi için 100 epoch

@@ -58,10 +58,12 @@ class RFCavityToGNOT:
         return curvature.astype(np.float32)
 
     def extract_geometry_features(self, nodes, elements):
-        # Per-axis normalization: map each axis independently to [0, 1]
-        min_val = nodes.min(axis=0)
-        max_val = nodes.max(axis=0)
-        nodes_norm = (nodes - min_val) / (max_val - min_val + 1e-10)
+        # Isotropic Normalization: En-boy oranını (aspect ratio) koruyarak merkezi 0'a çek.
+        # Bu, kavitelerin asimetrik yapısının (elips vb.) model tarafından doğru algılanmasını sağlar.
+        center_raw = nodes.mean(axis=0)
+        nodes_centered = nodes - center_raw
+        global_scale = np.max(np.abs(nodes_centered)) + 1e-12
+        nodes_norm = nodes_centered / global_scale
 
         # Boundary
         boundary_indices = self._find_boundary_nodes(elements)
