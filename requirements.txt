@@ -9,3 +9,4 @@ gmsh
 seaborn
 tqdm
 torchmetrics
+pyyaml

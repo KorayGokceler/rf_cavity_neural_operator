@@ -8,65 +8,102 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
+from src.config import load_config, config_to_flat_dict
 
 import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train GNOT Model.")
-    parser.add_argument("--data_path", type=str, default="data/gnot_dataset.pkl", help="Path to input PKL or H5 dataset.")
-    parser.add_argument("--log_dir", type=str, default="training_logs", help="Directory for logs and checkpoints.")
-    parser.add_argument("--exp_name", type=str, default="gnot_training", help="Name of the experiment.")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training.")
-    parser.add_argument("--max_epochs", type=int, default=50, help="Maximum number of epochs to train.")
-    parser.add_argument("--hidden_dim", type=int, default=256, help="Hidden dimension size of the model.")
-    parser.add_argument("--n_layers", type=int, default=6, help="Number of GNOT layers.")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate.")
-    parser.add_argument("--freq_weight", type=float, default=0.5, help="Weight for frequency loss component.")
-    parser.add_argument("--scheduler", type=str, default="onecycle", choices=["onecycle", "cosine"], help="LR scheduler type.")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for AdamW.")
-    parser.add_argument("--patience", type=int, default=10, help="Patience for EarlyStopping.")
-    parser.add_argument("--viz_every_n_epochs", type=int, default=5, help="Visualize mode shapes every N epochs.")
-    parser.add_argument("--use_checkpoint", action="store_true", help="Use gradient checkpointing to save GPU VRAM.")
-    parser.add_argument("--num_workers", type=int, default=0, help="Number of workers for DataLoader.")
+    parser.add_argument("--config", type=str, default="configs/default.yaml",
+                        help="Path to YAML config file.")
+    # Her config değerini CLI'dan override edebilirsin:
+    #   python train.py --config configs/default.yaml --override model.embed_dim=128
+    parser.add_argument("--override", nargs="*", default=[],
+                        help="Override config values: key=value (e.g. model.embed_dim=128)")
+    # Eski CLI argümanları hala destekleniyor (config override olarak):
     parser.add_argument("--fast_dev_run", action="store_true", help="Run 1 epoch to verify pipeline.")
-    
-    # Model architecture constants (usually not changed frequently)
-    parser.add_argument("--grid_dim", type=int, default=2, help="Grid dimension size.")
-    parser.add_argument("--val_dim", type=int, default=6, help="Value dimension size.")
-    parser.add_argument("--theta_dim", type=int, default=1, help="Theta dimension size.")
-    
     return parser.parse_args()
 
-def main(args):
-    print("Loading datasets...")
-    # NOTE: Before running training, make sure data/gnot_dataset.pkl exists
-    # Running data generation and conversion is required prior to training.
-    
-    train_dataset = GNOTDataset(args.data_path, split='train')
-    val_dataset   = GNOTDataset(args.data_path, split='val')
-    test_dataset  = GNOTDataset(args.data_path, split='test')
+def parse_overrides(override_list):
+    """Parse CLI overrides like ['model.embed_dim=128', 'training.batch_size=32']."""
+    overrides = {}
+    for item in override_list:
+        key, val_str = item.split("=", 1)
+        # Otomatik tip dönüşümü
+        try:
+            val = int(val_str)
+        except ValueError:
+            try:
+                val = float(val_str)
+            except ValueError:
+                if val_str.lower() == "true":
+                    val = True
+                elif val_str.lower() == "false":
+                    val = False
+                elif val_str.lower() == "null" or val_str.lower() == "none":
+                    val = None
+                else:
+                    val = val_str
+        overrides[key] = val
+    return overrides
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                              collate_fn=gnot_collate_fn, num_workers=args.num_workers,
-                              pin_memory=True)
-    val_loader   = DataLoader(val_dataset,   batch_size=args.batch_size,
-                              collate_fn=gnot_collate_fn, num_workers=args.num_workers,
-                              pin_memory=True)
-    test_loader  = DataLoader(test_dataset,  batch_size=args.batch_size,
-                              collate_fn=gnot_collate_fn, num_workers=args.num_workers,
-                              pin_memory=True)
+def main():
+    args = parse_args()
+    
+    # Config yükle + CLI override'larını uygula
+    overrides = parse_overrides(args.override)
+    if args.fast_dev_run:
+        overrides["training.fast_dev_run"] = True
+    cfg = load_config(args.config, overrides=overrides)
+    
+    # Kısayollar
+    tc = cfg.training
+    mc = cfg.model
+    dc = cfg.dataset
+
+    print(f"Config loaded from: {args.config}")
+    print(f"Model: embed_dim={mc.embed_dim}, n_layers={mc.n_layers}, n_heads={mc.n_heads}, "
+          f"num_experts={mc.num_experts}, num_field_modes={mc.num_field_modes}")
+    print(f"Training: lr={tc.learning_rate}, batch_size={tc.batch_size}, epochs={tc.max_epochs}, "
+          f"scheduler={tc.scheduler}")
+
+    print("\nLoading datasets...")
+    train_dataset = GNOTDataset(dc.data_path, split='train',
+                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio)
+    val_dataset   = GNOTDataset(dc.data_path, split='val',
+                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio)
+    test_dataset  = GNOTDataset(dc.data_path, split='test',
+                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio)
+
+    train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
+                              collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
+                              pin_memory=tc.pin_memory)
+    val_loader   = DataLoader(val_dataset,   batch_size=tc.batch_size,
+                              collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
+                              pin_memory=tc.pin_memory)
+    test_loader  = DataLoader(test_dataset,  batch_size=tc.batch_size,
+                              collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
+                              pin_memory=tc.pin_memory)
 
     model = GNOTLightning(
-        val_dim=args.val_dim,
-        grid_dim=args.grid_dim,
-        theta_dim=args.theta_dim,
-        hidden_dim=args.hidden_dim,
-        n_layers=args.n_layers,
-        lr=args.learning_rate,
-        freq_weight=args.freq_weight,
-        scheduler=args.scheduler,
-        weight_decay=args.weight_decay,
-        use_checkpoint=args.use_checkpoint
+        val_dim=mc.val_dim,
+        grid_dim=mc.grid_dim,
+        theta_dim=mc.theta_dim,
+        hidden_dim=mc.embed_dim,
+        n_layers=mc.n_layers,
+        n_heads=mc.n_heads,
+        num_experts=mc.num_experts,
+        num_field_modes=mc.num_field_modes,
+        lr=tc.learning_rate,
+        freq_weight=tc.freq_weight,
+        scheduler=tc.scheduler,
+        weight_decay=tc.weight_decay,
+        use_checkpoint=mc.use_checkpoint,
+        # Scheduler-specific params
+        onecycle_pct_start=tc.onecycle_pct_start,
+        onecycle_div_factor=tc.onecycle_div_factor,
+        onecycle_final_div_factor=tc.onecycle_final_div_factor,
+        cosine_eta_min=tc.cosine_eta_min,
     )
     
     # Pass frequency statistics to the model for physical units logging
@@ -74,7 +111,7 @@ def main(args):
         model.freq_stats = train_dataset.stats
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{args.log_dir}/{args.exp_name}",
+        dirpath=f"{tc.log_dir}/{tc.exp_name}",
         filename="best-{epoch:02d}-{val/loss:.4f}",
         save_top_k=1,
         monitor="val/loss",
@@ -83,38 +120,39 @@ def main(args):
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    early_stop = EarlyStopping(monitor="val/loss", patience=args.patience, mode="min")
-    viz_callback = FieldVisualizationCallback(log_every_n_epochs=args.viz_every_n_epochs)
+    early_stop = EarlyStopping(monitor="val/loss", patience=tc.patience, mode="min")
+    viz_callback = FieldVisualizationCallback(log_every_n_epochs=tc.viz_every_n_epochs)
     gpu_stats = DeviceStatsMonitor()
-    progress_bar = TQDMProgressBar(refresh_rate=50) # Reduces flickering in Colab
+    progress_bar = TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate)
     
-    tb_logger = TensorBoardLogger(save_dir=args.log_dir, name=args.exp_name)
+    tb_logger = TensorBoardLogger(save_dir=tc.log_dir, name=tc.exp_name)
+    
+    # Config'i TensorBoard'a logla (reproduceability)
+    tb_logger.log_hyperparams(config_to_flat_dict(cfg))
 
     trainer = pl.Trainer(
-        max_epochs=args.max_epochs,
+        max_epochs=tc.max_epochs,
         accelerator="auto",
         devices=1,
-        gradient_clip_val=1.0,
+        gradient_clip_val=tc.gradient_clip_val,
         callbacks=[checkpoint_callback, lr_monitor, early_stop, viz_callback, gpu_stats, progress_bar],
         logger=tb_logger,
-        log_every_n_steps=50,
+        log_every_n_steps=tc.log_every_n_steps,
         enable_progress_bar=True,
         enable_model_summary=True,
-        fast_dev_run=args.fast_dev_run
+        fast_dev_run=tc.fast_dev_run
     )
 
-    if args.fast_dev_run:
+    if tc.fast_dev_run:
         print("Starting fast_dev_run training to verify pipeline...")
     trainer.fit(model, train_loader, val_loader)
     
     print("Running final evaluation on held-out test split...")
-    # Use the true test split (not val) so evaluation is unbiased
-    ckpt_path = "best" if not args.fast_dev_run else None
+    ckpt_path = "best" if not tc.fast_dev_run else None
     trainer.test(dataloaders=test_loader, ckpt_path=ckpt_path)
     
-    if args.fast_dev_run:
+    if tc.fast_dev_run:
         print("Verification complete! To run full training, do not use --fast_dev_run flag.")
 
 if __name__ == '__main__':
-    args = parse_args()
-    main(args)
+    main()

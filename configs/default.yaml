@@ -1,0 +1,138 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity Neural Operator — Default Configuration
+# ═══════════════════════════════════════════════════════════════
+# Bu dosyayı kopyalayıp experiment-specific config oluşturabilirsiniz:
+#   cp configs/default.yaml configs/experiment_v2.yaml
+#   python train.py --config configs/experiment_v2.yaml
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────
+#  1. DATA GENERATION (dataset_generator.py)
+# ─────────────────────────────────────────────────────
+data_gen:
+  h5_filename: "rf_cavity_1000_dataset.h5"
+  plot_dir: "dataset_plots"
+  n_total: 1000                 # Üretilecek toplam geometri
+  n_plot: 100                   # Görselleştirilecek örnek sayısı
+  generation_mode: "random"     # "random" veya "calibration"
+  
+  # FEM Solver
+  fem_order: "P2"               # Finite element order
+  n_eigen_modes: 3              # Çözülecek eigenmode sayısı (k)
+  eigen_sigma: 500.0            # Shift-invert sigma
+  
+  # Mesh control
+  mesh_size_min: 0.0012         # Sınır yakınında minimum mesh boyutu
+  mesh_size_max: 0.005          # Merkezde maximum mesh boyutu
+  mesh_dist_min: 0.002          # Mesh sıklaştırma başlangıç mesafesi
+  mesh_dist_max: 0.03           # Mesh sıklaştırma bitiş mesafesi
+
+  # Geometry randomization
+  sharp_n_pts_range: [7, 13]    # Sharp geometrilerde köşe sayısı aralığı
+  sharp_r_range: [0.02, 0.046]  # Sharp geometrilerde yarıçap aralığı
+  smooth_base_r: 0.035          # Smooth geometrilerde baz yarıçap
+  smooth_perturb: 0.008         # Smooth geometrilerde pertürbasyon genliği
+  smooth_harmonics: [2, 8]      # Smooth geometrilerde harmonik aralığı
+
+
+# ─────────────────────────────────────────────────────
+#  2. DATA CONVERSION (dataset_converter.py, convert.py)
+# ─────────────────────────────────────────────────────
+data_convert:
+  h5_filepath: "rf_cavity_1000_dataset.h5"
+  output_path: "data/gnot_dataset.pkl"
+  output_format: "pkl"          # "pkl" veya "h5"
+  mode_indices: [0, 1, 2]       # Hangi eigenmode'lar dahil edilecek
+  max_samples: null             # null = tümü
+
+
+# ─────────────────────────────────────────────────────
+#  3. DATASET (dataset.py)
+# ─────────────────────────────────────────────────────
+dataset:
+  data_path: "data/gnot_dataset.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  # test_ratio otomatik: 1 - train - val = 0.1
+  random_seed: 42
+
+
+# ─────────────────────────────────────────────────────
+#  4. MODEL ARCHITECTURE (gnot.py)
+# ─────────────────────────────────────────────────────
+model:
+  # Input dimensions (veri formatına bağlı, genelde değişmez)
+  val_dim: 6                    # Input feature boyutu [x, y, dist_bnd, bnd_mask, dist_center, curvature]
+  grid_dim: 2                   # Koordinat boyutu (2D)
+  theta_dim: 1                  # Mode index boyutu
+
+  # Core architecture
+  embed_dim: 256                # Hidden dimension (ana boyut parametresi)
+  n_layers: 6                   # Toplam GNOT bloğu sayısı
+  n_heads: 4                    # Attention head sayısı (embed_dim % n_heads == 0 olmalı)
+  num_experts: 4                # GeometricGatingFFN expert sayısı
+
+  # Mode conditioning
+  num_field_modes: 3            # Mode-specific field head sayısı (mode_indices ile uyumlu olmalı)
+  num_film_modes: 20            # FiLM embedding tablo boyutu (headroom)
+  film_init_std: 0.02           # FiLM embedding başlangıç std
+
+  # Spatial encoding
+  rff_dim: 64                   # Random Fourier Features boyutu (çift sayı olmalı)
+  rff_scale: 1.0                # RFF frekans ölçeği
+
+  # Regularization
+  dropout: 0.0                  # Attention ve FFN dropout (0.0-0.3)
+
+  # Memory optimization
+  use_checkpoint: true          # Gradient checkpointing (GPU VRAM tasarrufu)
+
+
+# ─────────────────────────────────────────────────────
+#  5. TRAINING (lightning_module.py, train.py)
+# ─────────────────────────────────────────────────────
+training:
+  # Optimization
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 16
+  max_epochs: 50
+  gradient_clip_val: 1.0
+
+  # Loss
+  freq_weight: 0.5              # Frekans loss ağırlığı: total = field_loss + freq_weight * freq_loss
+
+  # LR Scheduler
+  scheduler: "onecycle"         # "onecycle" veya "cosine"
+  # OneCycleLR parametreleri
+  onecycle_pct_start: 0.3       # Warmup oranı
+  onecycle_div_factor: 25       # Başlangıç lr = max_lr / div_factor
+  onecycle_final_div_factor: 1.0e+4
+  # CosineAnnealingLR parametreleri
+  cosine_eta_min: 1.0e-6
+
+  # Early stopping
+  patience: 10                  # Val loss iyileşmezse dur
+
+  # DataLoader
+  num_workers: 0                # Colab'da 4, Windows'ta 0
+  pin_memory: true
+
+  # Logging & Visualization
+  log_dir: "training_logs"
+  exp_name: "gnot_training"
+  log_every_n_steps: 50
+  viz_every_n_epochs: 5         # Field görselleştirme sıklığı
+  progress_bar_refresh_rate: 50
+
+  # Debug
+  fast_dev_run: false           # true ile 1 iterasyon test
+
+
+# ─────────────────────────────────────────────────────
+#  6. INFERENCE (infer.py)
+# ─────────────────────────────────────────────────────
+inference:
+  checkpoint_path: null         # null = en son best checkpoint
+  output_dir: "inference_results"
+  num_visualize: 5

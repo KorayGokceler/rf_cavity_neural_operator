@@ -5,8 +5,12 @@ import torchmetrics
 from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=128, n_layers=6, lr=1e-3, freq_weight=0.1, 
-                 scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False):
+    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, n_layers=6,
+                 n_heads=4, num_experts=4, num_field_modes=3,
+                 lr=1e-3, freq_weight=0.5,
+                 scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
+                 onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
+                 cosine_eta_min=1e-6):
         super().__init__()
         self.save_hyperparameters()
         self.model = GNOTModel(
@@ -15,6 +19,9 @@ class GNOTLightning(pl.LightningModule):
             theta_dim=theta_dim,
             embed_dim=hidden_dim,
             n_layers=n_layers,
+            n_heads=n_heads,
+            num_experts=num_experts,
+            num_field_modes=num_field_modes,
             use_checkpoint=use_checkpoint
         )
         self.freq_weight = freq_weight
@@ -176,16 +183,16 @@ class GNOTLightning(pl.LightningModule):
                 optimizer, 
                 max_lr=self.hparams.lr, 
                 total_steps=self.trainer.estimated_stepping_batches,
-                pct_start=0.3,
-                div_factor=25,
-                final_div_factor=1e4
+                pct_start=self.hparams.onecycle_pct_start,
+                div_factor=self.hparams.onecycle_div_factor,
+                final_div_factor=self.hparams.onecycle_final_div_factor
             )
             interval = 'step'
         elif self.hparams.scheduler == 'cosine':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, 
                 T_max=self.trainer.max_epochs, 
-                eta_min=1e-6
+                eta_min=self.hparams.cosine_eta_min
             )
             interval = 'epoch'
         else:
