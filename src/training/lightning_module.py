@@ -52,14 +52,14 @@ class GNOTLightning(pl.LightningModule):
         mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
 
         # Per-mode weighted field loss
-        loss_field = torch.tensor(0.0, device=pred_field.device)
+        loss_field = 0.0  # Python float — ilk tensor eklenince otomatik cast
         for mode_val in range(len(self.mode_loss_weights)):
             mode_mask = (mode_ids == mode_val)
             if not mode_mask.any():
                 continue
             p = pred_field[mode_mask]   # [n_mode, N, 1]
             t = true_field[mode_mask]
-            w = self.mode_loss_weights[mode_val]
+            w = float(self.mode_loss_weights[mode_val])
             if mask is not None:
                 m = mask[mode_mask].unsqueeze(-1).float()
                 n_valid = m.sum().clamp(min=1.0)
