@@ -214,14 +214,14 @@ class MLPEncoder(nn.Module):
 class GNOTModel(nn.Module):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
                  n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
-                 n_heads=4, num_experts=4, num_field_modes=3, use_checkpoint=False):
+                 n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, use_checkpoint=False):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
 
         # --- Random Fourier Features for high spatial frequency encoding ---
         self.rff_dim = 64
-        self.rff = RandomFourierFeatures(in_dim=grid_dim, out_dim=self.rff_dim, scale=1.0)
+        self.rff = RandomFourierFeatures(in_dim=grid_dim, out_dim=self.rff_dim, scale=rff_scale)
 
         # Query points (represented in raw space + Fourier space)
         self.query_encoder = MLPEncoder(grid_dim + self.rff_dim, embed_dim)

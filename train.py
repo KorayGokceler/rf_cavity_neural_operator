@@ -112,6 +112,7 @@ def main():
         scheduler=tc.scheduler,
         weight_decay=tc.weight_decay,
         use_checkpoint=mc.use_checkpoint,
+        rff_scale=getattr(mc, 'rff_scale', 1.0),
         # Scheduler-specific params (using getattr for flexibility with different configs)
         onecycle_pct_start=getattr(tc, 'onecycle_pct_start', 0.3),
         onecycle_div_factor=getattr(tc, 'onecycle_div_factor', 25.0),
