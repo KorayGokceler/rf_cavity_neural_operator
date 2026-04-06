@@ -121,10 +121,21 @@ class RFCavityToGNOT:
 
                     Y = vecs[:, m_idx].reshape(-1, 1).astype(np.float32)
 
-                    # Sign alignment
-                    max_idx = np.argmax(np.abs(Y))
-                    sign = np.sign(Y[max_idx]) if np.sign(Y[max_idx]) != 0 else 1
+                    # Spatial Sign Alignment: İşareti en güçlü aksis ile mekansal olarak sabitle.
+                    # Bu, dipol/kuadrupol gibi simetrik alanlardaki rastgele işaret taklalarını engeller.
+                    nodes_y = nodes[:, 1].reshape(-1, 1)
+                    nodes_x = nodes[:, 0].reshape(-1, 1)
+                    sum_y = (Y * nodes_y).sum()
+                    sum_x = (Y * nodes_x).sum()
+
+                    # En güçlü korelasyon olan ekseni seç ve pozitif yöne zorla
+                    if abs(sum_y) > abs(sum_x):
+                        sign = np.sign(sum_y) if abs(sum_y) > 1e-12 else 1
+                    else:
+                        sign = np.sign(sum_x) if abs(sum_x) > 1e-12 else 1
+                    
                     Y = Y * sign
+                    if sign == 0: Y = Y * 1.0 # fallback for zero case
 
                     # Normalize
                     Y_max = np.abs(Y).max()
