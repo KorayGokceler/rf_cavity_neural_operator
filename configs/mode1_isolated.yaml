@@ -1,0 +1,66 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity Neural Operator — Mode 1 Isolation Config
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────
+#  1. DATASET
+# ─────────────────────────────────────────────────────
+dataset:
+  data_path: "data/mode1_only.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+
+# ─────────────────────────────────────────────────────
+#  2. MODEL ARCHITECTURE
+# ─────────────────────────────────────────────────────
+model:
+  val_dim: 6
+  grid_dim: 2
+  theta_dim: 1
+  embed_dim: 256
+  n_shared_layers: 2
+  n_mode_layers: 4              # Dipol için daha fazla derinlik (2 -> 4)
+  n_freq_layers: 2
+  n_heads: 4
+  num_experts: 4
+  
+  # İzolasyon Ayarları
+  num_field_modes: 1            # SADECE 1 MOD (Mode 1 verisi buraya 0 olarak gelecek)
+  num_film_modes: 5             # Sadece bir mod için küçük bir tablo yeterli
+  
+  # Spektral Çözünürlük (Dipolün loblarını net görmek için)
+  rff_dim: 64
+  rff_scale: 5.0                # 1.0 -> 5.0 (Vurgulanmış mekansal çözünürlük)
+  
+  use_checkpoint: true
+
+# ─────────────────────────────────────────────────────
+#  3. TRAINING
+# ─────────────────────────────────────────────────────
+training:
+  learning_rate: 5.0e-4         # Daha stabil bir başlangıç
+  weight_decay: 1.0e-4
+  batch_size: 16
+  max_epochs: 100               # Dipol'ün tek başına mükemmelleşmesi için 100 epoch
+  gradient_clip_val: 0.5
+  
+  # Loss
+  freq_weight: 0.1              # Odak noktamız field (0.5 -> 0.1)
+  mode_loss_weights: [1.0]      # Tek mod olduğu için sadece bir ağırlık
+  
+  # Scheduler (Stabilite için Cosine)
+  scheduler: "cosine"
+  cosine_eta_min: 1.0e-6
+  
+  patience: 15                  # Uzun süreli öğrenme için sabır
+  
+  exp_name: "mode1_isolated_test"
+  viz_every_n_epochs: 10
+  log_dir: "training_logs"
+  log_every_n_steps: 50
+  num_workers: 0
+  pin_memory: true
+  viz_every_n_steps: 10
+  progress_bar_refresh_rate: 50
+  fast_dev_run: false

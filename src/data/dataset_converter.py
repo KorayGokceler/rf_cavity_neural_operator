@@ -115,7 +115,7 @@ class RFCavityToGNOT:
                     self.stats['n_geometries'] += 1
                     self.stats['mesh_sizes'].append(len(nodes))
 
-                for m_idx in mode_indices:
+                for i, m_idx in enumerate(mode_indices):
                     if m_idx >= len(freqs):
                         continue
 
@@ -143,7 +143,7 @@ class RFCavityToGNOT:
                         Y = Y / Y_max
 
                     freq = float(freqs[m_idx])
-                    theta = np.array([float(m_idx), freq, float(sample_id)], dtype=np.float32)
+                    theta = np.array([float(i), freq, float(sample_id)], dtype=np.float32)
 
                     self.samples.append({
                         'geom_id': sample_id,
