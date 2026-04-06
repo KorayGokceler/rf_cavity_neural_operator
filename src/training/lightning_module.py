@@ -80,6 +80,25 @@ class GNOTLightning(pl.LightningModule):
                       (torch.norm(true_flat, dim=1) + 1e-8)).mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B)
 
+        # Per-mode relative L2 error — hangi modun hatalı olduğunu görmek için
+        mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
+        for mode_val in mode_ids.unique():
+            idx = (mode_ids == mode_val).nonzero(as_tuple=True)[0]  # bu modun sample indeksleri
+            if mask is not None:
+                mode_rels = []
+                for i in idx:
+                    m = mask[i]
+                    p = pred_field[i, m, :]
+                    t = true_field[i, m, :]
+                    mode_rels.append(torch.norm(p - t) / (torch.norm(t) + 1e-8))
+                mode_rel = torch.stack(mode_rels).mean()
+            else:
+                p = pred_field[idx].view(len(idx), -1)
+                t = true_field[idx].view(len(idx), -1)
+                mode_rel = (torch.norm(p - t, dim=1) / (torch.norm(t, dim=1) + 1e-8)).mean()
+            self.log(f'{prefix}/mode_{mode_val.item()}_rel_l2', mode_rel,
+                     prog_bar=False, batch_size=len(idx))
+
         # Extract valid-only flat tensors for torchmetrics (R2, MAE)
         if mask is not None:
             mask_flat = mask.unsqueeze(-1).expand_as(pred_field)  # [B, N, 1]

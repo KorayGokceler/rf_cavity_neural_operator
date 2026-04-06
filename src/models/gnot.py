@@ -110,18 +110,21 @@ class GNOTBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, coords_dim=2, num_experts=4, dropout=0.0):
         super().__init__()
         self.cross_attn = LinearAttention(embed_dim, num_heads, dropout)
-        self.norm1 = nn.LayerNorm(embed_dim)
+        # FIX 1: Ayrı normlar — query ve key/value farklı dağılımda olabilir.
+        # Aynı norm kullanmak cross-attention'ın condition sinyalini ezmesine yol açıyordu.
+        self.norm1_q  = nn.LayerNorm(embed_dim)   # query (x) için
+        self.norm1_kv = nn.LayerNorm(embed_dim)   # key/value (condition_emb) için
         self.self_attn = LinearAttention(embed_dim, num_heads, dropout)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ffn = GeometricGatingFFN(embed_dim, coords_dim, num_experts, dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
 
     def forward(self, x, condition_emb, coords, mask=None, condition_mask=None):
-        # Pre-norm: normalize inputs BEFORE attention/FFN (more stable for deep nets)
+        # Pre-norm cross-attention: query ve key/value ayrı normlardan geçiyor
         attn_out = self.cross_attn(
-            query=self.norm1(x),
-            key=self.norm1(condition_emb),
-            value=self.norm1(condition_emb),
+            query=self.norm1_q(x),
+            key=self.norm1_kv(condition_emb),
+            value=self.norm1_kv(condition_emb),
             mask=condition_mask
         )
         x = x + attn_out
@@ -141,6 +144,31 @@ class GNOTBlock(nn.Module):
         if mask is not None:
             x = x * mask.unsqueeze(-1)
         return x
+
+class FiLMConditioner(nn.Module):
+    """Feature-wise Linear Modulation: mode embedding'i LayerNorm-proof şekilde uygular.
+    
+    Additive injection (+) yerine affine transform (gamma * x + beta) kullanır.
+    LayerNorm mean/variance'ı sıfırladığında additive bias kaybolur,
+    ama multiplicative gamma sinyali korunur.
+    """
+    def __init__(self, embed_dim, num_modes=20):
+        super().__init__()
+        # Her mod için ayrı gamma ve beta üretiyor (2 * embed_dim)
+        self.emb = nn.Embedding(num_modes, embed_dim * 2)
+        # gamma başlangıçta ~1, beta ~0 olsun ki eğitim başında kararlı olsun
+        nn.init.zeros_(self.emb.weight)
+
+    def forward(self, x, mode_idx):
+        # mode_idx: [B] veya [B, 1] — her ikisini de destekle
+        if mode_idx.dim() > 1:
+            mode_idx = mode_idx.squeeze(-1)          # [B]
+        params = self.emb(mode_idx)                  # [B, 2*D]
+        gamma, beta = params.chunk(2, dim=-1)        # her biri [B, D]
+        gamma = gamma.unsqueeze(1)                   # [B, 1, D] — broadcast over nodes
+        beta  = beta.unsqueeze(1)
+        # 1 + gamma: başlangıçta identity (gamma=0 init)
+        return x * (1.0 + gamma) + beta
 
 class RandomFourierFeatures(nn.Module):
     def __init__(self, in_dim, out_dim, scale=1.0):
@@ -181,8 +209,10 @@ class GNOTModel(nn.Module):
         # Input features + Query point Raw Context + Query point RFF context
         self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
         
-        # Categorical embedding ensures absolutely separate representations for each mode
-        self.theta_encoder = nn.Embedding(num_embeddings=20, embedding_dim=embed_dim)
+        # FIX 2: FiLM conditioner — additive mode injection yerine affine transform.
+        # Ayrı FiLM'ler: biri query stream'i (x_emb), biri condition stream'i (y_emb) için.
+        self.film_query = FiLMConditioner(embed_dim, num_modes=20)
+        self.film_cond  = FiLMConditioner(embed_dim, num_modes=20)
 
         # Architecture division into Shared -> [Field Branch, Freq Branch]
         # Total n_layers is distributed as: shared, task_field, task_freq.
@@ -237,14 +267,11 @@ class GNOTModel(nn.Module):
         enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
         y_emb = self.input_func_encoder(enhanced_inputs)
         
-        # Squeeze the trailing 1 (from [B, 1]), output gives [B, D], then we restore the unsqueeze [B, 1, D]
-        theta_int = theta.squeeze(-1) # [B]
-        theta_emb_expand = self.theta_encoder(theta_int).unsqueeze(1) # [B, 1, D]
-        
-        # Inject mode directly into spatial coordinates
-        x_emb = x_emb + theta_emb_expand
-        y_emb = y_emb + theta_emb_expand
-        
+        # FIX 2: FiLM ile mode conditioning — LayerNorm mode sinyalini silemiyor
+        theta_int = theta.squeeze(-1)  # [B, 1] -> [B]
+        x_emb = self.film_query(x_emb, theta_int)   # affine: x * (1 + gamma) + beta
+        y_emb = self.film_cond(y_emb,  theta_int)
+
         # The condition targets are simply the y_emb now
         condition_emb = y_emb
 
