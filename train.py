@@ -96,6 +96,7 @@ def main():
         num_field_modes=mc.num_field_modes,
         lr=tc.learning_rate,
         freq_weight=tc.freq_weight,
+        mode_loss_weights=tc.mode_loss_weights,
         scheduler=tc.scheduler,
         weight_decay=tc.weight_decay,
         use_checkpoint=mc.use_checkpoint,

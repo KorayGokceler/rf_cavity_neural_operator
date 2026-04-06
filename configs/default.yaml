@@ -101,6 +101,8 @@ training:
 
   # Loss
   freq_weight: 0.5              # Frekans loss ağırlığı: total = field_loss + freq_weight * freq_loss
+  mode_loss_weights: [1.0, 1.0, 1.0]  # Per-mode field loss ağırlıkları [mode0, mode1, mode2]
+                                       # Zayıf modları güçlendirmek için: [1.0, 2.0, 2.0]
 
   # LR Scheduler
   scheduler: "onecycle"         # "onecycle" veya "cosine"

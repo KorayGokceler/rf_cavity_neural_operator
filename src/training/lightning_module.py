@@ -7,7 +7,7 @@ from src.models.gnot import GNOTModel
 class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, n_layers=6,
                  n_heads=4, num_experts=4, num_field_modes=3,
-                 lr=1e-3, freq_weight=0.5,
+                 lr=1e-3, freq_weight=0.5, mode_loss_weights=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6):
@@ -25,7 +25,12 @@ class GNOTLightning(pl.LightningModule):
             use_checkpoint=use_checkpoint
         )
         self.freq_weight = freq_weight
-        self.freq_stats = None # Will be set by the dataloader or manually
+        # Per-mode loss weights: [w0, w1, w2] — zayıf modlara daha yüksek ağırlık verilebilir
+        if mode_loss_weights is None:
+            self.mode_loss_weights = [1.0] * num_field_modes
+        else:
+            self.mode_loss_weights = list(mode_loss_weights)
+        self.freq_stats = None
 
         # Optional: Metrics to evaluate and measure model's success
         self.train_r2 = torchmetrics.R2Score()
@@ -44,16 +49,28 @@ class GNOTLightning(pl.LightningModule):
 
         pred_field = outputs['field']      # [B, N, 1]
         true_field = batch['Y_field']      # [B, N, 1]
+        mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
 
-        if mask is not None:
-            # Expand mask to match field shape [B, N, 1]
-            mask_exp = mask.unsqueeze(-1).float()  # [B, N, 1]
-            n_valid = mask_exp.sum().clamp(min=1.0)
-
-            # Masked MSE for field: only penalize real nodes
-            loss_field = ((pred_field - true_field) ** 2 * mask_exp).sum() / n_valid
-        else:
-            loss_field = F.mse_loss(pred_field, true_field)
+        # Per-mode weighted field loss
+        loss_field = torch.tensor(0.0, device=pred_field.device)
+        for mode_val in range(len(self.mode_loss_weights)):
+            mode_mask = (mode_ids == mode_val)
+            if not mode_mask.any():
+                continue
+            p = pred_field[mode_mask]   # [n_mode, N, 1]
+            t = true_field[mode_mask]
+            w = self.mode_loss_weights[mode_val]
+            if mask is not None:
+                m = mask[mode_mask].unsqueeze(-1).float()
+                n_valid = m.sum().clamp(min=1.0)
+                mode_loss = ((p - t) ** 2 * m).sum() / n_valid
+            else:
+                mode_loss = F.mse_loss(p, t)
+            loss_field = loss_field + w * mode_loss
+            self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss,
+                     prog_bar=False, batch_size=int(mode_mask.sum()))
+        # Normalize by sum of weights so total scale doesn't change
+        loss_field = loss_field / sum(self.mode_loss_weights)
 
         loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
         total_loss = loss_field + (self.freq_weight * loss_freq)
