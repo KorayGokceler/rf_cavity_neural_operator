@@ -58,7 +58,7 @@ class GNOTLightning(pl.LightningModule):
         mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
 
         # Per-mode weighted field loss
-        loss_field = 0.0  # Python float — ilk tensor eklenince otomatik cast
+        loss_field = 0.0
         for mode_val in range(len(self.mode_loss_weights)):
             mode_mask = (mode_ids == mode_val)
             if not mode_mask.any():
@@ -66,16 +66,30 @@ class GNOTLightning(pl.LightningModule):
             p = pred_field[mode_mask]   # [n_mode, N, 1]
             t = true_field[mode_mask]
             w = float(self.mode_loss_weights[mode_val])
+
+            # --- SIGN-AGNOSTIC LOSS LOGIC ---
+            # Hesapla: (pred - true)^2 ve (pred + true)^2
+            mse_pos = (p - t) ** 2
+            mse_neg = (p + t) ** 2
+
             if mask is not None:
-                m = mask[mode_mask].unsqueeze(-1).float()
-                n_valid = m.sum().clamp(min=1.0)
-                mode_loss = ((p - t) ** 2 * m).sum() / n_valid
+                m = mask[mode_mask].unsqueeze(-1).float()  # [n_mode, N, 1]
+                # Per-sample masked mean
+                loss_pos_per_sample = (mse_pos * m).sum(dim=(1, 2)) / (m.sum(dim=(1, 2)) + 1e-8)
+                loss_neg_per_sample = (mse_neg * m).sum(dim=(1, 2)) / (m.sum(dim=(1, 2)) + 1e-8)
             else:
-                mode_loss = F.mse_loss(p, t)
+                loss_pos_per_sample = mse_pos.mean(dim=(1, 2))
+                loss_neg_per_sample = mse_neg.mean(dim=(1, 2))
+
+            # Her örnek için hangisine daha yakınsa onu seç
+            mode_loss = torch.minimum(loss_pos_per_sample, loss_neg_per_sample).mean()
+            # ----------------------------------
+
             loss_field = loss_field + w * mode_loss
             self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss,
                      prog_bar=False, batch_size=int(mode_mask.sum()))
-        # Normalize by sum of weights so total scale doesn't change
+        
+        # Normalize by sum of weights
         loss_field = loss_field / sum(self.mode_loss_weights)
 
         loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
@@ -85,29 +99,26 @@ class GNOTLightning(pl.LightningModule):
         self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=pred_field.shape[0])
         self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=pred_field.shape[0])
         
-        # Denormalized Freq MAE for better tracking
         if self.freq_stats:
             freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
             self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=pred_field.shape[0])
 
-        # Per-sample Relative L2 Error for field (masked)
+        # Per-sample SIGN-AGNOSTIC Relative L2 Error
         B = pred_field.shape[0]
-        if mask is not None:
-            rel_l2_list = []
-            for i in range(B):
-                m = mask[i]  # [N]
-                p = pred_field[i, m, :]  # [valid_nodes, 1]
-                t = true_field[i, m, :]  # [valid_nodes, 1]
-                rel = torch.norm(p - t) / (torch.norm(t) + 1e-8)
-                rel_l2_list.append(rel)
-            rel_l2 = torch.stack(rel_l2_list).mean()
-        else:
-            pred_flat = pred_field.view(B, -1)
-            true_flat = true_field.view(B, -1)
-            rel_l2 = (torch.norm(pred_flat - true_flat, dim=1) /
-                      (torch.norm(true_flat, dim=1) + 1e-8)).mean()
+        rel_l2_list = []
+        for i in range(B):
+            m = mask[i] if mask is not None else torch.ones_like(pred_field[i, :, 0], dtype=torch.bool)
+            p = pred_field[i, m, :]  # [valid_nodes, 1]
+            t = true_field[i, m, :]  # [valid_nodes, 1]
+            
+            # Compute both rel_l2 and take min
+            rel_pos = torch.norm(p - t) / (torch.norm(t) + 1e-8)
+            rel_neg = torch.norm(p + t) / (torch.norm(t) + 1e-8)
+            rel_l2_list.append(torch.minimum(rel_pos, rel_neg))
+            
+        rel_l2 = torch.stack(rel_l2_list).mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B)
 
         # Per-mode relative L2 error — hangi modun hatalı olduğunu görmek için
