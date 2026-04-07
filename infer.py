@@ -71,6 +71,7 @@ def main(args):
                 freq_preds = outputs['freq']
                 freq_trues = batch['Y_freq']
 
+            B = preds.shape[0]
             for i in range(B):
                 m = mask[i] if mask is not None else slice(None)
                 
