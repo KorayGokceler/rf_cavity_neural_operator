@@ -56,6 +56,27 @@ class GNOTLightning(pl.LightningModule):
         pred_field = outputs['field']      # [B, N, 1]
         true_field = batch['Y_field']      # [B, N, 1]
         mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
+        B, N, _ = pred_field.shape
+
+        # --- SIGN REALIGNMENT DURING TRAINING ---
+        # Her örnek için pred ve true arasındaki faza (işarete) bak.
+        # Eğer ters işaret daha yakınsa pred'i ters çevir.
+        with torch.no_grad():
+            # [B] boyutunda işaret belirle: MSE(p, t) < MSE(p, -t) ise 1, değilse -1
+            # Maske varsa sadece maskeli bölgede karara var.
+            if mask is not None:
+                m_f = mask.unsqueeze(-1).float()
+                diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=(1, 2))
+                diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=(1, 2))
+            else:
+                diff_pos = ((pred_field - true_field) ** 2).mean(dim=(1, 2))
+                diff_neg = ((pred_field + true_field) ** 2).mean(dim=(1, 2))
+            
+            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).view(B, 1, 1)
+        
+        # Gradyan akışını bozmadan işareti düzelt (differentiable sign selection)
+        pred_field = pred_field * signs
+        # ----------------------------------------
 
         # Per-mode weighted field loss
         loss_field = 0.0
@@ -67,23 +88,12 @@ class GNOTLightning(pl.LightningModule):
             t = true_field[mode_mask]
             w = float(self.mode_loss_weights[mode_val])
 
-            # --- SIGN-AGNOSTIC LOSS LOGIC ---
-            # Hesapla: (pred - true)^2 ve (pred + true)^2
-            mse_pos = (p - t) ** 2
-            mse_neg = (p + t) ** 2
-
             if mask is not None:
-                m = mask[mode_mask].unsqueeze(-1).float()  # [n_mode, N, 1]
-                # Per-sample masked mean
-                loss_pos_per_sample = (mse_pos * m).sum(dim=(1, 2)) / (m.sum(dim=(1, 2)) + 1e-8)
-                loss_neg_per_sample = (mse_neg * m).sum(dim=(1, 2)) / (m.sum(dim=(1, 2)) + 1e-8)
+                m = mask[mode_mask].unsqueeze(-1).float()
+                n_valid = m.sum().clamp(min=1.0)
+                mode_loss = ((p - t) ** 2 * m).sum() / n_valid
             else:
-                loss_pos_per_sample = mse_pos.mean(dim=(1, 2))
-                loss_neg_per_sample = mse_neg.mean(dim=(1, 2))
-
-            # Her örnek için hangisine daha yakınsa onu seç
-            mode_loss = torch.minimum(loss_pos_per_sample, loss_neg_per_sample).mean()
-            # ----------------------------------
+                mode_loss = F.mse_loss(p, t)
 
             loss_field = loss_field + w * mode_loss
             self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss,
@@ -95,28 +105,23 @@ class GNOTLightning(pl.LightningModule):
         loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
         total_loss = loss_field + (self.freq_weight * loss_freq)
 
-        self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=pred_field.shape[0])
-        self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=pred_field.shape[0])
-        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=pred_field.shape[0])
+        self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=B)
+        self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=B)
+        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B)
         
         if self.freq_stats:
             freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
-            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=pred_field.shape[0])
+            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B)
 
-        # Per-sample SIGN-AGNOSTIC Relative L2 Error
-        B = pred_field.shape[0]
+        # Per-sample Relative L2 Error (Artık hizalı olduğu için doğrudan norm yeterli)
         rel_l2_list = []
         for i in range(B):
             m = mask[i] if mask is not None else torch.ones_like(pred_field[i, :, 0], dtype=torch.bool)
-            p = pred_field[i, m, :]  # [valid_nodes, 1]
-            t = true_field[i, m, :]  # [valid_nodes, 1]
-            
-            # Compute both rel_l2 and take min
-            rel_pos = torch.norm(p - t) / (torch.norm(t) + 1e-8)
-            rel_neg = torch.norm(p + t) / (torch.norm(t) + 1e-8)
-            rel_l2_list.append(torch.minimum(rel_pos, rel_neg))
+            p = pred_field[i, m, :]
+            t = true_field[i, m, :]
+            rel_l2_list.append(torch.norm(p - t) / (torch.norm(t) + 1e-8))
             
         rel_l2 = torch.stack(rel_l2_list).mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B)
