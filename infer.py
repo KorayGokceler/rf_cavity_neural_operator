@@ -71,13 +71,28 @@ def main(args):
                 freq_preds = outputs['freq']
                 freq_trues = batch['Y_freq']
 
-            B = preds.shape[0]
             for i in range(B):
                 m = mask[i] if mask is not None else slice(None)
                 
+                # Sign-Agnostic Logic for Inference Metrics & Visualization
+                p_tensor = preds[i, m]
+                t_tensor = targets[i, m]
+                
+                rel_pos = torch.norm(p_tensor - t_tensor) / (torch.norm(t_tensor) + 1e-8)
+                rel_neg = torch.norm(p_tensor + t_tensor) / (torch.norm(t_tensor) + 1e-8)
+                
+                # En iyi işareti seç (faz keyfiliğini görselde yenmek için)
+                if rel_neg < rel_pos:
+                    rel_l2 = rel_neg.item()
+                    final_pred_viz = -p_tensor.cpu().numpy()
+                    sign_info = " (Flipped for Viz)"
+                else:
+                    rel_l2 = rel_pos.item()
+                    final_pred_viz = p_tensor.cpu().numpy()
+                    sign_info = ""
+
                 valid_coords = coords[i, m].cpu().numpy()
-                valid_targets = targets[i, m].cpu().numpy()
-                valid_preds = preds[i, m].cpu().numpy()
+                valid_targets = t_tensor.cpu().numpy()
                 
                 f_true = freq_trues[i, 0].item()
                 f_pred = freq_preds[i, 0].item()
@@ -86,14 +101,10 @@ def main(args):
                 # Extraction of mode index
                 m_idx = int(batch['Theta_in'][i].item())
                 
-                # Calculate relative L2 for just this sample
-                rel_l2 = torch.norm(preds[i, m] - targets[i, m]) / (torch.norm(targets[i, m]) + 1e-8)
-                rel_l2 = rel_l2.item()
-                
-                title = f"Mode {m_idx} | Sample {samples_plotted} | Freq True: {f_true:.2f}GHz, Pred: {f_pred:.2f}GHz (Err: {f_err:.3f})\nField Rel L2: {rel_l2:.3f}"
+                title = f"Mode {m_idx} | Sample {samples_plotted}{sign_info}\nFreq True: {f_true:.2f}GHz, Pred: {f_pred:.2f}GHz (Err: {f_err:.3f})\nField Rel L2: {rel_l2:.3f}"
                 save_path = os.path.join(args.output_dir, f"{args.split}_mode{m_idx}_sample_{samples_plotted}.png")
                 
-                plot_single_comparison(valid_coords, valid_targets, valid_preds, title, save_path)
+                plot_single_comparison(valid_coords, valid_targets, final_pred_viz, title, save_path)
                 print(f"[{samples_plotted+1}/{args.num_samples}] Saved visualization to {save_path}")
                 
                 samples_plotted += 1
