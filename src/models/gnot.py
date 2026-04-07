@@ -63,13 +63,8 @@ class AttentionPool(nn.Module):
         return self.norm(out).squeeze(1)
 
 class GeometricGatingFFN(nn.Module):
-    def __init__(self, embed_dim, coords_dim, num_experts=4, dropout=0.1):
+    def __init__(self, embed_dim, num_experts=4, dropout=0.1):
         super().__init__()
-        self.gating_net = nn.Sequential(
-            nn.Linear(coords_dim, 64),
-            nn.GELU(),
-            nn.Linear(64, num_experts)
-        )
         self.experts = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(embed_dim, embed_dim * 4),
@@ -79,17 +74,9 @@ class GeometricGatingFFN(nn.Module):
             ) for _ in range(num_experts)
         ])
 
-    def forward(self, x, coords):
-        gate_logits = self.gating_net(coords)
-        gate_weights = F.softmax(gate_logits, dim=-1)  # [B, N, num_experts]
-
-        # Top-2 sparse routing: only compute the 2 highest-weight experts
-        top2_weights, top2_idx = gate_weights.topk(2, dim=-1)  # [B, N, 2]
-        # Re-normalize so the two weights sum to 1
-        top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
-
-        # Find which experts are actually needed (avoid computing unused ones)
-        active_experts = set(top2_idx.unique().tolist())
+    def forward(self, x, gate_info):
+        # gate_info: (top2_weights, top2_idx, active_experts)
+        top2_weights, top2_idx, active_experts = gate_info
 
         # Pre-compute only active expert outputs
         expert_outputs = {}
@@ -98,7 +85,7 @@ class GeometricGatingFFN(nn.Module):
 
         final_output = torch.zeros_like(x)
         for k in range(2):
-            idx = top2_idx[..., k]   # [B, N] — which expert each token picks
+            idx = top2_idx[..., k]   # [B, N]
             w   = top2_weights[..., k].unsqueeze(-1)  # [B, N, 1]
             for i in active_experts:
                 mask = (idx == i).float().unsqueeze(-1)  # [B, N, 1]
@@ -107,7 +94,7 @@ class GeometricGatingFFN(nn.Module):
         return final_output
 
 class GNOTBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, fourier_dim=64, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
+    def __init__(self, embed_dim, num_heads, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
         super().__init__()
         self.use_film = use_film
         self.cross_attn = LinearAttention(embed_dim, num_heads, dropout)
@@ -115,7 +102,7 @@ class GNOTBlock(nn.Module):
         self.norm1_kv = nn.LayerNorm(embed_dim)
         self.self_attn = LinearAttention(embed_dim, num_heads, dropout)
         self.norm2 = nn.LayerNorm(embed_dim)
-        self.ffn = GeometricGatingFFN(embed_dim, fourier_dim, num_experts, dropout)
+        self.ffn = GeometricGatingFFN(embed_dim, num_experts, dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
         # Per-block FiLM: her blok sonunda mode sinyalini yenile.
         # Mode-specific bloklar için zorunlu, shared bloklar için mode-blind olmalı.
@@ -124,7 +111,7 @@ class GNOTBlock(nn.Module):
         else:
             self.block_film = None
 
-    def forward(self, x, condition_emb, fourier_coords, mode_idx, mask=None, condition_mask=None, global_context=None):
+    def forward(self, x, condition_emb, mode_idx, gate_info, mask=None, condition_mask=None, global_context=None):
         attn_out = self.cross_attn(
             query=self.norm1_q(x),
             key=self.norm1_kv(condition_emb),
@@ -149,7 +136,7 @@ class GNOTBlock(nn.Module):
         if mask is not None:
             x = x * mask.unsqueeze(-1)
 
-        ffn_out = self.ffn(self.norm3(x), fourier_coords)
+        ffn_out = self.ffn(self.norm3(x), gate_info)
         x = x + ffn_out
 
         # Mode conditioning: sadece fizik öğrenen şubelerde aktif
@@ -246,22 +233,30 @@ class GNOTModel(nn.Module):
         block_coords_dim = self.rff_dim if use_rff else grid_dim
 
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, block_coords_dim, num_experts, use_film=False)
+            GNOTBlock(embed_dim, n_heads, num_experts, use_film=False)
             for _ in range(shared_layers)
         ])
         
         # Mode-specific field branches
         self.mode_field_blocks = nn.ModuleList([
             nn.ModuleList([
-                 GNOTBlock(embed_dim, n_heads, block_coords_dim, num_experts, use_film=True)
+                 GNOTBlock(embed_dim, n_heads, num_experts, use_film=True)
                  for _ in range(mode_layers)
             ]) for _ in range(num_field_modes)
         ])
         
         self.freq_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, block_coords_dim, num_experts, use_film=True)
+            GNOTBlock(embed_dim, n_heads, num_experts, use_film=True)
             for _ in range(freq_layers)
         ])
+
+        # Global Gating Network: Koordinatlara bakıp hangi uzmanların seçileceğine en başta karar verir.
+        # Makale şemasındaki "Gating" kutucuğuna tekabül eder.
+        self.global_gating = nn.Sequential(
+            nn.Linear(block_coords_dim, 64),
+            nn.GELU(),
+            nn.Linear(64, num_experts)
+        )
 
         self.pooler = AttentionPool(embed_dim, n_heads)
 
@@ -333,24 +328,28 @@ class GNOTModel(nn.Module):
         # Global Context Extraction: Kavitenin "Büyük Resmini" bir kere çıkarıp tüm bloklara dağıtacağız.
         global_context = self.pooler(condition_emb, condition_mask)
 
+        # Global Gating Logic: Koordinatlara bakıp Top-2 uzman kararı al.
+        gate_logits = self.global_gating(x_f_pass)
+        gate_weights = F.softmax(gate_logits, dim=-1)
+        top2_weights, top2_idx = gate_weights.topk(2, dim=-1)
+        top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
+        active_experts = set(top2_idx.unique().tolist())
+        gate_info = (top2_weights, top2_idx, active_experts)
+
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, theta_int, gate_info, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context)
+                x_emb = block(x_emb, condition_emb, theta_int, gate_info, mask, condition_mask, global_context)
 
-        # Mode-specific field branch: sort → process → cat → unsort
-        # In-place assignment (field_pred[mask] = ...) yerine gradient-safe yöntem
-        B, N, D = x_emb.shape
-
-        # Freq branch: shared freq blocks
+        # Freq branch
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context, use_reentrant=False)
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, theta_int, gate_info, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_freq = block(x_freq, condition_emb, x_f_pass, theta_int, mask, condition_mask, global_context)
+                x_freq = block(x_freq, condition_emb, theta_int, gate_info, mask, condition_mask, global_context)
 
         # Sample'ları mode'a göre sırala
         sort_idx = theta_int.argsort()
@@ -359,11 +358,14 @@ class GNOTModel(nn.Module):
         x_sorted = x_emb[sort_idx]
         cond_sorted = condition_emb[sort_idx]
         X_sorted = X[sort_idx]
-        x_f_pass_sorted = x_f_pass[sort_idx] if x_f_pass is not None else None
         theta_sorted = theta_int[sort_idx]
         global_context_sorted = global_context[sort_idx]
         mask_sorted = mask[sort_idx] if mask is not None else None
         cmask_sorted = condition_mask[sort_idx] if condition_mask is not None else None
+        
+        # Gating bilgisini de sırala
+        t2w_sorted = top2_weights[sort_idx]
+        t2i_sorted = top2_idx[sort_idx]
 
         # Her modun kaç sample'ı var
         mode_counts = [(theta_int == m).sum().item() for m in range(self.num_field_modes)]
@@ -374,26 +376,26 @@ class GNOTModel(nn.Module):
         for mode_val in range(self.num_field_modes):
             count = mode_counts[mode_val]
             if count == 0:
-                # Bu mod batch'te yok — sıfır placeholder
                 continue
             end = start + count
             x_m = x_sorted[start:end]
             c_m = cond_sorted[start:end]
-            X_m = X_sorted[start:end]
             th_m = theta_sorted[start:end]
             mk_m = mask_sorted[start:end] if mask_sorted is not None else None
             cm_m = cmask_sorted[start:end] if cmask_sorted is not None else None
             g_m = global_context_sorted[start:end]
-
-            # Mode-specific PHYSICS branch (Multiple blocks)
-            # Use x_f_pass_sorted instead of x_fourier_sorted
-            x_f_m = x_f_pass_sorted[start:end] if x_f_pass_sorted is not None else None
+            
+            # Bu modun gating bilgisini dilimle
+            t2w_m = t2w_sorted[start:end]
+            t2i_m = t2i_sorted[start:end]
+            m_experts = set(t2i_m.unique().tolist())
+            g_info_m = (t2w_m, t2i_m, m_experts)
             
             for m_block in self.mode_field_blocks[mode_val]:
                 if self.use_checkpoint and self.training:
-                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, x_f_m, th_m, mk_m, cm_m, g_m, use_reentrant=False)
+                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, g_info_m, mk_m, cm_m, g_m, use_reentrant=False)
                 else:
-                    x_m = m_block(x_m, c_m, x_f_m, th_m, mk_m, cm_m, g_m)
+                    x_m = m_block(x_m, c_m, th_m, g_info_m, mk_m, cm_m, g_m)
             
             field_parts.append(self.field_heads[mode_val](x_m))
             start = end
