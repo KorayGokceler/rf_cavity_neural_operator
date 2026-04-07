@@ -125,15 +125,11 @@ class RFCavityToGNOT:
 
 
 
-                    # Robust Vectorial Sign Alignment: Alanın yönelimini (Vx, Vy) hesaplayarak pozitif yöne sabitle.
-                    # İzotropik normalizasyon (merkezi 0'da) sayesinde atan2 her zaman doğru açıyı verir.
-                    nodes_norm = self.geometry_pool[sample_id]['X']
-                    v_x = (Y * nodes_norm[:, 0:1]).sum()
-                    v_y = (Y * nodes_norm[:, 1:2]).sum()
-                    
-                    # atan2(y, x) ile açıyı bul ve sağ yarım küreye [-pi/2, pi/2] sabitle.
-                    angle = np.arctan2(v_y, v_x)
-                    if angle < -np.pi/2 or angle > np.pi/2:
+                    # Peak-Sign Normalization: Alanın faz (sign) keyfiliğini yenmek için en yüksek mutlak değerli noktanın işareti baz alınıyor.
+                    # Bu, her örnekteki en belirgin "dağın" her zaman yukarı bakmasını sağlar.
+                    max_idx = np.argmax(np.abs(Y))
+                    peak_val = Y.flatten()[max_idx]
+                    if peak_val < 0:
                         Y = Y * -1.0
 
                     # Normalize
