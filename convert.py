@@ -3,22 +3,24 @@ import argparse
 from src.data.dataset_converter import RFCavityToGNOT
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert H5 dataset to GNOT PKL.")
+    parser = argparse.ArgumentParser(description="Convert H5 dataset to GNOT proper format.")
     parser.add_argument("--h5_filepath", type=str, default="rf_cavity_1000_dataset.h5", help="Path to input H5 file.")
-    parser.add_argument("--output_pkl", type=str, default="data/gnot_dataset.pkl", help="Path to output PKL file.")
+    parser.add_argument("--output_path", type=str, default="data/gnot_dataset.pkl", help="Path to output file.")
+    parser.add_argument("--output_format", type=str, default="pkl", choices=["pkl", "h5"], help="Output format (pkl or h5).")
     parser.add_argument("--modes", type=int, nargs='+', default=[0, 1, 2], help="Mode indices to include (e.g., 0 1 or 1).")
     args = parser.parse_args()
 
-    output_dir = os.path.dirname(args.output_pkl)
+    output_dir = os.path.dirname(args.output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     
-    print(f"Starting conversion from {args.h5_filepath} to {args.output_pkl} (Modes: {args.modes})...")
+    print(f"Starting conversion from {args.h5_filepath} to {args.output_path} (Modes: {args.modes}, Format: {args.output_format})...")
     converter = RFCavityToGNOT(args.h5_filepath)
     converter.convert_dataset(
-        output_filepath=args.output_pkl,
+        output_filepath=args.output_path,
         mode_indices=args.modes,
         max_samples=None,
+        format=args.output_format
     )
     print("Conversion finished.")
 

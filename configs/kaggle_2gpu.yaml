@@ -37,8 +37,8 @@ data_gen:
 # ─────────────────────────────────────────────────────
 data_convert:
   h5_filepath: "rf_cavity_1000_dataset.h5"
-  output_path: "data/gnot_dataset.pkl"
-  output_format: "pkl"
+  output_path: "data/gnot_dataset.h5"
+  output_format: "h5"
   mode_indices: [0, 1, 2]
   max_samples: null
 
@@ -47,7 +47,7 @@ data_convert:
 #  3. DATASET
 # ─────────────────────────────────────────────────────
 dataset:
-  data_path: "data/gnot_dataset.pkl"
+  data_path: "data/gnot_dataset.h5"
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
