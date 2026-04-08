@@ -14,6 +14,8 @@ class GNOTLightning(pl.LightningModule):
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6):
         super().__init__()
+        # Suppress harmless DDP + gradient checkpointing stream mismatch warning
+        torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
         self.save_hyperparameters()
         self.model = GNOTModel(
             val_dim=val_dim,
@@ -97,7 +99,7 @@ class GNOTLightning(pl.LightningModule):
 
             loss_field = loss_field + w * mode_loss
             self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss,
-                     prog_bar=False, batch_size=int(mode_mask.sum()))
+                     prog_bar=False, batch_size=int(mode_mask.sum()), sync_dist=True)
         
         # Normalize by sum of weights
         loss_field = loss_field / sum(self.mode_loss_weights)
@@ -105,15 +107,15 @@ class GNOTLightning(pl.LightningModule):
         loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
         total_loss = loss_field + (self.freq_weight * loss_freq)
 
-        self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=B)
-        self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=B)
-        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B)
+        self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B, sync_dist=True)
         
         if self.freq_stats:
             freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
             mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
-            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B)
+            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
 
         # Per-sample Relative L2 Error (Artık hizalı olduğu için doğrudan norm yeterli)
         rel_l2_list = []
@@ -124,7 +126,7 @@ class GNOTLightning(pl.LightningModule):
             rel_l2_list.append(torch.norm(p - t) / (torch.norm(t) + 1e-8))
             
         rel_l2 = torch.stack(rel_l2_list).mean()
-        self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B)
+        self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B, sync_dist=True)
 
         # Per-mode relative L2 error — hangi modun hatalı olduğunu görmek için
         mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
@@ -143,7 +145,7 @@ class GNOTLightning(pl.LightningModule):
                 t = true_field[idx].view(len(idx), -1)
                 mode_rel = (torch.norm(p - t, dim=1) / (torch.norm(t, dim=1) + 1e-8)).mean()
             self.log(f'{prefix}/mode_{mode_val.item()}_rel_l2', mode_rel,
-                     prog_bar=False, batch_size=len(idx))
+                     prog_bar=False, batch_size=len(idx), sync_dist=True)
 
         # Extract valid-only flat tensors for torchmetrics (R2, MAE)
         if mask is not None:
@@ -159,18 +161,21 @@ class GNOTLightning(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
         self.train_r2(preds, targets)
-        self.log('train/r2', self.train_r2, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('train/r2', self.train_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "val")
         self.val_r2(preds, targets)
         self.val_mae(preds, targets)
-        self.log('val/r2', self.val_r2, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val/mae', self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val/r2', self.val_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('val/mae', self.val_mae, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def on_validation_epoch_end(self):
+        # Only print on rank 0 to avoid duplicate output in DDP
+        if self.global_rank != 0:
+            return
         metrics = self.trainer.logged_metrics
         epoch = self.trainer.current_epoch
 
@@ -210,8 +215,8 @@ class GNOTLightning(pl.LightningModule):
         loss, preds, targets = self._compute_loss(batch, "test")
         self.test_r2(preds, targets)
         self.test_mae(preds, targets)
-        self.log('test/r2', self.test_r2, on_step=False, on_epoch=True)
-        self.log('test/mae', self.test_mae, on_step=False, on_epoch=True)
+        self.log('test/r2', self.test_r2, on_step=False, on_epoch=True, sync_dist=True)
+        self.log('test/mae', self.test_mae, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
     def configure_optimizers(self):
