@@ -117,35 +117,28 @@ class GNOTLightning(pl.LightningModule):
             mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
             self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Per-sample Relative L2 Error (Artık hizalı olduğu için doğrudan norm yeterli)
-        rel_l2_list = []
-        for i in range(B):
-            m = mask[i] if mask is not None else torch.ones_like(pred_field[i, :, 0], dtype=torch.bool)
-            p = pred_field[i, m, :]
-            t = true_field[i, m, :]
-            rel_l2_list.append(torch.norm(p - t) / (torch.norm(t) + 1e-8))
-            
-        rel_l2 = torch.stack(rel_l2_list).mean()
+        # Per-sample Relative L2 Error — VECTORIZED (no Python for-loop)
+        if mask is not None:
+            m_f = mask.unsqueeze(-1).float()  # [B, N, 1]
+            diff_sq = ((pred_field - true_field) ** 2 * m_f).sum(dim=(1, 2))  # [B]
+            true_sq = ((true_field) ** 2 * m_f).sum(dim=(1, 2))  # [B]
+        else:
+            diff_sq = ((pred_field - true_field) ** 2).sum(dim=(1, 2))  # [B]
+            true_sq = ((true_field) ** 2).sum(dim=(1, 2))  # [B]
+        rel_l2 = (torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + 1e-8)).mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Per-mode relative L2 error — hangi modun hatalı olduğunu görmek için
+        # Per-mode relative L2 error — vectorized
         mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
-        for mode_val in mode_ids.unique():
-            idx = (mode_ids == mode_val).nonzero(as_tuple=True)[0]  # bu modun sample indeksleri
-            if mask is not None:
-                mode_rels = []
-                for i in idx:
-                    m = mask[i]
-                    p = pred_field[i, m, :]
-                    t = true_field[i, m, :]
-                    mode_rels.append(torch.norm(p - t) / (torch.norm(t) + 1e-8))
-                mode_rel = torch.stack(mode_rels).mean()
-            else:
-                p = pred_field[idx].view(len(idx), -1)
-                t = true_field[idx].view(len(idx), -1)
-                mode_rel = (torch.norm(p - t, dim=1) / (torch.norm(t, dim=1) + 1e-8)).mean()
-            self.log(f'{prefix}/mode_{mode_val.item()}_rel_l2', mode_rel,
-                     prog_bar=False, batch_size=len(idx), sync_dist=True)
+        for mode_val in range(len(self.mode_loss_weights)):
+            mode_mask_b = (mode_ids == mode_val)  # [B]
+            if not mode_mask_b.any():
+                continue
+            mode_diff = diff_sq[mode_mask_b]  # [n_mode]
+            mode_true = true_sq[mode_mask_b]  # [n_mode]
+            mode_rel = (torch.sqrt(mode_diff) / (torch.sqrt(mode_true) + 1e-8)).mean()
+            self.log(f'{prefix}/mode_{mode_val}_rel_l2', mode_rel,
+                     prog_bar=False, batch_size=int(mode_mask_b.sum()), sync_dist=True)
 
         # Extract valid-only flat tensors for torchmetrics (R2, MAE)
         if mask is not None:

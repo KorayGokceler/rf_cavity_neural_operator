@@ -155,7 +155,14 @@ def main():
     # Multi-GPU support: strategy & devices from config
     n_gpus = torch.cuda.device_count()
     devices = n_gpus if n_gpus > 0 else "auto"
-    strategy = getattr(tc, 'strategy', 'auto')
+    strategy_name = getattr(tc, 'strategy', 'auto')
+    
+    # Optimize DDP: skip unused parameter detection (all params are used in GNOT)
+    if strategy_name == "ddp" and n_gpus > 1:
+        from pytorch_lightning.strategies import DDPStrategy
+        strategy = DDPStrategy(find_unused_parameters=False)
+    else:
+        strategy = strategy_name
     
     trainer = pl.Trainer(
         max_epochs=tc.max_epochs,
