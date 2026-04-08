@@ -13,6 +13,9 @@ class FieldVisualizationCallback(pl.Callback):
         self.log_every_n_epochs = log_every_n_epochs
 
     def on_validation_epoch_end(self, trainer, pl_module):
+        # Only run visualization on rank 0 (avoids duplicate logging in multi-GPU DDP)
+        if trainer.global_rank != 0:
+            return
         if (trainer.current_epoch + 1) % self.log_every_n_epochs != 0:
             return
 

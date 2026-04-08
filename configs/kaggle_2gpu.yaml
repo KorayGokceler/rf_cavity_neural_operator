@@ -1,0 +1,137 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity Neural Operator — Kaggle 2×T4 GPU Configuration
+# ═══════════════════════════════════════════════════════════════
+# Kaggle'da 2 GPU ile DDP (Data Distributed Parallel) eğitimi:
+#   !python train.py --config configs/kaggle_2gpu.yaml
+#
+# ÖNEMLİ: DDP'de her GPU batch_size kadar örnek alır.
+# Effective batch size = batch_size × GPU sayısı = 8 × 2 = 16
+# Bu, tek GPU ile batch_size=16 ile aynıdır.
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────
+#  1. DATA GENERATION (dataset_generator.py)
+# ─────────────────────────────────────────────────────
+data_gen:
+  h5_filename: "rf_cavity_1000_dataset.h5"
+  plot_dir: "dataset_plots"
+  n_total: 1000
+  n_plot: 100
+  generation_mode: "random"
+  fem_order: "P2"
+  n_eigen_modes: 3
+  eigen_sigma: 500.0
+  mesh_size_min: 0.0012
+  mesh_size_max: 0.005
+  mesh_dist_min: 0.002
+  mesh_dist_max: 0.03
+  sharp_n_pts_range: [7, 13]
+  sharp_r_range: [0.02, 0.046]
+  smooth_base_r: 0.035
+  smooth_perturb: 0.008
+  smooth_harmonics: [2, 8]
+
+
+# ─────────────────────────────────────────────────────
+#  2. DATA CONVERSION
+# ─────────────────────────────────────────────────────
+data_convert:
+  h5_filepath: "rf_cavity_1000_dataset.h5"
+  output_path: "data/gnot_dataset.pkl"
+  output_format: "pkl"
+  mode_indices: [0, 1, 2]
+  max_samples: null
+
+
+# ─────────────────────────────────────────────────────
+#  3. DATASET
+# ─────────────────────────────────────────────────────
+dataset:
+  data_path: "data/gnot_dataset.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+
+
+# ─────────────────────────────────────────────────────
+#  4. MODEL ARCHITECTURE
+# ─────────────────────────────────────────────────────
+model:
+  val_dim: 6
+  grid_dim: 2
+  theta_dim: 1
+
+  embed_dim: 256
+  n_shared_layers: 2
+  n_mode_layers: 2
+  n_freq_layers: 2
+  n_heads: 4
+  num_experts: 4
+
+  num_field_modes: 3
+  num_film_modes: 20
+  film_init_std: 0.02
+
+  rff_dim: 64
+  rff_scale: 1.0
+
+  dropout: 0.0
+
+  # T4 GPU has 16GB VRAM — gradient checkpointing critical for 256 embed_dim
+  use_checkpoint: true
+
+
+# ─────────────────────────────────────────────────────
+#  5. TRAINING — Kaggle 2×T4 GPU Optimized
+# ─────────────────────────────────────────────────────
+training:
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+
+  # ╔═══════════════════════════════════════════════════╗
+  # ║  DDP: Effective batch = batch_size × num_GPUs    ║
+  # ║  8 × 2 = 16 effective (same as single GPU 16)   ║
+  # ╚═══════════════════════════════════════════════════╝
+  batch_size: 8
+  max_epochs: 50
+  gradient_clip_val: 1.0
+
+  # Multi-GPU strategy
+  strategy: "ddp"          # "auto" for single GPU, "ddp" for multi-GPU
+
+  # Loss
+  freq_weight: 0.5
+  mode_loss_weights: [1.0, 1.0, 1.0]
+
+  # LR Scheduler
+  scheduler: "onecycle"
+  onecycle_pct_start: 0.3
+  onecycle_div_factor: 25
+  onecycle_final_div_factor: 1.0e+4
+  cosine_eta_min: 1.0e-6
+
+  # Early stopping
+  patience: 10
+
+  # DataLoader — Kaggle has 4 vCPUs, 2 per GPU
+  num_workers: 2
+  pin_memory: true
+
+  # Logging & Visualization
+  log_dir: "training_logs"
+  exp_name: "gnot_kaggle_2gpu"
+  log_every_n_steps: 50
+  viz_every_n_epochs: 5
+  progress_bar_refresh_rate: 50
+
+  # Debug
+  fast_dev_run: false
+
+
+# ─────────────────────────────────────────────────────
+#  6. INFERENCE
+# ─────────────────────────────────────────────────────
+inference:
+  checkpoint_path: null
+  output_dir: "inference_results"
+  num_visualize: 5
