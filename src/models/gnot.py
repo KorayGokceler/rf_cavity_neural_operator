@@ -94,7 +94,7 @@ class GeometricGatingFFN(nn.Module):
         return final_output
 
 class GNOTBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
+    def __init__(self, embed_dim, num_heads, coords_dim, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
         super().__init__()
         self.use_film = use_film
         self.cross_attn = LinearAttention(embed_dim, num_heads, dropout)
@@ -111,7 +111,14 @@ class GNOTBlock(nn.Module):
         else:
             self.block_film = None
 
-    def forward(self, x, condition_emb, mode_idx, gate_info, mask=None, condition_mask=None, global_context=None):
+        self.local_gating = nn.Sequential(
+            nn.Linear(coords_dim, 64),
+            nn.GELU(),
+            nn.Linear(64, num_experts)
+        )
+        self.register_buffer('_expert_calls', torch.zeros(num_experts, dtype=torch.long))
+
+    def forward(self, x, condition_emb, mode_idx, pos, mask=None, condition_mask=None, global_context=None):
         attn_out = self.cross_attn(
             query=self.norm1_q(x),
             key=self.norm1_kv(condition_emb),
@@ -135,6 +142,20 @@ class GNOTBlock(nn.Module):
         x = x + attn_out
         if mask is not None:
             x = x * mask.unsqueeze(-1)
+
+        # Local Sparse Gating Logic
+        gate_logits = self.local_gating(pos)
+        gate_weights = F.softmax(gate_logits, dim=-1)
+        top2_weights, top2_idx = gate_weights.topk(2, dim=-1)
+        top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
+        active_experts = set(top2_idx.unique().tolist())
+        gate_info = (top2_weights, top2_idx, active_experts)
+
+        # Track usage during validation
+        if not self.training:
+            with torch.no_grad():
+                counts = torch.bincount(top2_idx.flatten(), minlength=gate_logits.shape[-1])
+                self._expert_calls += counts
 
         ffn_out = self.ffn(self.norm3(x), gate_info)
         x = x + ffn_out
@@ -204,6 +225,22 @@ class GNOTModel(nn.Module):
                  n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
                  use_rff=True, use_checkpoint=False):
         super().__init__()
+
+    def reset_expert_calls(self):
+        for m in self.modules():
+            if hasattr(m, '_expert_calls'):
+                m._expert_calls.zero_()
+
+    def get_expert_calls(self):
+        total_calls = None
+        for m in self.modules():
+            if hasattr(m, '_expert_calls'):
+                if total_calls is None:
+                    total_calls = m._expert_calls.clone()
+                else:
+                    total_calls += m._expert_calls
+        return total_calls
+
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
         self.use_rff = use_rff
@@ -233,30 +270,22 @@ class GNOTModel(nn.Module):
         block_coords_dim = self.rff_dim if use_rff else grid_dim
 
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, num_experts, use_film=False)
+            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=False)
             for _ in range(shared_layers)
         ])
         
         # Mode-specific field branches
         self.mode_field_blocks = nn.ModuleList([
             nn.ModuleList([
-                 GNOTBlock(embed_dim, n_heads, num_experts, use_film=True)
+                 GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
                  for _ in range(mode_layers)
             ]) for _ in range(num_field_modes)
         ])
         
         self.freq_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, num_experts, use_film=True)
+            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
             for _ in range(freq_layers)
         ])
-
-        # Global Gating Network: Koordinatlara bakıp hangi uzmanların seçileceğine en başta karar verir.
-        # Makale şemasındaki "Gating" kutucuğuna tekabül eder.
-        self.global_gating = nn.Sequential(
-            nn.Linear(block_coords_dim, 64),
-            nn.GELU(),
-            nn.Linear(64, num_experts)
-        )
 
         self.pooler = AttentionPool(embed_dim, n_heads)
 
@@ -275,9 +304,6 @@ class GNOTModel(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, 1)
         )
-        
-        # Expert usage tracker for load balancing analysis
-        self.register_buffer('_expert_calls', torch.zeros(num_experts, dtype=torch.long))
 
         # Initialize heads with small weights to prevent early training explosion
         self._init_weights()
@@ -331,34 +357,20 @@ class GNOTModel(nn.Module):
         # Global Context Extraction: Kavitenin "Büyük Resmini" bir kere çıkarıp tüm bloklara dağıtacağız.
         global_context = self.pooler(condition_emb, condition_mask)
 
-        # Global Gating Logic: Koordinatlara bakıp Top-2 uzman kararı al.
-        gate_logits = self.global_gating(x_f_pass)
-        gate_weights = F.softmax(gate_logits, dim=-1)
-        top2_weights, top2_idx = gate_weights.topk(2, dim=-1)
-        top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
-        active_experts = set(top2_idx.unique().tolist())
-        gate_info = (top2_weights, top2_idx, active_experts)
-
-        # Track usage during validation
-        if not self.training:
-            with torch.no_grad():
-                counts = torch.bincount(top2_idx.flatten(), minlength=gate_logits.shape[-1])
-                self._expert_calls += counts
-
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, theta_int, gate_info, mask, condition_mask, global_context, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, theta_int, gate_info, mask, condition_mask, global_context)
+                x_emb = block(x_emb, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
 
         # Freq branch
         x_freq = x_emb
         for block in self.freq_blocks:
             if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, theta_int, gate_info, mask, condition_mask, global_context, use_reentrant=False)
+                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_freq = block(x_freq, condition_emb, theta_int, gate_info, mask, condition_mask, global_context)
+                x_freq = block(x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
 
         # Sample'ları mode'a göre sırala
         sort_idx = theta_int.argsort()
@@ -372,9 +384,8 @@ class GNOTModel(nn.Module):
         mask_sorted = mask[sort_idx] if mask is not None else None
         cmask_sorted = condition_mask[sort_idx] if condition_mask is not None else None
         
-        # Gating bilgisini de sırala
-        t2w_sorted = top2_weights[sort_idx]
-        t2i_sorted = top2_idx[sort_idx]
+        # Koordinat bilgisini de (x_f_pass) sırala
+        x_f_pass_sorted = x_f_pass[sort_idx]
 
         # Her modun kaç sample'ı var
         mode_counts = [(theta_int == m).sum().item() for m in range(self.num_field_modes)]
@@ -394,17 +405,14 @@ class GNOTModel(nn.Module):
             cm_m = cmask_sorted[start:end] if cmask_sorted is not None else None
             g_m = global_context_sorted[start:end]
             
-            # Bu modun gating bilgisini dilimle
-            t2w_m = t2w_sorted[start:end]
-            t2i_m = t2i_sorted[start:end]
-            m_experts = set(t2i_m.unique().tolist())
-            g_info_m = (t2w_m, t2i_m, m_experts)
+            # Bu modun koordinatlarını dilimle
+            pos_m = x_f_pass_sorted[start:end]
             
             for m_block in self.mode_field_blocks[mode_val]:
                 if self.use_checkpoint and self.training:
-                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, g_info_m, mk_m, cm_m, g_m, use_reentrant=False)
+                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, pos_m, mk_m, cm_m, g_m, use_reentrant=False)
                 else:
-                    x_m = m_block(x_m, c_m, th_m, g_info_m, mk_m, cm_m, g_m)
+                    x_m = m_block(x_m, c_m, th_m, pos_m, mk_m, cm_m, g_m)
             
             field_parts.append(self.field_heads[mode_val](x_m))
             start = end

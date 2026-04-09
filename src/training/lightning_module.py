@@ -166,8 +166,8 @@ class GNOTLightning(pl.LightningModule):
         return loss
 
     def on_validation_epoch_start(self):
-        if hasattr(self.model, '_expert_calls'):
-            self.model._expert_calls.zero_()
+        if hasattr(self.model, 'reset_expert_calls'):
+            self.model.reset_expert_calls()
 
     def on_validation_epoch_end(self):
         # Only print on rank 0 to avoid duplicate output in DDP
@@ -175,14 +175,15 @@ class GNOTLightning(pl.LightningModule):
             return
 
         # Log Expert Load Balancing
-        if hasattr(self.model, '_expert_calls'):
-            calls = self.model._expert_calls.float()
-            total_calls = calls.sum()
-            if total_calls > 0:
-                percentages = (calls / total_calls) * 100
-                stats_str = " | ".join([f"E{i}: {p:.1f}%" for i, p in enumerate(percentages)])
-                for i, p in enumerate(percentages):
-                    self.logger.experiment.add_scalar(f"Experts/Usage_Percent_E{i}", p, self.current_epoch)
+        if hasattr(self.model, 'get_expert_calls'):
+            calls = self.model.get_expert_calls()
+            if calls is not None:
+                calls = calls.float()
+                total_calls = calls.sum()
+                if total_calls > 0:
+                    percentages = (calls / total_calls) * 100
+                    for i, p in enumerate(percentages):
+                        self.logger.experiment.add_scalar(f"Experts/Usage_Percent_E{i}", p, self.current_epoch)
         metrics = self.trainer.logged_metrics
         epoch = self.trainer.current_epoch
 
