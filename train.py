@@ -23,6 +23,7 @@ def parse_args():
                         help="Override config values: key=value (e.g. model.embed_dim=128)")
     # Eski CLI argümanları hala destekleniyor (config override olarak):
     parser.add_argument("--fast_dev_run", action="store_true", help="Run 1 epoch to verify pipeline.")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from.")
     return parser.parse_args()
 
 def parse_overrides(override_list):
@@ -142,15 +143,15 @@ def main():
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"{tc.log_dir}/{tc.exp_name}",
-        filename="best-{epoch:02d}-{val/loss:.4f}",
+        filename="best-{epoch:02d}-{val/field_rel_l2:.4f}",
         save_top_k=1,
-        monitor="val/loss",
+        monitor="val/field_rel_l2",
         mode="min",
         verbose=False
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    early_stop = EarlyStopping(monitor="val/loss", patience=tc.patience, mode="min")
+    early_stop = EarlyStopping(monitor="val/field_rel_l2", patience=tc.patience, mode="min")
     viz_callback = FieldVisualizationCallback(log_every_n_epochs=tc.viz_every_n_epochs)
     progress_bar = TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate)
     
@@ -187,7 +188,8 @@ def main():
 
     if tc.fast_dev_run and local_rank == 0:
         print("Starting fast_dev_run training to verify pipeline...")
-    trainer.fit(model, train_loader, val_loader)
+        
+    trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume)
     
     if local_rank == 0:
         print("Running final evaluation on held-out test split...")
