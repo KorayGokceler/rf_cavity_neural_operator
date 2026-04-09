@@ -42,17 +42,17 @@ training:
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
   batch_size: 64
-  max_epochs: 30
+  max_epochs: 1000
   gradient_clip_val: 1.0
   strategy: "auto"
   freq_weight: 0.5
   mode_loss_weights: [1.0]
   scheduler: "onecycle"
-  onecycle_pct_start: 0.3
+  onecycle_pct_start: 0.15
   onecycle_div_factor: 25
   onecycle_final_div_factor: 1.0e+4
   cosine_eta_min: 1.0e-6
-  patience: 10
+  patience: 200
   num_workers: 4
   pin_memory: true
   log_dir: "training_logs"
