@@ -20,7 +20,7 @@ dataset:
   # feature_indices yok → tüm 6 feature kullanılır
 
 model:
-  val_dim: 6                      # Tüm 6 feature
+  val_dim: 8                      # Tüm 8 feature
   grid_dim: 2
   theta_dim: 1
   embed_dim: 256

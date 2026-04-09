@@ -6,9 +6,9 @@ from torch.nn.utils.rnn import pad_sequence
 
 class GNOTDataset(Dataset):
     # Feature channel reference (Input_funcs columns):
-    #   0: x_norm, 1: y_norm, 2: dist_to_boundary, 3: boundary_mask,
-    #   4: dist_to_center, 5: curvature
-    FEATURE_NAMES = ['x_norm', 'y_norm', 'dist_boundary', 'boundary_mask', 'dist_center', 'curvature']
+    #   0: x_norm, 1: y_norm, 2: dist_to_boundary, 3: dir_bnd_x,
+    #   4: dir_bnd_y, 5: node_area, 6: cos_principal, 7: sin_principal
+    FEATURE_NAMES = ['x_norm', 'y_norm', 'dist_boundary', 'dir_bnd_x', 'dir_bnd_y', 'node_area', 'cos_principal', 'sin_principal']
 
     def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1, feature_indices=None):
         print(f"Loading dataset from {data_path}...")

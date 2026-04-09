@@ -34,64 +34,74 @@ class RFCavityToGNOT:
                          if count == 1 for node in edge}
         return np.array(list(boundary_nodes))
 
-    def _estimate_local_curvature(self, nodes, elements):
+    def _compute_node_areas(self, nodes, elements):
+        """Her noktanın Voronoi benzeri alanı: komşu üçgen alanlarının 1/3'ü toplamı.
+        Mesh yoğunluğu bilgisi verir — fizik çözücü sınıra yakın daha sık mesh kullanır."""
         n_nodes = len(nodes)
-        curvature = np.zeros((n_nodes, 1))
-
-        neighbors = [set() for _ in range(n_nodes)]
+        areas = np.zeros(n_nodes)
         for tri in elements:
-            for i in range(3):
-                for j in range(3):
-                    if i != j:
-                        neighbors[tri[i]].add(tri[j])
-
-        for i in range(n_nodes):
-            if len(neighbors[i]) > 1:
-                neighbor_list = list(neighbors[i])
-                vectors = nodes[neighbor_list] - nodes[i]
-                angles = np.arctan2(vectors[:, 1], vectors[:, 0])
-                curvature[i] = np.std(angles)
-
-        if curvature.max() > 0:
-            curvature = curvature / (curvature.max() + 1e-10)
-
-        return curvature.astype(np.float32)
+            v0, v1, v2 = nodes[tri[0]], nodes[tri[1]], nodes[tri[2]]
+            tri_area = 0.5 * abs(np.cross(v1 - v0, v2 - v0))
+            for k in range(3):
+                areas[tri[k]] += tri_area / 3.0
+        # Normalize to [0, 1]
+        if areas.max() > 0:
+            areas = areas / (areas.max() + 1e-10)
+        return areas.reshape(-1, 1).astype(np.float32)
 
     def extract_geometry_features(self, nodes, elements):
         # Isotropic Normalization: En-boy oranını (aspect ratio) koruyarak merkezi 0'a çek.
-        # Bu, kavitelerin asimetrik yapısının (elips vb.) model tarafından doğru algılanmasını sağlar.
         center_raw = nodes.mean(axis=0)
         nodes_centered = nodes - center_raw
         global_scale = np.max(np.abs(nodes_centered)) + 1e-12
         nodes_norm = nodes_centered / global_scale
 
-        # Boundary
+        # Boundary detection
         boundary_indices = self._find_boundary_nodes(elements)
-        tree = cKDTree(nodes_norm[boundary_indices])
-        dist_to_boundary, _ = tree.query(nodes_norm)
+        boundary_nodes = nodes_norm[boundary_indices]
+        tree = cKDTree(boundary_nodes)
+        dist_to_boundary, nearest_idx = tree.query(nodes_norm)
 
-        boundary_mask = np.zeros((len(nodes), 1))
-        boundary_mask[boundary_indices] = 1.0
+        # Direction to nearest boundary (normalized) — "duvar hangi yönde?"
+        nearest_bnd_points = boundary_nodes[nearest_idx]  # [N, 2]
+        dir_vec = nearest_bnd_points - nodes_norm          # [N, 2]
+        dir_norms = np.linalg.norm(dir_vec, axis=1, keepdims=True) + 1e-10
+        dir_to_boundary = (dir_vec / dir_norms).astype(np.float32)  # [N, 2] unit vectors
 
-        # Center
-        center = nodes_norm.mean(axis=0)
-        dist_to_center = np.linalg.norm(nodes_norm - center, axis=1, keepdims=True)
+        # Node area (local mesh density)
+        node_area = self._compute_node_areas(nodes_norm, elements)
 
-        # Curvature
-        curvature = self._estimate_local_curvature(nodes_norm, elements)
+        # Principal axis angle — kavite ana eksenine göre açı
+        # PCA on boundary nodes → major axis direction
+        bnd_centered = boundary_nodes - boundary_nodes.mean(axis=0)
+        cov = np.cov(bnd_centered.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        principal_axis = eigenvectors[:, -1]  # en büyük eigenvalue'nun eigenvector'ü
 
-        # Combine: [x_norm, y_norm, dist_to_boundary, boundary_mask, dist_to_center, curvature]
+        # Her nokta için: (nokta - merkez) vektörünün ana eksene göre açısı
+        node_vecs = nodes_norm - nodes_norm.mean(axis=0)
+        # cos(angle) = dot(node_vec, principal) / |node_vec|
+        dots = node_vecs @ principal_axis
+        node_mags = np.linalg.norm(node_vecs, axis=1) + 1e-10
+        cos_angle = (dots / node_mags).reshape(-1, 1).astype(np.float32)
+        # sin bileşeni de ekle — tam yön bilgisi için
+        cross = (node_vecs[:, 0] * principal_axis[1] - node_vecs[:, 1] * principal_axis[0])
+        sin_angle = (cross / node_mags).reshape(-1, 1).astype(np.float32)
+
+        # Combine: [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area, cos_principal, sin_principal]
+        # val_dim = 8
         geom_features = np.concatenate([
-            nodes_norm,
-            dist_to_boundary.reshape(-1, 1),
-            boundary_mask,
-            dist_to_center,
-            curvature,
+            nodes_norm,                         # [0,1] x, y
+            dist_to_boundary.reshape(-1, 1),    # [2]   dist to boundary
+            dir_to_boundary,                    # [3,4] direction to nearest boundary (x, y)
+            node_area,                          # [5]   local mesh density
+            cos_angle,                          # [6]   cos(angle to principal axis)
+            sin_angle,                          # [7]   sin(angle to principal axis)
         ], axis=1).astype(np.float32)
 
         return {
             'X': nodes_norm.astype(np.float32),
-            'Input_funcs': geom_features,  # numpy array directly, no tuple wrapping
+            'Input_funcs': geom_features,
             'elements': elements,
         }
 
