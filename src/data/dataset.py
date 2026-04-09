@@ -5,10 +5,16 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
 class GNOTDataset(Dataset):
-    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1):
+    # Feature channel reference (Input_funcs columns):
+    #   0: x_norm, 1: y_norm, 2: dist_to_boundary, 3: boundary_mask,
+    #   4: dist_to_center, 5: curvature
+    FEATURE_NAMES = ['x_norm', 'y_norm', 'dist_boundary', 'boundary_mask', 'dist_center', 'curvature']
+
+    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1, feature_indices=None):
         print(f"Loading dataset from {data_path}...")
         self.data_path = data_path
         self.is_h5 = str(data_path).endswith('.h5')
+        self.feature_indices = feature_indices  # e.g. [0,1] for xy-only, None=all
 
         if self.is_h5:
             import h5py, json
@@ -104,6 +110,10 @@ class GNOTDataset(Dataset):
             norm_freq = (raw_freq - self.stats['mean']) / self.stats['std']
         else:
             norm_freq = raw_freq
+
+        # Ablation: select feature subset if feature_indices is set
+        if self.feature_indices is not None:
+            input_features = input_features[:, self.feature_indices]
 
         return {
             'X': torch.from_numpy(x).float(),

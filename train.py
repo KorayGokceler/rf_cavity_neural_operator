@@ -86,12 +86,19 @@ def main():
 
     if local_rank == 0:
         print("\nLoading datasets...")
+    feature_indices = getattr(dc, 'feature_indices', None)
+    if feature_indices is not None and local_rank == 0:
+        names = [GNOTDataset.FEATURE_NAMES[i] for i in feature_indices]
+        print(f"Ablation: using features {feature_indices} → {names}")
     train_dataset = GNOTDataset(dc.data_path, split='train',
-                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio)
+                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
+                                feature_indices=feature_indices)
     val_dataset   = GNOTDataset(dc.data_path, split='val',
-                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio)
+                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
+                                feature_indices=feature_indices)
     test_dataset  = GNOTDataset(dc.data_path, split='test',
-                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio)
+                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
+                                feature_indices=feature_indices)
 
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,

@@ -1,0 +1,61 @@
+# ═══════════════════════════════════════════════════
+#  ABLATION B: (x, y) + sınır bilgisi
+#  Feature indices: [0, 1, 2, 3] → x_norm, y_norm, dist_boundary, boundary_mask
+#  Soru: Sınır bilgisi eklersek ne kadar iyileşir?
+# ═══════════════════════════════════════════════════
+
+data_convert:
+  h5_filepath: "rf_cavity_1000_dataset.h5"
+  output_path: "data/gnot_dataset.h5"
+  output_format: "h5"
+  mode_indices: [1]
+  max_samples: null
+
+dataset:
+  data_path: "data/gnot_dataset.h5"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  feature_indices: [0, 1, 2, 3]  # (x, y) + boundary features
+
+model:
+  val_dim: 4                      # 4 feature
+  grid_dim: 2
+  theta_dim: 1
+  embed_dim: 256
+  n_shared_layers: 2
+  n_mode_layers: 2
+  n_freq_layers: 2
+  n_heads: 4
+  num_experts: 4
+  num_field_modes: 1
+  num_film_modes: 20
+  film_init_std: 0.02
+  rff_dim: 64
+  rff_scale: 1.0
+  dropout: 0.0
+  use_checkpoint: false
+
+training:
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 64
+  max_epochs: 30
+  gradient_clip_val: 1.0
+  strategy: "auto"
+  freq_weight: 0.5
+  mode_loss_weights: [1.0]
+  scheduler: "onecycle"
+  onecycle_pct_start: 0.3
+  onecycle_div_factor: 25
+  onecycle_final_div_factor: 1.0e+4
+  cosine_eta_min: 1.0e-6
+  patience: 10
+  num_workers: 4
+  pin_memory: true
+  log_dir: "training_logs"
+  exp_name: "ablation_B_xy_boundary"
+  log_every_n_steps: 20
+  viz_every_n_epochs: 10
+  progress_bar_refresh_rate: 20
+  fast_dev_run: false
