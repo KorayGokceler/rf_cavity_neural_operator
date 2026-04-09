@@ -276,6 +276,9 @@ class GNOTModel(nn.Module):
             nn.Linear(embed_dim, 1)
         )
         
+        # Expert usage tracker for load balancing analysis
+        self.register_buffer('_expert_calls', torch.zeros(num_experts, dtype=torch.long))
+
         # Initialize heads with small weights to prevent early training explosion
         self._init_weights()
 
@@ -335,6 +338,12 @@ class GNOTModel(nn.Module):
         top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
         active_experts = set(top2_idx.unique().tolist())
         gate_info = (top2_weights, top2_idx, active_experts)
+
+        # Track usage during validation
+        if not self.training:
+            with torch.no_grad():
+                counts = torch.bincount(top2_idx.flatten(), minlength=gate_logits.shape[-1])
+                self._expert_calls += counts
 
         # Shared processing with checkpointing option
         for block in self.shared_blocks:
