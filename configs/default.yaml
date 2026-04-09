@@ -40,8 +40,8 @@ data_gen:
 # ─────────────────────────────────────────────────────
 data_convert:
   h5_filepath: "rf_cavity_1000_dataset.h5"
-  output_path: "data/gnot_dataset.h5"
-  output_format: "h5"          # "pkl" veya "h5"
+  output_path: "data/gnot_dataset.pkl"
+  output_format: "pkl"          # "pkl" veya "h5"
   mode_indices: [1]            # SADECE MODE 1 (Dipol mod)
   max_samples: null             # null = tümü
 
@@ -50,7 +50,7 @@ data_convert:
 #  3. DATASET (dataset.py)
 # ─────────────────────────────────────────────────────
 dataset:
-  data_path: "data/gnot_dataset.h5"
+  data_path: "data/gnot_dataset.pkl"
   train_ratio: 0.8
   val_ratio: 0.1
   # test_ratio otomatik: 1 - train - val = 0.1

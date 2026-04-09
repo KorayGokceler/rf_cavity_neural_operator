@@ -6,13 +6,13 @@
 
 data_convert:
   h5_filepath: "rf_cavity_1000_dataset.h5"
-  output_path: "data/gnot_dataset.h5"
-  output_format: "h5"
+  output_path: "data/gnot_dataset.pkl"
+  output_format: "pkl"
   mode_indices: [1]
   max_samples: null
 
 dataset:
-  data_path: "data/gnot_dataset.h5"
+  data_path: "data/gnot_dataset.pkl"
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
