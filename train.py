@@ -174,6 +174,7 @@ def main():
     
     trainer = pl.Trainer(
         max_epochs=tc.max_epochs,
+        check_val_every_n_epoch=getattr(tc, 'check_val_every_n_epoch', 5),
         accelerator="auto",
         devices=devices,
         strategy=strategy,

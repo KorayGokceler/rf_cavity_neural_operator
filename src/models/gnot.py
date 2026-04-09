@@ -75,22 +75,22 @@ class GeometricGatingFFN(nn.Module):
         ])
 
     def forward(self, x, gate_info):
-        # gate_info: (top2_weights, top2_idx, active_experts)
-        top2_weights, top2_idx, active_experts = gate_info
+        # gate_info: (top2_weights, top2_idx)
+        top2_weights, top2_idx = gate_info
 
-        # Pre-compute only active expert outputs
-        expert_outputs = {}
-        for i in active_experts:
-            expert_outputs[i] = self.experts[i](x)
+        # Pre-compute all expert outputs (no CPU syncs)
+        # Since num_experts is small (4), full dense evaluation is faster than D2H halting.
+        expert_outputs = [expert(x) for expert in self.experts]
 
         final_output = torch.zeros_like(x)
         for k in range(2):
             idx = top2_idx[..., k]   # [B, N]
             w   = top2_weights[..., k].unsqueeze(-1)  # [B, N, 1]
-            for i in active_experts:
+            for i in range(len(self.experts)):
                 mask = (idx == i).float().unsqueeze(-1)  # [B, N, 1]
-                if mask.any():
-                    final_output = final_output + w * mask * expert_outputs[i]
+                # Multiply directly without using .any() to avoid GPU-CPU sync blocks
+                final_output = final_output + w * mask * expert_outputs[i]
+                
         return final_output
 
 class GNOTBlock(nn.Module):
@@ -148,8 +148,7 @@ class GNOTBlock(nn.Module):
         gate_weights = F.softmax(gate_logits, dim=-1)
         top2_weights, top2_idx = gate_weights.topk(2, dim=-1)
         top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
-        active_experts = set(top2_idx.unique().tolist())
-        gate_info = (top2_weights, top2_idx, active_experts)
+        gate_info = (top2_weights, top2_idx)
 
         # Track usage during validation
         if not self.training:
