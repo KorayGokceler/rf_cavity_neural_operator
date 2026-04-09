@@ -48,7 +48,7 @@ training:
   freq_weight: 0.5
   mode_loss_weights: [1.0]
   scheduler: "onecycle"
-  onecycle_pct_start: 0.15
+  onecycle_pct_start: 0.03
   onecycle_div_factor: 25
   onecycle_final_div_factor: 1.0e+4
   cosine_eta_min: 1.0e-6
