@@ -225,22 +225,6 @@ class GNOTModel(nn.Module):
                  n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
                  use_rff=True, use_checkpoint=False):
         super().__init__()
-
-    def reset_expert_calls(self):
-        for m in self.modules():
-            if hasattr(m, '_expert_calls'):
-                m._expert_calls.zero_()
-
-    def get_expert_calls(self):
-        total_calls = None
-        for m in self.modules():
-            if hasattr(m, '_expert_calls'):
-                if total_calls is None:
-                    total_calls = m._expert_calls.clone()
-                else:
-                    total_calls += m._expert_calls
-        return total_calls
-
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
         self.use_rff = use_rff
@@ -425,3 +409,18 @@ class GNOTModel(nn.Module):
         freq_pred = self.freq_decoder(global_feat)
 
         return {'field': field_pred, 'freq': freq_pred}
+
+    def reset_expert_calls(self):
+        for m in self.modules():
+            if hasattr(m, '_expert_calls'):
+                m._expert_calls.zero_()
+
+    def get_expert_calls(self):
+        total_calls = None
+        for m in self.modules():
+            if hasattr(m, '_expert_calls'):
+                if total_calls is None:
+                    total_calls = m._expert_calls.clone()
+                else:
+                    total_calls += m._expert_calls
+        return total_calls
