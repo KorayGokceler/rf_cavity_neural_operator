@@ -174,16 +174,16 @@ class GNOTLightning(pl.LightningModule):
         if self.global_rank != 0:
             return
 
-        # Log Expert Load Balancing
-        if hasattr(self.model, 'get_expert_calls'):
-            calls = self.model.get_expert_calls()
-            if calls is not None:
+        # Log Expert Load Balancing per block
+        if hasattr(self.model, 'get_expert_calls_per_block'):
+            calls_dict = self.model.get_expert_calls_per_block()
+            for block_name, calls in calls_dict.items():
                 calls = calls.float()
                 total_calls = calls.sum()
                 if total_calls > 0:
                     percentages = (calls / total_calls) * 100
                     for i, p in enumerate(percentages):
-                        self.logger.experiment.add_scalar(f"Experts/Usage_Percent_E{i}", p, self.current_epoch)
+                        self.logger.experiment.add_scalar(f"Experts_{block_name}/E{i}", p, self.current_epoch)
         metrics = self.trainer.logged_metrics
         epoch = self.trainer.current_epoch
 

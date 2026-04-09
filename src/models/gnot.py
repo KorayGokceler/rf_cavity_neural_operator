@@ -415,12 +415,11 @@ class GNOTModel(nn.Module):
             if hasattr(m, '_expert_calls'):
                 m._expert_calls.zero_()
 
-    def get_expert_calls(self):
-        total_calls = None
-        for m in self.modules():
+    def get_expert_calls_per_block(self):
+        calls_dict = {}
+        for name, m in self.named_modules():
             if hasattr(m, '_expert_calls'):
-                if total_calls is None:
-                    total_calls = m._expert_calls.clone()
-                else:
-                    total_calls += m._expert_calls
-        return total_calls
+                # Format name safely to use as TensorBoard tag (e.g. "shared_blocks.0" -> "shared_blocks_0")
+                safe_name = name.replace('.', '_')
+                calls_dict[safe_name] = m._expert_calls.clone()
+        return calls_dict
