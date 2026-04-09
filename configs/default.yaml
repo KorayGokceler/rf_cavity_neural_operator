@@ -40,9 +40,9 @@ data_gen:
 # ─────────────────────────────────────────────────────
 data_convert:
   h5_filepath: "rf_cavity_1000_dataset.h5"
-  output_path: "data/gnot_dataset.pkl"
-  output_format: "pkl"          # "pkl" veya "h5"
-  mode_indices: [0, 1, 2]       # Hangi eigenmode'lar dahil edilecek
+  output_path: "data/gnot_dataset.h5"
+  output_format: "h5"          # "pkl" veya "h5"
+  mode_indices: [1]            # SADECE MODE 1 (Dipol mod)
   max_samples: null             # null = tümü
 
 
@@ -50,7 +50,7 @@ data_convert:
 #  3. DATASET (dataset.py)
 # ─────────────────────────────────────────────────────
 dataset:
-  data_path: "data/gnot_dataset.pkl"
+  data_path: "data/gnot_dataset.h5"
   train_ratio: 0.8
   val_ratio: 0.1
   # test_ratio otomatik: 1 - train - val = 0.1
@@ -75,7 +75,7 @@ model:
   num_experts: 4                # GeometricGatingFFN expert sayısı
 
   # Mode conditioning
-  num_field_modes: 3            # Mode-specific field head sayısı (mode_indices ile uyumlu olmalı)
+  num_field_modes: 1            # Sadece 1 mod çalışıyoruz
   num_film_modes: 20            # FiLM embedding tablo boyutu (headroom)
   film_init_std: 0.02           # FiLM embedding başlangıç std
 
@@ -104,8 +104,8 @@ training:
 
   # Loss
   freq_weight: 0.5              # Frekans loss ağırlığı: total = field_loss + freq_weight * freq_loss
-  mode_loss_weights: [1.0, 1.0, 1.0]  # Per-mode field loss ağırlıkları [mode0, mode1, mode2]
-                                       # Zayıf modları güçlendirmek için: [1.0, 2.0, 2.0]
+  mode_loss_weights: [1.0]      # SADECE MODE 1 İÇİN TEK AĞIRLIK
+                                # Zayıf modları güçlendirmek için normalde [1.0, 2.0, 2.0] yazılırdı
 
   # LR Scheduler
   scheduler: "onecycle"         # "onecycle" veya "cosine"
