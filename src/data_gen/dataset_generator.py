@@ -5,7 +5,7 @@ from skfem import utils
 from skfem.models.poisson import laplace, mass
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
-
+import sys
 import argparse
 
 def parse_args():
@@ -20,11 +20,21 @@ def parse_args():
 # Global settings placeholder
 ARGS = None
 
-def generate_sample_data(s_id):
+def worker_init():
+    """Initialize Gmsh once per worker process to save time and prevent hangs."""
     try:
         gmsh.initialize()
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.option.setNumber("General.Verbosity", 1)  # Only errors
+    except Exception:
+        pass
+
+def generate_sample_data(s_id):
+    try:
+        # Clear existing models from previous task in this worker
+        for m in gmsh.model.list():
+            gmsh.model.remove()
+            
         gmsh.model.add(f"rf_{s_id}")
         np.random.seed(s_id * 13)
         L, cx, cy = 0.1, 0.05, 0.05
@@ -160,7 +170,8 @@ def generate_sample_data(s_id):
         return None
     finally:
         try:
-            gmsh.finalize()
+            # We don't finalize here, we just clear the model for the next run
+            gmsh.model.remove()
         except Exception:
             pass
 
@@ -205,7 +216,7 @@ if __name__ == '__main__':
         n_workers = min(cpu_count(), 4)
         print(f"Starting generation with {n_workers} workers...")
         
-        with Pool(n_workers) as pool:
+        with Pool(n_workers, initializer=worker_init) as pool:
             for i in tqdm(range(0, ARGS.n_total, 50), desc="Batch Generation"):
                 chunk_range = range(i, min(i + 50, ARGS.n_total))
                 chunk_results = pool.map(generate_sample_data, chunk_range)
@@ -225,7 +236,11 @@ if __name__ == '__main__':
                         plot_path = os.path.join(ARGS.plot_dir, f"sample_{res['id']:03d}.png")
                         save_sample_plot(res, plot_path)
                 
+                
                 # Force flush to disk to prevent data loss and hangs
                 f_h5.flush()
                 
     print(f"\n✅ All {ARGS.n_total} samples successfully generated and flushed to disk!")
+    
+    # Nuclear Option: Force exit to prevent Colab from hanging on process cleanup
+    os._exit(0)
