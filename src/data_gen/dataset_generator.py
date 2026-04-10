@@ -44,15 +44,55 @@ def generate_sample_data(s_id):
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
                 pts_c = [(cx + radius*np.cos(ti), cy + radius*np.sin(ti)) for ti in t]
         else:
-            method = np.random.choice(['sharp', 'smooth'])
+            method = np.random.choice(['sharp', 'smooth', 'pillbox', 'elliptical'], p=[0.20, 0.20, 0.30, 0.30])
             if method == 'sharp':
                 n_pts = np.random.randint(7, 13)
                 angles = np.sort(np.random.uniform(0, 2*np.pi, n_pts))
                 r = np.random.uniform(0.02, 0.046, n_pts)
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
-            else:
+            elif method == 'smooth':
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
                 r = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
+            elif method == 'pillbox':
+                # Endüstriyel RF Kavitelerine benzer: Geniş hücre (body) ve Işın Geçiş Boruları (beam pipes)
+                body_w = np.random.uniform(0.05, 0.09)
+                body_h = np.random.uniform(0.04, 0.07)
+                pipe_w = np.random.uniform(0.015, body_w - 0.01) # boru ana gövdeden ince olmalı
+                pipe_top = np.random.uniform(0.01, 0.025)
+                pipe_bot = np.random.uniform(0.01, 0.025)
+                
+                # Koordinat Sınırları (CCW saat yönü tersine dizilim MESH için ZORUNLUDUR)
+                x_b_min, x_b_max = cx - body_w/2, cx + body_w/2
+                y_b_min, y_b_max = cy - body_h/2, cy + body_h/2
+                x_p_min, x_p_max = cx - pipe_w/2, cx + pipe_w/2
+                
+                # Sol üst köşe ışın borusundan başlayarak Saat Yönünün Tersine (CCW) tüm dış hattı dön
+                pts_c = [
+                    (x_p_min, y_b_max + pipe_top), # 1. Üst Sol Uç
+                    (x_p_min, y_b_max),            # 2. Üst Sol İç Köşe
+                    (x_b_min, y_b_max),            # 3. Gövde Üst Sol
+                    (x_b_min, y_b_min),            # 4. Gövde Alt Sol
+                    (x_p_min, y_b_min),            # 5. Alt Sol İç Köşe
+                    (x_p_min, y_b_min - pipe_bot), # 6. Alt Sol Uç
+                    (x_p_max, y_b_min - pipe_bot), # 7. Alt Sağ Uç
+                    (x_p_max, y_b_min),            # 8. Alt Sağ İç Köşe
+                    (x_b_max, y_b_min),            # 9. Gövde Alt Sağ
+                    (x_b_max, y_b_max),            # 10. Gövde Üst Sağ
+                    (x_p_max, y_b_max),            # 11. Üst Sağ İç Köşe
+                    (x_p_max, y_b_max + pipe_top)  # 12. Üst Sağ Uç
+                ]
+            else: # method == 'elliptical'
+                # TESLA tarzı Parçacık Hızlandırıcı Kavitelerinin analitik modeli. 
+                # Ekvator kısmı geniş, iris (boğaz) kısmı dar ve yumuşak kavisli.
+                req = np.random.uniform(0.035, 0.048) # Ekvator genişliği
+                riris = np.random.uniform(0.015, req - 0.01) # Işın delik genişliği
+                
+                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
+                # Formül: r(θ) = r_iris + (r_eq - r_iris) * |cos(θ)|^power. 
+                # Bu çok pürüzsüz eliptik-lob formları çıkarır.
+                power = np.random.uniform(1.2, 3.5)
+                r = riris + (req - riris) * (np.abs(np.cos(t))**power)
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
 
         pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
