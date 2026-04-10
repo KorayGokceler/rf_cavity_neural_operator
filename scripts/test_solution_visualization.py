@@ -1,6 +1,11 @@
 import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
+
+# Add project root to sys.path to allow imports from src
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.data_gen.dataset_generator import get_argparser, generate_sample_data
 
 def main():
