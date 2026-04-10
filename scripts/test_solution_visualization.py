@@ -2,24 +2,26 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
+import argparse
 
 # Add project root to sys.path to allow imports from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_gen.dataset_generator import get_argparser, generate_sample_data
+import src.data_gen.dataset_generator as dg
+from src.data_gen.dataset_generator import generate_sample_data
 
 def main():
-    # Setup args for the generator
-    parser = get_argparser()
-    # Mocking arguments
-    args = parser.parse_args(['--n_samples', '4'])
+    # Setup mock args for the generator
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="random")
+    dg.ARGS = parser.parse_args()
     
     # We will generate 4 random samples
     samples = []
     print("Generating 4 geometries and solving Maxwell equations. Please wait...")
     for i in range(4):
-        # generate_sample_data takes (index, ARGS)
-        data = generate_sample_data((i+100, args))
+        # generate_sample_data takes an integer ID
+        data = generate_sample_data(i + 100)
         if data is not None:
             samples.append(data)
             print(f"Sample {i+1} solved! Freq: {data['freqs'][0]:.4f} GHz")
@@ -61,7 +63,4 @@ def main():
     print(f"\nSolutions visual saved to {output_path}")
 
 if __name__ == '__main__':
-    # Need to monkeypatch ARGS inside dataset_generator
-    import src.data_gen.dataset_generator as dg
-    dg.ARGS = get_argparser().parse_args(['--n_samples', '4'])
     main()
