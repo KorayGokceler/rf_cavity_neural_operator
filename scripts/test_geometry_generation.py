@@ -58,8 +58,8 @@ def main():
             ax.axis('off')
             
     plt.tight_layout()
-    output_path = r"C:\Users\heplab\.gemini\antigravity\brain\27f14451-905c-4ba9-94cb-220ac79530ff\artifacts\cavity_shapes_demo.png"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_path = "cavity_shapes_demo.png"
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Shapes saved to {output_path}")
 
