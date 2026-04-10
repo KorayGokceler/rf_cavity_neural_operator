@@ -64,7 +64,8 @@ def generate_sample_data(s_id):
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
             elif method == 'smooth':
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-                r = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                r_fluctuation = sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                r = np.maximum(0.035 + r_fluctuation, 0.01) # Radius must be positive
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
             elif method == 'pillbox':
                 # Endüstriyel RF Kavitelerine benzer: Geniş hücre (body) ve Işın Geçiş Boruları (beam pipes)
@@ -148,6 +149,10 @@ def generate_sample_data(s_id):
         gmsh.model.mesh.generate(2)
         _, coords, _ = gmsh.model.mesh.getNodes()
         _, _, conns = gmsh.model.mesh.getElements(2)
+        
+        if len(coords) == 0 or len(conns[0]) == 0:
+            return None
+            
         nodes = np.ascontiguousarray(coords.reshape(-1, 3)[:, :2])
         elements = np.ascontiguousarray((conns[0].reshape(-1, 3) - 1).astype(np.int32))
 
