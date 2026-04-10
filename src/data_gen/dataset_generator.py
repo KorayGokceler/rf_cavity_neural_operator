@@ -23,6 +23,8 @@ ARGS = None
 def generate_sample_data(s_id):
     try:
         gmsh.initialize()
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("General.Verbosity", 1)  # Only errors
         gmsh.model.add(f"rf_{s_id}")
         np.random.seed(s_id * 13)
         L, cx, cy = 0.1, 0.05, 0.05
