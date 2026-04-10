@@ -10,11 +10,12 @@ class GNOTDataset(Dataset):
     #   4: dir_bnd_y, 5: node_area, 6: cos_principal, 7: sin_principal
     FEATURE_NAMES = ['x_norm', 'y_norm', 'dist_boundary', 'dir_bnd_x', 'dir_bnd_y', 'node_area', 'cos_principal', 'sin_principal']
 
-    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1, feature_indices=None):
+    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1, feature_indices=None, max_nodes=None):
         print(f"Loading dataset from {data_path}...")
         self.data_path = data_path
         self.is_h5 = str(data_path).endswith('.h5')
         self.feature_indices = feature_indices  # e.g. [0,1] for xy-only, None=all
+        self.max_nodes = max_nodes  # Optional parameter to crop sequence length
 
         if self.is_h5:
             import h5py, json
@@ -114,6 +115,17 @@ class GNOTDataset(Dataset):
         # Ablation: select feature subset if feature_indices is set
         if self.feature_indices is not None:
             input_features = input_features[:, self.feature_indices]
+
+        # VRAM Optimization: Node Sub-sampling
+        # Randomly select a subset of nodes if the point cloud exceeds max_nodes.
+        # This completely flattens VRAM peaks and eliminates massive zero-padding waste!
+        n_nodes = x.shape[0]
+        if self.max_nodes is not None and n_nodes > self.max_nodes:
+            # We use torch.randperm instead of np.random to avoid DataLoader worker RNG duplication
+            rand_idx = torch.randperm(n_nodes)[:self.max_nodes].numpy()
+            x = x[rand_idx]
+            input_features = input_features[rand_idx]
+            y_field = y_field[rand_idx]
 
         return {
             'X': torch.from_numpy(x).float(),

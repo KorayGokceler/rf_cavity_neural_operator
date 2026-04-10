@@ -91,15 +91,16 @@ def main():
     if feature_indices is not None and local_rank == 0:
         names = [GNOTDataset.FEATURE_NAMES[i] for i in feature_indices]
         print(f"Ablation: using features {feature_indices} → {names}")
+    max_nodes = getattr(dc, 'max_nodes', None)
     train_dataset = GNOTDataset(dc.data_path, split='train',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices)
+                                feature_indices=feature_indices, max_nodes=max_nodes)
     val_dataset   = GNOTDataset(dc.data_path, split='val',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices)
+                                feature_indices=feature_indices, max_nodes=max_nodes)
     test_dataset  = GNOTDataset(dc.data_path, split='test',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices)
+                                feature_indices=feature_indices, max_nodes=max_nodes)
 
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,

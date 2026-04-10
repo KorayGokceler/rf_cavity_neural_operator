@@ -17,6 +17,7 @@ dataset:
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
+  max_nodes: 2500
   # feature_indices yok → tüm 6 feature kullanılır
 
 model:
