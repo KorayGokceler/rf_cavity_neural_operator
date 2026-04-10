@@ -190,9 +190,22 @@ if __name__ == '__main__':
     os.makedirs(ARGS.plot_dir, exist_ok=True)
     print(f"🚀 Generating {ARGS.n_total} samples using {cpu_count()} cores...")
 
+    # Create file and initialize metadata
+    import json
+    metadata = {
+        'n_samples': ARGS.n_total,
+        'mode': ARGS.mode,
+        'freq_stats': None # Can be computed after generation if needed
+    }
+
     with h5py.File(ARGS.h5_filename, "w") as f_h5:
-        with Pool(cpu_count()) as pool:
-            # Process in chunks to manage memory
+        f_h5.attrs['metadata'] = json.dumps(metadata)
+        
+        # Using a fixed number of workers to prevent OOM/Hang on Colab
+        n_workers = min(cpu_count(), 4)
+        print(f"Starting generation with {n_workers} workers...")
+        
+        with Pool(n_workers) as pool:
             for i in tqdm(range(0, ARGS.n_total, 50), desc="Batch Generation"):
                 chunk_range = range(i, min(i + 50, ARGS.n_total))
                 chunk_results = pool.map(generate_sample_data, chunk_range)
@@ -200,17 +213,19 @@ if __name__ == '__main__':
                 for res in chunk_results:
                     if res is None: continue
 
-                    # H5 Save (Gzip compression)
-                    grp = f_h5.create_group(f"sample_{res['id']:04d}")
+                    grp = f_h5.create_group(f"samples/{res['id']}")
                     grp.create_dataset("nodes", data=res['nodes'], compression="gzip", compression_opts=4)
                     grp.create_dataset("elements", data=res['elements'], compression="gzip", compression_opts=4)
                     grp.create_dataset("freqs", data=res['freqs'])
                     grp.create_dataset("vecs", data=res['vecs'], compression="gzip", compression_opts=4)
                     grp.attrs['shape_type'] = res['shape_type']
+                    grp.attrs['geom_id'] = res['id']
 
-                    # Plot first N_PLOT
                     if res['id'] < ARGS.n_plot:
                         plot_path = os.path.join(ARGS.plot_dir, f"sample_{res['id']:03d}.png")
                         save_sample_plot(res, plot_path)
-
-    print(f"\n✅ Completed! \n📦 File: {ARGS.h5_filename} \n🖼️ Plots: {ARGS.plot_dir}/")
+                
+                # Force flush to disk to prevent data loss and hangs
+                f_h5.flush()
+                
+    print(f"\n✅ All {ARGS.n_total} samples successfully generated and flushed to disk!")
