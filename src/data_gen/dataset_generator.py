@@ -97,23 +97,23 @@ def generate_sample_data(s_id):
                 pts_c = []
                 # 1. Sağ-Üst Işın Borusu
                 pts_c.append((cx + L/2 + L_pipe, cy + riris))
-                pts_c.append((cx + L/2, cy + riris))
+                # Skip the duplicate at cx + L/2, cy + riris since x_curve[0] is L/2
                 # 2. Üst TESLA Kavisi (Sağdan Sola)
                 for x, y in zip(x_curve, y_top_curve):
                     pts_c.append((cx + x, y))
                 # 3. Sol-Üst Işın Borusu
-                pts_c.append((cx - L/2, cy + riris))
+                # Skip the duplicate at cx - L/2 since x_curve[-1] is -L/2
                 pts_c.append((cx - L/2 - L_pipe, cy + riris))
                 # 4. Sol-Alt Işın Borusu
                 pts_c.append((cx - L/2 - L_pipe, cy - riris))
-                pts_c.append((cx - L/2, cy - riris))
                 # 5. Alt TESLA Kavisi (Soldan Sağa dönmeli)
                 x_curve_bot = np.linspace(-L/2, L/2, 40)
                 y_bot_curve = cy - (riris + (req - riris) * (np.cos(x_curve_bot * np.pi / L)**power))
+                # Skip the duplicate at cx - L/2 since x_curve_bot[0] is -L/2
                 for x, y in zip(x_curve_bot, y_bot_curve):
                     pts_c.append((cx + x, y))
                 # 6. Sağ-Alt Işın Borusu
-                pts_c.append((cx + L/2, cy - riris))
+                # Skip the duplicate at cx + L/2 since x_curve_bot[-1] is L/2
                 pts_c.append((cx + L/2 + L_pipe, cy - riris))
 
         pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]

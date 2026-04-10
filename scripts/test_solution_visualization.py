@@ -40,7 +40,9 @@ def main():
         vecs = data['vecs']
         
         # Fundamental mode is the first column
-        E_field = vecs[:, 0]
+        # vecs length matches ndof (P2 has edge nodes), but nodes matches Gmsh vertices
+        # We slice to match node count for tripcolor
+        E_field = vecs[:len(nodes), 0]
         E_field = np.abs(E_field) # magnitude
         
         # Plot Mesh
