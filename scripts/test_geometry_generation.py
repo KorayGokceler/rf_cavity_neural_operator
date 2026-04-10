@@ -30,13 +30,40 @@ def generate_geometry(method, cx=0.05, cy=0.05):
             (x_p_max, y_b_min), (x_b_max, y_b_min), (x_b_max, y_b_max), 
             (x_p_max, y_b_max), (x_p_max, y_b_max + pipe_top)
         ]
-    else: # elliptical
-        req = np.random.uniform(0.035, 0.048)
-        riris = np.random.uniform(0.015, req - 0.01)
-        t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-        power = np.random.uniform(1.2, 3.5)
-        r = riris + (req - riris) * (np.abs(np.cos(t))**power)
-        pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
+    else: # elliptical (TESLA-like)
+        req = np.random.uniform(0.040, 0.055)    # Equator radius
+        riris = np.random.uniform(0.012, 0.025)  # Beam pipe / Iris radius
+        L = np.random.uniform(0.04, 0.08)        # Cell length
+        L_pipe = np.random.uniform(0.01, 0.03)   # Beam pipe length
+        power = np.random.uniform(1.5, 3.0)      # Curvature control (2.0 is harmonic)
+        
+        # We need a CCW boundary. 
+        # Start Top-Right -> Top-Curve -> Top-Left -> Bot-Left -> Bot-Curve -> Bot-Right -> Top-Right
+        x_curve = np.linspace(L/2, -L/2, 40) # Right to Left
+        y_top_curve = cy + riris + (req - riris) * (np.cos(x_curve * np.pi / L)**power)
+        
+        pts_c = []
+        # Top-Right pipe
+        pts_c.append((cx + L/2 + L_pipe, cy + riris))
+        pts_c.append((cx + L/2, cy + riris))
+        # Top Cell Curve (Right to Left)
+        for x, y in zip(x_curve, y_top_curve):
+            pts_c.append((cx + x, y))
+        # Top-Left pipe
+        pts_c.append((cx - L/2, cy + riris))
+        pts_c.append((cx - L/2 - L_pipe, cy + riris))
+        
+        # Bottom-Left pipe
+        pts_c.append((cx - L/2 - L_pipe, cy - riris))
+        pts_c.append((cx - L/2, cy - riris))
+        # Bottom Cell Curve (Left to Right)
+        x_curve_bot = np.linspace(-L/2, L/2, 40)
+        y_bot_curve = cy - (riris + (req - riris) * (np.cos(x_curve_bot * np.pi / L)**power))
+        for x, y in zip(x_curve_bot, y_bot_curve):
+            pts_c.append((cx + x, y))
+        # Bottom-Right pipe
+        pts_c.append((cx + L/2, cy - riris))
+        pts_c.append((cx + L/2 + L_pipe, cy - riris))
     
     # Close the boundary for plotting
     pts_c.append(pts_c[0])

@@ -5,7 +5,7 @@ GNOT_Colab_Runner.ipynb
 *.h5
 *.pkl
 data/
-
+Notlarim.txt
 # Python caching
 __pycache__/
 *.py[cod]

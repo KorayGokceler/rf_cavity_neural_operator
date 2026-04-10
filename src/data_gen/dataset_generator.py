@@ -83,17 +83,38 @@ def generate_sample_data(s_id):
                     (x_p_max, y_b_max + pipe_top)  # 12. Üst Sağ Uç
                 ]
             else: # method == 'elliptical'
-                # TESLA tarzı Parçacık Hızlandırıcı Kavitelerinin analitik modeli. 
-                # Ekvator kısmı geniş, iris (boğaz) kısmı dar ve yumuşak kavisli.
-                req = np.random.uniform(0.035, 0.048) # Ekvator genişliği
-                riris = np.random.uniform(0.015, req - 0.01) # Işın delik genişliği
+                # GERÇEKÇİ TESLA KAVİTESİ: Beam pipe + Yumuşak Eliptik Genişleme
+                req = np.random.uniform(0.040, 0.055)    # Ekvator genişliği
+                riris = np.random.uniform(0.012, 0.025)  # Beam pipe / Iris genişliği
+                L = np.random.uniform(0.04, 0.08)        # Eliptik hücre uzunluğu
+                L_pipe = np.random.uniform(0.01, 0.03)   # Dış ışın borusu uzunlukları
+                power = np.random.uniform(1.5, 3.0)      # Eğrilik kontrolü (2.0 = düzgün harmonik)
                 
-                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-                # Formül: r(θ) = r_iris + (r_eq - r_iris) * |cos(θ)|^power. 
-                # Bu çok pürüzsüz eliptik-lob formları çıkarır.
-                power = np.random.uniform(1.2, 3.5)
-                r = riris + (req - riris) * (np.abs(np.cos(t))**power)
-                pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
+                # MESH için Saat Yönünün Tersine (CCW) tüm hücreyi dönmemiz gerekiyor.
+                x_curve = np.linspace(L/2, -L/2, 40) # Sağdan Sola üst kavis
+                y_top_curve = cy + riris + (req - riris) * (np.cos(x_curve * np.pi / L)**power)
+                
+                pts_c = []
+                # 1. Sağ-Üst Işın Borusu
+                pts_c.append((cx + L/2 + L_pipe, cy + riris))
+                pts_c.append((cx + L/2, cy + riris))
+                # 2. Üst TESLA Kavisi (Sağdan Sola)
+                for x, y in zip(x_curve, y_top_curve):
+                    pts_c.append((cx + x, y))
+                # 3. Sol-Üst Işın Borusu
+                pts_c.append((cx - L/2, cy + riris))
+                pts_c.append((cx - L/2 - L_pipe, cy + riris))
+                # 4. Sol-Alt Işın Borusu
+                pts_c.append((cx - L/2 - L_pipe, cy - riris))
+                pts_c.append((cx - L/2, cy - riris))
+                # 5. Alt TESLA Kavisi (Soldan Sağa dönmeli)
+                x_curve_bot = np.linspace(-L/2, L/2, 40)
+                y_bot_curve = cy - (riris + (req - riris) * (np.cos(x_curve_bot * np.pi / L)**power))
+                for x, y in zip(x_curve_bot, y_bot_curve):
+                    pts_c.append((cx + x, y))
+                # 6. Sağ-Alt Işın Borusu
+                pts_c.append((cx + L/2, cy - riris))
+                pts_c.append((cx + L/2 + L_pipe, cy - riris))
 
         pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
         lines = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
