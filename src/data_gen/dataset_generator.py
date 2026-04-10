@@ -94,7 +94,7 @@ def generate_sample_data(s_id):
                 
                 # MESH için Saat Yönünün Tersine (CCW) tüm hücreyi dönmemiz gerekiyor.
                 x_curve = np.linspace(L/2, -L/2, 40) # Sağdan Sola üst kavis
-                y_top_curve = cy + riris + (req - riris) * (np.cos(x_curve * np.pi / L)**power)
+                y_top_curve = cy + riris + (req - riris) * (np.abs(np.cos(x_curve * np.pi / L))**power)
                 
                 pts_c = []
                 # 1. Sağ-Üst Işın Borusu
@@ -110,7 +110,7 @@ def generate_sample_data(s_id):
                 pts_c.append((cx - L/2 - L_pipe, cy - riris))
                 # 5. Alt TESLA Kavisi (Soldan Sağa dönmeli)
                 x_curve_bot = np.linspace(-L/2, L/2, 40)
-                y_bot_curve = cy - (riris + (req - riris) * (np.cos(x_curve_bot * np.pi / L)**power))
+                y_bot_curve = cy - (riris + (req - riris) * (np.abs(np.cos(x_curve_bot * np.pi / L))**power))
                 # Skip the duplicate at cx - L/2 since x_curve_bot[0] is -L/2
                 for x, y in zip(x_curve_bot, y_bot_curve):
                     pts_c.append((cx + x, y))
