@@ -13,7 +13,7 @@ model:
   n_heads: 8
   num_experts: 4
   num_field_modes: 1     # Training only on Mode 2 (index 1)
-  val_dim: 1
+  val_dim: 8             # 8 geometric features from dataset
   grid_dim: 2
   theta_dim: 1
   use_checkpoint: true
