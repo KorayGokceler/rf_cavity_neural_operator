@@ -165,10 +165,17 @@ def generate_sample_data(s_id):
         vals, vecs = utils.solve_eigen(Kc, Mc, x=xc, I=Ic, k=3, sigma=500.0)
 
         freqs = (299792458 * np.sqrt(np.abs(vals.real))) / (2 * np.pi) / 1e9
+        
+        # High Fidelity: Use actual DOF locations from P2 basis for points
+        p2_nodes = basis.doflocs.T.astype(np.float32)
 
         return {
-            'id': s_id, 'nodes': nodes, 'elements': elements,
-            'freqs': freqs.real, 'vecs': vecs.real, 'n_nodes': len(nodes),
+            'id': s_id, 
+            'nodes': p2_nodes, 
+            'elements': elements,
+            'freqs': freqs.real, 
+            'vecs': vecs.real, 
+            'n_nodes': len(p2_nodes),
             'shape_type': 'calibration' if ARGS.mode == 'calibration' else 'random'
         }
     except Exception as e:

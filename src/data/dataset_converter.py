@@ -109,18 +109,24 @@ class RFCavityToGNOT:
         print(f"Converting: {self.h5_filepath} to {format.upper()}")
 
         with h5py.File(self.h5_filepath, 'r') as f:
-            sample_keys = sorted(f.keys())
+            if 'samples' not in f:
+                print("Error: H5 file does not contain 'samples' group.")
+                return
+            
+            samples_grp = f['samples']
+            sample_keys = sorted(samples_grp.keys(), key=lambda x: int(x))
+            
             if max_samples:
                 sample_keys = sample_keys[:max_samples]
 
             for key in tqdm(sample_keys, desc="Converting"):
-                grp = f[key]
-                sample_id = int(key.split('_')[-1])
+                grp = samples_grp[key]
+                sample_id = int(key)
 
                 nodes = grp['nodes'][:]
                 elements = grp['elements'][:]
                 freqs = grp['freqs'][:]
-                vecs = grp['vecs'][:len(nodes), :]
+                vecs = grp['vecs'][:]
 
                 if sample_id not in self.geometry_pool:
                     self.geometry_pool[sample_id] = self.extract_geometry_features(nodes, elements)

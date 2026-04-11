@@ -22,8 +22,12 @@ class GNOTDataset(Dataset):
             with h5py.File(data_path, 'r') as f:
                 metadata = json.loads(f.attrs['metadata'])
                 self.stats = metadata.get('freq_stats', None)
-                self.n_samples_total = metadata['n_samples']
-                # Store sample indices for subsetting
+                self.n_samples_total = metadata.get('n_samples', 0)
+                
+                # If n_samples is 0, count the actual samples in 'samples' group
+                if self.n_samples_total == 0 and 'samples' in f:
+                    self.n_samples_total = len(f['samples'].keys())
+                
                 self.indices = list(range(self.n_samples_total))
         else:
             with open(data_path, 'rb') as f:
