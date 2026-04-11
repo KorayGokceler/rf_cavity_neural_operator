@@ -141,14 +141,7 @@ class RFCavityToGNOT:
 
 
 
-                    # Peak-Sign Normalization: Alanın faz (sign) keyfiliğini yenmek için en yüksek mutlak değerli noktanın işareti baz alınıyor.
-                    # Bu, her örnekteki en belirgin "dağın" her zaman yukarı bakmasını sağlar.
-                    max_idx = np.argmax(np.abs(Y))
-                    peak_val = Y.flatten()[max_idx]
-                    if peak_val < 0:
-                        Y = Y * -1.0
-
-                    # Normalize
+                    # Normalize magnitude only
                     Y_max = np.abs(Y).max()
                     if Y_max > 1e-10:
                         Y = Y / Y_max

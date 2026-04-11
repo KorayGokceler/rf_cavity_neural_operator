@@ -55,15 +55,17 @@ def plot_single_sample_features(data, sample_idx, save_dir):
         'Normalized X': input_funcs[:, 0],
         'Normalized Y': input_funcs[:, 1],
         'Distance to Boundary': input_funcs[:, 2],
-        'Boundary Mask': input_funcs[:, 3],
-        'Distance to Center': input_funcs[:, 4],
-        'Local Curvature': input_funcs[:, 5],
+        'Boundary Normal X': input_funcs[:, 3],
+        'Boundary Normal Y': input_funcs[:, 4],
+        'Local Node Area': input_funcs[:, 5],
+        'PCA Cosine': input_funcs[:, 6],
+        'PCA Sine': input_funcs[:, 7],
     }
 
     # =========================================================================
-    # Figure 1: Geometric Features (6 panels)
+    # Figure 1: Geometric Features (8 panels)
     # =========================================================================
-    fig, axes = plt.subplots(2, 3, figsize=(22, 14))
+    fig, axes = plt.subplots(2, 4, figsize=(24, 12))
     fig.suptitle(
         f"Geometric Features — Sample {geom_id} | Mode {int(theta[0])+1} | "
         f"Freq: {theta[1]:.4f} GHz | Nodes: {len(nodes)}",
@@ -131,7 +133,7 @@ def plot_single_sample_features(data, sample_idx, save_dir):
     # =========================================================================
     # Figure 3: Feature Distributions (Histograms)
     # =========================================================================
-    fig, axes = plt.subplots(2, 3, figsize=(20, 10))
+    fig, axes = plt.subplots(2, 4, figsize=(24, 10))
     fig.suptitle(f"Feature Distributions — Sample {geom_id}", fontsize=16, fontweight='bold')
 
     colors = ['#2ecc71', '#e74c3c', '#3498db', '#9b59b6', '#f39c12', '#1abc9c']
@@ -240,8 +242,8 @@ def plot_dataset_statistics(data, save_dir):
     # --- Panel 5: Feature Correlation Heatmap (from one sample) ---
     ax5 = fig.add_subplot(gs[1, 1])
     sample_geom_id = list(geometry_pool.keys())[0]
-    sample_features = geometry_pool[sample_geom_id]['Input_funcs'][0]
-    feature_names = ['X', 'Y', 'Dist_Bnd', 'Bnd_Mask', 'Dist_Ctr', 'Curvature']
+    sample_features = geometry_pool[sample_geom_id]['Input_funcs']
+    feature_names = ['X', 'Y', 'Dist_Bnd', 'Bnd_Norm_X', 'Bnd_Norm_Y', 'Node_Area', 'PCA_Cos', 'PCA_Sin']
     corr_matrix = np.corrcoef(sample_features.T)
     im = ax5.imshow(corr_matrix, cmap='RdBu_r', vmin=-1, vmax=1)
     ax5.set_xticks(range(len(feature_names)))
@@ -271,7 +273,7 @@ def plot_dataset_statistics(data, save_dir):
         ["Total Geometries", str(len(geometry_pool))],
         ["Total Samples", str(len(samples))],
         ["Modes per Geometry", str(len(unique_modes))],
-        ["Input Feature Dim", "6 (X, Y, dist_bnd, bnd_mask, dist_ctr, curvature)"],
+        ["Input Feature Dim", "8 (X, Y, dist_bnd, bnd_norm_x/y, node_area, pca_cos/sin)"],
         ["Output Dim (Field)", "1 (normalized mode shape)"],
         ["Output Dim (Freq)", "1 (resonance frequency in GHz)"],
         ["Theta Dim", "1 (mode index)"],
