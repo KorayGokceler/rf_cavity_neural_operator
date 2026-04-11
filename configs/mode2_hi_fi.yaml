@@ -23,11 +23,17 @@ model:
 training:
   learning_rate: 0.0002
   batch_size: 16
-  max_epochs: 150
+  max_epochs: 500
   scheduler: "reducelr"
   weight_decay: 1e-4
+  num_workers: 2         # Adjusted for Colab
+  pin_memory: true
+  freq_weight: 0.5
+  mode_loss_weights: [1.0]
+  gradient_clip_val: 1.0
   log_dir: "lightning_logs"
   exp_name: "gnot_mode2_5k_256neurons"
   log_every_n_steps: 10
   viz_every_n_epochs: 10
-  patience: 25           # Early stopping patience
+  patience: 25
+  progress_bar_refresh_rate: 1
