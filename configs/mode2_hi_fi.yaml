@@ -1,0 +1,33 @@
+dataset:
+  data_path: "data/gnot_mode2_only.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  max_nodes: 2048        # VRAM stability
+  feature_indices: null  # Use all 8 features
+
+model:
+  embed_dim: 256         # User selected 256 for 5000 samples
+  n_shared_layers: 4     # Deep enough for single mode complexity
+  n_mode_layers: 2
+  n_freq_layers: 2
+  n_heads: 8
+  num_experts: 4
+  num_field_modes: 1     # Training only on Mode 2 (index 1)
+  val_dim: 1
+  grid_dim: 2
+  theta_dim: 1
+  use_checkpoint: true
+  use_rff: true
+  rff_scale: 1.0
+
+training:
+  learning_rate: 0.0002
+  batch_size: 16
+  max_epochs: 150
+  scheduler: "reducelr"
+  weight_decay: 1e-4
+  log_dir: "lightning_logs"
+  exp_name: "gnot_mode2_5k_256neurons"
+  log_every_n_steps: 10
+  viz_every_n_epochs: 10
+  patience: 25           # Early stopping patience

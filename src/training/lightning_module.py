@@ -12,7 +12,7 @@ class GNOTLightning(pl.LightningModule):
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
                  rff_scale=1.0, use_rff=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
-                 cosine_eta_min=1e-6):
+                 cosine_eta_min=1e-6, reducelr_patience=10, reducelr_factor=0.5):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
@@ -243,13 +243,24 @@ class GNOTLightning(pl.LightningModule):
                 final_div_factor=self.hparams.onecycle_final_div_factor
             )
             interval = 'step'
-        elif self.hparams.scheduler == 'cosine':
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, 
-                T_max=self.trainer.max_epochs, 
-                eta_min=self.hparams.cosine_eta_min
-            )
             interval = 'epoch'
+        elif self.hparams.scheduler == 'reducelr':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, 
+                mode='min', 
+                factor=self.hparams.reducelr_factor, 
+                patience=self.hparams.reducelr_patience,
+                min_lr=1e-7
+            )
+            return {
+                "optimizer": optimizer, 
+                "lr_scheduler": {
+                    "scheduler": scheduler, 
+                    "monitor": "val/field_rel_l2",
+                    "interval": "epoch",
+                    "frequency": 1
+                }
+            }
         else:
             return optimizer
 
