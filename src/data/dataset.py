@@ -120,6 +120,13 @@ class GNOTDataset(Dataset):
         if self.feature_indices is not None:
             input_features = input_features[:, self.feature_indices]
 
+        # Legacy data safety check: If X was P1 (~2000 nodes) and Y was P2 (~7800 nodes), truncate Y to match X
+        if x.shape[0] != y_field.shape[0]:
+            min_nodes = min(x.shape[0], y_field.shape[0])
+            x = x[:min_nodes]
+            input_features = input_features[:min_nodes]
+            y_field = y_field[:min_nodes]
+
         # VRAM Optimization: Node Sub-sampling
         # Randomly select a subset of nodes if the point cloud exceeds max_nodes.
         # This completely flattens VRAM peaks and eliminates massive zero-padding waste!
