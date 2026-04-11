@@ -229,12 +229,21 @@ if __name__ == '__main__':
         print(f"Starting generation with {n_workers} workers...")
         
         with Pool(n_workers, initializer=worker_init) as pool:
-            for i in tqdm(range(0, ARGS.n_total, 50), desc="Batch Generation"):
-                chunk_range = range(i, min(i + 50, ARGS.n_total))
+            successful_samples = 0
+            current_id = 0
+            pbar = tqdm(total=ARGS.n_total, desc="Generating Valid Geometries")
+            
+            while successful_samples < ARGS.n_total:
+                # Ask for a chunk of 50. Ask for a bit more to account for failures.
+                batch_size = 50
+                chunk_range = range(current_id, current_id + batch_size)
+                current_id += batch_size
+                
                 chunk_results = pool.map(generate_sample_data, chunk_range)
 
                 for res in chunk_results:
                     if res is None: continue
+                    if successful_samples >= ARGS.n_total: break
 
                     grp = f_h5.create_group(f"samples/{res['id']}")
                     grp.create_dataset("nodes", data=res['nodes'], compression="gzip", compression_opts=4)
@@ -244,13 +253,16 @@ if __name__ == '__main__':
                     grp.attrs['shape_type'] = res['shape_type']
                     grp.attrs['geom_id'] = res['id']
 
-                    if res['id'] < ARGS.n_plot:
+                    if successful_samples < ARGS.n_plot:
                         plot_path = os.path.join(ARGS.plot_dir, f"sample_{res['id']:03d}.png")
                         save_sample_plot(res, plot_path)
                 
+                    successful_samples += 1
+                    pbar.update(1)
                 
                 # Force flush to disk to prevent data loss and hangs
                 f_h5.flush()
+            pbar.close()
                 
     print(f"\n✅ All {ARGS.n_total} samples successfully generated and flushed to disk!")
     
