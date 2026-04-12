@@ -102,15 +102,19 @@ def main():
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes)
 
+    # Optimized DataLoader settings
+    pw = True if tc.num_workers > 0 else False
+    pf = 2 if tc.num_workers > 0 else None
+
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory)
+                              pin_memory=tc.pin_memory, persistent_workers=pw, prefetch_factor=pf)
     val_loader   = DataLoader(val_dataset,   batch_size=tc.batch_size,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory)
+                              pin_memory=tc.pin_memory, persistent_workers=pw, prefetch_factor=pf)
     test_loader  = DataLoader(test_dataset,  batch_size=tc.batch_size,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory)
+                              pin_memory=tc.pin_memory, persistent_workers=pw, prefetch_factor=pf)
 
     model = GNOTLightning(
         val_dim=mc.val_dim,
