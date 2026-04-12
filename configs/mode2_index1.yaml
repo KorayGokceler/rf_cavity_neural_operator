@@ -1,40 +1,115 @@
-# GNOT Configuration for Physics Mode 2 (Index 1) ONLY
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity Neural Operator — Mode 2 (Index 1) Detailed Config
+# ═══════════════════════════════════════════════════════════════
+# Bu konfigürasyon sadece 2. modun (Dipol/Higher Mode) öğrenilmesine odaklanır.
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────
+#  1. DATA GENERATION (dataset_generator.py)
+# ─────────────────────────────────────────────────────
+data_gen:
+  h5_filename: "rf_cavity_5000_hi_fi.h5"
+  plot_dir: "dataset_plots_mode2"
+  n_total: 5000                 # Daha yüksek kapasiteli eğitim için 5k örnek
+  n_plot: 50                    # Görselleştirilecek örnek sayısı
+  generation_mode: "random"     # "random" veya "calibration"
+  
+  # FEM Solver Settings
+  fem_order: "P1"               # Artık P1 Mesh kullanıyoruz (Hata payı düşük, stabil)
+  n_eigen_modes: 3              # İlk 3 modu çöz (Index 1 ortada kalsın)
+  eigen_sigma: 300.0            # Fundamental mod etrafında yoğunlaş
+  
+  # Mesh control (Daha sıkı mesh)
+  mesh_size_min: 0.0010         # Sınır hassasiyeti (1mm)
+  mesh_size_max: 0.0035         # İç bölge yoğunluğu
+  mesh_dist_min: 0.002
+  mesh_dist_max: 0.04
+
+# ─────────────────────────────────────────────────────
+#  2. DATA CONVERSION (convert.py)
+# ─────────────────────────────────────────────────────
+data_convert:
+  h5_filepath: "rf_cavity_5000_hi_fi.h5"
+  output_path: "data/gnot_mode2_only.pkl"
+  output_format: "pkl"
+  mode_indices: [1]             # SADECE 2. MOD (Index 1)
+  max_samples: null
+
+# ─────────────────────────────────────────────────────
+#  3. DATASET (dataset.py)
+# ─────────────────────────────────────────────────────
 dataset:
-  data_path: "data/gnot_mode1_dataset.pkl"
+  data_path: "data/gnot_mode2_only.pkl"
   train_ratio: 0.8
   val_ratio: 0.1
-  max_nodes: 2048        # VRAM safety
-  feature_indices: null  # Use all 8 geometric features
+  random_seed: 42
+  max_nodes: 2048               # VRAM taşmasını önlemek için sub-sampling
 
+# ─────────────────────────────────────────────────────
+#  4. MODEL ARCHITECTURE (gnot.py)
+# ─────────────────────────────────────────────────────
 model:
-  embed_dim: 128         # Standard dimension
-  n_shared_layers: 2
-  n_mode_layers: 2
-  n_freq_layers: 2
-  n_heads: 4
-  num_experts: 4
-  num_field_modes: 1     # We only care about 1 mode (index 1 is treated as index 0 here)
-  val_dim: 8             
+  val_dim: 8                    # 8 geometric features
   grid_dim: 2
   theta_dim: 1
-  use_checkpoint: true
-  use_rff: true
+  
+  # Capacity settings
+  embed_dim: 256                # 5000 örnek için 256 neuron (yüksek kapasite)
+  n_shared_layers: 4            # Geometriyi anlamak için daha derin trunk
+  n_mode_layers: 2              # Tek mod dallanması
+  n_freq_layers: 2              # Frekans tahmini dallanması
+  n_heads: 8                    # 256 / 8 = 32 dim per head
+  num_experts: 4                # Sparse gating expert sayısı
+
+  # Mode settings
+  num_field_modes: 1            # Tek mod eğitimi (Index 1 -> Branch 0)
+  num_film_modes: 20            # FiLM headroom
+  film_init_std: 0.02
+
+  # Encoding
+  rff_dim: 64                   
   rff_scale: 1.0
 
+  # Reg & Opt
+  dropout: 0.0
+  use_checkpoint: true          # VRAM tasarrufu AKTİF
+
+# ─────────────────────────────────────────────────────
+#  5. TRAINING (lightning_module.py)
+# ─────────────────────────────────────────────────────
 training:
-  learning_rate: 0.0002
-  batch_size: 32
-  max_epochs: 300
-  scheduler: "reducelr"
-  weight_decay: 0.0001
-  num_workers: 4         # Adjust based on local CPU
+  learning_rate: 2.0e-4         # Mode 2 genellikle daha zor öğrenilir, düşük LR önerilir
+  weight_decay: 1.0e-4
+  batch_size: 16                # 256 neurons + checkpointing için ideal
+  max_epochs: 500               # Derin öğrenme için uzun süre
+  check_val_every_n_epoch: 1    # Her epoch sonunda doğrulama yap (Scheduler için zorunlu)
+  gradient_clip_val: 0.5        # Gradients patlamasın diye daha sert clip
+  strategy: "auto"
+
+  # Loss weights
+  freq_weight: 0.5              # Frekans loss katkısı
+  mode_loss_weights: [1.0]      # Tek mod ağırlığı
+
+  # LR Scheduler
+  scheduler: "reducelr"         # Val loss takıldığında LR düşür
+  patience: 25                  # Erken durdurma sabrı
+
+  # OS specific
+  num_workers: 0                # Windows uyumluluğu için 0
   pin_memory: true
-  freq_weight: 0.5
-  mode_loss_weights: [1.0]
-  gradient_clip_val: 1.0
-  fast_dev_run: false
-  log_dir: "lightning_logs"
-  exp_name: "gnot_mode2_only"
+
+  # Logging & Viz
+  log_dir: "training_logs"
+  exp_name: "gnot_mode2_hi_fi_256dim"
   log_every_n_steps: 10
   viz_every_n_epochs: 10
-  patience: 30
+  progress_bar_refresh_rate: 1
+  fast_dev_run: false           # Boru hattını test etmek için 1 iterasyon çalıştır (true/false)
+
+# ─────────────────────────────────────────────────────
+#  6. INFERENCE
+# ─────────────────────────────────────────────────────
+inference:
+  checkpoint_path: null
+  output_dir: "inference_results_mode2"
+  num_visualize: 10
