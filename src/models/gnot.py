@@ -222,11 +222,12 @@ class GNOTModel(nn.Module):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
                  n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
-                 use_rff=True, use_checkpoint=False):
+                 use_rff=True, use_checkpoint=False, predict_frequency=True):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
         self.use_rff = use_rff
+        self.predict_frequency = predict_frequency
 
         # --- Random Fourier Features for high spatial frequency encoding ---
         if use_rff:
@@ -265,10 +266,21 @@ class GNOTModel(nn.Module):
             ]) for _ in range(num_field_modes)
         ])
         
-        self.freq_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
-            for _ in range(freq_layers)
-        ])
+        # Freq branch (Optional)
+        if self.predict_frequency:
+            self.freq_blocks = nn.ModuleList([
+                GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
+                for _ in range(freq_layers)
+            ])
+            self.freq_decoder = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.LayerNorm(embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, 1)
+            )
+        else:
+            self.freq_blocks = None
+            self.freq_decoder = None
 
         self.pooler = AttentionPool(embed_dim, n_heads)
 
@@ -281,12 +293,6 @@ class GNOTModel(nn.Module):
                 nn.Linear(embed_dim, 1)
             ) for _ in range(num_field_modes)
         ])
-        self.freq_decoder = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.LayerNorm(embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, 1)
-        )
 
         # Initialize heads with small weights to prevent early training explosion
         self._init_weights()
@@ -297,11 +303,12 @@ class GNOTModel(nn.Module):
                 nn.init.trunc_normal_(m.weight, std=0.01)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-        for m in self.freq_decoder.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.01)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+        if self.predict_frequency:
+            for m in self.freq_decoder.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.trunc_normal_(m.weight, std=0.01)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
     def forward(self, batch):
         X = batch['X']
@@ -347,13 +354,19 @@ class GNOTModel(nn.Module):
             else:
                 x_emb = block(x_emb, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
 
-        # Freq branch
-        x_freq = x_emb
-        for block in self.freq_blocks:
-            if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
-            else:
-                x_freq = block(x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
+        # Freq branch (Optional)
+        if self.predict_frequency:
+            x_freq = x_emb
+            for block in self.freq_blocks:
+                if self.use_checkpoint and self.training:
+                    x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
+                else:
+                    x_freq = block(x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
+            
+            global_feat = self.pooler(x_freq, mask)
+            freq_pred = self.freq_decoder(global_feat)
+        else:
+            freq_pred = None
 
         # Sample'ları mode'a göre sırala
         sort_idx = theta_int.argsort()
@@ -403,9 +416,6 @@ class GNOTModel(nn.Module):
         # Birleştir ve orijinal sıraya geri dön — NO in-place ops
         field_pred_sorted = torch.cat(field_parts, dim=0)  # [B, N, 1]
         field_pred = field_pred_sorted[unsort_idx]          # orijinal batch sırası
-
-        global_feat = self.pooler(x_freq, mask)
-        freq_pred = self.freq_decoder(global_feat)
 
         return {'field': field_pred, 'freq': freq_pred}
 

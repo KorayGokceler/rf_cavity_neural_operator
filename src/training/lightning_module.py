@@ -10,7 +10,7 @@ class GNOTLightning(pl.LightningModule):
                  n_heads=4, num_experts=4, num_field_modes=3,
                  lr=1e-3, freq_weight=0.5, mode_loss_weights=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
-                 rff_scale=1.0, use_rff=True,
+                 rff_scale=1.0, use_rff=True, predict_frequency=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6, reducelr_patience=10, reducelr_factor=0.5):
         super().__init__()
@@ -30,7 +30,8 @@ class GNOTLightning(pl.LightningModule):
             num_field_modes=num_field_modes,
             rff_scale=rff_scale,
             use_rff=use_rff,
-            use_checkpoint=use_checkpoint
+            use_checkpoint=use_checkpoint,
+            predict_frequency=predict_frequency
         )
         self.freq_weight = freq_weight
         # Per-mode loss weights: [w0, w1, w2] — zayıf modlara daha yüksek ağırlık verilebilir
@@ -104,18 +105,22 @@ class GNOTLightning(pl.LightningModule):
         # Normalize by sum of weights
         loss_field = loss_field / sum(self.mode_loss_weights)
 
-        loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
-        total_loss = loss_field + (self.freq_weight * loss_freq)
+        # Frequency Loss — Optional
+        if self.hparams.predict_frequency:
+            loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
+            total_loss = loss_field + (self.freq_weight * loss_freq)
+            
+            self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B, sync_dist=True)
+            if self.freq_stats:
+                freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
+                freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
+                mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
+                self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
+        else:
+            total_loss = loss_field
 
         self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B, sync_dist=True)
-        
-        if self.freq_stats:
-            freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
-            freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
-            mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
-            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
 
         # Per-sample Relative L2 Error — VECTORIZED (no Python for-loop)
         if mask is not None:
@@ -154,6 +159,11 @@ class GNOTLightning(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
         self.train_r2(preds, targets)
+        
+        # Log current Learning Rate to progress bar
+        lr = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log('lr', lr, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        
         self.log('train/r2', self.train_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 

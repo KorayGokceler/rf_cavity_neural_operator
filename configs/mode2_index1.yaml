@@ -60,6 +60,7 @@ model:
   n_freq_layers: 2              # Frekans tahmini dallanması
   n_heads: 8                    # 256 / 8 = 32 dim per head
   num_experts: 4                # Sparse gating expert sayısı
+  predict_frequency: false
 
   # Mode settings
   num_field_modes: 1            # Tek mod eğitimi (Index 1 -> Branch 0)
