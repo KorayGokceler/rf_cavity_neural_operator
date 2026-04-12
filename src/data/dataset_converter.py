@@ -58,14 +58,19 @@ class RFCavityToGNOT:
 
         # Boundary detection
         boundary_indices = self._find_boundary_nodes(elements)
-        boundary_nodes = nodes_norm[boundary_indices]
+        if len(boundary_indices) == 0:
+            # Fallback: all nodes are boundary (should not happen with valid mesh)
+            boundary_nodes = nodes_norm
+        else:
+            boundary_nodes = nodes_norm[boundary_indices]
+            
         tree = cKDTree(boundary_nodes)
         dist_to_boundary, nearest_idx = tree.query(nodes_norm)
 
         # Direction to nearest boundary (normalized) — "duvar hangi yönde?"
         nearest_bnd_points = boundary_nodes[nearest_idx]  # [N, 2]
         dir_vec = nearest_bnd_points - nodes_norm          # [N, 2]
-        dir_norms = np.linalg.norm(dir_vec, axis=1, keepdims=True) + 1e-10
+        dir_norms = np.linalg.norm(dir_vec, axis=1, keepdims=True) + 1e-12
         dir_to_boundary = (dir_vec / dir_norms).astype(np.float32)  # [N, 2] unit vectors
 
         # Node area (local mesh density)
@@ -74,7 +79,7 @@ class RFCavityToGNOT:
         # Principal axis angle — kavite ana eksenine göre açı
         # PCA on boundary nodes → major axis direction
         bnd_centered = boundary_nodes - boundary_nodes.mean(axis=0)
-        cov = np.cov(bnd_centered.T)
+        cov = np.cov(bnd_centered.T) + np.eye(2) * 1e-12
         eigenvalues, eigenvectors = np.linalg.eigh(cov)
         principal_axis = eigenvectors[:, -1]  # en büyük eigenvalue'nun eigenvector'ü
 
@@ -82,7 +87,7 @@ class RFCavityToGNOT:
         node_vecs = nodes_norm - nodes_norm.mean(axis=0)
         # cos(angle) = dot(node_vec, principal) / |node_vec|
         dots = node_vecs @ principal_axis
-        node_mags = np.linalg.norm(node_vecs, axis=1) + 1e-10
+        node_mags = np.linalg.norm(node_vecs, axis=1) + 1e-12
         cos_angle = (dots / node_mags).reshape(-1, 1).astype(np.float32)
         # sin bileşeni de ekle — tam yön bilgisi için
         cross = (node_vecs[:, 0] * principal_axis[1] - node_vecs[:, 1] * principal_axis[0])

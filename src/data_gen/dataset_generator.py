@@ -31,13 +31,19 @@ def worker_init():
 
 def generate_sample_data(s_id):
     try:
-        # Clear existing models from previous task in this worker
-        for m in gmsh.model.list():
+        # Clear existing models and initialize for this specific task
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.option.setNumber("General.Verbosity", 1)
+
+        model_name = f"rf_{s_id}_{os.getpid()}"
+        if model_name in gmsh.model.list():
             gmsh.model.remove()
-            
-        gmsh.model.add(f"rf_{s_id}")
-        np.random.seed(s_id * 13)
-        L, cx, cy = 0.1, 0.05, 0.05
+        gmsh.model.add(model_name)
+        
+        np.random.seed(s_id * 13 + 7)
+        cx, cy = 0.05, 0.05
 
         # Geometric Diversity: Sharp corners and chaotic blobs
         if ARGS.mode == 'calibration':
@@ -63,87 +69,60 @@ def generate_sample_data(s_id):
                 r = np.random.uniform(0.02, 0.046, n_pts)
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
             elif method == 'smooth':
-                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-                r_fluctuation = sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
-                r = np.maximum(0.035 + r_fluctuation, 0.01) # Radius must be positive
+                t = np.linspace(0, 2*np.pi, 120, endpoint=False)
+                r_fluctuation = sum(np.random.uniform(-0.009, 0.009) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                r = np.maximum(0.035 + r_fluctuation, 0.012) 
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
             elif method == 'pillbox':
-                # Endüstriyel RF Kavitelerine benzer: Geniş hücre (body) ve Işın Geçiş Boruları (beam pipes)
                 body_w = np.random.uniform(0.05, 0.09)
                 body_h = np.random.uniform(0.04, 0.07)
-                pipe_w = np.random.uniform(0.015, body_w - 0.01) # boru ana gövdeden ince olmalı
+                pipe_w = np.random.uniform(0.015, body_w - 0.01) 
                 pipe_top = np.random.uniform(0.01, 0.025)
                 pipe_bot = np.random.uniform(0.01, 0.025)
-                
-                # Koordinat Sınırları (CCW saat yönü tersine dizilim MESH için ZORUNLUDUR)
                 x_b_min, x_b_max = cx - body_w/2, cx + body_w/2
                 y_b_min, y_b_max = cy - body_h/2, cy + body_h/2
                 x_p_min, x_p_max = cx - pipe_w/2, cx + pipe_w/2
-                
-                # Sol üst köşe ışın borusundan başlayarak Saat Yönünün Tersine (CCW) tüm dış hattı dön
                 pts_c = [
-                    (x_p_min, y_b_max + pipe_top), # 1. Üst Sol Uç
-                    (x_p_min, y_b_max),            # 2. Üst Sol İç Köşe
-                    (x_b_min, y_b_max),            # 3. Gövde Üst Sol
-                    (x_b_min, y_b_min),            # 4. Gövde Alt Sol
-                    (x_p_min, y_b_min),            # 5. Alt Sol İç Köşe
-                    (x_p_min, y_b_min - pipe_bot), # 6. Alt Sol Uç
-                    (x_p_max, y_b_min - pipe_bot), # 7. Alt Sağ Uç
-                    (x_p_max, y_b_min),            # 8. Alt Sağ İç Köşe
-                    (x_b_max, y_b_min),            # 9. Gövde Alt Sağ
-                    (x_b_max, y_b_max),            # 10. Gövde Üst Sağ
-                    (x_p_max, y_b_max),            # 11. Üst Sağ İç Köşe
-                    (x_p_max, y_b_max + pipe_top)  # 12. Üst Sağ Uç
+                    (x_p_min, y_b_max + pipe_top), (x_p_min, y_b_max),
+                    (x_b_min, y_b_max), (x_b_min, y_b_min),
+                    (x_p_min, y_b_min), (x_p_min, y_b_min - pipe_bot),
+                    (x_p_max, y_b_min - pipe_bot), (x_p_max, y_b_min),
+                    (x_b_max, y_b_min), (x_b_max, y_b_max),
+                    (x_p_max, y_b_max), (x_p_max, y_b_max + pipe_top)
                 ]
-            else: # method == 'elliptical'
-                # GERÇEKÇİ TESLA KAVİTESİ: Beam pipe + Yumuşak Eliptik Genişleme
-                req = np.random.uniform(0.040, 0.055)    # Ekvator genişliği
-                riris = np.random.uniform(0.012, 0.025)  # Beam pipe / Iris genişliği
-                L = np.random.uniform(0.04, 0.08)        # Eliptik hücre uzunluğu
-                L_pipe = np.random.uniform(0.01, 0.03)   # Dış ışın borusu uzunlukları
-                power = np.random.uniform(1.5, 3.0)      # Eğrilik kontrolü (2.0 = düzgün harmonik)
-                
-                # MESH için Saat Yönünün Tersine (CCW) tüm hücreyi dönmemiz gerekiyor.
-                x_curve = np.linspace(L/2, -L/2, 40) # Sağdan Sola üst kavis
-                y_top_curve = cy + riris + (req - riris) * (np.abs(np.cos(x_curve * np.pi / L))**power)
-                
+            else: # elliptical
+                req = np.random.uniform(0.040, 0.055)
+                riris = np.random.uniform(0.012, 0.025)
+                L_cell = np.random.uniform(0.04, 0.08)
+                L_pipe = np.random.uniform(0.01, 0.03)
+                power = np.random.uniform(1.8, 2.5)
+                x_curve = np.linspace(L_cell/2, -L_cell/2, 40)
+                y_top_curve = cy + riris + (req - riris) * (np.abs(np.cos(x_curve * np.pi / L_cell))**power)
                 pts_c = []
-                # 1. Sağ-Üst Işın Borusu
-                pts_c.append((cx + L/2 + L_pipe, cy + riris))
-                # Skip the duplicate at cx + L/2, cy + riris since x_curve[0] is L/2
-                # 2. Üst TESLA Kavisi (Sağdan Sola)
-                for x, y in zip(x_curve, y_top_curve):
-                    pts_c.append((cx + x, y))
-                # 3. Sol-Üst Işın Borusu
-                # Skip the duplicate at cx - L/2 since x_curve[-1] is -L/2
-                pts_c.append((cx - L/2 - L_pipe, cy + riris))
-                # 4. Sol-Alt Işın Borusu
-                pts_c.append((cx - L/2 - L_pipe, cy - riris))
-                # 5. Alt TESLA Kavisi (Soldan Sağa dönmeli)
-                x_curve_bot = np.linspace(-L/2, L/2, 40)
-                y_bot_curve = cy - (riris + (req - riris) * (np.abs(np.cos(x_curve_bot * np.pi / L))**power))
-                # Skip the duplicate at cx - L/2 since x_curve_bot[0] is -L/2
-                for x, y in zip(x_curve_bot, y_bot_curve):
-                    pts_c.append((cx + x, y))
-                # 6. Sağ-Alt Işın Borusu
-                # Skip the duplicate at cx + L/2 since x_curve_bot[-1] is L/2
-                pts_c.append((cx + L/2 + L_pipe, cy - riris))
+                pts_c.append((cx + L_cell/2 + L_pipe, cy + riris))
+                for x, y in zip(x_curve, y_top_curve): pts_c.append((cx + x, y))
+                pts_c.append((cx - L_cell/2 - L_pipe, cy + riris))
+                pts_c.append((cx - L_cell/2 - L_pipe, cy - riris))
+                x_curve_bot = np.linspace(-L_cell/2, L_cell/2, 40)
+                y_bot_curve = cy - (riris + (req - riris) * (np.abs(np.cos(x_curve_bot * np.pi / L_cell))**power))
+                for x, y in zip(x_curve_bot, y_bot_curve): pts_c.append((cx + x, y))
+                pts_c.append((cx + L_cell/2 + L_pipe, cy - riris))
 
         pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
         lines = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
         gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(lines)])
         gmsh.model.occ.synchronize()
 
-        # Adaptive Mesh: Dense at boundary, balanced at center
+        # Fine P1 Mesh (Robust & Uniformly DENSE)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.model.mesh.field.add("Distance", 1)
         gmsh.model.mesh.field.setNumbers(1, "CurvesList", lines)
         gmsh.model.mesh.field.add("Threshold", 2)
         gmsh.model.mesh.field.setNumber(2, "InField", 1)
-        gmsh.model.mesh.field.setNumber(2, "SizeMin", 0.0012)
-        gmsh.model.mesh.field.setNumber(2, "SizeMax", 0.005)
+        gmsh.model.mesh.field.setNumber(2, "SizeMin", 0.0010) # 1mm precision
+        gmsh.model.mesh.field.setNumber(2, "SizeMax", 0.0035) # 3.5mm interior max
         gmsh.model.mesh.field.setNumber(2, "DistMin", 0.002)
-        gmsh.model.mesh.field.setNumber(2, "DistMax", 0.03)
+        gmsh.model.mesh.field.setNumber(2, "DistMax", 0.04)
         gmsh.model.mesh.field.setAsBackgroundMesh(2)
 
         gmsh.model.mesh.generate(2)
@@ -156,33 +135,30 @@ def generate_sample_data(s_id):
         nodes = np.ascontiguousarray(coords.reshape(-1, 3)[:, :2])
         elements = np.ascontiguousarray((conns[0].reshape(-1, 3) - 1).astype(np.int32))
 
-        # Physics Solver (P2 Precision)
+        # Physics Solver (P1 Precision - 1:1 Node:Element mapping)
         m = MeshTri(nodes.T, elements.T)
-        basis = Basis(m, ElementTriP2())
+        basis = Basis(m, ElementTriP1())
         K, M = laplace.assemble(basis), mass.assemble(basis)
         D = basis.get_dofs(facets=m.boundary_facets())
         Kc, Mc, xc, Ic = utils.condense(K, M, D=D, expand=True)
-        vals, vecs = utils.solve_eigen(Kc, Mc, x=xc, I=Ic, k=3, sigma=500.0)
+        vals, vecs = utils.solve_eigen(Kc, Mc, x=xc, I=Ic, k=3, sigma=300.0) # Shift closer to fundamental
 
         freqs = (299792458 * np.sqrt(np.abs(vals.real))) / (2 * np.pi) / 1e9
         
-        # High Fidelity: Use actual DOF locations from P2 basis for points
-        p2_nodes = basis.doflocs.T.astype(np.float32)
-
         return {
             'id': s_id, 
-            'nodes': p2_nodes, 
+            'nodes': nodes.astype(np.float32), 
             'elements': elements,
             'freqs': freqs.real, 
             'vecs': vecs.real, 
-            'n_nodes': len(p2_nodes),
+            'n_nodes': len(nodes),
             'shape_type': 'calibration' if ARGS.mode == 'calibration' else 'random'
         }
     except Exception as e:
+        # print(f"Error in worker {s_id}: {str(e)}")
         return None
     finally:
         try:
-            # We don't finalize here, we just clear the model for the next run
             gmsh.model.remove()
         except Exception:
             pass
@@ -192,16 +168,15 @@ def save_sample_plot(data, save_path):
     nodes, elements = data['nodes'], data['elements']
     triang = Triangulation(nodes[:, 0], nodes[:, 1], elements)
 
-    # Mesh Panel
-    axes[0].triplot(triang, color='gray', linewidth=0.15, alpha=0.5)
-    axes[0].set_title(f"ID {data['id']}: {len(elements)} Elements")
-
-    for i in range(3):
-        # Taking up to first n_nodes from P2 precision for visualization
-        mode_v = data['vecs'][:data['n_nodes'], i]
-        mode_norm = mode_v / np.max(np.abs(mode_v))
-        axes[i+1].tripcolor(triang, mode_norm, shading='gouraud', cmap='RdBu_r', vmin=-1, vmax=1)
-        axes[i+1].set_title(f"Mode {i+1}: {data['freqs'][i]:.4f} GHz")
+    for i in range(4):
+        if i == 0:
+            axes[i].triplot(triang, color='gray', linewidth=0.15, alpha=0.5)
+            axes[i].set_title(f"ID {data['id']}: {len(elements)} Elements")
+        else:
+            mode_v = data['vecs'][:, i-1]
+            mode_norm = mode_v / (np.max(np.abs(mode_v)) + 1e-10)
+            axes[i].tripcolor(triang, mode_norm, shading='gouraud', cmap='RdBu_r', vmin=-1, vmax=1)
+            axes[i].set_title(f"Mode {i}: {data['freqs'][i-1]:.4f} GHz")
 
     for ax in axes: ax.set_aspect('equal'); ax.axis('off')
     plt.savefig(save_path, dpi=120, bbox_inches='tight')
@@ -209,62 +184,47 @@ def save_sample_plot(data, save_path):
 
 if __name__ == '__main__':
     ARGS = parse_args()
-    
     os.makedirs(ARGS.plot_dir, exist_ok=True)
     print(f"🚀 Generating {ARGS.n_total} samples using {cpu_count()} cores...")
 
-    # Create file and initialize metadata
     import json
-    metadata = {
-        'n_samples': ARGS.n_total,
-        'mode': ARGS.mode,
-        'freq_stats': None # Can be computed after generation if needed
-    }
+    metadata = {'n_samples': ARGS.n_total, 'mode': ARGS.mode}
 
     with h5py.File(ARGS.h5_filename, "w") as f_h5:
         f_h5.attrs['metadata'] = json.dumps(metadata)
-        
-        # Using a fixed number of workers to prevent OOM/Hang on Colab
-        n_workers = min(cpu_count(), 4)
-        print(f"Starting generation with {n_workers} workers...")
+        n_workers = min(cpu_count(), 8) # slightly more workers for P1
+        print(f"Starting robust generation with {n_workers} workers...")
         
         with Pool(n_workers, initializer=worker_init) as pool:
             successful_samples = 0
-            current_id = 0
+            # imap_unordered is key to avoiding hangs! 
+            # It yields results as they finish, regardless of input order.
+            # We ask for a bit more samples (1.2x) to account for failed geometries.
+            task_range = range(int(ARGS.n_total * 1.5)) 
             pbar = tqdm(total=ARGS.n_total, desc="Generating Valid Geometries")
             
-            while successful_samples < ARGS.n_total:
-                # Ask for a chunk of 50. Ask for a bit more to account for failures.
-                batch_size = 50
-                chunk_range = range(current_id, current_id + batch_size)
-                current_id += batch_size
-                
-                chunk_results = pool.map(generate_sample_data, chunk_range)
+            # Using imap_unordered for a stream of results
+            for res in pool.imap_unordered(generate_sample_data, task_range):
+                if res is None: continue
+                if successful_samples >= ARGS.n_total: break
 
-                for res in chunk_results:
-                    if res is None: continue
-                    if successful_samples >= ARGS.n_total: break
+                grp = f_h5.create_group(f"samples/{res['id']}")
+                grp.create_dataset("nodes", data=res['nodes'], compression="gzip", compression_opts=4)
+                grp.create_dataset("elements", data=res['elements'], compression="gzip", compression_opts=4)
+                grp.create_dataset("freqs", data=res['freqs'])
+                grp.create_dataset("vecs", data=res['vecs'], compression="gzip", compression_opts=4)
+                grp.attrs['shape_type'] = res['shape_type']
+                grp.attrs['geom_id'] = res['id']
 
-                    grp = f_h5.create_group(f"samples/{res['id']}")
-                    grp.create_dataset("nodes", data=res['nodes'], compression="gzip", compression_opts=4)
-                    grp.create_dataset("elements", data=res['elements'], compression="gzip", compression_opts=4)
-                    grp.create_dataset("freqs", data=res['freqs'])
-                    grp.create_dataset("vecs", data=res['vecs'], compression="gzip", compression_opts=4)
-                    grp.attrs['shape_type'] = res['shape_type']
-                    grp.attrs['geom_id'] = res['id']
-
-                    if successful_samples < ARGS.n_plot:
-                        plot_path = os.path.join(ARGS.plot_dir, f"sample_{res['id']:03d}.png")
-                        save_sample_plot(res, plot_path)
+                if successful_samples < ARGS.n_plot:
+                    plot_path = os.path.join(ARGS.plot_dir, f"sample_{res['id']:03d}.png")
+                    save_sample_plot(res, plot_path)
+            
+                successful_samples += 1
+                pbar.update(1)
+                if successful_samples % 20 == 0: f_h5.flush()
                 
-                    successful_samples += 1
-                    pbar.update(1)
-                
-                # Force flush to disk to prevent data loss and hangs
-                f_h5.flush()
             pbar.close()
                 
-    print(f"\n✅ All {ARGS.n_total} samples successfully generated and flushed to disk!")
-    
-    # Nuclear Option: Force exit to prevent Colab from hanging on process cleanup
+    print(f"\n✅ All {ARGS.n_total} samples successfully generated!")
     os._exit(0)
