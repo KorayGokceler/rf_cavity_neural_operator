@@ -273,8 +273,7 @@ class GNOTLightning(pl.LightningModule):
                 mode='min',
                 factor=0.5,
                 patience=10,
-                min_lr=1e-7,
-                verbose=True
+                min_lr=1e-7
             )
             return {
                 "optimizer": optimizer,
