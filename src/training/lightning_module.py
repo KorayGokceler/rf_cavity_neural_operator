@@ -160,6 +160,11 @@ class GNOTLightning(pl.LightningModule):
         loss, preds, targets = self._compute_loss(batch, "train")
         self.train_r2(preds, targets)
         self.log('train/r2', self.train_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        
+        # Öğrenme oranını (learning rate) progress bar'a yansıt
+        current_lr = self.optimizers().param_groups[0]['lr']
+        self.log('lr', current_lr, prog_bar=True, on_step=True, on_epoch=False)
+        
         return loss
 
     def validation_step(self, batch, batch_idx):
