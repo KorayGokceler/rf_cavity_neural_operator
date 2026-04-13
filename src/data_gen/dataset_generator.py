@@ -5,6 +5,8 @@ from skfem import utils
 from skfem.models.poisson import laplace, mass
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
+import logging
+logging.getLogger('skfem').setLevel(logging.ERROR)
 
 import argparse
 
@@ -55,13 +57,15 @@ def generate_sample_data(s_id):
             method = np.random.choice(['sharp', 'smooth'])
             if method == 'sharp':
                 n_pts = np.random.randint(7, 13)
-                angles = np.sort(np.random.uniform(0, 2*np.pi, n_pts))
+                delta = 2 * np.pi / n_pts
+                # Ensure minimum angular distance to prevent self-intersecting boundaries and gmsh hangs
+                angles = np.array([i * delta + np.random.uniform(-delta/3, delta/3) for i in range(n_pts)])
                 r = np.random.uniform(0.02, 0.046, n_pts)
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
             else:
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
                 r_raw = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
-                r = np.abs(r_raw)  # Prevent negative radius to avoid self-intersecting meshes hanging gmsh
+                r = np.clip(r_raw, 0.015, None)  # Prevent negative/tiny radius to avoid self-intersecting boundaries
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
 
         pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
