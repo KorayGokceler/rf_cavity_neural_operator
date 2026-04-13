@@ -106,13 +106,16 @@ def main():
 
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory)
+                              pin_memory=tc.pin_memory, persistent_workers=tc.num_workers > 0,
+                              prefetch_factor=2 if tc.num_workers > 0 else None)
     val_loader   = DataLoader(val_dataset,   batch_size=tc.batch_size,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory)
+                              pin_memory=tc.pin_memory, persistent_workers=tc.num_workers > 0,
+                              prefetch_factor=2 if tc.num_workers > 0 else None)
     test_loader  = DataLoader(test_dataset,  batch_size=tc.batch_size,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory)
+                              pin_memory=tc.pin_memory, persistent_workers=tc.num_workers > 0,
+                              prefetch_factor=2 if tc.num_workers > 0 else None)
 
     model = GNOTLightning(
         val_dim=mc.val_dim,
