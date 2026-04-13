@@ -98,11 +98,11 @@ model:
 training:
   # Optimization
   learning_rate: 2.0e-4
-  weight_decay: 1.0e-4
+  weight_decay: 0.0               # Modelin genlikleri (amplutidleri) baskılamasını engelle
   batch_size: 16
   max_epochs: 500
   check_val_every_n_epoch: 1    # Her epoch sonunda doğrulama yap
-  gradient_clip_val: 0.5
+  gradient_clip_val: 2.0        # Keskin gradyanlara (Peak fixleri) izin ver
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
 
   # Loss

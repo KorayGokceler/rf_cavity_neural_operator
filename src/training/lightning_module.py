@@ -94,9 +94,21 @@ class GNOTLightning(pl.LightningModule):
             if mask is not None:
                 m = mask[mode_mask].unsqueeze(-1).float()
                 n_valid = m.sum().clamp(min=1.0)
-                mode_loss = ((p - t) ** 2 * m).sum() / n_valid
+                
+                # Peak-Weighted Loss: Tepe noktalarında (amplitude yüksek olan veriler) cezayı artır
+                # Hata = (p-t)^2 * (1 + 5 * |t|)
+                weight = 1.0 + 5.0 * t.abs()
+                mse_weighted = (((p - t) ** 2) * weight * m).sum() / n_valid
+                
+                # L1 Loss: Ufak tefek genlik sapmalarını silmek için
+                l1_loss = ((p - t).abs() * m).sum() / n_valid
+                
+                mode_loss = mse_weighted + 0.1 * l1_loss
             else:
-                mode_loss = F.mse_loss(p, t)
+                weight = 1.0 + 5.0 * t.abs()
+                mse_weighted = (((p - t) ** 2) * weight).mean()
+                l1_loss = F.l1_loss(p, t)
+                mode_loss = mse_weighted + 0.1 * l1_loss
 
             loss_field = loss_field + w * mode_loss
             self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss,
