@@ -61,6 +61,25 @@ class GNOTLightning(pl.LightningModule):
         mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
         B, N, _ = pred_field.shape
 
+        # --- PHYSICS-INFORMED NEURAL NETWORK (PINN) BOUNDARY CONSTRAINT ---
+        # Input_funcs[:, :, 2] is the 'dist_boundary' feature
+        dist_bnd = batch['Input_funcs'][:, :, 2]  # [B, N]
+        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1) # [B, N, 1] boolean mask
+        
+        # 1. PINN Boundary Penalty: Raw ağ çıktısının duvarda (0'a gitmesi gerekirken) yaptığı hata
+        # (Bu, ağın sınırları fiziksel olarak öğrenmesini sağlar)
+        if bnd_mask.any():
+            loss_bnd = (pred_field[bnd_mask] ** 2).mean()
+        else:
+            loss_bnd = torch.tensor(0.0, device=pred_field.device)
+            
+        self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
+        
+        # 2. Hard Constraint: Tahminleri duvar düğümlerinde tartışılamaz şekilde 0.0'a ez.
+        # Bu işlem gradyanı keser, bu yüzden ağın duvarda gradyan alabilmesi için üstte loss_bnd hesapladık.
+        pred_field = pred_field * (~bnd_mask).float()
+        # ------------------------------------------------------------------
+
         # --- SIGN REALIGNMENT DURING TRAINING ---
         # Her örnek için pred ve true arasındaki faza (işarete) bak.
         # Eğer ters işaret daha yakınsa pred'i ters çevir.
@@ -120,7 +139,8 @@ class GNOTLightning(pl.LightningModule):
         # Frequency loss: skip if predict_frequency is disabled
         if self.predict_frequency and outputs.get('freq') is not None:
             loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
-            total_loss = loss_field + (self.freq_weight * loss_freq)
+            # Toplam Loss = Alan + Frekans + Duvar(PINN)
+            total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd)
             self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B, sync_dist=True)
             
             if self.freq_stats:
@@ -129,7 +149,8 @@ class GNOTLightning(pl.LightningModule):
                 mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
                 self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
         else:
-            total_loss = loss_field
+            # Toplam Loss = Alan + Duvar(PINN)
+            total_loss = loss_field + (1.0 * loss_bnd)
 
         self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=B, sync_dist=True)
