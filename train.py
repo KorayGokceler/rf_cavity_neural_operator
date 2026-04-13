@@ -88,18 +88,21 @@ def main():
     if local_rank == 0:
         print("\nLoading datasets...")
     feature_indices = getattr(dc, 'feature_indices', None)
+    max_nodes = getattr(dc, 'max_nodes', None)
     if feature_indices is not None and local_rank == 0:
         names = [GNOTDataset.FEATURE_NAMES[i] for i in feature_indices]
         print(f"Ablation: using features {feature_indices} → {names}")
+    if max_nodes is not None and local_rank == 0:
+        print(f"Node sub-sampling: max_nodes={max_nodes}")
     train_dataset = GNOTDataset(dc.data_path, split='train',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices)
+                                feature_indices=feature_indices, max_nodes=max_nodes)
     val_dataset   = GNOTDataset(dc.data_path, split='val',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices)
+                                feature_indices=feature_indices, max_nodes=max_nodes)
     test_dataset  = GNOTDataset(dc.data_path, split='test',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices)
+                                feature_indices=feature_indices, max_nodes=max_nodes)
 
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
@@ -130,6 +133,7 @@ def main():
         use_checkpoint=mc.use_checkpoint,
         rff_scale=getattr(mc, 'rff_scale', 1.0),
         use_rff=getattr(mc, 'use_rff', True),
+        predict_frequency=getattr(mc, 'predict_frequency', True),
         # Scheduler-specific params (using getattr for flexibility with different configs)
         onecycle_pct_start=getattr(tc, 'onecycle_pct_start', 0.3),
         onecycle_div_factor=getattr(tc, 'onecycle_div_factor', 25.0),

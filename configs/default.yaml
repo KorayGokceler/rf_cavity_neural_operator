@@ -55,6 +55,7 @@ dataset:
   val_ratio: 0.1
   # test_ratio otomatik: 1 - train - val = 0.1
   random_seed: 42
+  max_nodes: 2048               # VRAM taşmasını önlemek için node sub-sampling (null=devre dışı)
 
 
 # ─────────────────────────────────────────────────────
@@ -68,11 +69,12 @@ model:
 
   # Core architecture
   embed_dim: 256                # Hidden dimension (ana boyut parametresi)
-  n_shared_layers: 2            # Geometrik trunk derinliği (mode-blind)
+  n_shared_layers: 4            # Geometrik trunk derinliği (daha derin → daha iyi öğrenme)
   n_mode_layers: 2              # Her modun kendi fizik branch derinliği
   n_freq_layers: 2              # Frekans branch derinliği
-  n_heads: 4                    # Attention head sayısı (embed_dim % n_heads == 0 olmalı)
+  n_heads: 8                    # Attention head sayısı (256 / 8 = 32 dim per head)
   num_experts: 4                # GeometricGatingFFN expert sayısı
+  predict_frequency: false      # Frekans tahmini devre dışı — alan doğruluğuna odaklan
 
   # Mode conditioning
   num_field_modes: 1            # Sadece 1 mod çalışıyoruz
@@ -95,40 +97,40 @@ model:
 # ─────────────────────────────────────────────────────
 training:
   # Optimization
-  learning_rate: 1.0e-3
+  learning_rate: 2.0e-4
   weight_decay: 1.0e-4
   batch_size: 16
-  max_epochs: 50
-  gradient_clip_val: 1.0
-  strategy: "auto"            # "auto" (single GPU) veya "ddp" (multi-GPU)
+  max_epochs: 500
+  check_val_every_n_epoch: 1    # Her epoch sonunda doğrulama yap
+  gradient_clip_val: 0.5
+  strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
 
   # Loss
   freq_weight: 0.5              # Frekans loss ağırlığı: total = field_loss + freq_weight * freq_loss
   mode_loss_weights: [1.0]      # SADECE MODE 1 İÇİN TEK AĞIRLIK
-                                # Zayıf modları güçlendirmek için normalde [1.0, 2.0, 2.0] yazılırdı
 
   # LR Scheduler
-  scheduler: "onecycle"         # "onecycle" veya "cosine"
-  # OneCycleLR parametreleri
-  onecycle_pct_start: 0.3       # Warmup oranı
-  onecycle_div_factor: 25       # Başlangıç lr = max_lr / div_factor
+  scheduler: "reducelr"         # "reducelr" — Val loss takıldığında LR düşür
+  # OneCycleLR parametreleri (scheduler: "onecycle" yapılırsa kullanılır)
+  onecycle_pct_start: 0.3
+  onecycle_div_factor: 25
   onecycle_final_div_factor: 1.0e+4
-  # CosineAnnealingLR parametreleri
+  # CosineAnnealingLR parametreleri (scheduler: "cosine" yapılırsa kullanılır)
   cosine_eta_min: 1.0e-6
 
   # Early stopping
-  patience: 10                  # Val loss iyileşmezse dur
+  patience: 25                  # Val loss iyileşmezse dur
 
   # DataLoader
-  num_workers: 0                # Colab'da 4, Windows'ta 0
+  num_workers: 4                # Colab'da 4, Windows'ta 0 yapın
   pin_memory: true
 
   # Logging & Visualization
   log_dir: "training_logs"
-  exp_name: "gnot_training"
-  log_every_n_steps: 50
-  viz_every_n_epochs: 5         # Field görselleştirme sıklığı
-  progress_bar_refresh_rate: 50
+  exp_name: "gnot_old_data_v1"
+  log_every_n_steps: 10
+  viz_every_n_epochs: 10        # Field görselleştirme sıklığı
+  progress_bar_refresh_rate: 1
 
   # Debug
   fast_dev_run: false           # true ile 1 iterasyon test

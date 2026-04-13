@@ -10,7 +10,7 @@ class GNOTLightning(pl.LightningModule):
                  n_heads=4, num_experts=4, num_field_modes=3,
                  lr=1e-3, freq_weight=0.5, mode_loss_weights=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
-                 rff_scale=1.0, use_rff=True,
+                 rff_scale=1.0, use_rff=True, predict_frequency=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6):
         super().__init__()
@@ -33,6 +33,7 @@ class GNOTLightning(pl.LightningModule):
             use_checkpoint=use_checkpoint
         )
         self.freq_weight = freq_weight
+        self.predict_frequency = predict_frequency
         # Per-mode loss weights: [w0, w1, w2] — zayıf modlara daha yüksek ağırlık verilebilir
         if mode_loss_weights is None:
             self.mode_loss_weights = [1.0] * num_field_modes
@@ -104,18 +105,22 @@ class GNOTLightning(pl.LightningModule):
         # Normalize by sum of weights
         loss_field = loss_field / sum(self.mode_loss_weights)
 
-        loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
-        total_loss = loss_field + (self.freq_weight * loss_freq)
+        # Frequency loss: skip if predict_frequency is disabled
+        if self.predict_frequency and outputs.get('freq') is not None:
+            loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
+            total_loss = loss_field + (self.freq_weight * loss_freq)
+            self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B, sync_dist=True)
+            
+            if self.freq_stats:
+                freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
+                freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
+                mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
+                self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
+        else:
+            total_loss = loss_field
 
         self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B, sync_dist=True)
-        
-        if self.freq_stats:
-            freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
-            freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
-            mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
-            self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
 
         # Per-sample Relative L2 Error — VECTORIZED (no Python for-loop)
         if mask is not None:
@@ -242,21 +247,43 @@ class GNOTLightning(pl.LightningModule):
                 div_factor=self.hparams.onecycle_div_factor,
                 final_div_factor=self.hparams.onecycle_final_div_factor
             )
-            interval = 'step'
+            return {
+                "optimizer": optimizer, 
+                "lr_scheduler": {
+                    "scheduler": scheduler, 
+                    "interval": "step"
+                }
+            }
         elif self.hparams.scheduler == 'cosine':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, 
                 T_max=self.trainer.max_epochs, 
                 eta_min=self.hparams.cosine_eta_min
             )
-            interval = 'epoch'
+            return {
+                "optimizer": optimizer, 
+                "lr_scheduler": {
+                    "scheduler": scheduler, 
+                    "interval": "epoch"
+                }
+            }
+        elif self.hparams.scheduler == 'reducelr':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=0.5,
+                patience=10,
+                min_lr=1e-7,
+                verbose=True
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "monitor": "val/field_rel_l2",
+                    "interval": "epoch",
+                    "frequency": 1
+                }
+            }
         else:
             return optimizer
-
-        return {
-            "optimizer": optimizer, 
-            "lr_scheduler": {
-                "scheduler": scheduler, 
-                "interval": interval
-            }
-        }

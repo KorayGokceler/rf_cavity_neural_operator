@@ -1,0 +1,98 @@
+İlk Aşama
+######################################################################################################################################
+
+\src\data_gen\data_generator.py dosyası inceleme.
+
+1)Öncelikle kullanılan kütüphanelerde kodun temel işini yapanları basitçe açıklayalım.
+
+gmsh----> Açık kaynaklı güçlü bir mesh motoru. Mesh üretmek için kullanıyoruz.
+
+skfem----> Scikit-FEM sonlu elemanlar analizi araçları bulunan kütüphane.
+
+multiprocessing ------> Cpu çekirdeklerini verimli kullanmak için.
+
+2)Kodun satır satır açıklaması
+
+def parse_args(): 
+    Termınalden çalıştırırken parametre yazabilmemizi sağlıyor.
+
+Parametreler: h5_filename: Oluşturulacak h5 dosyasının ismi.
+              plot_dir: Örnek plotların kaydedileceği directory.
+              n_total: Toplam geometri sayısı.
+              n_plot: Plot edilecek örnek sayısı.
+              mode= random ve calibration parametreleri var. calibration analitik çözümlerle kıyaslamak için kullanılıyor. Eğitim için random seçiyoruz.
+
+def generate_sample_data(s_id): 
+    Kodun temel fonksiyonu. Hem modelin generalize edebileceği şekilde random geometriler oluşturup hem de bu şekillerin meshlerini oluşturuyor. Daha sonrasında basit bir solver kullanıp denklemi çözüyor.
+    s_id parametresi sample numarasıdır 0'dan n_totala kadar gider. Bu parametre kullanılarak bu fonksiyonun içinde random seed oluşturulur. Bu fonksiyon main döngüsünde her bir örnek için çalıştırılır.
+    Fonksiyonun başında her bir örnek için gmsh tekrar başlatılır.
+    Fonksiyon basit bir if else ile başlar eğer calibration modu çalışırsa kare veya çember üretetilir.
+    Eğer random modu çalışırsa öncelikle şekilin random bir şekilde sharp veya smooth hangisi olacağı seçilir.
+    Sharp şekillerde 7 ila 12 arasında nokta seçilip bunların merkeze uzaklıkları belirlenip bir polıgon oluşturulur.
+    Smooth şekillerde ise cosinüs kullanılarak daha yumuşak geçişli şekiller oluşturulur.
+    Buradan sonra oluşturulan noktalar kullanılarak gmsh ile şekil oluşturulur. Sonrasında meshleme aşamasına geçilir.
+    Özel bir adaptif mesh yüntemi kullanılmıştır birkaç deneme yapılarak buna karar verilmiştir. Ancak burası en önemli geliştirmeye açık kısımdır. Belki ileride solution based adaptive refinement denenebilir.
+       "# Adaptive Mesh: Dense at boundary, balanced at center
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        gmsh.model.mesh.field.add("Distance", 1)
+        gmsh.model.mesh.field.setNumbers(1, "CurvesList", lines)
+        gmsh.model.mesh.field.add("Threshold", 2)
+        gmsh.model.mesh.field.setNumber(2, "InField", 1)
+        gmsh.model.mesh.field.setNumber(2, "SizeMin", 0.0012)
+        gmsh.model.mesh.field.setNumber(2, "SizeMax", 0.005)
+        gmsh.model.mesh.field.setNumber(2, "DistMin", 0.002)
+        gmsh.model.mesh.field.setNumber(2, "DistMax", 0.03)
+        gmsh.model.mesh.field.setAsBackgroundMesh(2)"
+    Mesh oluşturulduktan sonra solver aşamasına gelinir.
+       "# Physics Solver (P2 Precision)
+        m = MeshTri(nodes.T, elements.T) # kütüphanenin ihtiyaç duyduğu mesh nesnesi oluşturulur
+        basis = Basis(m, ElementTriP2()) # 2.dereceden poolinomlarla bazlar oluşturulur FEM için.
+        K, M = laplace.assemble(basis), mass.assemble(basis) # stiffness ve mass matrislerini oluşturuyoruz.
+        D = basis.get_dofs(facets=m.boundary_facets()) # Boundary nodelarını alıyoruz. Default olarak 0 boundary.
+        Kc, Mc, xc, Ic = utils.condense(K, M, D=D, expand=True) # matrislere ve vektörlere boundary conditionları uyguluyoruz.
+        vals, vecs = utils.solve_eigen(Kc, Mc, x=xc, I=Ic, k=3, sigma=500.0) # ilk 3 frekans için modları bulan eigensolverı kullanıyoruz.
+
+        freqs = (299792458 * np.sqrt(np.abs(vals.real))) / (2 * np.pi) / 1e9" # frekansı ghz birimine getiriyoruz.
+
+    son olarak fonksiyon bunları return ediyor.
+    return {
+            'id': s_id, 'nodes': nodes, 'elements': elements,
+            'freqs': freqs.real, 'vecs': vecs.real, 'n_nodes': len(nodes),
+            'shape_type': 'calibration' if ARGS.mode == 'calibration' else 'random'
+        }
+
+def save_sample_plot(data, save_path): Bu fonksiyon örneklerimizi plot ediyor. Eğitimi etkilemeyen sadece inceleme amaçlı bir fonksiyon.
+
+if __name__ == '__main__': Main bloğunda meshler paqralel bir şekilde oluşturulup çözülüyor burası da optimizasyona açık ama temelde sadece datanın üretim süresini etkiliyor.
+       
+Featureların oluşturulması
+#####################################################################################################################################
+   
+src\data\dataset_converter.py
+
+Belki de en kritik koddur. Modele tahmin yapması için doğru featureları vermeliyiz.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
