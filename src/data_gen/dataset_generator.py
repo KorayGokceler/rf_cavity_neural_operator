@@ -22,8 +22,16 @@ ARGS = None
 
 def generate_sample_data(s_id):
     try:
-        gmsh.initialize()
-        gmsh.model.add(f"rf_{s_id}")
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.option.setNumber("General.Verbosity", 1)
+            
+        model_name = f"rf_{s_id}_{os.getpid()}"
+        if model_name in gmsh.model.list():
+            gmsh.model.remove()
+        gmsh.model.add(model_name)
+        
         np.random.seed(s_id * 13)
         L, cx, cy = 0.1, 0.05, 0.05
 
@@ -52,7 +60,8 @@ def generate_sample_data(s_id):
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
             else:
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-                r = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                r_raw = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                r = np.abs(r_raw)  # Prevent negative radius to avoid self-intersecting meshes hanging gmsh
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
 
         pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
@@ -97,7 +106,7 @@ def generate_sample_data(s_id):
         return None
     finally:
         try:
-            gmsh.finalize()
+            gmsh.model.remove()
         except Exception:
             pass
 
