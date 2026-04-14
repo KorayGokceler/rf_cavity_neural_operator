@@ -130,8 +130,10 @@ class GNOTLightning(pl.LightningModule):
                 mode_loss = mse_weighted + 0.1 * l1_loss
 
             loss_field = loss_field + w * mode_loss
+            # Log mode-specific loss on epoch level for both train and val
             self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss,
-                     prog_bar=False, batch_size=int(mode_mask.sum()), sync_dist=True)
+                     on_step=False, on_epoch=True, prog_bar=False, 
+                     batch_size=int(mode_mask.sum()), sync_dist=True)
         
         # Normalize by sum of weights
         loss_field = loss_field / sum(self.mode_loss_weights)
@@ -141,19 +143,19 @@ class GNOTLightning(pl.LightningModule):
             loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
             # Toplam Loss = Alan + Frekans + Duvar(PINN)
             total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd)
-            self.log(f'{prefix}/freq_loss', loss_freq, prog_bar=False, batch_size=B, sync_dist=True)
+            self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
             
             if self.freq_stats:
                 freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
                 freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
                 mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
-                self.log(f'{prefix}/freq_mae_ghz', mae_ghz, prog_bar=True, batch_size=B, sync_dist=True)
+                self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         else:
             # Toplam Loss = Alan + Duvar(PINN)
             total_loss = loss_field + (1.0 * loss_bnd)
 
-        self.log(f'{prefix}/loss', total_loss, prog_bar=True, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/field_loss', loss_field, prog_bar=False, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
         # Per-sample Relative L2 Error — VECTORIZED (no Python for-loop)
         if mask is not None:
@@ -164,7 +166,7 @@ class GNOTLightning(pl.LightningModule):
             diff_sq = ((pred_field - true_field) ** 2).sum(dim=(1, 2))  # [B]
             true_sq = ((true_field) ** 2).sum(dim=(1, 2))  # [B]
         rel_l2 = (torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + 1e-8)).mean()
-        self.log(f'{prefix}/field_rel_l2', rel_l2, prog_bar=True, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/field_rel_l2', rel_l2, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
         # Per-mode relative L2 error — vectorized
         mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
@@ -176,7 +178,8 @@ class GNOTLightning(pl.LightningModule):
             mode_true = true_sq[mode_mask_b]  # [n_mode]
             mode_rel = (torch.sqrt(mode_diff) / (torch.sqrt(mode_true) + 1e-8)).mean()
             self.log(f'{prefix}/mode_{mode_val}_rel_l2', mode_rel,
-                     prog_bar=False, batch_size=int(mode_mask_b.sum()), sync_dist=True)
+                     on_step=False, on_epoch=True, prog_bar=False, 
+                     batch_size=int(mode_mask_b.sum()), sync_dist=True)
 
         # Extract valid-only flat tensors for torchmetrics (R2, MAE)
         if mask is not None:
@@ -227,40 +230,55 @@ class GNOTLightning(pl.LightningModule):
                     percentages = (calls / total_calls) * 100
                     for i, p in enumerate(percentages):
                         self.logger.experiment.add_scalar(f"Experts_{block_name}/E{i}", p, self.current_epoch)
+        
         metrics = self.trainer.logged_metrics
         epoch = self.trainer.current_epoch
 
-        # Tüm mode_X_rel_l2 metriklerini topla
-        mode_errors = {
-            k: v for k, v in metrics.items()
-            if k.startswith('val/mode_') and k.endswith('_rel_l2')
+        # Collect mode-specific errors for both Train and Val
+        # We use a dict of {mode_idx: value}
+        train_errors = {
+            k.split('mode_')[1].split('_')[0]: v.item() if torch.is_tensor(v) else v
+            for k, v in metrics.items() if k.startswith('train/mode_') and k.endswith('_rel_l2')
+        }
+        val_errors = {
+            k.split('mode_')[1].split('_')[0]: v.item() if torch.is_tensor(v) else v
+            for k, v in metrics.items() if k.startswith('val/mode_') and k.endswith('_rel_l2')
         }
 
-        if not mode_errors:
+        mode_indices = sorted(list(set(train_errors.keys()) | set(val_errors.keys())))
+        if not mode_indices:
             return
 
-        # Başlık
-        print(f"\n{'─'*50}")
-        print(f"  Epoch {epoch:>3d} │ Val Per-Mode Field Error")
-        print(f"{'─'*50}")
+        # Header
+        print(f"\n{'━'*64}")
+        print(f"  Epoch {epoch:>3d} │ Mode-Specific Relative L2 Field Error")
+        print(f"{'─'*64}")
+        print(f"  Mode      │   Train Rel   │    Val Rel    │ Progress")
+        print(f"{'─'*64}")
 
-        # Her modu sıralı bas
-        for key in sorted(mode_errors.keys()):
-            mode_num = key.split('mode_')[1].split('_')[0]
-            val = mode_errors[key]
-            # Basit durum çubuğu (0.0 = iyi, 1.0+ = kötü)
-            bar_len = int(min(val * 20, 20))
-            bar = '█' * bar_len + '░' * (20 - bar_len)
-            status = '✅' if val < 0.1 else ('⚠️ ' if val < 0.3 else '❌')
-            print(f"  Mode {mode_num}  [{bar}]  {val:.4f}  {status}")
+        for m_idx in mode_indices:
+            t_val = train_errors.get(m_idx, 0.0)
+            v_val = val_errors.get(m_idx, 0.0)
+            
+            # Status indicators
+            status = '✅' if v_val < 0.1 else ('⚠️ ' if v_val < 0.3 else '❌')
+            if v_val == 0: status = '??'
 
-        # Global özet
-        val_loss = metrics.get('val/loss', None)
-        val_r2   = metrics.get('val/r2',   None)
-        print(f"{'─'*50}")
-        if val_loss is not None:
-            print(f"  Total Loss: {val_loss:.4f}   R²: {val_r2:.4f}" if val_r2 is not None else f"  Total Loss: {val_loss:.4f}")
-        print(f"{'─'*50}\n")
+            # Mini bar chart for Val error
+            bar_len = int(min(v_val * 15, 15))
+            bar = '█' * bar_len + '░' * (15 - bar_len)
+            
+            t_str = f"{t_val:10.4f}" if m_idx in train_errors else "   -      "
+            v_str = f"{v_val:10.4f}" if m_idx in val_errors else "   -      "
+            
+            print(f"  Mode {m_idx:2s}   │  {t_str}   │  {v_str}   │ [{bar}] {status}")
+
+        # Global Summary
+        print(f"{'─'*64}")
+        global_val_l2 = metrics.get('val/field_rel_l2', 0.0)
+        global_val_r2 = metrics.get('val/r2', 0.0)
+        print(f"  GLOBAL VAL  │  Rel L2: {global_val_l2:.4f}  │  R²: {global_val_r2:.4f}")
+        print(f"{'━'*64}\n")
 
     def test_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "test")

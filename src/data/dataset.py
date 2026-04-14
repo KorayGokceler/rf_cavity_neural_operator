@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import pickle
+import collections
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
@@ -17,6 +18,9 @@ class GNOTDataset(Dataset):
         self.feature_indices = feature_indices  # e.g. [0,1] for xy-only, None=all
         self.max_nodes = max_nodes  # Optional: cap sequence length to prevent VRAM overflow
 
+        # 1. Collect mapping: sample_index -> geom_id
+        sample_to_geom = []
+        
         if self.is_h5:
             import h5py, json
             with h5py.File(data_path, 'r') as f:
@@ -24,31 +28,49 @@ class GNOTDataset(Dataset):
                 self.stats = metadata.get('freq_stats', None)
                 self.n_samples_total = metadata['n_samples']
                 # Store sample indices for subsetting
-                self.indices = list(range(self.n_samples_total))
+                for i in range(self.n_samples_total):
+                    g_id = f['samples'][str(i)].attrs['geom_id']
+                    sample_to_geom.append((i, g_id))
         else:
             with open(data_path, 'rb') as f:
                 data = pickle.load(f)
             self.geometry_pool = data['geometry_pool']
             all_samples = data['samples']
             self.stats = data.get('metadata', {}).get('freq_stats', None)
-            self.indices = list(range(len(all_samples)))
-            # We still need to keep the light samples list for PKL
             self.samples_metadata = all_samples
+            for i, s in enumerate(all_samples):
+                sample_to_geom.append((i, s['geom_id']))
 
-        n_total = len(self.indices)
-        n_train = int(n_total * train_ratio)
-        n_val = int(n_total * val_ratio)
-
+        # 2. Group samples by geometry
+        geom_to_samples = collections.defaultdict(list)
+        for s_idx, g_id in sample_to_geom:
+            geom_to_samples[g_id].append(s_idx)
+        
+        unique_geoms = sorted(list(geom_to_samples.keys()))
+        n_geoms = len(unique_geoms)
+        
+        # 3. Shuffle geometries (not samples!) to keep modes of same geometry together
         np.random.seed(42)
-        perm = np.random.permutation(n_total)
-        self.indices = [self.indices[i] for i in perm]
+        perm_geoms = np.random.permutation(unique_geoms)
+        
+        n_train_geoms = int(n_geoms * train_ratio)
+        n_val_geoms = int(n_geoms * val_ratio)
 
         if split == 'train':
-            self.active_indices = self.indices[:n_train]
+            active_geoms = perm_geoms[:n_train_geoms]
         elif split == 'val':
-            self.active_indices = self.indices[n_train:n_train+n_val]
+            active_geoms = perm_geoms[n_train_geoms : n_train_geoms + n_val_geoms]
         else:
-            self.active_indices = self.indices[n_train+n_val:]
+            active_geoms = perm_geoms[n_train_geoms + n_val_geoms :]
+
+        # 4. Collect all sample indices for the selected geometries
+        self.active_indices = []
+        for g_id in active_geoms:
+            self.active_indices.extend(geom_to_samples[g_id])
+        
+        # Optional: shuffle active_indices so modes are mixed within batches
+        if split == 'train':
+            np.random.shuffle(self.active_indices)
 
         if self.stats:
             print(f"Freq Stats: mean={self.stats['mean']:.4f}, std={self.stats['std']:.4f}")
