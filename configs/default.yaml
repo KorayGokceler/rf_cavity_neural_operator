@@ -42,7 +42,7 @@ data_convert:
   h5_filepath: "rf_cavity_1000_dataset.h5"
   output_path: "data/gnot_dataset.pkl"
   output_format: "pkl"          # "pkl" veya "h5"
-  mode_indices: [1]            # SADECE MODE 1 (Dipol mod)
+  mode_indices: [0, 1, 2]       # TUM 3 MODE (Monopol, Dipol, vs.)
   max_samples: null             # null = tümü
 
 
@@ -77,7 +77,7 @@ model:
   predict_frequency: false      # Frekans tahmini devre dışı — alan doğruluğuna odaklan
 
   # Mode conditioning
-  num_field_modes: 1            # Sadece 1 mod çalışıyoruz
+  num_field_modes: 3            # 3 mode da egitilecek
   num_film_modes: 20            # FiLM embedding tablo boyutu (headroom)
   film_init_std: 0.02           # FiLM embedding başlangıç std
 
@@ -107,7 +107,7 @@ training:
 
   # Loss
   freq_weight: 0.5              # Frekans loss ağırlığı: total = field_loss + freq_weight * freq_loss
-  mode_loss_weights: [1.0]      # SADECE MODE 1 İÇİN TEK AĞIRLIK
+  mode_loss_weights: [1.0, 1.0, 1.0] # 3 MODE ICIN AGIRLIKLAR
 
   # LR Scheduler
   scheduler: "reducelr"         # "reducelr" — Val loss takıldığında LR düşür
