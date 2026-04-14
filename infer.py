@@ -8,26 +8,45 @@ from torch.utils.data import DataLoader
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
 
-def plot_single_comparison(coords, target, pred, title, save_path):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+def plot_geometry_comparison(geom_id, modes_data, save_path):
+    """
+    Plots all modes of a geometry in a single figure.
+    Each mode gets a row with Ground Truth and Prediction columns.
+    """
+    n_modes = len(modes_data)
+    # Sort modes by their index
+    sorted_modes = sorted(modes_data.items())
     
-    tri = Triangulation(coords[:, 0], coords[:, 1])
+    fig, axes = plt.subplots(n_modes, 2, figsize=(12, 5 * n_modes), squeeze=False)
+    fig.suptitle(f"Geometry ID: {geom_id}", fontsize=16, fontweight='bold', y=0.98)
     
-    im1 = axes[0].tripcolor(tri, target.flatten(), cmap='RdBu_r', shading='gouraud')
-    axes[0].set_title("Ground Truth (Simulated)")
-    fig.colorbar(im1, ax=axes[0])
-    
-    im2 = axes[1].tripcolor(tri, pred.flatten(), cmap='RdBu_r', shading='gouraud')
-    axes[1].set_title("GNOT Prediction")
-    fig.colorbar(im2, ax=axes[1])
-    
-    for ax in axes:
-        ax.set_aspect('equal')
-        ax.axis('off')
+    for i, (m_idx, data) in enumerate(sorted_modes):
+        coords = data['coords']
+        target = data['target']
+        pred = data['pred']
+        f_true = data['f_true']
+        f_pred = data['f_pred']
+        rel_l2 = data['rel_l2']
+        sign_info = data['sign_info']
         
-    fig.suptitle(title)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        tri = Triangulation(coords[:, 0], coords[:, 1])
+        
+        # Ground Truth
+        im1 = axes[i, 0].tripcolor(tri, target.flatten(), cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
+        axes[i, 0].set_title(f"Mode {m_idx} - Ground Truth\nFreq: {f_true:.2f} GHz", fontsize=12)
+        fig.colorbar(im1, ax=axes[i, 0])
+        
+        # Prediction
+        im2 = axes[i, 1].tripcolor(tri, pred.flatten(), cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
+        axes[i, 1].set_title(f"Mode {m_idx} - GNOT Prediction{sign_info}\nFreq: {f_pred:.2f} GHz (Rel L2: {rel_l2:.3f})", fontsize=12)
+        fig.colorbar(im2, ax=axes[i, 1])
+        
+        for ax in axes[i]:
+            ax.set_aspect('equal')
+            ax.axis('off')
+            
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(save_path, dpi=120, bbox_inches='tight')
     plt.close(fig)
 
 def main(args):
@@ -49,9 +68,10 @@ def main(args):
 
     os.makedirs(args.output_dir, exist_ok=True)
     
-    print(f"Running inference and generating {args.num_samples} visualization plots...")
+    print(f"Running inference for {args.num_samples} geometries...")
     
-    samples_plotted = 0
+    geometries_results = {}
+    
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             if torch.cuda.is_available():
@@ -62,6 +82,8 @@ def main(args):
             targets = batch['Y_field']
             coords = batch['X']
             mask = batch.get('Mask', None)
+            geom_ids = batch['geom_id'].squeeze(-1).cpu().numpy()
+            theta_ins = batch['Theta_in'].squeeze(-1).cpu().numpy()
             
             # De-normalize predicted frequencies if available
             if model.freq_stats:
@@ -73,45 +95,62 @@ def main(args):
 
             B = preds.shape[0]
             for i in range(B):
-                m = mask[i] if mask is not None else slice(None)
+                g_id = int(geom_ids[i])
+                m_idx = int(theta_ins[i])
                 
-                # Sign-Agnostic Logic for Inference Metrics & Visualization
+                # Check if we already have enough geometries
+                if g_id not in geometries_results and len(geometries_results) >= args.num_samples:
+                    continue
+                
+                m = mask[i] if mask is not None else slice(None)
                 p_tensor = preds[i, m]
                 t_tensor = targets[i, m]
                 
+                # Sign-Agnostic selection
                 rel_pos = torch.norm(p_tensor - t_tensor) / (torch.norm(t_tensor) + 1e-8)
                 rel_neg = torch.norm(p_tensor + t_tensor) / (torch.norm(t_tensor) + 1e-8)
                 
-                # En iyi işareti seç (faz keyfiliğini görselde yenmek için)
                 if rel_neg < rel_pos:
                     rel_l2 = rel_neg.item()
                     final_pred_viz = -p_tensor.cpu().numpy()
-                    sign_info = " (Flipped for Viz)"
+                    sign_info = "*" # mini indicator for sign flip
                 else:
                     rel_l2 = rel_pos.item()
                     final_pred_viz = p_tensor.cpu().numpy()
                     sign_info = ""
 
-                valid_coords = coords[i, m].cpu().numpy()
-                valid_targets = t_tensor.cpu().numpy()
+                if g_id not in geometries_results:
+                    geometries_results[g_id] = {}
                 
-                f_true = freq_trues[i, 0].item()
-                f_pred = freq_preds[i, 0].item()
-                f_err = abs(f_true - f_pred)
-                
-                # Extraction of mode index
-                m_idx = int(batch['Theta_in'][i].item())
-                
-                title = f"Mode {m_idx} | Sample {samples_plotted}{sign_info}\nFreq True: {f_true:.2f}GHz, Pred: {f_pred:.2f}GHz (Err: {f_err:.3f})\nField Rel L2: {rel_l2:.3f}"
-                save_path = os.path.join(args.output_dir, f"{args.split}_mode{m_idx}_sample_{samples_plotted}.png")
-                
-                plot_single_comparison(valid_coords, valid_targets, final_pred_viz, title, save_path)
-                print(f"[{samples_plotted+1}/{args.num_samples}] Saved visualization to {save_path}")
-                
-                samples_plotted += 1
-                if samples_plotted >= args.num_samples:
-                    print("Inference completed successfully!")
-                    return
+                geometries_results[g_id][m_idx] = {
+                    'coords': coords[i, m].cpu().numpy(),
+                    'target': t_tensor.cpu().numpy(),
+                    'pred': final_pred_viz,
+                    'f_true': freq_trues[i, 0].item(),
+                    'f_pred': freq_preds[i, 0].item(),
+                    'rel_l2': rel_l2,
+                    'sign_info': sign_info
+                }
+
+            # Break early if we collected all needed geometries and they all have 3 modes
+            # (or whatever number of modes is expected)
+            all_complete = len(geometries_results) >= args.num_samples
+            if all_complete:
+                # Check if each geometry has at least some modes (e.g. 3)
+                for res in geometries_results.values():
+                    if len(res) < 3: # Assuming 3 modes is standard
+                        all_complete = False
+                        break
+                if all_complete: break
+
+    # Now plot the grouped results
+    print(f"Plotting {len(geometries_results)} geometries...")
+    for idx, (g_id, modes) in enumerate(geometries_results.items()):
+        save_path = os.path.join(args.output_dir, f"sample_geom_{g_id:04d}_all_modes.png")
+        plot_geometry_comparison(g_id, modes, save_path)
+        print(f"[{idx+1}/{len(geometries_results)}] Saved grouped plot for Geometry {g_id} to {save_path}")
+
+    print("Inference and grouped visualization completed successfully!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Infer and Visualize GNOT Predictions")
