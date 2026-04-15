@@ -8,6 +8,11 @@ def main():
     parser.add_argument("--output_path", type=str, default="data/gnot_dataset.pkl", help="Path to output file.")
     parser.add_argument("--output_format", type=str, default="pkl", choices=["pkl", "h5"], help="Output format (pkl or h5).")
     parser.add_argument("--modes", type=int, nargs='+', default=[0, 1, 2], help="Mode indices to include (e.g., 0 1 or 1).")
+    
+    # Frequency stats override
+    parser.add_argument("--freq_mean", type=float, default=None, help="Manual override for frequency mean.")
+    parser.add_argument("--freq_std", type=float, default=None, help="Manual override for frequency std.")
+    
     args = parser.parse_args()
 
     output_dir = os.path.dirname(args.output_path)
@@ -20,7 +25,9 @@ def main():
         output_filepath=args.output_path,
         mode_indices=args.modes,
         max_samples=None,
-        format=args.output_format
+        format=args.output_format,
+        freq_mean=args.freq_mean,
+        freq_std=args.freq_std
     )
     print("Conversion finished.")
 

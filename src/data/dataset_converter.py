@@ -105,7 +105,8 @@ class RFCavityToGNOT:
             'elements': elements,
         }
 
-    def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None, format='pkl'):
+    def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None, format='pkl', 
+                        freq_mean=None, freq_std=None):
         print(f"Converting: {self.h5_filepath} to {format.upper()}")
 
         with h5py.File(self.h5_filepath, 'r') as f:
@@ -161,14 +162,18 @@ class RFCavityToGNOT:
                     self.stats['freq_range'][1] = max(self.stats['freq_range'][1], freq)
                     self.stats['freq_by_mode'][m_idx].append(freq)
 
+        # Use manual stats if provided, otherwise compute from dataset
+        final_mean = float(freq_mean) if freq_mean is not None else float(np.mean([f for l in self.stats['freq_by_mode'].values() for f in l]))
+        final_std = float(freq_std) if freq_std is not None else float(np.std([f for l in self.stats['freq_by_mode'].values() for f in l]) + 1e-10)
+
         # Dataset Metadata
         metadata = {
             'mode_indices': mode_indices,
             'n_geometries': self.stats['n_geometries'],
             'n_samples': self.stats['n_samples'],
             'freq_stats': {
-                'mean': float(np.mean([f for l in self.stats['freq_by_mode'].values() for f in l])),
-                'std': float(np.std([f for l in self.stats['freq_by_mode'].values() for f in l]) + 1e-10),
+                'mean': final_mean,
+                'std': final_std,
                 'mode_stats': {
                     str(m): {'mean': float(np.mean(l)), 'std': float(np.std(l) + 1e-10)}
                     for m, l in self.stats['freq_by_mode'].items()
