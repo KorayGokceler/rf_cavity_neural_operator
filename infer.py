@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
 
-def plot_geometry_comparison(geom_id, modes_data, save_path):
+def plot_geometry_comparison(geom_id, modes_data, save_path, elements):
     """
     Plots all modes of a geometry in a single figure.
     Each mode gets a row with Ground Truth and Prediction columns.
@@ -29,7 +29,7 @@ def plot_geometry_comparison(geom_id, modes_data, save_path):
         rel_l2 = data['rel_l2']
         sign_info = data['sign_info']
         
-        tri = Triangulation(coords[:, 0], coords[:, 1])
+        tri = Triangulation(coords[:, 0], coords[:, 1], elements)
         
         # Ground Truth
         im1 = axes[i, 0].tripcolor(tri, target.flatten(), cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
@@ -63,6 +63,11 @@ def main(args):
     # Put frequency stats from dataset to model (important for denormalizing freq predictions)
     if hasattr(dataset, 'stats') and dataset.stats:
         model.freq_stats = dataset.stats
+    
+    # Manual override
+    if args.freq_mean is not None and args.freq_std is not None:
+        model.freq_stats = {'mean': args.freq_mean, 'std': args.freq_std}
+        print(f"Using manual frequency stats override: mean={args.freq_mean}, std={args.freq_std}")
 
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=gnot_collate_fn)
 
@@ -81,6 +86,7 @@ def main(args):
             preds = outputs['field']
             targets = batch['Y_field']
             coords = batch['X']
+            elements_batch = batch['elements']
             mask = batch.get('Mask', None)
             geom_ids = batch['geom_id'].squeeze(-1).cpu().numpy()
             theta_ins = batch['Theta_in'].squeeze(-1).cpu().numpy()
@@ -120,9 +126,9 @@ def main(args):
                     sign_info = ""
 
                 if g_id not in geometries_results:
-                    geometries_results[g_id] = {}
+                    geometries_results[g_id] = {'modes': {}, 'elements': elements_batch[i].cpu().numpy()}
                 
-                geometries_results[g_id][m_idx] = {
+                geometries_results[g_id]['modes'][m_idx] = {
                     'coords': coords[i, m].cpu().numpy(),
                     'target': t_tensor.cpu().numpy(),
                     'pred': final_pred_viz,
@@ -138,16 +144,16 @@ def main(args):
             if all_complete:
                 # Check if each geometry has at least some modes (e.g. 3)
                 for res in geometries_results.values():
-                    if len(res) < 3: # Assuming 3 modes is standard
+                    if len(res['modes']) < 3: # Assuming 3 modes is standard
                         all_complete = False
                         break
                 if all_complete: break
 
     # Now plot the grouped results
     print(f"Plotting {len(geometries_results)} geometries...")
-    for idx, (g_id, modes) in enumerate(geometries_results.items()):
+    for idx, (g_id, data) in enumerate(geometries_results.items()):
         save_path = os.path.join(args.output_dir, f"sample_geom_{g_id:04d}_all_modes.png")
-        plot_geometry_comparison(g_id, modes, save_path)
+        plot_geometry_comparison(g_id, data['modes'], save_path, data['elements'])
         print(f"[{idx+1}/{len(geometries_results)}] Saved grouped plot for Geometry {g_id} to {save_path}")
 
     print("Inference and grouped visualization completed successfully!")
@@ -160,6 +166,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for inference")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of samples to visualize and save as PNG")
     parser.add_argument("--output_dir", type=str, default="inference_plots", help="Output directory for PNG plots")
+    
+    # Frequency stats override
+    parser.add_argument("--freq_mean", type=float, default=None, help="Manual override for frequency mean")
+    parser.add_argument("--freq_std", type=float, default=None, help="Manual override for frequency std")
     
     args = parser.parse_args()
     main(args)

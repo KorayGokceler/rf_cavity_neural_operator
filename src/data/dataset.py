@@ -155,7 +155,8 @@ class GNOTDataset(Dataset):
             'Y_field': torch.from_numpy(y_field).float(),
             'Y_freq': torch.from_numpy(np.array([norm_freq], dtype=np.float32)),
             'Theta_in': torch.tensor([int(raw_theta[0])], dtype=torch.long),
-            'geom_id': torch.tensor([int(raw_theta[2])], dtype=torch.long)
+            'geom_id': torch.tensor([int(raw_theta[2])], dtype=torch.long),
+            'elements': torch.from_numpy(geom['elements']).long()
         }
 
 def gnot_collate_fn(batch):
@@ -165,6 +166,7 @@ def gnot_collate_fn(batch):
     batch_y_freq = [item['Y_freq'] for item in batch]
     batch_theta_in = [item['Theta_in'] for item in batch]
     batch_geom_id = [item['geom_id'] for item in batch]
+    batch_elements = [item['elements'] for item in batch]
 
     X_padded = pad_sequence(batch_x, batch_first=True, padding_value=0.0)
     Inputs_padded = pad_sequence(batch_inputs, batch_first=True, padding_value=0.0)
@@ -186,5 +188,6 @@ def gnot_collate_fn(batch):
         'Y_freq': Y_freq_stacked,
         'Theta_in': Theta_in_stacked,
         'geom_id': geom_id_stacked,
-        'Mask': mask
+        'Mask': mask,
+        'elements': batch_elements
     }
