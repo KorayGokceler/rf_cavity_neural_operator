@@ -37,42 +37,26 @@ def generate_sample_data(s_id):
         np.random.seed(s_id * 13)
         L, cx, cy = 0.1, 0.05, 0.05
 
-        # Geometric Diversity: Sharp corners and chaotic blobs
-        loops_pts_c = []  # List of point lists (one per loop)
-        
+        # Build Geometry using OCC Primitives for calibration or Polygons for random
         if ARGS.mode == 'calibration':
             # Calibration: Square, Circle, or Annulus (Simit)
             shape_choice = s_id % 3
             if shape_choice == 0:
-                # Square
                 shape_type = 'square'
                 side = 0.08
-                pts_c = [
-                    (cx - side/2, cy - side/2),
-                    (cx + side/2, cy - side/2),
-                    (cx + side/2, cy + side/2),
-                    (cx - side/2, cy + side/2)
-                ]
-                loops_pts_c.append(pts_c)
+                tag = gmsh.model.occ.addRectangle(cx - side/2, cy - side/2, 0, side, side)
             elif shape_choice == 1:
-                # Circle
                 shape_type = 'circle'
                 radius = 0.04
-                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-                pts_c = [(cx + radius*np.cos(ti), cy + radius*np.sin(ti)) for ti in t]
-                loops_pts_c.append(pts_c)
+                tag = gmsh.model.occ.addDisk(cx, cy, 0, radius, radius)
             else:
-                # Annulus (Simit)
                 shape_type = 'annulus'
                 r_outer = 0.045
                 r_inner = 0.02
-                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-                # Outer loop
-                pts_outer = [(cx + r_outer*np.cos(ti), cy + r_outer*np.sin(ti)) for ti in t]
-                # Inner loop (hole)
-                pts_inner = [(cx + r_inner*np.cos(ti), cy + r_inner*np.sin(ti)) for ti in t]
-                loops_pts_c.append(pts_outer)
-                loops_pts_c.append(pts_inner)
+                d1 = gmsh.model.occ.addDisk(cx, cy, 0, r_outer, r_outer)
+                d2 = gmsh.model.occ.addDisk(cx, cy, 0, r_inner, r_inner)
+                # Cut disk1 with disk2 to create a hole
+                gmsh.model.occ.cut([(2, d1)], [(2, d2)])
         else:
             method = np.random.choice(['sharp', 'smooth'])
             if method == 'sharp':
@@ -88,24 +72,25 @@ def generate_sample_data(s_id):
                 r_raw = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
                 r = np.clip(r_raw, 0.015, None)
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
-            loops_pts_c.append(pts_c)
-
-        # Build Geometry using loops
-        curve_loops = []
-        all_lines = []
-        for pts_c in loops_pts_c:
+            
             pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
             lines = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
-            all_lines.extend(lines)
-            curve_loops.append(gmsh.model.occ.addCurveLoop(lines))
-            
-        gmsh.model.occ.addPlaneSurface(curve_loops)
+            gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(lines)])
+
         gmsh.model.occ.synchronize()
+
+        # Automatically find boundary lines for adaptive mesh field
+        surfaces = gmsh.model.getEntities(dim=2)
+        all_boundary_lines = []
+        for s in surfaces:
+            # getBoundary returns a list of (dim, tag)
+            bnd = gmsh.model.getBoundary([s], combined=True, oriented=False, recursive=False)
+            all_boundary_lines.extend([abs(e[1]) for e in bnd if e[0] == 1])
 
         # Adaptive Mesh: Dense at boundary, balanced at center
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.model.mesh.field.add("Distance", 1)
-        gmsh.model.mesh.field.setNumbers(1, "CurvesList", all_lines)
+        gmsh.model.mesh.field.setNumbers(1, "CurvesList", all_boundary_lines)
         gmsh.model.mesh.field.add("Threshold", 2)
         gmsh.model.mesh.field.setNumber(2, "InField", 1)
         gmsh.model.mesh.field.setNumber(2, "SizeMin", 0.0012)
@@ -136,6 +121,7 @@ def generate_sample_data(s_id):
             'shape_type': shape_type
         }
     except Exception as e:
+        print(f"Error generating sample {s_id}: {e}")
         return None
     finally:
         try:
