@@ -38,10 +38,14 @@ def generate_sample_data(s_id):
         L, cx, cy = 0.1, 0.05, 0.05
 
         # Geometric Diversity: Sharp corners and chaotic blobs
+        loops_pts_c = []  # List of point lists (one per loop)
+        
         if ARGS.mode == 'calibration':
-            # Calibration: Square or Circle
-            shape_type = 'square' if s_id % 2 == 0 else 'circle'
-            if shape_type == 'square':
+            # Calibration: Square, Circle, or Annulus (Simit)
+            shape_choice = s_id % 3
+            if shape_choice == 0:
+                # Square
+                shape_type = 'square'
                 side = 0.08
                 pts_c = [
                     (cx - side/2, cy - side/2),
@@ -49,34 +53,59 @@ def generate_sample_data(s_id):
                     (cx + side/2, cy + side/2),
                     (cx - side/2, cy + side/2)
                 ]
-            else:
+                loops_pts_c.append(pts_c)
+            elif shape_choice == 1:
+                # Circle
+                shape_type = 'circle'
                 radius = 0.04
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
                 pts_c = [(cx + radius*np.cos(ti), cy + radius*np.sin(ti)) for ti in t]
+                loops_pts_c.append(pts_c)
+            else:
+                # Annulus (Simit)
+                shape_type = 'annulus'
+                r_outer = 0.045
+                r_inner = 0.02
+                t = np.linspace(0, 2*np.pi, 100, endpoint=False)
+                # Outer loop
+                pts_outer = [(cx + r_outer*np.cos(ti), cy + r_outer*np.sin(ti)) for ti in t]
+                # Inner loop (hole)
+                pts_inner = [(cx + r_inner*np.cos(ti), cy + r_inner*np.sin(ti)) for ti in t]
+                loops_pts_c.append(pts_outer)
+                loops_pts_c.append(pts_inner)
         else:
             method = np.random.choice(['sharp', 'smooth'])
             if method == 'sharp':
+                shape_type = 'random_sharp'
                 n_pts = np.random.randint(7, 13)
                 delta = 2 * np.pi / n_pts
-                # Ensure minimum angular distance to prevent self-intersecting boundaries and gmsh hangs
                 angles = np.array([i * delta + np.random.uniform(-delta/3, delta/3) for i in range(n_pts)])
                 r = np.random.uniform(0.02, 0.046, n_pts)
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
             else:
+                shape_type = 'random_smooth'
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
                 r_raw = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
-                r = np.clip(r_raw, 0.015, None)  # Prevent negative/tiny radius to avoid self-intersecting boundaries
+                r = np.clip(r_raw, 0.015, None)
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
+            loops_pts_c.append(pts_c)
 
-        pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
-        lines = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
-        gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(lines)])
+        # Build Geometry using loops
+        curve_loops = []
+        all_lines = []
+        for pts_c in loops_pts_c:
+            pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
+            lines = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
+            all_lines.extend(lines)
+            curve_loops.append(gmsh.model.occ.addCurveLoop(lines))
+            
+        gmsh.model.occ.addPlaneSurface(curve_loops)
         gmsh.model.occ.synchronize()
 
         # Adaptive Mesh: Dense at boundary, balanced at center
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.model.mesh.field.add("Distance", 1)
-        gmsh.model.mesh.field.setNumbers(1, "CurvesList", lines)
+        gmsh.model.mesh.field.setNumbers(1, "CurvesList", all_lines)
         gmsh.model.mesh.field.add("Threshold", 2)
         gmsh.model.mesh.field.setNumber(2, "InField", 1)
         gmsh.model.mesh.field.setNumber(2, "SizeMin", 0.0012)
@@ -104,7 +133,7 @@ def generate_sample_data(s_id):
         return {
             'id': s_id, 'nodes': nodes, 'elements': elements,
             'freqs': freqs.real, 'vecs': vecs.real, 'n_nodes': len(nodes),
-            'shape_type': 'calibration' if ARGS.mode == 'calibration' else 'random'
+            'shape_type': shape_type
         }
     except Exception as e:
         return None
