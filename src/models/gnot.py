@@ -310,17 +310,14 @@ class GNOTModel(nn.Module):
     def forward(self, batch):
         X = batch['X']
         inputs = batch['Input_funcs']
-        # The batch now contains intact geometries instead of individual modes!
-        # Batch size B is number of geometries.
+        theta_in = batch['Theta_in']  # [B, 1] — mode index per sample
         mask = batch.get('Mask', None)
         B = X.shape[0]
 
         # Inject Geometric Fourier features alongside Raw Grid (Optional)
         if self.use_rff and self.rff is not None:
             x_fourier = self.rff(X)
-            # Query embedding uses [Raw, RFF]
             x_enhanced = torch.cat([X, x_fourier], dim=-1)
-            # Functional inputs use [Raw_Features, Raw_Coords, RFF]
             enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
         else:
             x_fourier = None
@@ -333,14 +330,13 @@ class GNOTModel(nn.Module):
         condition_emb = y_emb
         condition_mask = mask if mask is not None else None
         
-        # If RFF is off, we still want blocks to have some spatial awareness for gating.
-        # Use Raw X as the 'fourier' input to blocks if RFF is disabled.
+        # Spatial features for gating
         x_f_pass = x_fourier if x_fourier is not None else X
 
-        # Global Context Extraction: Kavitenin "Büyük Resmini" bir kere çıkarıp tüm bloklara dağıtacağız.
+        # Global Context Extraction
         global_context = self.pooler(condition_emb, condition_mask)
 
-        # Trunk (Shared processing) — Dummy theta for shared blocks since they don't use film
+        # Trunk (Shared processing) — mode-blind
         dummy_theta = torch.zeros(B, dtype=torch.long, device=X.device)
 
         for block in self.shared_blocks:
@@ -349,41 +345,43 @@ class GNOTModel(nn.Module):
             else:
                 x_emb = block(x_emb, condition_emb, dummy_theta, x_f_pass, mask, condition_mask, global_context)
 
-        # Mode-specific processing: We run ALL geometries through ALL mode branches symmetrically!
-        field_parts = []
-        freq_parts = []
+        # --- Dynamic Routing: route each sample to its own mode branch ---
+        mode_indices = theta_in[:, 0]  # [B] — integer mode index per sample
+        
+        # Initialize output tensors
+        N = X.shape[1]
+        field_pred = torch.zeros(B, N, 1, device=X.device)
+        freq_pred = torch.zeros(B, 1, device=X.device) if self.freq_heads is not None else None
         
         for mode_val in range(self.num_field_modes):
-            # Pass the entire batch through the Mode branch
-            x_m = x_emb
-            c_m = condition_emb
-            pos_m = x_f_pass
-            # Create mode conditioning index tensor for this specific branch
-            th_m = torch.full((B,), mode_val, dtype=torch.long, device=X.device)
+            # Find which samples in this batch belong to this mode
+            mode_mask = (mode_indices == mode_val)  # [B] bool
+            if not mode_mask.any():
+                continue
+            
+            # Extract subset
+            x_m = x_emb[mode_mask]          # [B_m, N, D]
+            c_m = condition_emb[mode_mask]   # [B_m, N, D]
+            pos_m = x_f_pass[mode_mask]      # [B_m, N, pos_dim]
+            m_mask = mask[mode_mask] if mask is not None else None
+            c_mask = condition_mask[mode_mask] if condition_mask is not None else None
+            gc_m = global_context[mode_mask]  # [B_m, D]
+            B_m = x_m.shape[0]
+            th_m = torch.full((B_m,), mode_val, dtype=torch.long, device=X.device)
             
             for m_block in self.mode_field_blocks[mode_val]:
                 if self.use_checkpoint and self.training:
-                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, pos_m, mask, condition_mask, global_context, use_reentrant=False)
+                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, pos_m, m_mask, c_mask, gc_m, use_reentrant=False)
                 else:
-                    x_m = m_block(x_m, c_m, th_m, pos_m, mask, condition_mask, global_context)
+                    x_m = m_block(x_m, c_m, th_m, pos_m, m_mask, c_mask, gc_m)
             
-            # Predict field for this mode
-            field_parts.append(self.field_heads[mode_val](x_m)) # [B, N, 1]
+            # Field prediction
+            field_pred[mode_mask] = self.field_heads[mode_val](x_m)  # [B_m, N, 1]
 
-            # Predict frequency for this mode
+            # Frequency prediction
             if self.freq_heads is not None:
-                mode_global = self.pooler(x_m, mask)
-                freq_parts.append(self.freq_heads[mode_val](mode_global)) # [B, 1]
-
-        # Combine all mode predictions sequentially along the LAST dimension (channel dim)
-        # field_pred: [B, N, 3]
-        field_pred = torch.cat(field_parts, dim=-1)
-
-        # freq_pred: [B, 3] or None
-        if self.freq_heads is not None and len(freq_parts) > 0:
-            freq_pred = torch.cat(freq_parts, dim=-1)
-        else:
-            freq_pred = None
+                mode_global = self.pooler(x_m, m_mask)
+                freq_pred[mode_mask] = self.freq_heads[mode_val](mode_global)  # [B_m, 1]
 
         return {'field': field_pred, 'freq': freq_pred}
 

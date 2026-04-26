@@ -62,16 +62,14 @@ class GNOTLightning(pl.LightningModule):
         outputs = self.model(batch)
         mask = batch.get('Mask', None)  # [B, N] boolean
 
-        pred_field = outputs['field']      # [B, N, 3]
-        true_field = batch['Y_fields']     # [B, N, 3]
+        pred_field = outputs['field']      # [B, N, 1]
+        true_field = batch['Y_field']      # [B, N, 1]
         B = pred_field.shape[0]
 
         # --- PHYSICS-INFORMED NEURAL NETWORK (PINN) BOUNDARY CONSTRAINT ---
-        # Input_funcs[:, :, 2] is the 'dist_boundary' feature
         dist_bnd = batch['Input_funcs'][:, :, 2]  # [B, N]
-        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1).expand_as(pred_field) # [B, N, 3] boolean mask
+        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1).expand_as(pred_field) # [B, N, 1]
         
-        # 1. PINN Boundary Penalty
         if bnd_mask.any():
             loss_bnd = (pred_field[bnd_mask] ** 2).mean()
         else:
@@ -79,144 +77,108 @@ class GNOTLightning(pl.LightningModule):
             
         self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
         
-        # 2. Hard Constraint
+        # Hard Constraint
         pred_field = pred_field * (~bnd_mask).float()
         # ------------------------------------------------------------------
 
-        # --- SIGN REALIGNMENT DURING TRAINING ---
-        # Her örnek için pred ve true arasındaki faza (işarete) bak.
-        # --- BIPARTITE MATCHING (PERMUTATION INVARIANT LOSS) ---
-        # Mode 1 and Mode 2 suffer from solver random-sorting.
-        # We define a sign-invariant error function.
-        def calc_err_sign_invariant(p, t):
-            if mask is not None:
-                m = mask.float()
-                n_v = m.sum(dim=1).clamp(min=1.0) # [B]
-                w = 1.0 + 5.0 * t.abs()
-                mse_pos = (((p - t) ** 2) * w * m).sum(dim=1) / n_v
-                mse_neg = (((p + t) ** 2) * w * m).sum(dim=1) / n_v
-                l1_pos = ((p - t).abs() * m).sum(dim=1) / n_v
-                l1_neg = ((p + t).abs() * m).sum(dim=1) / n_v
-                err_pos = mse_pos + 0.1 * l1_pos
-                err_neg = mse_neg + 0.1 * l1_neg
-                return torch.min(err_pos, err_neg)
-            else:
-                w = 1.0 + 5.0 * t.abs()
-                mse_pos = (((p - t) ** 2) * w).mean(dim=1)
-                mse_neg = (((p + t) ** 2) * w).mean(dim=1)
-                l1_pos = F.l1_loss(p, t, reduction='none').mean(dim=1)
-                l1_neg = F.l1_loss(p, -t, reduction='none').mean(dim=1)
-                err_pos = mse_pos + 0.1 * l1_pos
-                err_neg = mse_neg + 0.1 * l1_neg
-                return torch.min(err_pos, err_neg)
-
-        with torch.no_grad():
-            # Error Options (Sign Invariant)
-            err_str = calc_err_sign_invariant(pred_field[..., 1], true_field[..., 1]) + calc_err_sign_invariant(pred_field[..., 2], true_field[..., 2])
-            err_crs = calc_err_sign_invariant(pred_field[..., 1], true_field[..., 2]) + calc_err_sign_invariant(pred_field[..., 2], true_field[..., 1])
-            use_straight = err_str <= err_crs  # [B] bool
-
-        # Re-align targets in memory so downstream code doesn't suffer
-        aligned_true_field = true_field.clone()
-        aligned_true_freq = batch['Y_freqs'].clone()
-
-        swap_mask = (~use_straight)  # [B]
-        # Swap fields
-        tmp_f = aligned_true_field[swap_mask, :, 1].clone()
-        aligned_true_field[swap_mask, :, 1] = aligned_true_field[swap_mask, :, 2]
-        aligned_true_field[swap_mask, :, 2] = tmp_f
-        # Swap freqs
-        tmp_fr = aligned_true_freq[swap_mask, 1].clone()
-        aligned_true_freq[swap_mask, 1] = aligned_true_freq[swap_mask, 2]
-        aligned_true_freq[swap_mask, 2] = tmp_fr
-        
         # --- PHASE (SIGN) REALIGNMENT ---
         with torch.no_grad():
             if mask is not None:
-                m_f = mask.unsqueeze(-1).expand_as(pred_field).float() # [B, N, 3]
-                diff_pos = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
-                diff_neg = ((pred_field + aligned_true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
+                m_f = mask.unsqueeze(-1).expand_as(pred_field).float()
+                diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
+                diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
             else:
-                diff_pos = ((pred_field - aligned_true_field) ** 2).mean(dim=1) # [B, 3]
-                diff_neg = ((pred_field + aligned_true_field) ** 2).mean(dim=1) # [B, 3]
+                diff_pos = ((pred_field - true_field) ** 2).mean(dim=1)  # [B, 1]
+                diff_neg = ((pred_field + true_field) ** 2).mean(dim=1)  # [B, 1]
             
-            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1) # [B, 1, 3]
+            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1) # [B, 1, 1]
         
-        # Target'ı pred'in işaretine uydur
-        aligned_true_field = aligned_true_field * signs
-        # -------------------------------------------------------------
+        aligned_true_field = true_field * signs
+        # ------------------------------------------------------------------
 
-        # Calculate finalized field loss
-        def calc_err_standard(p, t):
-            if mask is not None:
-                m = mask.float()
-                n_v = m.sum(dim=1).clamp(min=1.0)
-                w = 1.0 + 5.0 * t.abs()
-                mse = (((p - t) ** 2) * w * m).sum(dim=1) / n_v
-                l1 = ((p - t).abs() * m).sum(dim=1) / n_v
-                return mse + 0.1 * l1
-            else:
-                w = 1.0 + 5.0 * t.abs()
-                mse = (((p - t) ** 2) * w).mean(dim=1)
-                return mse + 0.1 * F.l1_loss(p, t, reduction='none').mean(dim=1)
+        # --- FIELD LOSS (Peak-Weighted Hybrid MSE + L1) ---
+        if mask is not None:
+            m = mask.float()
+            n_v = m.sum(dim=1).clamp(min=1.0)  # [B]
+            w = 1.0 + 5.0 * aligned_true_field.abs().squeeze(-1)  # [B, N]
+            diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))  # [B, N]
+            mse = ((diff ** 2) * w * m).sum(dim=1) / n_v  # [B]
+            l1 = (diff.abs() * m).sum(dim=1) / n_v  # [B]
+            loss_field = (mse + 0.1 * l1).mean()
+        else:
+            w = 1.0 + 5.0 * aligned_true_field.abs().squeeze(-1)
+            diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))
+            mse = ((diff ** 2) * w).mean(dim=1)
+            l1 = diff.abs().mean(dim=1)
+            loss_field = (mse + 0.1 * l1).mean()
 
-        loss_field = torch.tensor(0.0, device=pred_field.device)
+        # Per-mode loss logging
+        theta_in = batch['Theta_in'][:, 0]  # [B]
         for mode_val in range(3):
-            err_m = calc_err_standard(pred_field[..., mode_val], aligned_true_field[..., mode_val]) # [B]
-            loss_m = err_m.mean()
-            loss_field = loss_field + self.mode_loss_weights[mode_val] * loss_m
-            self.log(f'{prefix}/mode_{mode_val}_loss', loss_m, on_step=False, on_epoch=True, prog_bar=False, batch_size=B)
-        
-        loss_field = loss_field / sum(self.mode_loss_weights)
+            mode_mask_sel = (theta_in == mode_val)
+            if mode_mask_sel.any():
+                if mask is not None:
+                    m_sel = mask[mode_mask_sel].float()
+                    n_v_sel = m_sel.sum(dim=1).clamp(min=1.0)
+                    d = (pred_field[mode_mask_sel].squeeze(-1) - aligned_true_field[mode_mask_sel].squeeze(-1))
+                    mode_loss = ((d ** 2) * m_sel).sum(dim=1) / n_v_sel
+                else:
+                    d = (pred_field[mode_mask_sel].squeeze(-1) - aligned_true_field[mode_mask_sel].squeeze(-1))
+                    mode_loss = (d ** 2).mean(dim=1)
+                self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss.mean(), on_step=False, on_epoch=True, prog_bar=False, batch_size=B)
 
         # Frequency loss
         if self.predict_frequency and outputs.get('freq') is not None:
-            freq_pred = outputs['freq'] # [B, 3]
-            loss_freq = F.mse_loss(freq_pred, aligned_true_freq)
+            freq_pred = outputs['freq']          # [B, 1]
+            freq_true = batch['Y_freq']          # [B, 1]
+            loss_freq = F.mse_loss(freq_pred, freq_true)
             self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
             
             if self.freq_stats:
                 freq_pred_ghz = freq_pred * self.freq_stats['std'] + self.freq_stats['mean']
-                freq_true_ghz = aligned_true_freq * self.freq_stats['std'] + self.freq_stats['mean']
+                freq_true_ghz = freq_true * self.freq_stats['std'] + self.freq_stats['mean']
                 mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
                 self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         else:
             loss_freq = torch.tensor(0.0, device=pred_field.device)
 
-        # Toplam Loss = Alan + Frekans + Duvar(PINN)
+        # Total Loss
         total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd)
 
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
-        # Per-mode Relative L2 Error — VECTORIZED [B, 3]
+        # Relative L2 Error
         if mask is not None:
-            m_f = mask.unsqueeze(-1).float()  # [B, N, 1]
-            diff_sq = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 3]
-            true_sq = ((aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 3]
+            m_f = mask.unsqueeze(-1).float()
+            diff_sq = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
+            true_sq = ((aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
         else:
-            diff_sq = ((pred_field - aligned_true_field) ** 2).sum(dim=1)  # [B, 3]
-            true_sq = ((aligned_true_field) ** 2).sum(dim=1)  # [B, 3]
+            diff_sq = ((pred_field - aligned_true_field) ** 2).sum(dim=1)
+            true_sq = ((aligned_true_field) ** 2).sum(dim=1)
             
-        rel_l2_all = torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + 1e-8) # [B, 3]
+        rel_l2_all = torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + 1e-8)  # [B, 1]
         rel_l2 = rel_l2_all.mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Log specific modes
+        # Per-mode Relative L2
         for mode_val in range(3):
-            mode_rel = rel_l2_all[:, mode_val].mean()
-            self.log(f'{prefix}/mode_{mode_val}_rel_l2', mode_rel, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+            mode_mask_sel = (theta_in == mode_val)
+            if mode_mask_sel.any():
+                mode_rel = rel_l2_all[mode_mask_sel].mean()
+                self.log(f'{prefix}/mode_{mode_val}_rel_l2', mode_rel, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
         # Tensors for torchmetrics (R2, MAE)
         if mask is not None:
-            mask_flat = mask.unsqueeze(-1).expand_as(pred_field)  # [B, N, 3]
+            mask_flat = mask.unsqueeze(-1).expand_as(pred_field)
             preds_valid = pred_field[mask_flat].contiguous()
             targets_valid = aligned_true_field[mask_flat].contiguous()
         else:
             preds_valid = pred_field.contiguous().view(-1)
             targets_valid = aligned_true_field.contiguous().view(-1)
 
-        return total_loss, preds_valid, targets_valid
+
+
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
