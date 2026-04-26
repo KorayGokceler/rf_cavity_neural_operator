@@ -310,8 +310,10 @@ class GNOTModel(nn.Module):
     def forward(self, batch):
         X = batch['X']
         inputs = batch['Input_funcs']
-        theta = batch['Theta_in']
+        # The batch now contains intact geometries instead of individual modes!
+        # Batch size B is number of geometries.
         mask = batch.get('Mask', None)
+        B = X.shape[0]
 
         # Inject Geometric Fourier features alongside Raw Grid (Optional)
         if self.use_rff and self.rff is not None:
@@ -328,13 +330,7 @@ class GNOTModel(nn.Module):
         x_emb = self.query_encoder(x_enhanced)
         y_emb = self.input_func_encoder(enhanced_inputs)
         
-        # NOTE: Giriş seviyesinde mode conditioning (film_query/cond) kaldırıldı.
-        # Shared trunk sadece geometriye (X, RFF) ve query contextine odaklanır.
-        theta_int = theta.squeeze(-1)  # [B]
-        
-        # The condition targets are simply the y_emb now
         condition_emb = y_emb
-
         condition_mask = mask if mask is not None else None
         
         # If RFF is off, we still want blocks to have some spatial awareness for gating.
@@ -344,75 +340,48 @@ class GNOTModel(nn.Module):
         # Global Context Extraction: Kavitenin "Büyük Resmini" bir kere çıkarıp tüm bloklara dağıtacağız.
         global_context = self.pooler(condition_emb, condition_mask)
 
-        # Shared processing with checkpointing option
+        # Trunk (Shared processing) — Dummy theta for shared blocks since they don't use film
+        dummy_theta = torch.zeros(B, dtype=torch.long, device=X.device)
+
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, dummy_theta, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
+                x_emb = block(x_emb, condition_emb, dummy_theta, x_f_pass, mask, condition_mask, global_context)
 
-        # NOTE: Ayrı freq branch kaldırıldı. Frekans artık mode-specific branch'lerden çıkıyor.
-
-        # Sample'ları mode'a göre sırala
-        sort_idx = theta_int.argsort()
-        unsort_idx = sort_idx.argsort()
-
-        x_sorted = x_emb[sort_idx]
-        cond_sorted = condition_emb[sort_idx]
-        X_sorted = X[sort_idx]
-        theta_sorted = theta_int[sort_idx]
-        global_context_sorted = global_context[sort_idx]
-        mask_sorted = mask[sort_idx] if mask is not None else None
-        cmask_sorted = condition_mask[sort_idx] if condition_mask is not None else None
-        
-        # Koordinat bilgisini de (x_f_pass) sırala
-        x_f_pass_sorted = x_f_pass[sort_idx]
-
-        # Her modun kaç sample'ı var
-        mode_counts = [(theta_int == m).sum().item() for m in range(self.num_field_modes)]
-
-        # Sıralı işle ve sonuçları topla
+        # Mode-specific processing: We run ALL geometries through ALL mode branches symmetrically!
         field_parts = []
         freq_parts = []
-        start = 0
+        
         for mode_val in range(self.num_field_modes):
-            count = mode_counts[mode_val]
-            if count == 0:
-                continue
-            end = start + count
-            x_m = x_sorted[start:end]
-            c_m = cond_sorted[start:end]
-            th_m = theta_sorted[start:end]
-            mk_m = mask_sorted[start:end] if mask_sorted is not None else None
-            cm_m = cmask_sorted[start:end] if cmask_sorted is not None else None
-            g_m = global_context_sorted[start:end]
-            
-            # Bu modun koordinatlarını dilimle
-            pos_m = x_f_pass_sorted[start:end]
+            # Pass the entire batch through the Mode branch
+            x_m = x_emb
+            c_m = condition_emb
+            pos_m = x_f_pass
+            # Create mode conditioning index tensor for this specific branch
+            th_m = torch.full((B,), mode_val, dtype=torch.long, device=X.device)
             
             for m_block in self.mode_field_blocks[mode_val]:
                 if self.use_checkpoint and self.training:
-                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, pos_m, mk_m, cm_m, g_m, use_reentrant=False)
+                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, pos_m, mask, condition_mask, global_context, use_reentrant=False)
                 else:
-                    x_m = m_block(x_m, c_m, th_m, pos_m, mk_m, cm_m, g_m)
+                    x_m = m_block(x_m, c_m, th_m, pos_m, mask, condition_mask, global_context)
             
-            # Alan tahmini: her node için
-            field_parts.append(self.field_heads[mode_val](x_m))
+            # Predict field for this mode
+            field_parts.append(self.field_heads[mode_val](x_m)) # [B, N, 1]
 
-            # Frekans tahmini: mode branch çıktısını pooling'den geçirip decode et
+            # Predict frequency for this mode
             if self.freq_heads is not None:
-                mode_global = self.pooler(x_m, mk_m)
-                freq_parts.append(self.freq_heads[mode_val](mode_global))
+                mode_global = self.pooler(x_m, mask)
+                freq_parts.append(self.freq_heads[mode_val](mode_global)) # [B, 1]
 
-            start = end
+        # Combine all mode predictions sequentially along the LAST dimension (channel dim)
+        # field_pred: [B, N, 3]
+        field_pred = torch.cat(field_parts, dim=-1)
 
-        # Birleştir ve orijinal sıraya geri dön — NO in-place ops
-        field_pred_sorted = torch.cat(field_parts, dim=0)  # [B, N, 1]
-        field_pred = field_pred_sorted[unsort_idx]          # orijinal batch sırası
-
+        # freq_pred: [B, 3] or None
         if self.freq_heads is not None and len(freq_parts) > 0:
-            freq_pred_sorted = torch.cat(freq_parts, dim=0)  # [B, 1]
-            freq_pred = freq_pred_sorted[unsort_idx]
+            freq_pred = torch.cat(freq_parts, dim=-1)
         else:
             freq_pred = None
 

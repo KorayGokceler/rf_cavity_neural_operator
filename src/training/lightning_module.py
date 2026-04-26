@@ -8,7 +8,7 @@ class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, 
                  n_shared_layers=2, n_mode_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3,
-                 lr=1e-3, freq_weight=0.5, ortho_weight=0.01,
+                 lr=1e-3, freq_weight=0.5,
                  mode_loss_weights=None,
                  lr_mode_specific=None, lr_freq_heads=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
@@ -39,7 +39,6 @@ class GNOTLightning(pl.LightningModule):
             predict_frequency=predict_frequency
         )
         self.freq_weight = freq_weight
-        self.ortho_weight = ortho_weight
         self.predict_frequency = predict_frequency
         # Per-mode loss weights: [w0, w1, w2] — zayıf modlara daha yüksek ağırlık verilebilir
         if mode_loss_weights is None:
@@ -59,87 +58,20 @@ class GNOTLightning(pl.LightningModule):
     def forward(self, batch):
         return self.model(batch)
 
-    def _compute_orthogonality_loss(self, pred_field, batch):
-        """
-        Fiziksel ortogonalite kısıtı: aynı geometrinin farklı modları birbirine dik olmalı.
-        ∫ E_m(x) · E_n(x) dA = 0  (m ≠ n)
-
-        node_area (Input_funcs[:, :, 5]) ile ağırlıklandırılmış iç çarpım kullanılır.
-        Bu, alan integralinin doğru bir ayrık yaklaşımıdır.
-        """
-        geom_ids = batch['geom_id'].squeeze(-1)   # [B]
-        mode_ids = batch['Theta_in'].squeeze(-1)   # [B]
-        mask = batch.get('Mask', None)
-        B = pred_field.shape[0]
-
-        # node_area feature index = 5 (bkz: docs/02_FEATURE_ENGINEERING.md)
-        node_area = batch['Input_funcs'][:, :, 5]  # [B, N]
-
-        loss_ortho = torch.tensor(0.0, device=pred_field.device)
-        n_pairs = 0
-
-        # Eşsiz geometrileri bul
-        unique_geoms = geom_ids.unique()
-
-        for g_id in unique_geoms:
-            g_mask = (geom_ids == g_id)
-            g_indices = g_mask.nonzero(as_tuple=True)[0]
-
-            if len(g_indices) < 2:
-                continue  # Tek mod varsa dik olacak bir şey yok
-
-            # Bu geometriye ait tüm mod tahminlerini topla
-            g_modes = mode_ids[g_indices]          # [n_modes_in_batch]
-            g_preds = pred_field[g_indices]          # [n_modes, N, 1]
-            g_area = node_area[g_indices[0]]         # [N] — aynı geometri, aynı area
-
-            if mask is not None:
-                g_valid = mask[g_indices[0]].float()  # [N]
-            else:
-                g_valid = torch.ones(g_area.shape[0], device=g_area.device)
-
-            # Area * valid mask = integral ağırlığı
-            w = (g_area * g_valid).unsqueeze(-1)  # [N, 1]
-
-            # Her (m, n) çifti için cosine similarity hesapla
-            for i in range(len(g_indices)):
-                for j in range(i + 1, len(g_indices)):
-                    if g_modes[i] == g_modes[j]:
-                        continue  # Aynı modun tekrarı — skip
-
-                    u_i = g_preds[i]  # [N, 1]
-                    u_j = g_preds[j]  # [N, 1]
-
-                    # Alan-ağırlıklı iç çarpım
-                    dot = (u_i * u_j * w).sum()
-                    norm_i = (u_i ** 2 * w).sum().sqrt().clamp(min=1e-8)
-                    norm_j = (u_j ** 2 * w).sum().sqrt().clamp(min=1e-8)
-
-                    cos_sim = dot / (norm_i * norm_j)
-                    loss_ortho = loss_ortho + cos_sim ** 2
-                    n_pairs += 1
-
-        if n_pairs > 0:
-            loss_ortho = loss_ortho / n_pairs
-
-        return loss_ortho
-
     def _compute_loss(self, batch, prefix):
         outputs = self.model(batch)
         mask = batch.get('Mask', None)  # [B, N] boolean
 
-        pred_field = outputs['field']      # [B, N, 1]
-        true_field = batch['Y_field']      # [B, N, 1]
-        mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
-        B, N, _ = pred_field.shape
+        pred_field = outputs['field']      # [B, N, 3]
+        true_field = batch['Y_fields']     # [B, N, 3]
+        B = pred_field.shape[0]
 
         # --- PHYSICS-INFORMED NEURAL NETWORK (PINN) BOUNDARY CONSTRAINT ---
         # Input_funcs[:, :, 2] is the 'dist_boundary' feature
         dist_bnd = batch['Input_funcs'][:, :, 2]  # [B, N]
-        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1) # [B, N, 1] boolean mask
+        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1).expand_as(pred_field) # [B, N, 3] boolean mask
         
-        # 1. PINN Boundary Penalty: Raw ağ çıktısının duvarda (0'a gitmesi gerekirken) yaptığı hata
-        # (Bu, ağın sınırları fiziksel olarak öğrenmesini sağlar)
+        # 1. PINN Boundary Penalty
         if bnd_mask.any():
             loss_bnd = (pred_field[bnd_mask] ** 2).mean()
         else:
@@ -147,128 +79,119 @@ class GNOTLightning(pl.LightningModule):
             
         self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
         
-        # 2. Hard Constraint: Tahminleri duvar düğümlerinde tartışılamaz şekilde 0.0'a ez.
-        # Bu işlem gradyanı keser, bu yüzden ağın duvarda gradyan alabilmesi için üstte loss_bnd hesapladık.
+        # 2. Hard Constraint
         pred_field = pred_field * (~bnd_mask).float()
         # ------------------------------------------------------------------
 
         # --- SIGN REALIGNMENT DURING TRAINING ---
         # Her örnek için pred ve true arasındaki faza (işarete) bak.
-        # Eğer ters işaret daha yakınsa pred'i ters çevir.
         with torch.no_grad():
-            # [B] boyutunda işaret belirle: MSE(p, t) < MSE(p, -t) ise 1, değilse -1
-            # Maske varsa sadece maskeli bölgede karara var.
             if mask is not None:
-                m_f = mask.unsqueeze(-1).float()
-                diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=(1, 2))
-                diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=(1, 2))
+                m_f = mask.unsqueeze(-1).expand_as(pred_field).float() # [B, N, 3]
+                diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
+                diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
             else:
-                diff_pos = ((pred_field - true_field) ** 2).mean(dim=(1, 2))
-                diff_neg = ((pred_field + true_field) ** 2).mean(dim=(1, 2))
+                diff_pos = ((pred_field - true_field) ** 2).mean(dim=1) # [B, 3]
+                diff_neg = ((pred_field + true_field) ** 2).mean(dim=1) # [B, 3]
             
-            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).view(B, 1, 1)
+            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1) # [B, 1, 3]
         
-        # Gradyan akışını bozmadan işareti düzelt (differentiable sign selection)
         pred_field = pred_field * signs
         # ----------------------------------------
 
-        # Per-mode weighted field loss
-        loss_field = 0.0
-        for mode_val in range(len(self.mode_loss_weights)):
-            mode_mask = (mode_ids == mode_val)
-            if not mode_mask.any():
-                continue
-            p = pred_field[mode_mask]   # [n_mode, N, 1]
-            t = true_field[mode_mask]
-            w = float(self.mode_loss_weights[mode_val])
-
+        # --- BIPARTITE MATCHING (PERMUTATION INVARIANT LOSS) ---
+        # Mode 1 and Mode 2 suffer from solver random-sorting.
+        def calc_err(p, t):
             if mask is not None:
-                m = mask[mode_mask].unsqueeze(-1).float()
-                n_valid = m.sum().clamp(min=1.0)
-                
-                # Peak-Weighted Loss: Tepe noktalarında (amplitude yüksek olan veriler) cezayı artır
-                # Hata = (p-t)^2 * (1 + 5 * |t|)
-                weight = 1.0 + 5.0 * t.abs()
-                mse_weighted = (((p - t) ** 2) * weight * m).sum() / n_valid
-                
-                # L1 Loss: Ufak tefek genlik sapmalarını silmek için
-                l1_loss = ((p - t).abs() * m).sum() / n_valid
-                
-                mode_loss = mse_weighted + 0.1 * l1_loss
+                m = mask.float()
+                n_v = m.sum(dim=1).clamp(min=1.0) # [B]
+                w = 1.0 + 5.0 * t.abs()
+                mse = (((p - t) ** 2) * w * m).sum(dim=1) / n_v
+                l1 = ((p - t).abs() * m).sum(dim=1) / n_v
+                return mse + 0.1 * l1
             else:
-                weight = 1.0 + 5.0 * t.abs()
-                mse_weighted = (((p - t) ** 2) * weight).mean()
-                l1_loss = F.l1_loss(p, t)
-                mode_loss = mse_weighted + 0.1 * l1_loss
+                w = 1.0 + 5.0 * t.abs()
+                mse = (((p - t) ** 2) * w).mean(dim=1)
+                return mse + 0.1 * F.l1_loss(p, t, reduction='none').mean(dim=1)
 
-            loss_field = loss_field + w * mode_loss
-            # Log mode-specific loss on epoch level for both train and val
-            self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss,
-                     on_step=False, on_epoch=True, prog_bar=False, 
-                     batch_size=int(mode_mask.sum()), sync_dist=True)
+        with torch.no_grad():
+            # Error Options
+            err_str = calc_err(pred_field[..., 1], true_field[..., 1]) + calc_err(pred_field[..., 2], true_field[..., 2])
+            err_crs = calc_err(pred_field[..., 1], true_field[..., 2]) + calc_err(pred_field[..., 2], true_field[..., 1])
+            
+            use_straight = err_str <= err_crs  # [B] bool
+
+        # Re-align targets in memory so downstream code doesn't suffer
+        aligned_true_field = true_field.clone()
+        aligned_true_freq = batch['Y_freqs'].clone()
+
+        swap_mask = (~use_straight)  # [B]
+        # Swap fields
+        tmp_f = aligned_true_field[swap_mask, :, 1].clone()
+        aligned_true_field[swap_mask, :, 1] = aligned_true_field[swap_mask, :, 2]
+        aligned_true_field[swap_mask, :, 2] = tmp_f
+        # Swap freqs
+        tmp_fr = aligned_true_freq[swap_mask, 1].clone()
+        aligned_true_freq[swap_mask, 1] = aligned_true_freq[swap_mask, 2]
+        aligned_true_freq[swap_mask, 2] = tmp_fr
+        # -------------------------------------------------------------
+
+        # Calculate finalized field loss
+        loss_field = torch.tensor(0.0, device=pred_field.device)
+        for mode_val in range(3):
+            err_m = calc_err(pred_field[..., mode_val], aligned_true_field[..., mode_val]) # [B]
+            loss_m = err_m.mean()
+            loss_field = loss_field + self.mode_loss_weights[mode_val] * loss_m
+            self.log(f'{prefix}/mode_{mode_val}_loss', loss_m, on_step=False, on_epoch=True, prog_bar=False, batch_size=B)
         
-        # Normalize by sum of weights
         loss_field = loss_field / sum(self.mode_loss_weights)
 
-        # Frequency loss: skip if predict_frequency is disabled
+        # Frequency loss
         if self.predict_frequency and outputs.get('freq') is not None:
-            loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
+            freq_pred = outputs['freq'] # [B, 3]
+            loss_freq = F.mse_loss(freq_pred, aligned_true_freq)
             self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
             
             if self.freq_stats:
-                freq_pred_ghz = outputs['freq'] * self.freq_stats['std'] + self.freq_stats['mean']
-                freq_true_ghz = batch['Y_freq'] * self.freq_stats['std'] + self.freq_stats['mean']
+                freq_pred_ghz = freq_pred * self.freq_stats['std'] + self.freq_stats['mean']
+                freq_true_ghz = aligned_true_freq * self.freq_stats['std'] + self.freq_stats['mean']
                 mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
                 self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         else:
             loss_freq = torch.tensor(0.0, device=pred_field.device)
 
-        # --- ORTHOGONALITY LOSS ---
-        # Aynı geometrinin farklı modlarının tahminleri birbirine dik olmalı
-        if self.ortho_weight > 0:
-            loss_ortho = self._compute_orthogonality_loss(pred_field, batch)
-            self.log(f'{prefix}/loss_ortho', loss_ortho, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-        else:
-            loss_ortho = torch.tensor(0.0, device=pred_field.device)
-
-        # Toplam Loss = Alan + Frekans + Duvar(PINN) + Ortogonalite
-        total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd) + (self.ortho_weight * loss_ortho)
+        # Toplam Loss = Alan + Frekans + Duvar(PINN)
+        total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd)
 
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
-        # Per-sample Relative L2 Error — VECTORIZED (no Python for-loop)
+        # Per-mode Relative L2 Error — VECTORIZED [B, 3]
         if mask is not None:
             m_f = mask.unsqueeze(-1).float()  # [B, N, 1]
-            diff_sq = ((pred_field - true_field) ** 2 * m_f).sum(dim=(1, 2))  # [B]
-            true_sq = ((true_field) ** 2 * m_f).sum(dim=(1, 2))  # [B]
+            diff_sq = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 3]
+            true_sq = ((aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 3]
         else:
-            diff_sq = ((pred_field - true_field) ** 2).sum(dim=(1, 2))  # [B]
-            true_sq = ((true_field) ** 2).sum(dim=(1, 2))  # [B]
-        rel_l2 = (torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + 1e-8)).mean()
+            diff_sq = ((pred_field - aligned_true_field) ** 2).sum(dim=1)  # [B, 3]
+            true_sq = ((aligned_true_field) ** 2).sum(dim=1)  # [B, 3]
+            
+        rel_l2_all = torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + 1e-8) # [B, 3]
+        rel_l2 = rel_l2_all.mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Per-mode relative L2 error — vectorized
-        mode_ids = batch['Theta_in'].squeeze(-1)  # [B]
-        for mode_val in range(len(self.mode_loss_weights)):
-            mode_mask_b = (mode_ids == mode_val)  # [B]
-            if not mode_mask_b.any():
-                continue
-            mode_diff = diff_sq[mode_mask_b]  # [n_mode]
-            mode_true = true_sq[mode_mask_b]  # [n_mode]
-            mode_rel = (torch.sqrt(mode_diff) / (torch.sqrt(mode_true) + 1e-8)).mean()
-            self.log(f'{prefix}/mode_{mode_val}_rel_l2', mode_rel,
-                     on_step=False, on_epoch=True, prog_bar=False, 
-                     batch_size=int(mode_mask_b.sum()), sync_dist=True)
+        # Log specific modes
+        for mode_val in range(3):
+            mode_rel = rel_l2_all[:, mode_val].mean()
+            self.log(f'{prefix}/mode_{mode_val}_rel_l2', mode_rel, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
-        # Extract valid-only flat tensors for torchmetrics (R2, MAE)
+        # Tensors for torchmetrics (R2, MAE)
         if mask is not None:
-            mask_flat = mask.unsqueeze(-1).expand_as(pred_field)  # [B, N, 1]
+            mask_flat = mask.unsqueeze(-1).expand_as(pred_field)  # [B, N, 3]
             preds_valid = pred_field[mask_flat].contiguous()
-            targets_valid = true_field[mask_flat].contiguous()
+            targets_valid = aligned_true_field[mask_flat].contiguous()
         else:
             preds_valid = pred_field.contiguous().view(-1)
-            targets_valid = true_field.contiguous().view(-1)
+            targets_valid = aligned_true_field.contiguous().view(-1)
 
         return total_loss, preds_valid, targets_valid
 

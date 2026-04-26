@@ -47,20 +47,20 @@ Model bu projeyle 2 çıktı üretir:
                                   │
                ┌──────────────────▼──────────────────┐
                │         SHARED TRUNK                 │
-               │    4 × GNOTBlock (mode-blind)        │
+               │    6 × GNOTBlock (mode-blind)        │
                │    FiLM: KAPALI                      │
                └──────────┬──────────────────────────┘
                           │
            ┌──────────────▼──────────────────┐
            │     MODE-SPECIFIC BRANCHES       │
            │                                  │
-           │  Mode 0: 2×Block → field_head[0] → alan tahmini
+           │  Mode 0: 1×Block → field_head[0] → alan tahmini
            │                   → pool → freq_head[0] → frekans_0
            │                                  │
-           │  Mode 1: 2×Block → field_head[1] → alan tahmini
+           │  Mode 1: 1×Block → field_head[1] → alan tahmini
            │                   → pool → freq_head[1] → frekans_1
            │                                  │
-           │  Mode 2: 2×Block → field_head[2] → alan tahmini
+           │  Mode 2: 1×Block → field_head[2] → alan tahmini
            │                   → pool → freq_head[2] → frekans_2
            │                                  │
            └──────────────────────────────────┘
@@ -236,15 +236,15 @@ Mode-specific branching ile her modun gradyanı sadece kendi parametrelerine etk
 | RFF (B matrisi, frozen) | ~128 (öğrenilmez) |
 | query_encoder | ~200K |
 | input_func_encoder | ~200K |
-| Shared blocks (4×) | ~4×1.6M = 6.4M |
-| Mode field blocks (3×2×) | ~6×1.6M = 9.6M |
+| Shared blocks (6×) | ~6×1.6M = 9.6M |
+| Mode field blocks (3×1×) | ~3×1.6M = 4.8M |
 | Field heads (3×) | ~100K |
 | Freq heads (3×, per-mode) | ~300K |
 | AttentionPool | ~200K |
 | FiLM conditioners | ~50K |
-| **TOPLAM** | **~17M parametre** |
+| **TOPLAM** | **~15.2M parametre** |
 
-> **Not:** Ayrı freq_blocks (eski ~3.2M) kaldırıldı. Per-mode freq_heads çok daha hafif (~300K). Net parametre tasarrufu: ~2.9M.
+> **Not:** Ayrı freq_blocks (eski ~3.2M) kaldırılmıştı. Şimdiki 6-trunk 1-branch mimarisiyle genel geometrik algı artırılırken total parametre sayısı düşürüldü. Ayrıca `predict_frequency: false` ile frekans loss hesabını tamamen kapatıp ağı sadece alan tahminine yönlendirmek mümkündür.
 
 ---
 

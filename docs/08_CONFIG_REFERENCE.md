@@ -70,13 +70,12 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `grid_dim` | 2 | Koordinat boyutu (2D) | 3D için 3 yapılır |
 | `theta_dim` | 1 | Koşul boyutu | |
 | `embed_dim` | 256 | Hidden dimension | ↑ = daha güçlü ama yavaş |
-| `n_shared_layers` | 4 | Shared trunk derinliği | ↑ = daha iyi geometri temsili |
-| `n_mode_layers` | 2 | Mode-specific derinlik | ↑ = daha iyi mod ayrımı |
-| `n_freq_layers` | 2 | Frekans branch derinliği | |
+| `n_shared_layers` | 6 | Shared trunk derinliği | ↑ = daha iyi geometri temsili |
+| `n_mode_layers` | 1 | Mode-specific derinlik | ↑ = daha iyi mod ayrımı |
 | `n_heads` | 8 | Attention head sayısı | embed_dim / n_heads tamsayı olmalı |
 | `num_experts` | 4 | MoE expert sayısı | 4-8 arası önerilir |
 | `num_field_modes` | 3 | Toplam mod sayısı | Veriyle uyumlu olmalı |
-| `predict_frequency` | false | Frekans tahmini | false = sadece alana odaklan |
+| `predict_frequency` | true | Frekans tahmini | false = sadece alana odaklan |
 | `rff_scale` | 1.0 | RFF frekans ölçeği | ↑ = daha yüksek frekans capture |
 | `dropout` | 0.0 | Regularization | 0.1-0.3 denenebilir |
 | `use_checkpoint` | true | Gradient checkpointing | true = VRAM↓, hız↓ |
@@ -91,8 +90,13 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `max_epochs` | 500 | Maksimum epoch |
 | `gradient_clip_val` | 2.0 | Gradyan kırpma |
 | `freq_weight` | 0.5 | Frekans loss ağırlığı |
+| `ortho_weight` | 0.01 | Ortogonalite loss ağırlığı (0=kapalı)|
 | `mode_loss_weights` | [1.0, 1.0, 1.0] | Mode-specific ağırlıklar |
+| `lr_mode_specific`| [2e-4, 8e-5, 8e-5]| Modlara özel öğrenme oranları |
+| `lr_freq_heads` | 1.0e-4 | Frekans başlıklarına özel LR |
 | `scheduler` | `reducelr` | LR scheduler tipi |
+| `reducelr_patience` | 10 | ReduceLROnPlateau sabırlılığı |
+| `reducelr_factor` | 0.5 | ReduceLROnPlateau LR küçültme çarpanı|
 | `patience` | 25 | Early stopping sabırlılığı |
 | `num_workers` | 4 | DataLoader worker sayısı |
 | `strategy` | `auto` | `auto` veya `ddp` |

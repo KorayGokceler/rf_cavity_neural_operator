@@ -42,14 +42,14 @@ class GNOTDataset(Dataset):
                 sample_to_geom.append((i, s['geom_id']))
 
         # 2. Group samples by geometry
-        geom_to_samples = collections.defaultdict(list)
+        self.geom_to_samples = collections.defaultdict(list)
         for s_idx, g_id in sample_to_geom:
-            geom_to_samples[g_id].append(s_idx)
+            self.geom_to_samples[g_id].append(s_idx)
         
-        unique_geoms = sorted(list(geom_to_samples.keys()))
+        unique_geoms = sorted(list(self.geom_to_samples.keys()))
         n_geoms = len(unique_geoms)
         
-        # 3. Shuffle geometries (not samples!) to keep modes of same geometry together
+        # 3. Shuffle geometries
         np.random.seed(42)
         perm_geoms = np.random.permutation(unique_geoms)
         
@@ -57,29 +57,20 @@ class GNOTDataset(Dataset):
         n_val_geoms = int(n_geoms * val_ratio)
 
         if split == 'train':
-            active_geoms = perm_geoms[:n_train_geoms]
+            self.active_geoms = perm_geoms[:n_train_geoms]
         elif split == 'val':
-            active_geoms = perm_geoms[n_train_geoms : n_train_geoms + n_val_geoms]
+            self.active_geoms = perm_geoms[n_train_geoms : n_train_geoms + n_val_geoms]
         else:
-            active_geoms = perm_geoms[n_train_geoms + n_val_geoms :]
-
-        # 4. Collect all sample indices for the selected geometries
-        self.active_indices = []
-        for g_id in active_geoms:
-            self.active_indices.extend(geom_to_samples[g_id])
-        
-        # Optional: shuffle active_indices so modes are mixed within batches
-        if split == 'train':
-            np.random.shuffle(self.active_indices)
+            self.active_geoms = perm_geoms[n_train_geoms + n_val_geoms :]
 
         if self.stats:
             print(f"Freq Stats: mean={self.stats['mean']:.4f}, std={self.stats['std']:.4f}")
-        print(f"Split: {split}, Count: {len(self.active_indices)}")
+        print(f"Split: {split}, Geometries Count: {len(self.active_geoms)}")
 
         self.h5_handle = None
 
     def __len__(self):
-        return len(self.active_indices)
+        return len(self.active_geoms)
 
     def _get_h5_handle(self):
         """Returns a worker-local H5 file handle.
@@ -107,72 +98,86 @@ class GNOTDataset(Dataset):
                     pass
 
     def __getitem__(self, idx):
-        real_idx = self.active_indices[idx]
+        g_id = self.active_geoms[idx]
+        sample_indices = self.geom_to_samples[g_id]
+        
+        y_fields = []
+        norm_freqs = []
+        mode_data = []
         
         if self.is_h5:
             f = self._get_h5_handle()
-            sample = f['samples'][str(real_idx)]
-            geom_id = sample.attrs['geom_id']
-            geom = f['geometry_pool'][str(geom_id)]
-            
+            geom = f['geometry_pool'][str(g_id)]
             x = geom['X'][:]
             input_features = geom['Input_funcs'][:]
-            y_field = sample['Y'][:]
-            raw_theta = sample['Theta'][:]
+            elements = geom['elements'][:]
+            
+            for s_idx in sample_indices:
+                sample = f['samples'][str(s_idx)]
+                y_val = sample['Y'][:]
+                raw_theta = sample['Theta'][:]
+                mode_data.append((raw_theta[0], y_val, raw_theta))
         else:
-            sample = self.samples_metadata[real_idx]
-            geom = self.geometry_pool[sample['geom_id']]
+            geom = self.geometry_pool[g_id]
             x = geom['X']
-            input_features = geom['Input_funcs']  # plain numpy array, no tuple
-            y_field = sample['Y']
-            raw_theta = sample['Theta']
+            input_features = geom['Input_funcs']
+            elements = geom['elements']
+            
+            for s_idx in sample_indices:
+                sample = self.samples_metadata[s_idx]
+                y_val = sample['Y']
+                raw_theta = sample['Theta']
+                mode_data.append((raw_theta[0], y_val, raw_theta))
 
-        # raw_theta format: [m_idx, freq, sample_id]
-        raw_freq = raw_theta[1]
-        if self.stats:
-            norm_freq = (raw_freq - self.stats['mean']) / self.stats['std']
-        else:
-            norm_freq = raw_freq
+        # Sort by mode index to guarantee 0, 1, 2 order
+        mode_data.sort(key=lambda item: item[0])
+
+        for m_idx, y_val, raw_theta in mode_data:
+            y_fields.append(y_val)
+            raw_freq = raw_theta[1]
+            if self.stats:
+                norm_freq = (raw_freq - self.stats['mean']) / self.stats['std']
+            else:
+                norm_freq = raw_freq
+            norm_freqs.append(norm_freq)
+
+        # Pre-process into tensors. y_val is [N, 1]. Stack into [N, 3].
+        y_fields_stacked = np.concatenate(y_fields, axis=-1)
+        norm_freqs_array = np.array(norm_freqs, dtype=np.float32)
 
         # Ablation: select feature subset if feature_indices is set
         if self.feature_indices is not None:
             input_features = input_features[:, self.feature_indices]
 
         # VRAM Optimization: Node Sub-sampling
-        # Randomly select a subset of nodes if the point cloud exceeds max_nodes.
-        # This completely flattens VRAM peaks and eliminates massive zero-padding waste!
         n_nodes = x.shape[0]
         if self.max_nodes is not None and n_nodes > self.max_nodes:
-            # We use torch.randperm instead of np.random to avoid DataLoader worker RNG duplication
             rand_idx = torch.randperm(n_nodes)[:self.max_nodes].numpy()
             x = x[rand_idx]
             input_features = input_features[rand_idx]
-            y_field = y_field[rand_idx]
+            y_fields_stacked = y_fields_stacked[rand_idx]
 
         return {
             'X': torch.from_numpy(x).float(),
             'Input_funcs': torch.from_numpy(input_features).float(),
-            'Y_field': torch.from_numpy(y_field).float(),
-            'Y_freq': torch.from_numpy(np.array([norm_freq], dtype=np.float32)),
-            'Theta_in': torch.tensor([int(raw_theta[0])], dtype=torch.long),
-            'geom_id': torch.tensor([int(raw_theta[2])], dtype=torch.long),
-            'elements': torch.from_numpy(geom['elements']).long()
+            'Y_fields': torch.from_numpy(y_fields_stacked).float(),
+            'Y_freqs': torch.from_numpy(norm_freqs_array),
+            'geom_id': torch.tensor([int(g_id)], dtype=torch.long),
+            'elements': torch.from_numpy(elements).long()
         }
 
 def gnot_collate_fn(batch):
     batch_x = [item['X'] for item in batch]
     batch_inputs = [item['Input_funcs'] for item in batch]
-    batch_y_field = [item['Y_field'] for item in batch]
-    batch_y_freq = [item['Y_freq'] for item in batch]
-    batch_theta_in = [item['Theta_in'] for item in batch]
+    batch_y_fields = [item['Y_fields'] for item in batch]
+    batch_y_freqs = [item['Y_freqs'] for item in batch]
     batch_geom_id = [item['geom_id'] for item in batch]
     batch_elements = [item['elements'] for item in batch]
 
     X_padded = pad_sequence(batch_x, batch_first=True, padding_value=0.0)
     Inputs_padded = pad_sequence(batch_inputs, batch_first=True, padding_value=0.0)
-    Y_field_padded = pad_sequence(batch_y_field, batch_first=True, padding_value=0.0)
-    Y_freq_stacked = torch.stack(batch_y_freq)
-    Theta_in_stacked = torch.stack(batch_theta_in)
+    Y_fields_padded = pad_sequence(batch_y_fields, batch_first=True, padding_value=0.0)
+    Y_freqs_stacked = torch.stack(batch_y_freqs)
     geom_id_stacked = torch.stack(batch_geom_id)
 
     lengths = [len(x) for x in batch_x]
@@ -184,9 +189,8 @@ def gnot_collate_fn(batch):
     return {
         'X': X_padded,
         'Input_funcs': Inputs_padded,
-        'Y_field': Y_field_padded,
-        'Y_freq': Y_freq_stacked,
-        'Theta_in': Theta_in_stacked,
+        'Y_fields': Y_fields_padded,
+        'Y_freqs': Y_freqs_stacked,
         'geom_id': geom_id_stacked,
         'Mask': mask,
         'elements': batch_elements

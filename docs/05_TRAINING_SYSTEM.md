@@ -16,9 +16,9 @@ GNOT modelinin eğitim, doğrulama ve test döngülerini yönetir. Fizik bilgili
 
 Toplam loss 3 bileşenden oluşur:
 
-$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{field}} + \alpha \cdot \mathcal{L}_{\text{freq}} + \lambda \cdot \mathcal{L}_{\text{bnd}}$$
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{field}} + \alpha \cdot \mathcal{L}_{\text{freq}} + \lambda \cdot \mathcal{L}_{\text{bnd}} + \beta \cdot \mathcal{L}_{\text{ortho}}$$
 
-Varsayılan değerler: $\alpha = 0.5$ (freq_weight), $\lambda = 1.0$
+Varsayılan değerler: $\alpha = 0.5$ (freq_weight), $\lambda = 1.0$, $\beta = 0.01$ (ortho_weight)
 
 ### 1. Field Loss (Alan Kaybı) — Peak-Weighted MSE + L1
 
@@ -60,8 +60,11 @@ $$\mathcal{L}_{\text{freq}} = \text{MSE}(\hat{f}, f)$$
 
 Frekanslar z-score normalize edilmiştir. İnference'ta GHz'e geri dönüştürülür.
 
-**Not:** `predict_frequency: false` ise bu branch tamamen devre dışıdır. Config'te frekans tahmini kapalı ayarlı — modelin alan tahminine odaklanması hedefleniyor.
+**Not:** `predict_frequency: false` ise bu branch hesaplanmaz ve total loss'a eklenmez.
 
+### 4. Orthogonality Loss
+
+Modların birbirine dik (ortogonal) olmasını fiziksel olarak zorlar. İlerleme çubuğunda (progress bar) `train/ortho_loss` olarak canlı izlenebilir. Eğitim config üzerinden `ortho_weight` (örn. 0.01) ile yönetilir.
 ---
 
 ## 🔄 Sign Realignment (İşaret Hizalama)
@@ -98,9 +101,17 @@ pred_field = pred_field * signs           # Daha yakın tarafı seç
 
 ## ⚙️ Optimizer & Scheduler
 
-### AdamW
+### AdamW & Özel Öğrenme Oranları (Per-Mode LR)
+Model mimarisindeki dallanmalar farklı düzeyde zorluklara sahip olduğu için, farklı fizik branchları (`lr_mode_specific`) ve frekans headleri (`lr_freq_heads`) kendi özel öğrenme oranlarına sahip olabilir.
+
 ```python
-optimizer = AdamW(params, lr=2e-4, weight_decay=0.0)
+optimizer = AdamW([
+    {'params': shared_params, 'lr': base_lr},
+    {'params': mode_0_params, 'lr': lr_mode_specific[0]},
+    {'params': mode_1_params, 'lr': lr_mode_specific[1]},
+    {'params': freq_heads, 'lr': lr_freq_heads},
+    # ...
+], weight_decay=0.0)
 ```
 
 **Not:** `weight_decay=0.0` bilinçli bir karar. Ağırlık çürümesi modelin genlik (amplitude) öğrenme kapasitesini baskılayabilir. Alan dağılımlarının tepeleri tam ölçekte öğrenilmelidir.
@@ -110,11 +121,13 @@ optimizer = AdamW(params, lr=2e-4, weight_decay=0.0)
 #### 1. ReduceLROnPlateau (Varsayılan)
 ```python
 scheduler = ReduceLROnPlateau(
-    optimizer, mode='min', factor=0.5,
-    patience=10, min_lr=1e-7
+    optimizer, mode='min', 
+    factor=cfg.reducelr_factor,     # Config'ten (örn 0.5)
+    patience=cfg.reducelr_patience, # Config'ten (örn 10)
+    min_lr=1e-7
 )
 ```
-Val loss 10 epoch iyileşmezse LR yarıya düşer. En güvenli seçenek.
+Belirlenen `reducelr_patience` boyunca val loss iyileşmezse, LR `reducelr_factor` ile çarpılarak düşürülür. En güvenli seçenek.
 
 #### 2. OneCycleLR
 ```python

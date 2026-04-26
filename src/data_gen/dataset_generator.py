@@ -112,12 +112,32 @@ def generate_sample_data(s_id):
         D = basis.get_dofs(facets=m.boundary_facets())
         Kc, Mc, xc, Ic = utils.condense(K, M, D=D, expand=True)
         vals, vecs = utils.solve_eigen(Kc, Mc, x=xc, I=Ic, k=3, sigma=500.0)
+        
+        vals_real = vals.real
+        vecs_real = vecs.real
+        freqs = (299792458 * np.sqrt(np.abs(vals_real))) / (2 * np.pi) / 1e9
 
-        freqs = (299792458 * np.sqrt(np.abs(vals.real))) / (2 * np.pi) / 1e9
+        # --- KALICI DÜZELTME: MODE TRACKING / ALIGNMENT ---
+        # 1. ve 2. Mod (Index 1 ve 2) Dipol modlarıdır ve Mode Crossing yaşarlar.
+        # Bu algoritma Index 1'i daima Dikey (Kuzey-Güney), Index 2'yi Yatay (Doğu-Batı) hizalar.
+        n_nodes = len(nodes)
+        x_c = nodes[:, 0] - np.mean(nodes[:, 0])
+        y_c = nodes[:, 1] - np.mean(nodes[:, 1])
+
+        mode_1 = vecs_real[:n_nodes, 1]
+        
+        C_x = np.abs(np.sum(mode_1 * x_c))
+        C_y = np.abs(np.sum(mode_1 * y_c))
+
+        if C_x > C_y:
+            # Mode 1 yatay çıkmış, demek ki çözücü gürültü sebebiyle ters sıralamış! Takas (Swap):
+            vecs_real[:, [1, 2]] = vecs_real[:, [2, 1]]
+            freqs[[1, 2]] = freqs[[2, 1]]
+        # --------------------------------------------------
 
         return {
             'id': s_id, 'nodes': nodes, 'elements': elements,
-            'freqs': freqs.real, 'vecs': vecs.real, 'n_nodes': len(nodes),
+            'freqs': freqs, 'vecs': vecs_real, 'n_nodes': len(nodes),
             'shape_type': shape_type
         }
     except Exception as e:
