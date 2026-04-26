@@ -222,11 +222,12 @@ class GNOTModel(nn.Module):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
                  n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
-                 use_rff=True, use_checkpoint=False):
+                 use_rff=True, use_checkpoint=False, predict_frequency=True):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
         self.use_rff = use_rff
+        self.predict_frequency = predict_frequency
 
         # --- Random Fourier Features for high spatial frequency encoding ---
         if use_rff:
@@ -265,11 +266,6 @@ class GNOTModel(nn.Module):
             ]) for _ in range(num_field_modes)
         ])
         
-        self.freq_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
-            for _ in range(freq_layers)
-        ])
-
         self.pooler = AttentionPool(embed_dim, n_heads)
 
         # Mode-specific field heads: her mod kendi decoder'ından geçiyor.
@@ -281,12 +277,20 @@ class GNOTModel(nn.Module):
                 nn.Linear(embed_dim, 1)
             ) for _ in range(num_field_modes)
         ])
-        self.freq_decoder = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.LayerNorm(embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, 1)
-        )
+
+        # Per-mode frequency heads: her mod kendi frekansını tahmin eder.
+        # Fiziksel olarak doğru — her eigenmode'un kendi rezonans frekansı vardır.
+        if predict_frequency:
+            self.freq_heads = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(embed_dim, embed_dim),
+                    nn.LayerNorm(embed_dim),
+                    nn.GELU(),
+                    nn.Linear(embed_dim, 1)
+                ) for _ in range(num_field_modes)
+            ])
+        else:
+            self.freq_heads = None
 
         # Initialize heads with small weights to prevent early training explosion
         self._init_weights()
@@ -297,11 +301,12 @@ class GNOTModel(nn.Module):
                 nn.init.trunc_normal_(m.weight, std=0.01)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-        for m in self.freq_decoder.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.01)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+        if self.freq_heads is not None:
+            for m in self.freq_heads.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.trunc_normal_(m.weight, std=0.01)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
     def forward(self, batch):
         X = batch['X']
@@ -347,13 +352,7 @@ class GNOTModel(nn.Module):
             else:
                 x_emb = block(x_emb, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
 
-        # Freq branch
-        x_freq = x_emb
-        for block in self.freq_blocks:
-            if self.use_checkpoint and self.training:
-                x_freq = torch.utils.checkpoint.checkpoint(block, x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
-            else:
-                x_freq = block(x_freq, condition_emb, theta_int, x_f_pass, mask, condition_mask, global_context)
+        # NOTE: Ayrı freq branch kaldırıldı. Frekans artık mode-specific branch'lerden çıkıyor.
 
         # Sample'ları mode'a göre sırala
         sort_idx = theta_int.argsort()
@@ -375,6 +374,7 @@ class GNOTModel(nn.Module):
 
         # Sıralı işle ve sonuçları topla
         field_parts = []
+        freq_parts = []
         start = 0
         for mode_val in range(self.num_field_modes):
             count = mode_counts[mode_val]
@@ -397,15 +397,25 @@ class GNOTModel(nn.Module):
                 else:
                     x_m = m_block(x_m, c_m, th_m, pos_m, mk_m, cm_m, g_m)
             
+            # Alan tahmini: her node için
             field_parts.append(self.field_heads[mode_val](x_m))
+
+            # Frekans tahmini: mode branch çıktısını pooling'den geçirip decode et
+            if self.freq_heads is not None:
+                mode_global = self.pooler(x_m, mk_m)
+                freq_parts.append(self.freq_heads[mode_val](mode_global))
+
             start = end
 
         # Birleştir ve orijinal sıraya geri dön — NO in-place ops
         field_pred_sorted = torch.cat(field_parts, dim=0)  # [B, N, 1]
         field_pred = field_pred_sorted[unsort_idx]          # orijinal batch sırası
 
-        global_feat = self.pooler(x_freq, mask)
-        freq_pred = self.freq_decoder(global_feat)
+        if self.freq_heads is not None and len(freq_parts) > 0:
+            freq_pred_sorted = torch.cat(freq_parts, dim=0)  # [B, 1]
+            freq_pred = freq_pred_sorted[unsort_idx]
+        else:
+            freq_pred = None
 
         return {'field': field_pred, 'freq': freq_pred}
 

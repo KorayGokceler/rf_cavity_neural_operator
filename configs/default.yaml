@@ -74,7 +74,7 @@ model:
   n_freq_layers: 2              # Frekans branch derinliği
   n_heads: 8                    # Attention head sayısı (256 / 8 = 32 dim per head)
   num_experts: 4                # GeometricGatingFFN expert sayısı
-  predict_frequency: false      # Frekans tahmini devre dışı — alan doğruluğuna odaklan
+  predict_frequency: true       # Frekans tahmini aktif — her mode branch kendi frekansını tahmin eder
 
   # Mode conditioning
   num_field_modes: 3            # 3 mode da egitilecek

@@ -30,7 +30,8 @@ class GNOTLightning(pl.LightningModule):
             num_field_modes=num_field_modes,
             rff_scale=rff_scale,
             use_rff=use_rff,
-            use_checkpoint=use_checkpoint
+            use_checkpoint=use_checkpoint,
+            predict_frequency=predict_frequency
         )
         self.freq_weight = freq_weight
         self.predict_frequency = predict_frequency
