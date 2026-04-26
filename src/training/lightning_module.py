@@ -177,8 +177,7 @@ class GNOTLightning(pl.LightningModule):
             preds_valid = pred_field.contiguous().view(-1)
             targets_valid = aligned_true_field.contiguous().view(-1)
 
-
-
+        return total_loss, preds_valid, targets_valid
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
