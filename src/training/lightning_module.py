@@ -85,53 +85,10 @@ class GNOTLightning(pl.LightningModule):
 
         # --- SIGN REALIGNMENT DURING TRAINING ---
         # Her örnek için pred ve true arasındaki faza (işarete) bak.
-        # --- BIPARTITE MATCHING (PERMUTATION INVARIANT LOSS) ---
-        # Mode 1 and Mode 2 suffer from solver random-sorting.
-        # We define a sign-invariant error function.
-        def calc_err_sign_invariant(p, t):
-            if mask is not None:
-                m = mask.float()
-                n_v = m.sum(dim=1).clamp(min=1.0) # [B]
-                w = 1.0 + 5.0 * t.abs()
-                mse_pos = (((p - t) ** 2) * w * m).sum(dim=1) / n_v
-                mse_neg = (((p + t) ** 2) * w * m).sum(dim=1) / n_v
-                l1_pos = ((p - t).abs() * m).sum(dim=1) / n_v
-                l1_neg = ((p + t).abs() * m).sum(dim=1) / n_v
-                err_pos = mse_pos + 0.1 * l1_pos
-                err_neg = mse_neg + 0.1 * l1_neg
-                return torch.min(err_pos, err_neg)
-            else:
-                w = 1.0 + 5.0 * t.abs()
-                mse_pos = (((p - t) ** 2) * w).mean(dim=1)
-                mse_neg = (((p + t) ** 2) * w).mean(dim=1)
-                l1_pos = F.l1_loss(p, t, reduction='none').mean(dim=1)
-                l1_neg = F.l1_loss(p, -t, reduction='none').mean(dim=1)
-                err_pos = mse_pos + 0.1 * l1_pos
-                err_neg = mse_neg + 0.1 * l1_neg
-                return torch.min(err_pos, err_neg)
-
-        with torch.no_grad():
-            # Error Options (Sign Invariant)
-            err_str = calc_err_sign_invariant(pred_field[..., 1], true_field[..., 1]) + calc_err_sign_invariant(pred_field[..., 2], true_field[..., 2])
-            err_crs = calc_err_sign_invariant(pred_field[..., 1], true_field[..., 2]) + calc_err_sign_invariant(pred_field[..., 2], true_field[..., 1])
-            use_straight = err_str <= err_crs  # [B] bool
-
-        # Re-align targets in memory so downstream code doesn't suffer
         aligned_true_field = true_field.clone()
         aligned_true_freq = batch['Y_freqs'].clone()
-
-        swap_mask = (~use_straight)  # [B]
-        # Swap fields
-        tmp_f = aligned_true_field[swap_mask, :, 1].clone()
-        aligned_true_field[swap_mask, :, 1] = aligned_true_field[swap_mask, :, 2]
-        aligned_true_field[swap_mask, :, 2] = tmp_f
-        # Swap freqs
-        tmp_fr = aligned_true_freq[swap_mask, 1].clone()
-        aligned_true_freq[swap_mask, 1] = aligned_true_freq[swap_mask, 2]
-        aligned_true_freq[swap_mask, 2] = tmp_fr
         
         # --- PHASE (SIGN) REALIGNMENT ---
-        # Artık modlar fiziksel olarak doğru eşleştiği için Faz(İşaret) eşitlemesi yapıyoruz.
         with torch.no_grad():
             if mask is not None:
                 m_f = mask.unsqueeze(-1).expand_as(pred_field).float() # [B, N, 3]
@@ -143,7 +100,7 @@ class GNOTLightning(pl.LightningModule):
             
             signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1) # [B, 1, 3]
         
-        # Target'ı pred'in işaretine uydurarak L2 Relative vb hesapların kusursuz olmasını sağla
+        # Target'ı pred'in işaretine uydur
         aligned_true_field = aligned_true_field * signs
         # -------------------------------------------------------------
 
