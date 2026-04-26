@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--freq_mean", type=float, default=None, help="Manual override for frequency mean.")
     parser.add_argument("--freq_std", type=float, default=None, help="Manual override for frequency std.")
     
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     output_dir = os.path.dirname(args.output_path)
     if output_dir:
