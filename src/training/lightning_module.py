@@ -10,6 +10,7 @@ class GNOTLightning(pl.LightningModule):
                  n_heads=4, num_experts=4, num_field_modes=3,
                  lr=1e-3, freq_weight=0.5, ortho_weight=0.01,
                  mode_loss_weights=None,
+                 lr_mode_specific=None, lr_freq_heads=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
                  rff_scale=1.0, use_rff=True, predict_frequency=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
@@ -17,6 +18,9 @@ class GNOTLightning(pl.LightningModule):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
+        self.lr_mode_specific = lr_mode_specific
+        self.lr_freq_heads = lr_freq_heads
+        
         self.save_hyperparameters()
         self.model = GNOTModel(
             val_dim=val_dim,
@@ -364,10 +368,51 @@ class GNOTLightning(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        # Differential learning rates kaldırıldı, tüm model aynı lr ile eğitilir.
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        base_lr = self.hparams.lr
+        param_groups = []
+        handled_param_ids = set()
+
+        # Mode Specific LRs
+        if self.lr_mode_specific is not None:
+            for mode_idx, mode_lr in enumerate(self.lr_mode_specific):
+                if mode_lr is not None and mode_idx < len(self.model.mode_field_blocks):
+                    # Gather parameters for this mode's blocks and field head
+                    mode_params = []
+                    # Mode Field Blocks
+                    for p in self.model.mode_field_blocks[mode_idx].parameters():
+                        mode_params.append(p)
+                        handled_param_ids.add(id(p))
+                    # Mode Field Heads
+                    for p in self.model.field_heads[mode_idx].parameters():
+                        mode_params.append(p)
+                        handled_param_ids.add(id(p))
+                    
+                    if len(mode_params) > 0:
+                        param_groups.append({"params": mode_params, "lr": mode_lr})
+                        print(f"Optimizer: Mode {mode_idx} branch trained with lr={mode_lr}")
+
+        # Freq Heads LR
+        if self.lr_freq_heads is not None and self.predict_frequency:
+            freq_params = []
+            for p in self.model.freq_heads.parameters():
+                if id(p) not in handled_param_ids:
+                    freq_params.append(p)
+                    handled_param_ids.add(id(p))
+            if len(freq_params) > 0:
+                param_groups.append({"params": freq_params, "lr": self.lr_freq_heads})
+                print(f"Optimizer: Frequency heads trained with lr={self.lr_freq_heads}")
+
+        # Base param group (General trunk, embeddings, RFF, unhandled parts)
+        base_params = []
+        for p in self.parameters():
+            if id(p) not in handled_param_ids:
+                base_params.append(p)
         
-        print(f"Optimizer: All params trained with lr={self.hparams.lr}")
+        if len(base_params) > 0:
+            param_groups.append({"params": base_params, "lr": base_lr})
+            print(f"Optimizer: Shared trunk & remaining params trained with lr={base_lr}")
+
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=self.hparams.weight_decay)
         
         if self.hparams.scheduler == 'onecycle':
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
