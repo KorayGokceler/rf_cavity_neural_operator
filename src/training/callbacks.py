@@ -45,8 +45,8 @@ class FieldVisualizationCallback(pl.Callback):
         
         with torch.no_grad():
             outputs = pl_module(batch)
-            preds = outputs['field']
-            targets = batch['Y_field']
+            preds = outputs['field']      # [B, N, 3]
+            targets = batch['Y_fields']   # [B, N, 3]
             coords = batch['X']
             mask = batch.get('Mask', None)
 
@@ -55,16 +55,14 @@ class FieldVisualizationCallback(pl.Callback):
             
             # Extract only valid nodes for visualization
             valid_coords = coords[i, m].cpu().numpy()
-            valid_targets = targets[i, m].cpu().numpy()
-            valid_preds = preds[i, m].cpu().numpy()
-
-            m_idx = batch['Theta_in'][i].item()
+            valid_targets = targets[i, m].cpu().numpy() # [N_valid, 3]
+            valid_preds = preds[i, m].cpu().numpy()     # [N_valid, 3]
             
             fig = self._plot_comparison(
                 valid_coords,
                 valid_targets,
                 valid_preds,
-                title=f"Epoch {trainer.current_epoch} - Mode {int(m_idx)} - Sample {i}"
+                title=f"Epoch {trainer.current_epoch} - Geometry {i} (Multi-Mode)"
             )
             
             # Log to TensorBoard (guard against missing logger)
@@ -75,23 +73,25 @@ class FieldVisualizationCallback(pl.Callback):
             plt.close(fig)
 
     def _plot_comparison(self, coords, target, pred, title=""):
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        num_modes = target.shape[1] # usually 3
+        fig, axes = plt.subplots(num_modes, 2, figsize=(12, 4 * num_modes))
         
         # Simple triangulation for point cloud visualization
-        # Note: This assumes points are somewhat regularly distributed
         tri = Triangulation(coords[:, 0], coords[:, 1])
         
-        im1 = axes[0].tripcolor(tri, target.flatten(), cmap='RdBu_r', shading='gouraud')
-        axes[0].set_title("Ground Truth")
-        fig.colorbar(im1, ax=axes[0])
-        
-        im2 = axes[1].tripcolor(tri, pred.flatten(), cmap='RdBu_r', shading='gouraud')
-        axes[1].set_title("Prediction")
-        fig.colorbar(im2, ax=axes[1])
-        
-        for ax in axes:
-            ax.set_aspect('equal')
-            ax.axis('off')
+        for m_idx in range(num_modes):
+            im1 = axes[m_idx, 0].tripcolor(tri, target[:, m_idx], cmap='RdBu_r', shading='gouraud')
+            axes[m_idx, 0].set_title(f"Ground Truth - Mode {m_idx}")
+            fig.colorbar(im1, ax=axes[m_idx, 0])
             
-        fig.suptitle(title)
+            im2 = axes[m_idx, 1].tripcolor(tri, pred[:, m_idx], cmap='RdBu_r', shading='gouraud')
+            axes[m_idx, 1].set_title(f"Prediction - Mode {m_idx}")
+            fig.colorbar(im2, ax=axes[m_idx, 1])
+            
+            for ax in axes[m_idx]:
+                ax.set_aspect('equal')
+                ax.axis('off')
+            
+        fig.suptitle(title, fontsize=16)
+        plt.tight_layout()
         return fig
