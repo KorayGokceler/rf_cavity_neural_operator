@@ -134,6 +134,8 @@ def main():
         lr_mode_specific=getattr(tc, 'lr_mode_specific', None),
         lr_freq_heads=getattr(tc, 'lr_freq_heads', None),
         scheduler=tc.scheduler,
+        reducelr_patience=getattr(tc, 'reducelr_patience', 10),
+        reducelr_factor=getattr(tc, 'reducelr_factor', 0.5),
         weight_decay=tc.weight_decay,
         use_checkpoint=mc.use_checkpoint,
         rff_scale=getattr(mc, 'rff_scale', 1.0),

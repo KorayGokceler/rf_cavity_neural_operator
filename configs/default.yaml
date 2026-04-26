@@ -114,6 +114,8 @@ training:
   lr_freq_heads: 1.0e-4                     # Sadece frekans head'leri için özel LR
 
   scheduler: "reducelr"         # "reducelr" — Val loss takıldığında LR düşür
+  reducelr_patience: 10         # Validation loss kaç epoch iyileşmezse LR düşsün
+  reducelr_factor: 0.5          # LR'ın düşürülme katsayısı (yeni_lr = lr * factor)
   # OneCycleLR parametreleri (scheduler: "onecycle" yapılırsa kullanılır)
   onecycle_pct_start: 0.3
   onecycle_div_factor: 25

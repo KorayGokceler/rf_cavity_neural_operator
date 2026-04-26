@@ -12,6 +12,7 @@ class GNOTLightning(pl.LightningModule):
                  mode_loss_weights=None,
                  lr_mode_specific=None, lr_freq_heads=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
+                 reducelr_patience=10, reducelr_factor=0.5,
                  rff_scale=1.0, use_rff=True, predict_frequency=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6):
@@ -447,8 +448,8 @@ class GNOTLightning(pl.LightningModule):
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
                 mode='min',
-                factor=0.5,
-                patience=10,
+                factor=self.hparams.reducelr_factor,
+                patience=self.hparams.reducelr_patience,
                 min_lr=1e-7
             )
             return {
