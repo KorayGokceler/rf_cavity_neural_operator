@@ -157,8 +157,15 @@ class GNOTDataset(Dataset):
             input_features = input_features[rand_idx]
             y_fields_stacked = y_fields_stacked[rand_idx]
 
+        # --- YÖNTEM 2: KESİN FİZİKSEL KOORDİNAT NORMALİZASYONU ---
+        # Veri setimiz [0.0, 0.1] metrekare kutusunda sıkışmıştır (Center: 0.05, L: 0.1).
+        # RFF'nin (Fourier) linear çökmeye uğramaması ve ağların koordinat farklarını 
+        # doğru idrak edebilmesi için [-1.0, 1.0] spektrumuna genişletiyoruz.
+        x_norm = (x - 0.05) / 0.05
+        # ----------------------------------------------------------
+
         return {
-            'X': torch.from_numpy(x).float(),
+            'X': torch.from_numpy(x_norm).float(),
             'Input_funcs': torch.from_numpy(input_features).float(),
             'Y_fields': torch.from_numpy(y_fields_stacked).float(),
             'Y_freqs': torch.from_numpy(norm_freqs_array),
