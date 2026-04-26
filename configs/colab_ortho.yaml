@@ -1,0 +1,92 @@
+# ═══════════════════════════════════════════════════════
+#  GNOT RF Cavity — Colab Training Config
+#  Branch: feature/orthogonality-and-depth
+#  Yenilikler: per-mode freq + orthogonality loss
+# ═══════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────
+#  1. DATASET
+# ─────────────────────────────────────────────────────
+dataset:
+  data_path: "data/gnot_dataset.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  max_nodes: 2048
+
+# ─────────────────────────────────────────────────────
+#  2. MODEL ARCHITECTURE
+# ─────────────────────────────────────────────────────
+model:
+  # Input dimensions
+  val_dim: 8                    # 8 geometric features
+  grid_dim: 2                   # 2D coordinates
+  theta_dim: 1                  # Mode index
+
+  # Core architecture
+  embed_dim: 256
+  n_shared_layers: 4            # Shared geometry trunk
+  n_mode_layers: 2              # Per-mode physics branch
+  n_freq_layers: 2              # (unused — freq comes from mode branches now)
+  n_heads: 8
+  num_experts: 4
+  num_field_modes: 3
+  predict_frequency: true       # Per-mode frequency prediction
+
+  # Spatial encoding
+  rff_scale: 1.0
+  use_rff: true
+
+  # Memory optimization
+  use_checkpoint: true
+  dropout: 0.0
+
+# ─────────────────────────────────────────────────────
+#  3. TRAINING
+# ─────────────────────────────────────────────────────
+training:
+  # Optimizer
+  learning_rate: 2.0e-4
+  weight_decay: 0.0
+  batch_size: 16
+  max_epochs: 300
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 2.0
+  strategy: "auto"
+
+  # Loss weights
+  # L_total = L_field + freq_w * L_freq + 1.0 * L_bnd + ortho_w * L_ortho
+  freq_weight: 0.5              # Frekans loss ağırlığı
+  ortho_weight: 0.01            # Ortogonalite loss ağırlığı (0.0 = devre dışı)
+  mode_loss_weights: [1.0, 1.0, 1.0]
+
+  # Scheduler
+  scheduler: "reducelr"
+  onecycle_pct_start: 0.3
+  onecycle_div_factor: 25
+  onecycle_final_div_factor: 1.0e+4
+  cosine_eta_min: 1.0e-6
+
+  # Early stopping
+  patience: 30
+
+  # DataLoader — Colab optimized
+  num_workers: 2
+  pin_memory: true
+
+  # Logging
+  log_dir: "training_logs"
+  exp_name: "gnot_ortho_v1"
+  log_every_n_steps: 10
+  viz_every_n_epochs: 10
+  progress_bar_refresh_rate: 1
+
+  fast_dev_run: false
+
+# ─────────────────────────────────────────────────────
+#  4. INFERENCE
+# ─────────────────────────────────────────────────────
+inference:
+  checkpoint_path: null
+  output_dir: "inference_results"
+  num_visualize: 5

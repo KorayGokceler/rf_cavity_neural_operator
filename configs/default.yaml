@@ -106,7 +106,8 @@ training:
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
 
   # Loss
-  freq_weight: 0.5              # Frekans loss ağırlığı: total = field_loss + freq_weight * freq_loss
+  freq_weight: 0.5              # Frekans loss ağırlığı: total = field + freq_w*freq + bnd + ortho_w*ortho
+  ortho_weight: 0.01            # Ortogonalite loss ağırlığı: modların dikliğini zorlar (0.0 = devre dışı)
   mode_loss_weights: [1.0, 1.0, 1.0] # 3 MODE ICIN AGIRLIKLAR
 
   # LR Scheduler

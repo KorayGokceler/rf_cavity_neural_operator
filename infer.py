@@ -92,11 +92,14 @@ def main(args):
             theta_ins = batch['Theta_in'].squeeze(-1).cpu().numpy()
             
             # De-normalize predicted frequencies if available
-            if model.freq_stats:
+            if outputs.get('freq') is not None and model.freq_stats:
                 freq_preds = outputs['freq'] * model.freq_stats['std'] + model.freq_stats['mean']
                 freq_trues = batch['Y_freq'] * model.freq_stats['std'] + model.freq_stats['mean']
-            else:
+            elif outputs.get('freq') is not None:
                 freq_preds = outputs['freq']
+                freq_trues = batch['Y_freq']
+            else:
+                freq_preds = batch['Y_freq'] * 0  # Zeros placeholder
                 freq_trues = batch['Y_freq']
 
             B = preds.shape[0]

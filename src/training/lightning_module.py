@@ -8,7 +8,8 @@ class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, 
                  n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3,
-                 lr=1e-3, freq_weight=0.5, mode_loss_weights=None,
+                 lr=1e-3, freq_weight=0.5, ortho_weight=0.01,
+                 mode_loss_weights=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
                  rff_scale=1.0, use_rff=True, predict_frequency=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
@@ -34,6 +35,7 @@ class GNOTLightning(pl.LightningModule):
             predict_frequency=predict_frequency
         )
         self.freq_weight = freq_weight
+        self.ortho_weight = ortho_weight
         self.predict_frequency = predict_frequency
         # Per-mode loss weights: [w0, w1, w2] — zayıf modlara daha yüksek ağırlık verilebilir
         if mode_loss_weights is None:
@@ -52,6 +54,71 @@ class GNOTLightning(pl.LightningModule):
 
     def forward(self, batch):
         return self.model(batch)
+
+    def _compute_orthogonality_loss(self, pred_field, batch):
+        """
+        Fiziksel ortogonalite kısıtı: aynı geometrinin farklı modları birbirine dik olmalı.
+        ∫ E_m(x) · E_n(x) dA = 0  (m ≠ n)
+
+        node_area (Input_funcs[:, :, 5]) ile ağırlıklandırılmış iç çarpım kullanılır.
+        Bu, alan integralinin doğru bir ayrık yaklaşımıdır.
+        """
+        geom_ids = batch['geom_id'].squeeze(-1)   # [B]
+        mode_ids = batch['Theta_in'].squeeze(-1)   # [B]
+        mask = batch.get('Mask', None)
+        B = pred_field.shape[0]
+
+        # node_area feature index = 5 (bkz: docs/02_FEATURE_ENGINEERING.md)
+        node_area = batch['Input_funcs'][:, :, 5]  # [B, N]
+
+        loss_ortho = torch.tensor(0.0, device=pred_field.device)
+        n_pairs = 0
+
+        # Eşsiz geometrileri bul
+        unique_geoms = geom_ids.unique()
+
+        for g_id in unique_geoms:
+            g_mask = (geom_ids == g_id)
+            g_indices = g_mask.nonzero(as_tuple=True)[0]
+
+            if len(g_indices) < 2:
+                continue  # Tek mod varsa dik olacak bir şey yok
+
+            # Bu geometriye ait tüm mod tahminlerini topla
+            g_modes = mode_ids[g_indices]          # [n_modes_in_batch]
+            g_preds = pred_field[g_indices]          # [n_modes, N, 1]
+            g_area = node_area[g_indices[0]]         # [N] — aynı geometri, aynı area
+
+            if mask is not None:
+                g_valid = mask[g_indices[0]].float()  # [N]
+            else:
+                g_valid = torch.ones(g_area.shape[0], device=g_area.device)
+
+            # Area * valid mask = integral ağırlığı
+            w = (g_area * g_valid).unsqueeze(-1)  # [N, 1]
+
+            # Her (m, n) çifti için cosine similarity hesapla
+            for i in range(len(g_indices)):
+                for j in range(i + 1, len(g_indices)):
+                    if g_modes[i] == g_modes[j]:
+                        continue  # Aynı modun tekrarı — skip
+
+                    u_i = g_preds[i]  # [N, 1]
+                    u_j = g_preds[j]  # [N, 1]
+
+                    # Alan-ağırlıklı iç çarpım
+                    dot = (u_i * u_j * w).sum()
+                    norm_i = (u_i ** 2 * w).sum().sqrt().clamp(min=1e-8)
+                    norm_j = (u_j ** 2 * w).sum().sqrt().clamp(min=1e-8)
+
+                    cos_sim = dot / (norm_i * norm_j)
+                    loss_ortho = loss_ortho + cos_sim ** 2
+                    n_pairs += 1
+
+        if n_pairs > 0:
+            loss_ortho = loss_ortho / n_pairs
+
+        return loss_ortho
 
     def _compute_loss(self, batch, prefix):
         outputs = self.model(batch)
@@ -142,8 +209,6 @@ class GNOTLightning(pl.LightningModule):
         # Frequency loss: skip if predict_frequency is disabled
         if self.predict_frequency and outputs.get('freq') is not None:
             loss_freq = F.mse_loss(outputs['freq'], batch['Y_freq'])
-            # Toplam Loss = Alan + Frekans + Duvar(PINN)
-            total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd)
             self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
             
             if self.freq_stats:
@@ -152,8 +217,18 @@ class GNOTLightning(pl.LightningModule):
                 mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
                 self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         else:
-            # Toplam Loss = Alan + Duvar(PINN)
-            total_loss = loss_field + (1.0 * loss_bnd)
+            loss_freq = torch.tensor(0.0, device=pred_field.device)
+
+        # --- ORTHOGONALITY LOSS ---
+        # Aynı geometrinin farklı modlarının tahminleri birbirine dik olmalı
+        if self.ortho_weight > 0:
+            loss_ortho = self._compute_orthogonality_loss(pred_field, batch)
+            self.log(f'{prefix}/loss_ortho', loss_ortho, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+        else:
+            loss_ortho = torch.tensor(0.0, device=pred_field.device)
+
+        # Toplam Loss = Alan + Frekans + Duvar(PINN) + Ortogonalite
+        total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd) + (self.ortho_weight * loss_ortho)
 
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
