@@ -245,10 +245,9 @@ class GNOTModel(nn.Module):
         # NOTE: Entrance FiLM (film_query/film_cond) kaldırıldı.
         # Trunk'ı başlangıçta mode-blind olmaya zorluyoruz; sadece geometriyi temsil etmeli.
 
-        # Minimal architecture: Shared -> [Mode-Specific (Deep), Freq (Deep)]
+        # Minimal architecture: Shared -> Mode-Specific (Deep)
         shared_layers = n_shared_layers
         mode_layers   = n_mode_layers  # Her modun özel fizik derinliği
-        freq_layers   = n_freq_layers
         
         # Bloc-specific coordinate dimension: RFF kapalıysa raw (x, y) kullanılır.
         block_coords_dim = self.rff_dim if use_rff else grid_dim
