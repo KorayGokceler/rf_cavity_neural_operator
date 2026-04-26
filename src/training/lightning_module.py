@@ -85,40 +85,35 @@ class GNOTLightning(pl.LightningModule):
 
         # --- SIGN REALIGNMENT DURING TRAINING ---
         # Her örnek için pred ve true arasındaki faza (işarete) bak.
-        with torch.no_grad():
-            if mask is not None:
-                m_f = mask.unsqueeze(-1).expand_as(pred_field).float() # [B, N, 3]
-                diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
-                diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
-            else:
-                diff_pos = ((pred_field - true_field) ** 2).mean(dim=1) # [B, 3]
-                diff_neg = ((pred_field + true_field) ** 2).mean(dim=1) # [B, 3]
-            
-            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1) # [B, 1, 3]
-        
-        pred_field = pred_field * signs
-        # ----------------------------------------
-
         # --- BIPARTITE MATCHING (PERMUTATION INVARIANT LOSS) ---
         # Mode 1 and Mode 2 suffer from solver random-sorting.
-        def calc_err(p, t):
+        # We define a sign-invariant error function.
+        def calc_err_sign_invariant(p, t):
             if mask is not None:
                 m = mask.float()
                 n_v = m.sum(dim=1).clamp(min=1.0) # [B]
                 w = 1.0 + 5.0 * t.abs()
-                mse = (((p - t) ** 2) * w * m).sum(dim=1) / n_v
-                l1 = ((p - t).abs() * m).sum(dim=1) / n_v
-                return mse + 0.1 * l1
+                mse_pos = (((p - t) ** 2) * w * m).sum(dim=1) / n_v
+                mse_neg = (((p + t) ** 2) * w * m).sum(dim=1) / n_v
+                l1_pos = ((p - t).abs() * m).sum(dim=1) / n_v
+                l1_neg = ((p + t).abs() * m).sum(dim=1) / n_v
+                err_pos = mse_pos + 0.1 * l1_pos
+                err_neg = mse_neg + 0.1 * l1_neg
+                return torch.min(err_pos, err_neg)
             else:
                 w = 1.0 + 5.0 * t.abs()
-                mse = (((p - t) ** 2) * w).mean(dim=1)
-                return mse + 0.1 * F.l1_loss(p, t, reduction='none').mean(dim=1)
+                mse_pos = (((p - t) ** 2) * w).mean(dim=1)
+                mse_neg = (((p + t) ** 2) * w).mean(dim=1)
+                l1_pos = F.l1_loss(p, t, reduction='none').mean(dim=1)
+                l1_neg = F.l1_loss(p, -t, reduction='none').mean(dim=1)
+                err_pos = mse_pos + 0.1 * l1_pos
+                err_neg = mse_neg + 0.1 * l1_neg
+                return torch.min(err_pos, err_neg)
 
         with torch.no_grad():
-            # Error Options
-            err_str = calc_err(pred_field[..., 1], true_field[..., 1]) + calc_err(pred_field[..., 2], true_field[..., 2])
-            err_crs = calc_err(pred_field[..., 1], true_field[..., 2]) + calc_err(pred_field[..., 2], true_field[..., 1])
-            
+            # Error Options (Sign Invariant)
+            err_str = calc_err_sign_invariant(pred_field[..., 1], true_field[..., 1]) + calc_err_sign_invariant(pred_field[..., 2], true_field[..., 2])
+            err_crs = calc_err_sign_invariant(pred_field[..., 1], true_field[..., 2]) + calc_err_sign_invariant(pred_field[..., 2], true_field[..., 1])
             use_straight = err_str <= err_crs  # [B] bool
 
         # Re-align targets in memory so downstream code doesn't suffer
@@ -134,12 +129,41 @@ class GNOTLightning(pl.LightningModule):
         tmp_fr = aligned_true_freq[swap_mask, 1].clone()
         aligned_true_freq[swap_mask, 1] = aligned_true_freq[swap_mask, 2]
         aligned_true_freq[swap_mask, 2] = tmp_fr
+        
+        # --- PHASE (SIGN) REALIGNMENT ---
+        # Artık modlar fiziksel olarak doğru eşleştiği için Faz(İşaret) eşitlemesi yapıyoruz.
+        with torch.no_grad():
+            if mask is not None:
+                m_f = mask.unsqueeze(-1).expand_as(pred_field).float() # [B, N, 3]
+                diff_pos = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
+                diff_neg = ((pred_field + aligned_true_field) ** 2 * m_f).sum(dim=1) # [B, 3]
+            else:
+                diff_pos = ((pred_field - aligned_true_field) ** 2).mean(dim=1) # [B, 3]
+                diff_neg = ((pred_field + aligned_true_field) ** 2).mean(dim=1) # [B, 3]
+            
+            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1) # [B, 1, 3]
+        
+        # Target'ı pred'in işaretine uydurarak L2 Relative vb hesapların kusursuz olmasını sağla
+        aligned_true_field = aligned_true_field * signs
         # -------------------------------------------------------------
 
         # Calculate finalized field loss
+        def calc_err_standard(p, t):
+            if mask is not None:
+                m = mask.float()
+                n_v = m.sum(dim=1).clamp(min=1.0)
+                w = 1.0 + 5.0 * t.abs()
+                mse = (((p - t) ** 2) * w * m).sum(dim=1) / n_v
+                l1 = ((p - t).abs() * m).sum(dim=1) / n_v
+                return mse + 0.1 * l1
+            else:
+                w = 1.0 + 5.0 * t.abs()
+                mse = (((p - t) ** 2) * w).mean(dim=1)
+                return mse + 0.1 * F.l1_loss(p, t, reduction='none').mean(dim=1)
+
         loss_field = torch.tensor(0.0, device=pred_field.device)
         for mode_val in range(3):
-            err_m = calc_err(pred_field[..., mode_val], aligned_true_field[..., mode_val]) # [B]
+            err_m = calc_err_standard(pred_field[..., mode_val], aligned_true_field[..., mode_val]) # [B]
             loss_m = err_m.mean()
             loss_field = loss_field + self.mode_loss_weights[mode_val] * loss_m
             self.log(f'{prefix}/mode_{mode_val}_loss', loss_m, on_step=False, on_epoch=True, prog_bar=False, batch_size=B)
