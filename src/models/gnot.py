@@ -220,7 +220,7 @@ class MLPEncoder(nn.Module):
 
 class GNOTModel(nn.Module):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
-                 n_shared_layers=2, n_mode_layers=2, n_freq_layers=2,
+                 n_shared_layers=2, n_mode_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
                  use_rff=True, use_checkpoint=False, predict_frequency=True):
         super().__init__()

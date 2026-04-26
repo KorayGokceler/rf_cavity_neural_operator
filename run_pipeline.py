@@ -54,7 +54,14 @@ def main():
     if not args.skip_convert:
         print("\n" + "─"*60)
         print("[2/3] FİZİKSEL FEATURE ÇIKARIMI (DATA CONVERSION) BAŞLIYOR...")
-        convert_args = ["python", "convert.py", "--config", args.config] + unknown_args
+        
+        convert_args = [
+            "python", "convert.py",
+            "--h5_filepath", cfg.get('data_convert', {}).get('h5_filepath', 'rf_cavity_1000_dataset.h5'),
+            "--output_path", cfg.get('data_convert', {}).get('output_path', 'data/gnot_dataset.pkl'),
+            "--output_format", cfg.get('data_convert', {}).get('output_format', 'pkl'),
+            "--modes"
+        ] + [str(m) for m in cfg.get('data_convert', {}).get('mode_indices', [0, 1, 2])]
         
         try:
             subprocess.run(convert_args, check=True)
