@@ -41,7 +41,7 @@ class FieldVisualizationCallback(pl.Callback):
             return
         
         # Move to device
-        batch = {k: v.to(pl_module.device) for k, v in batch.items()}
+        batch = {k: (v.to(pl_module.device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
         
         with torch.no_grad():
             outputs = pl_module(batch)

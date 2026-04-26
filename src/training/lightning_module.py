@@ -226,7 +226,7 @@ class GNOTLightning(pl.LightningModule):
         # Aynı geometrinin farklı modlarının tahminleri birbirine dik olmalı
         if self.ortho_weight > 0:
             loss_ortho = self._compute_orthogonality_loss(pred_field, batch)
-            self.log(f'{prefix}/loss_ortho', loss_ortho, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+            self.log(f'{prefix}/loss_ortho', loss_ortho, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         else:
             loss_ortho = torch.tensor(0.0, device=pred_field.device)
 
