@@ -110,7 +110,7 @@ training:
   mode_loss_weights: [1.0, 1.0, 1.0] # 3 MODE ICIN AGIRLIKLAR
 
   # LR Scheduler
-  lr_mode_specific: [null, 8.0e-5, 8.0e-5]  # [Mode 0 (base), Mode 1, Mode 2] için özel LR
+  lr_mode_specific: [2.0e-4, 8.0e-5, 8.0e-5]  # [Mode 0, Mode 1, Mode 2] için özel fizik branch öğrenme hızları
   lr_freq_heads: 1.0e-4                     # Sadece frekans head'leri için özel LR
 
   scheduler: "reducelr"         # "reducelr" — Val loss takıldığında LR düşür
