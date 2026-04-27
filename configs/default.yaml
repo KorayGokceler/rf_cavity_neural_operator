@@ -105,7 +105,8 @@ training:
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
 
   # Loss
-  freq_weight: 0.5              # Frekans loss ağırlığı: total = field + freq_w*freq + bnd
+  freq_weight: 0.5              # Frekans loss ağırlığı: total = field + freq_w*freq + bnd + smooth
+  smoothness_weight: 0.1        # Mesh-aware gradient matching loss ağırlığı (gürültüyü azaltır)
   mode_loss_weights: [1.0, 1.0, 1.0] # 3 MODE ICIN AGIRLIKLAR
 
   # LR Scheduler

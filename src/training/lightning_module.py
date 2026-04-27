@@ -8,7 +8,7 @@ class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, 
                  n_shared_layers=2, n_mode_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3,
-                 lr=1e-3, freq_weight=0.5,
+                 lr=1e-3, freq_weight=0.5, smoothness_weight=0.1,
                  mode_loss_weights=None,
                  lr_mode_specific=None, lr_freq_heads=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
@@ -39,6 +39,7 @@ class GNOTLightning(pl.LightningModule):
             predict_frequency=predict_frequency
         )
         self.freq_weight = freq_weight
+        self.smoothness_weight = smoothness_weight
         self.predict_frequency = predict_frequency
         # Per-mode loss weights: [w0, w1, w2] — zayıf modlara daha yüksek ağırlık verilebilir
         if mode_loss_weights is None:
@@ -142,8 +143,19 @@ class GNOTLightning(pl.LightningModule):
         else:
             loss_freq = torch.tensor(0.0, device=pred_field.device)
 
+        # Mesh-aware gradient matching smoothness loss
+        if self.smoothness_weight > 0:
+            elements_list = batch.get('elements', None)
+            if elements_list is not None and len(elements_list) > 0:
+                loss_smooth = self._compute_smoothness_loss(pred_field, aligned_true_field, elements_list)
+            else:
+                loss_smooth = torch.tensor(0.0, device=pred_field.device)
+        else:
+            loss_smooth = torch.tensor(0.0, device=pred_field.device)
+        self.log(f'{prefix}/smooth_loss', loss_smooth, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+
         # Total Loss
-        total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd)
+        total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd) + (self.smoothness_weight * loss_smooth)
 
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
@@ -178,6 +190,48 @@ class GNOTLightning(pl.LightningModule):
             targets_valid = aligned_true_field.contiguous().view(-1)
 
         return total_loss, preds_valid, targets_valid
+
+    def _compute_smoothness_loss(self, pred_field, aligned_true_field, elements_list):
+        """Mesh-aware gradient matching loss using triangle edge connectivity.
+        
+        Penalizes the difference between predicted and true spatial gradients
+        across mesh edges. Forces spatially coherent outputs without suppressing
+        legitimate field variations. Cost: ~5-10% overhead (no autograd needed).
+        """
+        total_loss = 0.0
+        count = 0
+        B = pred_field.shape[0]
+        
+        for b in range(B):
+            elems = elements_list[b].to(pred_field.device)  # [num_elements, 3]
+            if elems.numel() == 0:
+                continue
+            
+            pred_b = pred_field[b, :, 0]   # [N]
+            true_b = aligned_true_field[b, :, 0]  # [N]
+            
+            # 3 edges per triangle: (v0,v1), (v1,v2), (v0,v2)
+            e0, e1, e2 = elems[:, 0], elems[:, 1], elems[:, 2]
+            
+            # Predicted gradients across edges
+            dp_01 = pred_b[e0] - pred_b[e1]
+            dp_12 = pred_b[e1] - pred_b[e2]
+            dp_02 = pred_b[e0] - pred_b[e2]
+            
+            # True gradients across edges
+            dt_01 = true_b[e0] - true_b[e1]
+            dt_12 = true_b[e1] - true_b[e2]
+            dt_02 = true_b[e0] - true_b[e2]
+            
+            # Gradient matching: penalize excess/missing spatial gradients
+            grad_loss = ((dp_01 - dt_01)**2 + (dp_12 - dt_12)**2 + (dp_02 - dt_02)**2).mean()
+            
+            total_loss += grad_loss
+            count += 1
+        
+        if count == 0:
+            return torch.tensor(0.0, device=pred_field.device)
+        return total_loss / count
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")

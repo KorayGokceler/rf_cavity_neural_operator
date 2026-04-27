@@ -146,6 +146,14 @@ class GNOTDataset(Dataset):
         n_nodes = x.shape[0]
         if self.max_nodes is not None and n_nodes > self.max_nodes:
             rand_idx = torch.randperm(n_nodes)[:self.max_nodes].numpy()
+            
+            # Remap elements: keep only triangles with all vertices in subsampled set
+            old_to_new = np.full(n_nodes, -1, dtype=np.int64)
+            old_to_new[rand_idx] = np.arange(len(rand_idx))
+            remapped = old_to_new[elements]  # [num_elements, 3]
+            valid = (remapped >= 0).all(axis=1)
+            elements = remapped[valid].astype(np.int32)
+            
             x = x[rand_idx]
             input_features = input_features[rand_idx]
             y_val = y_val[rand_idx]
