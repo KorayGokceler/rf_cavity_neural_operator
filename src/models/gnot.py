@@ -253,7 +253,7 @@ class GNOTModel(nn.Module):
         block_coords_dim = self.rff_dim if use_rff else grid_dim
 
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=False)
+            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
             for _ in range(shared_layers)
         ])
         
@@ -362,17 +362,15 @@ class GNOTModel(nn.Module):
         # Global Context Extraction
         global_context = self.pooler(condition_emb, condition_mask)
 
-        # Trunk (Shared processing) — mode-blind
-        dummy_theta = torch.zeros(B, dtype=torch.long, device=X.device)
-
+        # Trunk (Shared processing) — mode-aware
+        mode_indices = theta_in[:, 0]  # [B] — integer mode index per sample
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, dummy_theta, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, mode_indices, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, dummy_theta, x_f_pass, mask, condition_mask, global_context)
+                x_emb = block(x_emb, condition_emb, mode_indices, x_f_pass, mask, condition_mask, global_context)
 
         # --- Dynamic Routing: route each sample to its own mode branch ---
-        mode_indices = theta_in[:, 0]  # [B] — integer mode index per sample
         
         # Initialize output tensors
         N = X.shape[1]
