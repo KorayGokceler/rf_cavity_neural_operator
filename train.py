@@ -124,6 +124,7 @@ def main():
         hidden_dim=mc.embed_dim,
         n_shared_layers=mc.n_shared_layers,
         n_mode_layers=mc.n_mode_layers,
+        n_field_head_layers=getattr(mc, 'n_field_head_layers', 2),
         n_heads=mc.n_heads,
         num_experts=mc.num_experts,
         num_field_modes=mc.num_field_modes,

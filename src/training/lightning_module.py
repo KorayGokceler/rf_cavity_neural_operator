@@ -6,7 +6,7 @@ from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, 
-                 n_shared_layers=2, n_mode_layers=2,
+                 n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3,
                  lr=1e-3, freq_weight=0.5, smoothness_weight=0.1,
                  mode_loss_weights=None,
@@ -40,6 +40,7 @@ class GNOTLightning(pl.LightningModule):
             embed_dim=hidden_dim,
             n_shared_layers=n_shared_layers,
             n_mode_layers=n_mode_layers,
+            n_field_head_layers=n_field_head_layers,
             n_heads=n_heads,
             num_experts=num_experts,
             num_field_modes=num_field_modes,

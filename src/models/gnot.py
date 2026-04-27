@@ -220,7 +220,7 @@ class MLPEncoder(nn.Module):
 
 class GNOTModel(nn.Module):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
-                 n_shared_layers=2, n_mode_layers=2,
+                 n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
                  use_rff=True, use_checkpoint=False, predict_frequency=True):
         super().__init__()
@@ -267,15 +267,41 @@ class GNOTModel(nn.Module):
         
         self.pooler = AttentionPool(embed_dim, n_heads)
 
-        # Mode-specific field heads: her mod kendi decoder'ından geçiyor.
-        # Gradient çakışması yok — Mode 0'ın gradyanı Head 1'e dokunmuyor.
-        self.field_heads = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(embed_dim, embed_dim),
-                nn.GELU(),
-                nn.Linear(embed_dim, 1)
-            ) for _ in range(num_field_modes)
-        ])
+        # Dynamic Mode-specific field heads
+        self.field_heads = nn.ModuleList()
+        for _ in range(num_field_modes):
+            layers = []
+            curr_dim = embed_dim
+            
+            # If depth > 2, expand first
+            if n_field_head_layers > 2:
+                layers.extend([
+                    nn.Linear(curr_dim, embed_dim * 2),
+                    nn.LayerNorm(embed_dim * 2),
+                    nn.GELU()
+                ])
+                curr_dim = embed_dim * 2
+                
+                # Intermediate layers
+                for _ in range(n_field_head_layers - 3):
+                    layers.extend([
+                        nn.Linear(curr_dim, curr_dim),
+                        nn.LayerNorm(curr_dim),
+                        nn.GELU()
+                    ])
+            
+            # Penultimate layer: shrink back to embed_dim
+            if n_field_head_layers >= 2:
+                layers.extend([
+                    nn.Linear(curr_dim, embed_dim),
+                    nn.LayerNorm(embed_dim),
+                    nn.GELU()
+                ])
+                curr_dim = embed_dim
+            
+            # Final output layer
+            layers.append(nn.Linear(curr_dim, 1))
+            self.field_heads.append(nn.Sequential(*layers))
 
         # Per-mode frequency heads: her mod kendi frekansını tahmin eder.
         # Fiziksel olarak doğru — her eigenmode'un kendi rezonans frekansı vardır.

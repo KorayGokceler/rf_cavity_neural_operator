@@ -71,6 +71,7 @@ model:
   embed_dim: 256                # Hidden dimension (ana boyut parametresi)
   n_shared_layers: 6            # Geometrik trunk derinliği (daha derin → daha iyi öğrenme)
   n_mode_layers: 1              # Her modun kendi fizik branch derinliği
+  n_field_head_layers: 3        # Tahmin kafası derinliği (decoder capacity)
   n_heads: 8                    # Attention head sayısı (256 / 8 = 32 dim per head)
   num_experts: 4                # GeometricGatingFFN expert sayısı
   predict_frequency: true       # Frekans tahmini aktif — her mode branch kendi frekansını tahmin eder
