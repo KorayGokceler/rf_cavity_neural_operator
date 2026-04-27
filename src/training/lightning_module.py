@@ -23,6 +23,16 @@ class GNOTLightning(pl.LightningModule):
         self.lr_freq_heads = lr_freq_heads
         
         self.save_hyperparameters()
+        
+        # --- GRADNORM INITIALIZATION ---
+        self.automatic_optimization = False  # GradNorm requires manual control
+        self.gradnorm_alpha = 1.5             # Dengeleme sertliği (1.0-2.0)
+        self.num_tasks = num_field_modes + 1  # Field (per mode) + Frequency
+        self.register_buffer('loss_weights', torch.ones(self.num_tasks))
+        self.register_buffer('initial_losses', torch.zeros(self.num_tasks))
+        self.has_initial_losses = False
+        # -------------------------------
+        
         self.model = GNOTModel(
             val_dim=val_dim,
             grid_dim=grid_dim,
@@ -234,15 +244,159 @@ class GNOTLightning(pl.LightningModule):
         return total_loss / count
 
     def training_step(self, batch, batch_idx):
-        loss, preds, targets = self._compute_loss(batch, "train")
-        self.train_r2(preds, targets)
-        self.log('train/r2', self.train_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        optimizer = self.optimizers()
         
-        # Öğrenme oranını (learning rate) progress bar'a yansıt
-        current_lr = self.optimizers().param_groups[0]['lr']
-        self.log('lr', current_lr, prog_bar=True, on_step=True, on_epoch=False)
+        # 1. Forward Pass
+        outputs = self.model(batch)
+        mask = batch.get('Mask', None)
+        theta_in = batch['Theta_in'][:, 0]
+        B = theta_in.shape[0]
+
+        # 2. Individual Task Losses Calculation
+        # We split field loss per mode to balance them individually via GradNorm
+        task_losses = []
         
-        return loss
+        pred_field = outputs['field']
+        true_field = batch['Y_field']
+        
+        # Phase (Sign) Alignment
+        with torch.no_grad():
+            if mask is not None:
+                m_f = mask.unsqueeze(-1).expand_as(pred_field).float()
+                diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=1)
+                diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=1)
+            else:
+                diff_pos = ((pred_field - true_field) ** 2).mean(dim=1)
+                diff_neg = ((pred_field + true_field) ** 2).mean(dim=1)
+            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1)
+        aligned_true_field = true_field * signs
+
+        # Per-mode field losses (Tasks 0 to num_modes-1)
+        for mode_val in range(self.hparams.num_field_modes):
+            mode_mask_sel = (theta_in == mode_val)
+            if mode_mask_sel.any():
+                m_sel = mask[mode_mask_sel].float() if mask is not None else None
+                p_sel = pred_field[mode_mask_sel].squeeze(-1)
+                t_sel = aligned_true_field[mode_mask_sel].squeeze(-1)
+                
+                if m_sel is not None:
+                    n_v_sel = m_sel.sum(dim=1).clamp(min=1.0)
+                    # Use standard MSE for gradnorm stability (unweighted by peak)
+                    loss_m = (((p_sel - t_sel) ** 2) * m_sel).sum(dim=1) / n_v_sel
+                else:
+                    loss_m = ((p_sel - t_sel) ** 2).mean(dim=1)
+                task_losses.append(loss_m.mean())
+            else:
+                # Handle missing modes in batch with a zero that still tracks grads
+                task_losses.append(torch.tensor(0.0, device=self.device, requires_grad=True))
+
+        # Frequency Loss (Task N)
+        if self.predict_frequency and outputs.get('freq') is not None:
+            task_losses.append(F.mse_loss(outputs['freq'], batch['Y_freq']))
+        else:
+            task_losses.append(torch.tensor(0.0, device=self.device, requires_grad=True))
+
+        task_losses = torch.stack(task_losses) # [num_tasks]
+
+        # 3. Save Initial Losses (L0) on first valid batch
+        if not self.has_initial_losses:
+            if (task_losses.detach() > 0).all():
+                self.initial_losses.copy_(task_losses.detach())
+                self.has_initial_losses = True
+
+        # 4. Weighted Total Loss
+        weighted_loss = (task_losses * self.loss_weights).sum()
+        
+        # Add Boundary and Smoothness (fixed weights, not part of gradnorm)
+        dist_bnd = batch['Input_funcs'][:, :, 2]
+        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1).expand_as(pred_field)
+        loss_bnd = (pred_field[bnd_mask] ** 2).mean() if bnd_mask.any() else torch.tensor(0.0, device=self.device)
+        
+        elements_list = batch.get('elements', None)
+        loss_smooth = self._compute_smoothness_loss(pred_field, aligned_true_field, elements_list) if (self.smoothness_weight > 0 and elements_list) else torch.tensor(0.0, device=self.device)
+        
+        total_loss = weighted_loss + (1.0 * loss_bnd) + (self.smoothness_weight * loss_smooth)
+
+        # 5. Optimization Step (Manual)
+        optimizer.zero_grad()
+        self.manual_backward(total_loss)
+        
+        # 6. GRADNORM UPDATE
+        if self.has_initial_losses:
+            self._update_loss_weights(task_losses)
+            
+        optimizer.step()
+        
+        # 7. Scheduler Step (Required for manual optimization)
+        sch = self.lr_schedulers()
+        if sch is not None:
+            # Step every iteration if using OneCycle or step-based schedulers
+            if self.trainer.lr_scheduler_configs[0].interval == 'step':
+                sch.step()
+            elif self.trainer.is_last_batch and self.trainer.lr_scheduler_configs[0].interval == 'epoch':
+                sch.step()
+        
+        # Logging
+        self.log('train/loss', total_loss, prog_bar=True, batch_size=B)
+        self.log('train/weighted_loss', weighted_loss, batch_size=B)
+        for i, w in enumerate(self.loss_weights):
+            self.log(f'gradnorm/weight_{i}', w, batch_size=B)
+            self.log(f'train/task_{i}_loss', task_losses[i], batch_size=B)
+
+        return total_loss
+
+    def _get_shared_layer(self):
+        """Reference layer for GradNorm: Last linear layer of the shared trunk."""
+        return self.model.shared_blocks[-1].ffn.experts[0][3]
+
+    def _update_loss_weights(self, task_losses):
+        """Dynamic Loss Weighting via GradNorm."""
+        W = self._get_shared_layer().weight
+        
+        norms = []
+        for i in range(self.num_tasks):
+            # Gradient of L_i w.r.t. W
+            grad = torch.autograd.grad(task_losses[i], W, retain_graph=True, allow_unused=True)[0]
+            if grad is not None:
+                # G_i = || w_i * grad(L_i) ||
+                norms.append(torch.norm(self.loss_weights[i] * grad, p=2))
+            else:
+                norms.append(torch.tensor(0.0, device=self.device))
+        
+        norms = torch.stack(norms)
+        
+        # Average gradient norm
+        avg_norm = norms.mean().detach()
+        
+        # Relative loss (inverse training rate)
+        # rel_loss = (L_i / L_i_0) / avg(L_j / L_j_0)
+        rel_loss = (task_losses.detach() / (self.initial_losses + 1e-8))
+        avg_rel_loss = rel_loss.mean()
+        inv_train_rate = rel_loss / (avg_rel_loss + 1e-8)
+        
+        # Target norm: E[G] * (inv_rate ^ alpha)
+        target_norms = (avg_norm * (inv_train_rate ** self.gradnorm_alpha)).detach()
+        
+        # GradNorm Loss: L1 distance between actual and target norms
+        gradnorm_loss = F.l1_loss(norms, target_norms)
+        
+        # Update weights (Separate from main optimizer)
+        self.loss_weights.requires_grad = True
+        if self.loss_weights.grad is not None:
+            self.loss_weights.grad.zero_()
+            
+        gradnorm_loss.backward()
+        
+        with torch.no_grad():
+            # Update step (lr=0.025 is standard for GradNorm)
+            self.loss_weights -= 0.025 * self.loss_weights.grad
+            
+            # Constraints: clamp and re-normalize to sum to num_tasks
+            self.loss_weights.clamp_(min=0.01)
+            self.loss_weights *= (self.num_tasks / self.loss_weights.sum())
+            
+        self.loss_weights.requires_grad = False
+        self.loss_weights.grad = None
 
     def validation_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "val")
