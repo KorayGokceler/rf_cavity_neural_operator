@@ -104,19 +104,18 @@ training:
   gradient_clip_val: 2.0        # Keskin gradyanlara (Peak fixleri) izin ver
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
 
-  # Loss
-  freq_weight: 0.5              # Frekans loss ağırlığı: total = field + freq_w*freq + bnd + smooth
-  smoothness_weight: 0.1        # Mesh-aware gradient matching loss ağırlığı (gürültüyü azaltır)
-  mode_loss_weights: [1.0, 1.0, 1.0] # 3 MODE ICIN AGIRLIKLAR
+  # Loss (GradNorm tarafından dinamik olarak yönetilir)
+  # freq_weight ve mode_loss_weights artık başlangıç değeridir veya GradNorm tarafından override edilir
+  freq_weight: 0.5              
+  smoothness_weight: 0.1        
+  mode_loss_weights: [1.0, 1.0, 1.0]
 
   # LR Scheduler
-  lr_mode_specific: [2.0e-4, 8.0e-5, 8.0e-5]  # [Mode 0, Mode 1, Mode 2] için özel fizik branch öğrenme hızları
-  lr_freq_heads: 1.0e-4                     # Sadece frekans head'leri için özel LR
-
-  scheduler: "reducelr"         # "reducelr" — Val loss takıldığında LR düşür
-  reducelr_patience: 10         # Validation loss kaç epoch iyileşmezse LR düşsün
-  reducelr_factor: 0.5          # LR'ın düşürülme katsayısı (yeni_lr = lr * factor)
-  # OneCycleLR parametreleri (scheduler: "onecycle" yapılırsa kullanılır)
+  # GradNorm ile en iyi 'onecycle' çalışır. Tek bir ana LR yeterlidir.
+  scheduler: "onecycle"
+  lr_mode_specific: null        # GradNorm şubeleri otomatik dengeler
+  lr_freq_heads: null           
+  
   onecycle_pct_start: 0.3
   onecycle_div_factor: 25
   onecycle_final_div_factor: 1.0e+4
