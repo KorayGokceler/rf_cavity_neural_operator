@@ -471,8 +471,10 @@ class GNOTLightning(pl.LightningModule):
 
         # Global Summary
         print(f"{'─'*64}")
-        global_val_l2 = metrics.get('val/field_rel_l2', 0.0)
-        global_val_r2 = metrics.get('val/r2', 0.0)
+        # Try both direct name and _epoch suffix (Lightning adds _epoch when on_step=True)
+        global_val_l2 = metrics.get('val/field_rel_l2_epoch', metrics.get('val/field_rel_l2', 0.0))
+        global_val_r2 = metrics.get('val/r2_epoch', metrics.get('val/r2', 0.0))
+        
         print(f"  GLOBAL VAL  │  Rel L2: {global_val_l2:.4f}  │  R²: {global_val_r2:.4f}")
         print(f"{'━'*64}\n")
 
