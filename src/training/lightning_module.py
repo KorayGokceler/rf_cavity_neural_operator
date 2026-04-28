@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 import torchmetrics
+import math
 from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
@@ -427,6 +428,39 @@ class GNOTLightning(pl.LightningModule):
                     "monitor": "val/field_rel_l2",
                     "interval": "epoch",
                     "frequency": 1
+                }
+            }
+        elif self.hparams.scheduler == 'custom_cosine':
+            # Custom logic: 
+            # 0-10: Constant 1e-4 (if base lr is 1e-4)
+            # 10+: Drop to 5e-5 and Cosine decay to cosine_eta_min
+            def lr_lambda(epoch):
+                base_lr = self.hparams.lr
+                drop_lr = 5e-5
+                if epoch < 10:
+                    return 1.0
+                else:
+                    # Remaining epochs after the constant phase
+                    total_cos_epochs = self.trainer.max_epochs - 10
+                    if total_cos_epochs <= 0: return drop_lr / base_lr
+                    
+                    progress = (epoch - 10) / total_cos_epochs
+                    progress = min(1.0, max(0.0, progress))
+                    
+                    # Cosine decay factor from 1.0 down to eta_min / drop_lr
+                    eta_min = self.hparams.cosine_eta_min
+                    cosine_factor = 0.5 * (1.0 + math.cos(math.pi * progress))
+                    
+                    # Target LR for this epoch
+                    target_lr = eta_min + (drop_lr - eta_min) * cosine_factor
+                    return target_lr / base_lr
+
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "epoch"
                 }
             }
         else:

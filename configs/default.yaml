@@ -97,10 +97,10 @@ model:
 # ─────────────────────────────────────────────────────
 training:
   # Optimization
-  learning_rate: 2.0e-4
+  learning_rate: 1.0e-4
   weight_decay: 0.0               # Modelin genlikleri (amplutidleri) baskılamasını engelle
   batch_size: 16
-  max_epochs: 500
+  max_epochs: 200
   check_val_every_n_epoch: 1    # Her epoch sonunda doğrulama yap
   gradient_clip_val: 2.0        # Keskin gradyanlara (Peak fixleri) izin ver
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
@@ -112,10 +112,9 @@ training:
   mode_loss_weights: [1.0, 1.0, 1.0]
 
   # LR Scheduler
-  # GradNorm ile en iyi 'onecycle' çalışır. Tek bir ana LR yeterlidir.
-  scheduler: "onecycle"
-  lr_mode_specific: null        # GradNorm şubeleri otomatik dengeler
-  lr_freq_heads: null           
+  scheduler: "custom_cosine"
+  lr_mode_specific: null
+  lr_freq_heads: null
   
   onecycle_pct_start: 0.3
   onecycle_div_factor: 25
