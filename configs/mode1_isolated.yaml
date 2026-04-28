@@ -27,7 +27,6 @@ model:
   
   # İzolasyon Ayarları
   num_field_modes: 1            # SADECE 1 MOD (Mode 1 verisi buraya 0 olarak gelecek)
-  num_film_modes: 5             # Sadece bir mod için küçük bir tablo yeterli
   
   use_checkpoint: true
 

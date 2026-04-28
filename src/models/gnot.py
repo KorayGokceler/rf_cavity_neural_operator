@@ -94,9 +94,8 @@ class GeometricGatingFFN(nn.Module):
         return final_output
 
 class GNOTBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, coords_dim, num_experts=4, dropout=0.0, num_modes=20, use_film=True):
+    def __init__(self, embed_dim, num_heads, coords_dim, num_experts=4, dropout=0.0):
         super().__init__()
-        self.use_film = use_film
         self.cross_attn = LinearAttention(embed_dim, num_heads, dropout)
         self.norm1_q  = nn.LayerNorm(embed_dim)
         self.norm1_kv = nn.LayerNorm(embed_dim)
@@ -104,12 +103,7 @@ class GNOTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ffn = GeometricGatingFFN(embed_dim, num_experts, dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
-        # Per-block FiLM: her blok sonunda mode sinyalini yenile.
-        # Mode-specific bloklar için zorunlu, shared bloklar için mode-blind olmalı.
-        if use_film:
-            self.block_film = FiLMConditioner(embed_dim, num_modes)
-        else:
-            self.block_film = None
+
 
         self.local_gating = nn.Sequential(
             nn.Linear(coords_dim, 64),
@@ -159,39 +153,13 @@ class GNOTBlock(nn.Module):
         ffn_out = self.ffn(self.norm3(x), gate_info)
         x = x + ffn_out
 
-        # Mode conditioning: sadece fizik öğrenen şubelerde aktif
-        if self.block_film is not None:
-            x = self.block_film(x, mode_idx)
+
 
         if mask is not None:
             x = x * mask.unsqueeze(-1)
         return x
 
-class FiLMConditioner(nn.Module):
-    """Feature-wise Linear Modulation: mode embedding'i LayerNorm-proof şekilde uygular.
-    
-    Additive injection (+) yerine affine transform (gamma * x + beta) kullanır.
-    LayerNorm mean/variance'ı sıfırladığında additive bias kaybolur,
-    ama multiplicative gamma sinyali korunur.
-    """
-    def __init__(self, embed_dim, num_modes=20):
-        super().__init__()
-        # Her mod için ayrı gamma ve beta üretiyor (2 * embed_dim)
-        self.emb = nn.Embedding(num_modes, embed_dim * 2)
-        # FIX: zeros yerine küçük random init — modlar baştan birbirinden ayrışıyor.
-        # zeros ile tüm modlar aynı başlangıç noktasından geldiği için model Mode 0'a kilitleniyor.
-        nn.init.normal_(self.emb.weight, mean=0.0, std=0.02)
 
-    def forward(self, x, mode_idx):
-        # mode_idx: [B] veya [B, 1] — her ikisini de destekle
-        if mode_idx.dim() > 1:
-            mode_idx = mode_idx.squeeze(-1)          # [B]
-        params = self.emb(mode_idx)                  # [B, 2*D]
-        gamma, beta = params.chunk(2, dim=-1)        # her biri [B, D]
-        gamma = gamma.unsqueeze(1)                   # [B, 1, D] — broadcast over nodes
-        beta  = beta.unsqueeze(1)
-        # 1 + gamma: başlangıçta identity (gamma=0 init)
-        return x * (1.0 + gamma) + beta
 
 
 
@@ -232,14 +200,14 @@ class GNOTModel(nn.Module):
         block_coords_dim = grid_dim
 
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
+            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts)
             for _ in range(shared_layers)
         ])
         
         # Mode-specific field branches
         self.mode_field_blocks = nn.ModuleList([
             nn.ModuleList([
-                 GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
+                 GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts)
                  for _ in range(mode_layers)
             ]) for _ in range(num_field_modes)
         ])

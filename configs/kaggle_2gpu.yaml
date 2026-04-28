@@ -69,8 +69,6 @@ model:
   num_experts: 4
 
   num_field_modes: 3
-  num_film_modes: 20
-  film_init_std: 0.02
 
   dropout: 0.0
 
