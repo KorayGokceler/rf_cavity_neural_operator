@@ -150,6 +150,17 @@ class GNOTBlock(nn.Module):
 
 
 
+class SpectralEncoding(nn.Module):
+    """Random Fourier Features for smooth spatial coordinate encoding."""
+    def __init__(self, in_dim, out_dim, scale=10.0):
+        super().__init__()
+        self.register_buffer('B', torch.randn(in_dim, out_dim // 2) * scale)
+
+    def forward(self, x):
+        # x: [..., in_dim]
+        proj = torch.matmul(x, self.B)
+        return torch.cat([torch.sin(proj), torch.cos(proj)], dim=-1)
+
 class MLPEncoder(nn.Module):
     def __init__(self, in_dim, out_dim):
         super().__init__()
@@ -253,16 +264,20 @@ class GNOTModel(nn.Module):
         self.num_field_modes = num_field_modes
         self.use_gnn = use_gnn
 
+        # 1. Coordinate Encoding (Spectral for smoothness)
+        spectral_dim = 64
+        self.spatial_encoder = SpectralEncoding(grid_dim, spectral_dim, scale=10.0)
+        
         if use_gnn:
             self.mesh_encoder = MeshEncoder(grid_dim, gnn_out_dim, n_layers=gnn_layers)
-            # Router sees coordinates + GNN context
-            router_dim = grid_dim + gnn_out_dim
-            input_dim_q = grid_dim + gnn_out_dim
-            input_dim_f = val_dim + gnn_out_dim  # inputs already contains X, only add GNN
+            # Router sees Spectral Coords + GNN context
+            router_dim = spectral_dim + gnn_out_dim
+            input_dim_q = spectral_dim + gnn_out_dim
+            input_dim_f = val_dim + gnn_out_dim # inputs column 0,1 are X
         else:
             self.mesh_encoder = None
-            router_dim = grid_dim
-            input_dim_q = grid_dim
+            router_dim = spectral_dim
+            input_dim_q = spectral_dim
             input_dim_f = val_dim + grid_dim
 
         # Query points
@@ -362,26 +377,26 @@ class GNOTModel(nn.Module):
         theta_in = batch['Theta_in']  # [B, 1] — mode index per sample
         mask = batch.get('Mask', None)
         elements = batch.get('elements', None)
-        B = X.shape[0]
+        B, N, _ = X.shape
+        n_nodes = mask.sum(dim=1).long() if mask is not None else torch.full((B,), N, device=X.device)
+        elements = batch.get('elements', None)
 
-        # Actual node counts per sample (from mask)
-        if mask is not None:
-            n_nodes = mask.sum(dim=1).long().tolist()
-        else:
-            n_nodes = [X.shape[1]] * B
+        # 0. Spectral Coordinate Encoding
+        x_spectral = self.spatial_encoder(X)
 
-        # GNN Mesh Encoding
+        # 1. GNN Mesh Encoding & Positional Enhancement
         if self.use_gnn and elements is not None:
             gnn_feats = self.mesh_encoder(X, elements, n_nodes)
-            x_enhanced = torch.cat([X, gnn_feats], dim=-1)
+            x_enhanced = torch.cat([x_spectral, gnn_feats], dim=-1)
             pos_enhanced = x_enhanced
-            # Inputs (8) + GNN (64) = 72. (X is already in inputs columns 0,1)
+            # Inputs (8) + GNN (64) = 72
             enhanced_inputs = torch.cat([inputs, gnn_feats], dim=-1)
         else:
-            x_enhanced = X
-            pos_enhanced = X
+            x_enhanced = x_spectral
+            pos_enhanced = x_spectral
             enhanced_inputs = torch.cat([inputs, X], dim=-1)
 
+        # 2. Embedding Layers
         x_emb = self.query_encoder(x_enhanced)
         y_emb = self.input_func_encoder(enhanced_inputs)
 
