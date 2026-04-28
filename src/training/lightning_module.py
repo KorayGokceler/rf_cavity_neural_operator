@@ -322,11 +322,12 @@ class GNOTLightning(pl.LightningModule):
 
         # 5. Optimization Step (Manual)
         optimizer.zero_grad()
-        self.manual_backward(total_loss)
         
-        # 6. GRADNORM UPDATE
+        # 6. GRADNORM UPDATE: Ana backward'dan önce yapılmalı ki grafik silinmesin.
         if self.has_initial_losses:
             self._update_loss_weights(task_losses)
+            
+        self.manual_backward(total_loss)
             
         # 6.5 Manual Gradient Clipping
         if self.gradient_clip_val is not None:
