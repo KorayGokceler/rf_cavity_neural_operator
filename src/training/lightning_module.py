@@ -74,13 +74,23 @@ class GNOTLightning(pl.LightningModule):
         pred_field = outputs['field']      # [B, N, 1]
         true_field = batch['Y_field']      # [B, N, 1]
         B = pred_field.shape[0]
+        theta_in = batch['Theta_in'][:, 0] # [B]
+        
+        # --- MODE WEIGHTING SETUP ---
+        mode_weights_tensor = torch.tensor(self.mode_loss_weights, device=pred_field.device) # [num_modes]
+        batch_weights = mode_weights_tensor[theta_in] # [B]
 
         # --- PHYSICS-INFORMED NEURAL NETWORK (PINN) BOUNDARY CONSTRAINT ---
         dist_bnd = batch['Input_funcs'][:, :, 2]  # [B, N]
         bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1).expand_as(pred_field) # [B, N, 1]
         
         if bnd_mask.any():
-            loss_bnd = (pred_field[bnd_mask] ** 2).mean()
+            # Weighted boundary loss: compute per-sample boundary loss then weight it
+            # bnd_mask: [B, N, 1]
+            sq_diff = (pred_field ** 2) * bnd_mask.float() # [B, N, 1]
+            # Average over nodes for each sample
+            sample_bnd_loss = sq_diff.sum(dim=(1, 2)) / (bnd_mask.sum(dim=(1, 2)).clamp(min=1.0)) # [B]
+            loss_bnd = (sample_bnd_loss * batch_weights).mean()
         else:
             loss_bnd = torch.tensor(0.0, device=pred_field.device)
             
@@ -113,34 +123,31 @@ class GNOTLightning(pl.LightningModule):
             diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))  # [B, N]
             mse = ((diff ** 2) * w * m).sum(dim=1) / n_v  # [B]
             l1 = (diff.abs() * m).sum(dim=1) / n_v  # [B]
-            loss_field = (mse + 0.1 * l1).mean()
+            sample_field_losses = (mse + 0.1 * l1) # [B]
         else:
             w = 1.0 + 5.0 * aligned_true_field.abs().squeeze(-1)
             diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))
             mse = ((diff ** 2) * w).mean(dim=1)
             l1 = diff.abs().mean(dim=1)
-            loss_field = (mse + 0.1 * l1).mean()
+            sample_field_losses = (mse + 0.1 * l1) # [B]
+
+        # Apply per-sample mode weighting
+        loss_field = (sample_field_losses * batch_weights).mean()
 
         # Per-mode loss logging
-        theta_in = batch['Theta_in'][:, 0]  # [B]
-        for mode_val in range(3):
+        for mode_val in range(len(self.mode_loss_weights)):
             mode_mask_sel = (theta_in == mode_val)
             if mode_mask_sel.any():
-                if mask is not None:
-                    m_sel = mask[mode_mask_sel].float()
-                    n_v_sel = m_sel.sum(dim=1).clamp(min=1.0)
-                    d = (pred_field[mode_mask_sel].squeeze(-1) - aligned_true_field[mode_mask_sel].squeeze(-1))
-                    mode_loss = ((d ** 2) * m_sel).sum(dim=1) / n_v_sel
-                else:
-                    d = (pred_field[mode_mask_sel].squeeze(-1) - aligned_true_field[mode_mask_sel].squeeze(-1))
-                    mode_loss = (d ** 2).mean(dim=1)
-                self.log(f'{prefix}/mode_{mode_val}_loss', mode_loss.mean(), on_step=False, on_epoch=True, prog_bar=False, batch_size=B)
+                m_loss = sample_field_losses[mode_mask_sel].mean()
+                self.log(f'{prefix}/mode_{mode_val}_loss', m_loss, on_step=False, on_epoch=True, prog_bar=False, batch_size=B)
 
-        # Frequency loss
         if self.predict_frequency and outputs.get('freq') is not None:
             freq_pred = outputs['freq']          # [B, 1]
             freq_true = batch['Y_freq']          # [B, 1]
-            loss_freq = F.mse_loss(freq_pred, freq_true)
+            # Weighted Frequency Loss
+            sample_freq_loss = F.mse_loss(freq_pred, freq_true, reduction='none').squeeze(-1) # [B]
+            loss_freq = (sample_freq_loss * batch_weights).mean()
+            
             self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
             
             if self.freq_stats:
@@ -155,7 +162,7 @@ class GNOTLightning(pl.LightningModule):
         if self.smoothness_weight > 0:
             elements_list = batch.get('elements', None)
             if elements_list is not None and len(elements_list) > 0:
-                loss_smooth = self._compute_smoothness_loss(pred_field, aligned_true_field, elements_list)
+                loss_smooth = self._compute_smoothness_loss(pred_field, aligned_true_field, elements_list, batch_weights)
             else:
                 loss_smooth = torch.tensor(0.0, device=pred_field.device)
         else:
@@ -163,7 +170,7 @@ class GNOTLightning(pl.LightningModule):
         self.log(f'{prefix}/smooth_loss', loss_smooth, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
         # Total Loss
-        total_loss = loss_field + (self.freq_weight * loss_freq) + (1.0 * loss_bnd) + (self.smoothness_weight * loss_smooth)
+        total_loss = loss_field + (self.freq_weight * loss_freq) + (0.1 * loss_bnd) + (self.smoothness_weight * loss_smooth)
 
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
@@ -199,12 +206,8 @@ class GNOTLightning(pl.LightningModule):
 
         return total_loss, preds_valid, targets_valid
 
-    def _compute_smoothness_loss(self, pred_field, aligned_true_field, elements_list):
+    def _compute_smoothness_loss(self, pred_field, aligned_true_field, elements_list, batch_weights):
         """Mesh-aware gradient matching loss using triangle edge connectivity.
-        
-        Penalizes the difference between predicted and true spatial gradients
-        across mesh edges. Forces spatially coherent outputs without suppressing
-        legitimate field variations. Cost: ~5-10% overhead (no autograd needed).
         """
         total_loss = 0.0
         count = 0
@@ -222,24 +225,17 @@ class GNOTLightning(pl.LightningModule):
             e0, e1, e2 = elems[:, 0], elems[:, 1], elems[:, 2]
             
             # Predicted gradients across edges
-            dp_01 = pred_b[e0] - pred_b[e1]
-            dp_12 = pred_b[e1] - pred_b[e2]
-            dp_02 = pred_b[e0] - pred_b[e2]
+            diff_pred = ((pred_b[e0] - pred_b[e1])**2 + (pred_b[e1] - pred_b[e2])**2 + (pred_b[e2] - pred_b[e0])**2)
             
             # True gradients across edges
-            dt_01 = true_b[e0] - true_b[e1]
-            dt_12 = true_b[e1] - true_b[e2]
-            dt_02 = true_b[e0] - true_b[e2]
+            diff_true = ((true_b[e0] - true_b[e1])**2 + (true_b[e1] - true_b[e2])**2 + (true_b[e2] - true_b[e0])**2)
             
-            # Gradient matching: penalize excess/missing spatial gradients
-            grad_loss = ((dp_01 - dt_01)**2 + (dp_12 - dt_12)**2 + (dp_02 - dt_02)**2).mean()
-            
-            total_loss += grad_loss
+            # Weighted by mode weight for this sample
+            sample_smooth = F.l1_loss(diff_pred, diff_true)
+            total_loss += sample_smooth * batch_weights[b]
             count += 1
-        
-        if count == 0:
-            return torch.tensor(0.0, device=pred_field.device)
-        return total_loss / count
+            
+        return total_loss / max(count, 1)
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
