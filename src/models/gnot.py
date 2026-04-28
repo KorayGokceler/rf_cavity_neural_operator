@@ -346,12 +346,12 @@ class GNOTModel(nn.Module):
                     x_m = m_block(x_m, c_m, th_m, pos_m, m_mask, c_mask, gc_m)
             
             # Field prediction
-            field_pred[mode_mask] = self.field_heads[mode_val](x_m)  # [B_m, N, 1]
+            field_pred[mode_mask] = self.field_heads[mode_val](x_m).float()  # [B_m, N, 1]
 
             # Frequency prediction
             if self.freq_heads is not None:
                 mode_global = self.pooler(x_m, m_mask)
-                freq_pred[mode_mask] = self.freq_heads[mode_val](mode_global)  # [B_m, 1]
+                freq_pred[mode_mask] = self.freq_heads[mode_val](mode_global).float()  # [B_m, 1]
 
         return {'field': field_pred, 'freq': freq_pred}
 
