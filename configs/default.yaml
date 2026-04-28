@@ -78,6 +78,11 @@ model:
 
   # Mode conditioning
   num_field_modes: 3            # 3 mode da egitilecek
+  
+  # GNN Geometry Encoding
+  use_gnn: true                 # GNN Mesh Encoder aktif
+  gnn_layers: 2                 # GNN derinliği
+  gnn_out_dim: 64               # GNN çıktı boyutu (64-128 arası ideal)
   # Regularization
   dropout: 0.0                  # Attention ve FFN dropout (0.0-0.3)
 

@@ -175,18 +175,119 @@ class MLPEncoder(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class GraphConv(nn.Module):
+    """Simple Graph Convolution (GCN) layer using scatter_mean.
+    Captures local neighborhood information without external libraries.
+    """
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.lin = nn.Linear(in_dim * 2, out_dim)
+        self.norm = nn.LayerNorm(out_dim)
+        self.act = nn.GELU()
+
+    def forward(self, x, edge_index):
+        # x: [TotalNodes, D]
+        # edge_index: [2, TotalEdges]
+        row, col = edge_index
+        
+        # Message passing: aggregate neighbor features
+        neighbor_features = torch.index_select(x, 0, col) # [TotalEdges, D]
+        
+        # Aggregate (Sum first, then mean)
+        out = torch.zeros_like(x)
+        out.index_add_(0, row, neighbor_features)
+        
+        # Normalization (Divide by degree)
+        degree = torch.zeros(x.shape[0], 1, device=x.device, dtype=x.dtype)
+        degree.index_add_(0, row, torch.ones(edge_index.shape[1], 1, device=x.device, dtype=x.dtype))
+        out = out / (degree + 1e-8)
+        
+        # Combine self and neighbor features
+        out = torch.cat([x, out], dim=-1)
+        return self.act(self.norm(self.lin(out)))
+
+class MeshEncoder(nn.Module):
+    """Encodes mesh geometry into local features using graph convolutions."""
+    def __init__(self, in_dim, out_dim, n_layers=2):
+        super().__init__()
+        self.n_layers = n_layers
+        self.layers = nn.ModuleList([
+            GraphConv(in_dim if i == 0 else out_dim, out_dim)
+            for i in range(n_layers)
+        ])
+
+    def build_edge_index(self, elements, n_nodes):
+        # elements: list of [Ni, 3] tensors (triangles)
+        all_edges = []
+        offset = 0
+        for i, tri in enumerate(elements):
+            # tri: [Ni, 3]
+            e1 = tri[:, [0, 1]]
+            e2 = tri[:, [1, 2]]
+            e3 = tri[:, [2, 0]]
+            
+            edges = torch.cat([e1, e2, e3], dim=0) # [3*Ni, 2]
+            edges = torch.cat([edges, edges.flip(1)], dim=0) # bidirectional [6*Ni, 2]
+            
+            all_edges.append(edges + offset)
+            offset += n_nodes[i]
+            
+        edge_index = torch.cat(all_edges, dim=0).t() # [2, E]
+        return edge_index
+
+    def forward(self, x, elements, n_nodes):
+        B, N, D = x.shape
+        device = x.device
+        
+        # 1. Build edge index
+        edge_index = self.build_edge_index(elements, n_nodes).to(device)
+        
+        # 2. Collapse batch into a single large graph
+        valid_nodes = []
+        for i in range(B):
+            valid_nodes.append(x[i, :n_nodes[i]])
+        
+        x_flat = torch.cat(valid_nodes, dim=0)
+        
+        # 3. Apply GNN layers
+        for layer in self.layers:
+            x_flat = layer(x_flat, edge_index)
+            
+        # 4. Reshape back to [B, N, D_out]
+        out_dim = x_flat.shape[-1]
+        out = torch.zeros(B, N, out_dim, device=device, dtype=x.dtype)
+        start = 0
+        for i in range(B):
+            end = start + n_nodes[i]
+            out[i, :n_nodes[i]] = x_flat[start:end]
+            start = end
+            
+        return out
+
 class GNOTModel(nn.Module):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
-                 n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
-                 n_heads=4, num_experts=4, num_field_modes=3,
-                 use_checkpoint=False, predict_frequency=True):
+    def __init__(self, val_dim=8, grid_dim=2, theta_dim=1, embed_dim=256, 
+                 n_shared_layers=6, n_mode_layers=1, n_field_head_layers=3,
+                 n_heads=8, num_experts=4, num_field_modes=3,
+                 use_checkpoint=False, predict_frequency=True,
+                 use_gnn=True, gnn_layers=2, gnn_out_dim=64):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
-        # Query points (represented in raw space)
-        self.query_encoder = MLPEncoder(grid_dim, embed_dim)
-        # Input features + Query point Raw Context
-        self.input_func_encoder = MLPEncoder(val_dim + grid_dim, embed_dim)
+        self.use_gnn = use_gnn
+
+        if use_gnn:
+            self.mesh_encoder = MeshEncoder(grid_dim, gnn_out_dim, n_layers=gnn_layers)
+            input_dim_q = grid_dim + gnn_out_dim
+            input_dim_f = val_dim + grid_dim + gnn_out_dim
+        else:
+            self.mesh_encoder = None
+            input_dim_q = grid_dim
+            input_dim_f = val_dim + grid_dim
+
+        # Query points
+        self.query_encoder = MLPEncoder(input_dim_q, embed_dim)
+        # Input features + Query point Context
+        self.input_func_encoder = MLPEncoder(input_dim_f, embed_dim)
         
         # Entrance Mode Embedding: Query'yi (X) ve Condition'ı (Y) en başta mode-aware yapar.
         self.mode_emb_entrance = nn.Embedding(num_field_modes, embed_dim)
@@ -285,11 +386,23 @@ class GNOTModel(nn.Module):
         inputs = batch['Input_funcs']
         theta_in = batch['Theta_in']  # [B, 1] — mode index per sample
         mask = batch.get('Mask', None)
+        elements = batch.get('elements', None)
         B = X.shape[0]
 
-        # Use Raw Grid
-        x_enhanced = X
-        enhanced_inputs = torch.cat([inputs, X], dim=-1)
+        # Actual node counts per sample (from mask)
+        if mask is not None:
+            n_nodes = mask.sum(dim=1).long().tolist()
+        else:
+            n_nodes = [X.shape[1]] * B
+
+        # GNN Mesh Encoding
+        if self.use_gnn and elements is not None:
+            gnn_feats = self.mesh_encoder(X, elements, n_nodes)
+            x_enhanced = torch.cat([X, gnn_feats], dim=-1)
+            enhanced_inputs = torch.cat([inputs, X, gnn_feats], dim=-1)
+        else:
+            x_enhanced = X
+            enhanced_inputs = torch.cat([inputs, X], dim=-1)
 
         x_emb = self.query_encoder(x_enhanced)
         y_emb = self.input_func_encoder(enhanced_inputs)

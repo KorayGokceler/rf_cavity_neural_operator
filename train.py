@@ -146,6 +146,9 @@ def main():
         onecycle_div_factor=getattr(tc, 'onecycle_div_factor', 25.0),
         onecycle_final_div_factor=getattr(tc, 'onecycle_final_div_factor', 1e4),
         cosine_eta_min=getattr(tc, 'cosine_eta_min', 1.0e-6),
+        use_gnn=getattr(mc, 'use_gnn', True),
+        gnn_layers=getattr(mc, 'gnn_layers', 2),
+        gnn_out_dim=getattr(mc, 'gnn_out_dim', 64)
     )
     
     # Pass frequency statistics to the model for physical units logging
