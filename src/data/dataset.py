@@ -11,12 +11,14 @@ class GNOTDataset(Dataset):
     #   4: dir_bnd_y, 5: node_area, 6: cos_principal, 7: sin_principal
     FEATURE_NAMES = ['x_norm', 'y_norm', 'dist_boundary', 'dir_bnd_x', 'dir_bnd_y', 'node_area', 'cos_principal', 'sin_principal']
 
-    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1, feature_indices=None, max_nodes=None):
+    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1, 
+                 feature_indices=None, max_nodes=None, active_mode_index=None):
         print(f"Loading dataset from {data_path}...")
         self.data_path = data_path
         self.is_h5 = str(data_path).endswith('.h5')
         self.feature_indices = feature_indices  # e.g. [0,1] for xy-only, None=all
         self.max_nodes = max_nodes  # Optional: cap sequence length to prevent VRAM overflow
+        self.active_mode_index = active_mode_index # Filter for single-mode training
 
         # 1. Collect all samples and their geometry IDs
         sample_to_geom = []
@@ -65,7 +67,24 @@ class GNOTDataset(Dataset):
         # 4. Flatten: collect all individual sample indices belonging to active geometries
         self.active_samples = []
         for g_id in active_geoms:
-            self.active_samples.extend(geom_to_samples[g_id])
+            indices = geom_to_samples[g_id]
+            # Optional: Filter by mode
+            if active_mode_index is not None:
+                filtered = []
+                for s_idx in indices:
+                    # We need to peek at the mode before adding
+                    if self.is_h5:
+                        import h5py
+                        with h5py.File(self.data_path, 'r') as f:
+                            m_idx = int(f['samples'][str(s_idx)].attrs.get('mode_idx', f['samples'][str(s_idx)]['Theta'][0]))
+                    else:
+                        m_idx = int(self.samples_metadata[s_idx]['Theta'][0])
+                    
+                    if m_idx == active_mode_index:
+                        filtered.append(s_idx)
+                self.active_samples.extend(filtered)
+            else:
+                self.active_samples.extend(indices)
         
         # Store geometry pool reference for PKL access
         if not self.is_h5:
@@ -132,6 +151,10 @@ class GNOTDataset(Dataset):
         # Mode index (0, 1, or 2) and frequency
         mode_idx = int(raw_theta[0])
         raw_freq = raw_theta[1]
+
+        # If we are in single-mode training, map the active mode to 0
+        if self.active_mode_index is not None:
+            mode_idx = 0
         
         if self.stats:
             norm_freq = (raw_freq - self.stats['mean']) / self.stats['std']

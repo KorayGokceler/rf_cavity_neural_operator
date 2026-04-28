@@ -94,15 +94,22 @@ def main():
         print(f"Ablation: using features {feature_indices} → {names}")
     if max_nodes is not None and local_rank == 0:
         print(f"Node sub-sampling: max_nodes={max_nodes}")
+    active_mode_index = getattr(dc, 'active_mode_index', None)
+    if active_mode_index is not None and local_rank == 0:
+        print(f"Single-Mode Training: only mode {active_mode_index} will be used.")
+    
     train_dataset = GNOTDataset(dc.data_path, split='train',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices, max_nodes=max_nodes)
+                                feature_indices=feature_indices, max_nodes=max_nodes,
+                                active_mode_index=active_mode_index)
     val_dataset   = GNOTDataset(dc.data_path, split='val',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices, max_nodes=max_nodes)
+                                feature_indices=feature_indices, max_nodes=max_nodes,
+                                active_mode_index=active_mode_index)
     test_dataset  = GNOTDataset(dc.data_path, split='test',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices, max_nodes=max_nodes)
+                                feature_indices=feature_indices, max_nodes=max_nodes,
+                                active_mode_index=active_mode_index)
 
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,

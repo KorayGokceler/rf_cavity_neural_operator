@@ -56,6 +56,7 @@ dataset:
   # test_ratio otomatik: 1 - train - val = 0.1
   random_seed: 42
   max_nodes: 1024               # VRAM taşmasını önlemek için node sub-sampling (null=devre dışı)
+  active_mode_index: null       # null=tüm modlar, 0=Monopol, 1=Dipol vs. (Single-mode training için)
 
 
 # ─────────────────────────────────────────────────────
