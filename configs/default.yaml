@@ -55,7 +55,7 @@ dataset:
   val_ratio: 0.1
   # test_ratio otomatik: 1 - train - val = 0.1
   random_seed: 42
-  max_nodes: 2048               # VRAM taşmasını önlemek için node sub-sampling (null=devre dışı)
+  max_nodes: 1024               # VRAM taşmasını önlemek için node sub-sampling (null=devre dışı)
 
 
 # ─────────────────────────────────────────────────────
