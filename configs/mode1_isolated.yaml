@@ -29,11 +29,6 @@ model:
   num_field_modes: 1            # SADECE 1 MOD (Mode 1 verisi buraya 0 olarak gelecek)
   num_film_modes: 5             # Sadece bir mod için küçük bir tablo yeterli
   
-  # Spektral Çözünürlük (Dipolün loblarını net görmek için)
-  use_rff: true                 # Artık Sign-Agnostic Loss olduğu için açabiliriz!
-  rff_dim: 64
-  rff_scale: 10.0               # 20.0 yerine 10.0 (Daha dengeli çözünürlük)
-  
   use_checkpoint: true
 
 # ─────────────────────────────────────────────────────

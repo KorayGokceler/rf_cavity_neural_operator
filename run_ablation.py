@@ -5,8 +5,7 @@ Runs 4 experiments sequentially to test which geometry features matter:
 
   A) Sadece (x, y)                    → val_dim=2
   B) (x, y) + boundary bilgisi       → val_dim=4
-  C) Tüm 6 feature, RFF kapalı       → val_dim=6, use_rff=False
-  D) Tüm 6 feature + RFF (referans)  → val_dim=6, use_rff=True
+
 
 Kullanım:
   python run_ablation.py
@@ -22,8 +21,6 @@ import time
 CONFIGS = [
     ("A", "configs/ablation/A_xy_only.yaml",       "Sadece (x, y)"),
     ("B", "configs/ablation/B_xy_boundary.yaml",    "(x, y) + boundary"),
-    ("C", "configs/ablation/C_full_no_rff.yaml",    "Full 6 feat, RFF OFF"),
-    ("D", "configs/ablation/D_full_with_rff.yaml",  "Full 6 feat + RFF ON"),
 ]
 
 def run_experiment(label, config_path, description):

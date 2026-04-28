@@ -139,8 +139,6 @@ def main():
         reducelr_factor=getattr(tc, 'reducelr_factor', 0.5),
         weight_decay=tc.weight_decay,
         use_checkpoint=mc.use_checkpoint,
-        rff_scale=getattr(mc, 'rff_scale', 1.0),
-        use_rff=getattr(mc, 'use_rff', True),
         predict_frequency=getattr(mc, 'predict_frequency', True),
         gradient_clip_val=tc.gradient_clip_val,
         # Scheduler-specific params (using getattr for flexibility with different configs)

@@ -81,10 +81,6 @@ model:
   num_film_modes: 20            # FiLM embedding tablo boyutu (headroom)
   film_init_std: 0.02           # FiLM embedding başlangıç std
 
-  # Spatial encoding
-  rff_dim: 64                   # Random Fourier Features boyutu (çift sayı olmalı)
-  rff_scale: 1.0                # RFF frekans ölçeği
-
   # Regularization
   dropout: 0.0                  # Attention ve FFN dropout (0.0-0.3)
 

@@ -72,9 +72,6 @@ model:
   num_film_modes: 20
   film_init_std: 0.02
 
-  rff_dim: 64
-  rff_scale: 1.0
-
   dropout: 0.0
 
   # T4 GPU has 16GB VRAM — gradient checkpointing critical for 256 embed_dim

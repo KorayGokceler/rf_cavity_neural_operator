@@ -14,7 +14,7 @@ class GNOTLightning(pl.LightningModule):
                  lr_mode_specific=None, lr_freq_heads=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
                  reducelr_patience=10, reducelr_factor=0.5,
-                 rff_scale=1.0, use_rff=True, predict_frequency=True,
+                 predict_frequency=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6,
                  gradient_clip_val=None):
@@ -38,8 +38,6 @@ class GNOTLightning(pl.LightningModule):
             n_heads=n_heads,
             num_experts=num_experts,
             num_field_modes=num_field_modes,
-            rff_scale=rff_scale,
-            use_rff=use_rff,
             use_checkpoint=use_checkpoint,
             predict_frequency=predict_frequency
         )
@@ -372,7 +370,7 @@ class GNOTLightning(pl.LightningModule):
                 param_groups.append({"params": freq_params, "lr": self.lr_freq_heads})
                 print(f"Optimizer: Frequency heads trained with lr={self.lr_freq_heads}")
 
-        # Base param group (General trunk, embeddings, RFF, unhandled parts)
+        # Base param group (General trunk, embeddings, unhandled parts)
         base_params = []
         for p in self.parameters():
             if id(p) not in handled_param_ids:

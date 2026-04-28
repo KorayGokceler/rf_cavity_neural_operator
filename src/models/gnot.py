@@ -193,18 +193,7 @@ class FiLMConditioner(nn.Module):
         # 1 + gamma: başlangıçta identity (gamma=0 init)
         return x * (1.0 + gamma) + beta
 
-class RandomFourierFeatures(nn.Module):
-    def __init__(self, in_dim, out_dim, scale=1.0):
-        super().__init__()
-        assert out_dim % 2 == 0, "out_dim for RandomFourierFeatures must be even."
-        # Fixed random frequencies 
-        self.B = nn.Parameter(torch.randn(in_dim, out_dim // 2) * scale, requires_grad=False)
-        
-    def forward(self, x):
-        # x shape: [B, N, in_dim]
-        # x_proj shape: [B, N, out_dim // 2]
-        x_proj = 2 * torch.pi * (x @ self.B)
-        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
+
 
 class MLPEncoder(nn.Module):
     def __init__(self, in_dim, out_dim):
@@ -221,26 +210,15 @@ class MLPEncoder(nn.Module):
 class GNOTModel(nn.Module):
     def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, embed_dim=128, 
                  n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
-                 n_heads=4, num_experts=4, num_field_modes=3, rff_scale=1.0, 
-                 use_rff=True, use_checkpoint=False, predict_frequency=True):
+                 n_heads=4, num_experts=4, num_field_modes=3,
+                 use_checkpoint=False, predict_frequency=True):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
-        self.use_rff = use_rff
-        self.predict_frequency = predict_frequency
-
-        # --- Random Fourier Features for high spatial frequency encoding ---
-        if use_rff:
-            self.rff_dim = 64
-            self.rff = RandomFourierFeatures(in_dim=grid_dim, out_dim=self.rff_dim, scale=rff_scale)
-        else:
-            self.rff_dim = 0
-            self.rff = None
-
-        # Query points (represented in raw space + Fourier space)
-        self.query_encoder = MLPEncoder(grid_dim + self.rff_dim, embed_dim)
-        # Input features + Query point Raw Context + Query point RFF context
-        self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
+        # Query points (represented in raw space)
+        self.query_encoder = MLPEncoder(grid_dim, embed_dim)
+        # Input features + Query point Raw Context
+        self.input_func_encoder = MLPEncoder(val_dim + grid_dim, embed_dim)
         
         # Entrance Mode Embedding: Query'yi (X) ve Condition'ı (Y) en başta mode-aware yapar.
         self.mode_emb_entrance = nn.Embedding(num_field_modes, embed_dim)
@@ -250,8 +228,8 @@ class GNOTModel(nn.Module):
         shared_layers = n_shared_layers
         mode_layers   = n_mode_layers  # Her modun özel fizik derinliği
         
-        # Bloc-specific coordinate dimension: RFF kapalıysa raw (x, y) kullanılır.
-        block_coords_dim = self.rff_dim if use_rff else grid_dim
+        # Bloc-specific coordinate dimension: always raw (x, y)
+        block_coords_dim = grid_dim
 
         self.shared_blocks = nn.ModuleList([
             GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts, use_film=True)
@@ -341,15 +319,9 @@ class GNOTModel(nn.Module):
         mask = batch.get('Mask', None)
         B = X.shape[0]
 
-        # Inject Geometric Fourier features alongside Raw Grid (Optional)
-        if self.use_rff and self.rff is not None:
-            x_fourier = self.rff(X)
-            x_enhanced = torch.cat([X, x_fourier], dim=-1)
-            enhanced_inputs = torch.cat([inputs, X, x_fourier], dim=-1)
-        else:
-            x_fourier = None
-            x_enhanced = X
-            enhanced_inputs = torch.cat([inputs, X], dim=-1)
+        # Use Raw Grid
+        x_enhanced = X
+        enhanced_inputs = torch.cat([inputs, X], dim=-1)
 
         x_emb = self.query_encoder(x_enhanced)
         y_emb = self.input_func_encoder(enhanced_inputs)
@@ -364,7 +336,7 @@ class GNOTModel(nn.Module):
         condition_mask = mask if mask is not None else None
         
         # Spatial features for gating
-        x_f_pass = x_fourier if x_fourier is not None else X
+        x_f_pass = X
 
         # Global Context Extraction
         global_context = self.pooler(condition_emb, condition_mask)
