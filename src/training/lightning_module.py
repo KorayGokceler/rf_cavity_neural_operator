@@ -309,9 +309,13 @@ class GNOTLightning(pl.LightningModule):
             status = '✅' if v_val < 0.1 else ('⚠️ ' if v_val < 0.3 else '❌')
             if v_val == 0: status = '??'
 
-            # Mini bar chart for Val error
-            bar_len = int(min(v_val * 15, 15))
-            bar = '█' * bar_len + '░' * (15 - bar_len)
+            # Mini bar chart for Val error (Safe for NaN)
+            if not np.isfinite(v_val):
+                bar_len = 0
+                bar = '?' * 15
+            else:
+                bar_len = int(min(v_val * 15, 15))
+                bar = '█' * bar_len + '░' * (15 - bar_len)
             
             t_str = f"{t_val:10.4f}" if m_idx in train_errors else "   -      "
             v_str = f"{v_val:10.4f}" if m_idx in val_errors else "   -      "
