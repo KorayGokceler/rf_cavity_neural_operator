@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 import torchmetrics
 import math
+import numpy as np
 from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
