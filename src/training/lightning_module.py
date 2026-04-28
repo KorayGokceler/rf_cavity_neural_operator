@@ -15,12 +15,14 @@ class GNOTLightning(pl.LightningModule):
                  reducelr_patience=10, reducelr_factor=0.5,
                  rff_scale=1.0, use_rff=True, predict_frequency=True,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
-                 cosine_eta_min=1e-6):
+                 cosine_eta_min=1e-6,
+                 gradient_clip_val=None):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
         self.lr_mode_specific = lr_mode_specific
         self.lr_freq_heads = lr_freq_heads
+        self.gradient_clip_val = gradient_clip_val
         
         self.save_hyperparameters()
         
@@ -325,6 +327,14 @@ class GNOTLightning(pl.LightningModule):
         # 6. GRADNORM UPDATE
         if self.has_initial_losses:
             self._update_loss_weights(task_losses)
+            
+        # 6.5 Manual Gradient Clipping
+        if self.gradient_clip_val is not None:
+            self.clip_gradients(
+                optimizer, 
+                gradient_clip_val=self.gradient_clip_val, 
+                gradient_clip_algorithm="norm"
+            )
             
         optimizer.step()
         
