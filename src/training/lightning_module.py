@@ -125,13 +125,13 @@ class GNOTLightning(pl.LightningModule):
             diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))  # [B, N]
             mse = ((diff ** 2) * w * m).sum(dim=1) / n_v  # [B]
             l1 = (diff.abs() * m).sum(dim=1) / n_v  # [B]
-            sample_field_losses = (mse + 0.1 * l1) # [B]
+            sample_field_losses = (mse + 0.05 * l1) # [B]
         else:
             w = 1.0 + 5.0 * aligned_true_field.abs().squeeze(-1)
             diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))
             mse = ((diff ** 2) * w).mean(dim=1)
             l1 = diff.abs().mean(dim=1)
-            sample_field_losses = (mse + 0.1 * l1) # [B]
+            sample_field_losses = (mse + 0.05 * l1) # [B]
 
         # Apply per-sample mode weighting
         loss_field = (sample_field_losses * batch_weights).mean()

@@ -106,9 +106,10 @@ class GNOTBlock(nn.Module):
 
 
         self.local_gating = nn.Sequential(
-            nn.Linear(coords_dim, 64),
+            nn.Linear(coords_dim, 128),
+            nn.LayerNorm(128),
             nn.GELU(),
-            nn.Linear(64, num_experts)
+            nn.Linear(128, num_experts)
         )
         self.register_buffer('_expert_calls', torch.zeros(num_experts, dtype=torch.long))
 
@@ -300,6 +301,7 @@ class GNOTModel(nn.Module):
             ]) for _ in range(num_field_modes)
         ])
         
+        self.final_ln = nn.LayerNorm(embed_dim)
         self.pooler = AttentionPool(embed_dim, n_heads)
 
         # Dynamic Mode-specific field heads
@@ -440,6 +442,9 @@ class GNOTModel(nn.Module):
                     x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, pos_m, m_mask, c_mask, gc_m, use_reentrant=False)
                 else:
                     x_m = m_block(x_m, c_m, th_m, pos_m, m_mask, c_mask, gc_m)
+            
+            # Final normalization before output head
+            x_m = self.final_ln(x_m)
             
             # Field prediction
             field_pred[mode_mask] = self.field_heads[mode_val](x_m).float()  # [B_m, N, 1]
