@@ -137,7 +137,7 @@ class GNOTBlock(nn.Module):
         if mask is not None:
             x = x * mask.unsqueeze(-1)
 
-        # Local Sparse Gating Logic
+        # Local Sparse Gating Logic - Uses geometric context (raw or GNN)
         gate_logits = self.local_gating(pos)
         gate_weights = F.softmax(gate_logits, dim=-1)
         top2_weights, top2_idx = gate_weights.topk(2, dim=-1)
@@ -215,53 +215,36 @@ class MeshEncoder(nn.Module):
             GraphConv(in_dim if i == 0 else out_dim, out_dim)
             for i in range(n_layers)
         ])
+        self.final_norm = nn.LayerNorm(out_dim)
 
     def build_edge_index(self, elements, n_nodes):
         # elements: list of [Ni, 3] tensors (triangles)
         all_edges = []
         offset = 0
         for i, tri in enumerate(elements):
-            # tri: [Ni, 3]
             e1 = tri[:, [0, 1]]
             e2 = tri[:, [1, 2]]
             e3 = tri[:, [2, 0]]
-            
-            edges = torch.cat([e1, e2, e3], dim=0) # [3*Ni, 2]
-            edges = torch.cat([edges, edges.flip(1)], dim=0) # bidirectional [6*Ni, 2]
-            
+            edges = torch.cat([e1, e2, e3, e1.flip(1), e2.flip(1), e3.flip(1)], dim=0) # [6*Ni, 2]
             all_edges.append(edges + offset)
             offset += n_nodes[i]
-            
-        edge_index = torch.cat(all_edges, dim=0).t() # [2, E]
-        return edge_index
+        return torch.cat(all_edges, dim=0).t() if all_edges else torch.zeros((2, 0), dtype=torch.long)
 
     def forward(self, x, elements, n_nodes):
         B, N, D = x.shape
         device = x.device
-        
-        # 1. Build edge index
         edge_index = self.build_edge_index(elements, n_nodes).to(device)
-        
-        # 2. Collapse batch into a single large graph
-        valid_nodes = []
-        for i in range(B):
-            valid_nodes.append(x[i, :n_nodes[i]])
-        
+        valid_nodes = [x[i, :n_nodes[i]] for i in range(B)]
         x_flat = torch.cat(valid_nodes, dim=0)
-        
-        # 3. Apply GNN layers
         for layer in self.layers:
             x_flat = layer(x_flat, edge_index)
-            
-        # 4. Reshape back to [B, N, D_out]
-        out_dim = x_flat.shape[-1]
-        out = torch.zeros(B, N, out_dim, device=device, dtype=x.dtype)
+        x_flat = self.final_norm(x_flat)
+        out = torch.zeros(B, N, x_flat.shape[-1], device=device, dtype=x.dtype)
         start = 0
         for i in range(B):
             end = start + n_nodes[i]
             out[i, :n_nodes[i]] = x_flat[start:end]
             start = end
-            
         return out
 
 class GNOTModel(nn.Module):
@@ -277,39 +260,35 @@ class GNOTModel(nn.Module):
 
         if use_gnn:
             self.mesh_encoder = MeshEncoder(grid_dim, gnn_out_dim, n_layers=gnn_layers)
+            # Router sees coordinates + GNN context
+            router_dim = grid_dim + gnn_out_dim
             input_dim_q = grid_dim + gnn_out_dim
-            input_dim_f = val_dim + grid_dim + gnn_out_dim
+            input_dim_f = val_dim + gnn_out_dim  # inputs already contains X, only add GNN
         else:
             self.mesh_encoder = None
+            router_dim = grid_dim
             input_dim_q = grid_dim
             input_dim_f = val_dim + grid_dim
 
         # Query points
         self.query_encoder = MLPEncoder(input_dim_q, embed_dim)
-        # Input features + Query point Context
+        # Input features + Geometry Context
         self.input_func_encoder = MLPEncoder(input_dim_f, embed_dim)
         
-        # Entrance Mode Embedding: Query'yi (X) ve Condition'ı (Y) en başta mode-aware yapar.
+        # Entrance Mode Embedding
         self.mode_emb_entrance = nn.Embedding(num_field_modes, embed_dim)
         nn.init.normal_(self.mode_emb_entrance.weight, mean=0.0, std=0.02)
 
-        # Minimal architecture: Shared -> Mode-Specific (Deep)
-        shared_layers = n_shared_layers
-        mode_layers   = n_mode_layers  # Her modun özel fizik derinliği
-        
-        # Bloc-specific coordinate dimension: always raw (x, y)
-        block_coords_dim = grid_dim
-
         self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts)
-            for _ in range(shared_layers)
+            GNOTBlock(embed_dim, n_heads, num_experts=num_experts, coords_dim=router_dim, dropout=dropout)
+            for _ in range(n_shared_layers)
         ])
         
         # Mode-specific field branches
         self.mode_field_blocks = nn.ModuleList([
             nn.ModuleList([
-                 GNOTBlock(embed_dim, n_heads, coords_dim=block_coords_dim, num_experts=num_experts)
-                 for _ in range(mode_layers)
+                 GNOTBlock(embed_dim, n_heads, num_experts=num_experts, coords_dim=router_dim, dropout=dropout)
+                 for _ in range(n_mode_layers)
             ]) for _ in range(num_field_modes)
         ])
         
@@ -399,15 +378,18 @@ class GNOTModel(nn.Module):
         if self.use_gnn and elements is not None:
             gnn_feats = self.mesh_encoder(X, elements, n_nodes)
             x_enhanced = torch.cat([X, gnn_feats], dim=-1)
-            enhanced_inputs = torch.cat([inputs, X, gnn_feats], dim=-1)
+            pos_enhanced = x_enhanced
+            # Inputs (8) + GNN (64) = 72. (X is already in inputs columns 0,1)
+            enhanced_inputs = torch.cat([inputs, gnn_feats], dim=-1)
         else:
             x_enhanced = X
+            pos_enhanced = X
             enhanced_inputs = torch.cat([inputs, X], dim=-1)
 
         x_emb = self.query_encoder(x_enhanced)
         y_emb = self.input_func_encoder(enhanced_inputs)
 
-        # Entrance Mode Injection: Embedding'leri daha en başta mod bilgisiyle harmanlıyoruz.
+        # Entrance Mode Injection
         mode_indices = theta_in[:, 0]  # [B]
         m_emb_init = self.mode_emb_entrance(mode_indices).unsqueeze(1) # [B, 1, D]
         x_emb = x_emb + m_emb_init
@@ -416,36 +398,29 @@ class GNOTModel(nn.Module):
         condition_emb = y_emb
         condition_mask = mask if mask is not None else None
         
-        # Spatial features for gating
-        x_f_pass = X
-
         # Global Context Extraction
         global_context = self.pooler(condition_emb, condition_mask)
 
         # Trunk (Shared processing) — mode-aware
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, mode_indices, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, mode_indices, pos_enhanced, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, mode_indices, x_f_pass, mask, condition_mask, global_context)
+                x_emb = block(x_emb, condition_emb, mode_indices, pos_enhanced, mask, condition_mask, global_context)
 
-        # --- Dynamic Routing: route each sample to its own mode branch ---
-        
-        # Initialize output tensors
+        # --- Dynamic Routing ---
         N = X.shape[1]
         field_pred = torch.zeros(B, N, 1, device=X.device, dtype=x_emb.dtype)
         freq_pred = torch.zeros(B, 1, device=X.device, dtype=x_emb.dtype) if self.freq_heads is not None else None
         
         for mode_val in range(self.num_field_modes):
-            # Find which samples in this batch belong to this mode
             mode_mask = (mode_indices == mode_val)  # [B] bool
             if not mode_mask.any():
                 continue
             
-            # Extract subset
-            x_m = x_emb[mode_mask]          # [B_m, N, D]
-            c_m = condition_emb[mode_mask]   # [B_m, N, D]
-            pos_m = x_f_pass[mode_mask]      # [B_m, N, pos_dim]
+            x_m = x_emb[mode_mask]
+            c_m = condition_emb[mode_mask]
+            pos_m = pos_enhanced[mode_mask]
             m_mask = mask[mode_mask] if mask is not None else None
             c_mask = condition_mask[mode_mask] if condition_mask is not None else None
             gc_m = global_context[mode_mask]  # [B_m, D]

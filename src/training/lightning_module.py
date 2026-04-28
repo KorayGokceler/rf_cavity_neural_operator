@@ -189,7 +189,7 @@ class GNOTLightning(pl.LightningModule):
         self.log(f'{prefix}/field_rel_l2', rel_l2, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
         # Per-mode Relative L2
-        for mode_val in range(3):
+        for mode_val in range(len(self.mode_loss_weights)):
             mode_mask_sel = (theta_in == mode_val)
             if mode_mask_sel.any():
                 mode_rel = rel_l2_all[mode_mask_sel].mean()
