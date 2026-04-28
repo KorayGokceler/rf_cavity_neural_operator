@@ -320,8 +320,8 @@ class GNOTModel(nn.Module):
         
         # Initialize output tensors
         N = X.shape[1]
-        field_pred = torch.zeros(B, N, 1, device=X.device)
-        freq_pred = torch.zeros(B, 1, device=X.device) if self.freq_heads is not None else None
+        field_pred = torch.zeros(B, N, 1, device=X.device, dtype=x_emb.dtype)
+        freq_pred = torch.zeros(B, 1, device=X.device, dtype=x_emb.dtype) if self.freq_heads is not None else None
         
         for mode_val in range(self.num_field_modes):
             # Find which samples in this batch belong to this mode
