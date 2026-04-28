@@ -252,7 +252,8 @@ class GNOTModel(nn.Module):
                  n_shared_layers=6, n_mode_layers=1, n_field_head_layers=3,
                  n_heads=8, num_experts=4, num_field_modes=3,
                  use_checkpoint=False, predict_frequency=True,
-                 use_gnn=True, gnn_layers=2, gnn_out_dim=64):
+                 use_gnn=True, gnn_layers=2, gnn_out_dim=64,
+                 dropout=0.0):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes

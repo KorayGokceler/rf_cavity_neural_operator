@@ -19,7 +19,8 @@ class GNOTLightning(pl.LightningModule):
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6,
                  gradient_clip_val=None,
-                 use_gnn=True, gnn_layers=2, gnn_out_dim=64):
+                 use_gnn=True, gnn_layers=2, gnn_out_dim=64,
+                 dropout=0.0):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
@@ -44,7 +45,8 @@ class GNOTLightning(pl.LightningModule):
             predict_frequency=predict_frequency,
             use_gnn=use_gnn,
             gnn_layers=gnn_layers,
-            gnn_out_dim=gnn_out_dim
+            gnn_out_dim=gnn_out_dim,
+            dropout=dropout
         )
         self.freq_weight = freq_weight
         self.smoothness_weight = smoothness_weight

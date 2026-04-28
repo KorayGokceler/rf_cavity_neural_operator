@@ -148,7 +148,8 @@ def main():
         cosine_eta_min=getattr(tc, 'cosine_eta_min', 1.0e-6),
         use_gnn=getattr(mc, 'use_gnn', True),
         gnn_layers=getattr(mc, 'gnn_layers', 2),
-        gnn_out_dim=getattr(mc, 'gnn_out_dim', 64)
+        gnn_out_dim=getattr(mc, 'gnn_out_dim', 64),
+        dropout=getattr(mc, 'dropout', 0.0)
     )
     
     # Pass frequency statistics to the model for physical units logging
