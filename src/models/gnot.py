@@ -74,22 +74,15 @@ class GeometricGatingFFN(nn.Module):
             ) for _ in range(num_experts)
         ])
 
-    def forward(self, x, gate_info):
-        # gate_info: (top2_weights, top2_idx)
-        top2_weights, top2_idx = gate_info
-
-        # Pre-compute all expert outputs (no CPU syncs)
-        # Since num_experts is small (4), full dense evaluation is faster than D2H halting.
-        expert_outputs = [expert(x) for expert in self.experts]
-
+    def forward(self, x, gate_weights):
+        # gate_weights: [B, N, num_experts]
+        
+        # Weighted sum of ALL experts for spatial continuity
+        # Since num_experts is small (4), full dense evaluation is very stable and fast.
         final_output = torch.zeros_like(x)
-        for k in range(2):
-            idx = top2_idx[..., k]   # [B, N]
-            w   = top2_weights[..., k].unsqueeze(-1)  # [B, N, 1]
-            for i in range(len(self.experts)):
-                mask = (idx == i).float().unsqueeze(-1)  # [B, N, 1]
-                # Multiply directly without using .any() to avoid GPU-CPU sync blocks
-                final_output = final_output + w * mask * expert_outputs[i]
+        for i, expert in enumerate(self.experts):
+            w = gate_weights[..., i:i+1] # [B, N, 1]
+            final_output = final_output + w * expert(x)
                 
         return final_output
 
@@ -138,20 +131,13 @@ class GNOTBlock(nn.Module):
         if mask is not None:
             x = x * mask.unsqueeze(-1)
 
-        # Local Sparse Gating Logic - Uses geometric context (raw or GNN)
+        # Local Smooth Gating Logic - Uses weighted sum of all experts for continuity
         gate_logits = self.local_gating(pos)
-        gate_weights = F.softmax(gate_logits, dim=-1)
-        top2_weights, top2_idx = gate_weights.topk(2, dim=-1)
-        top2_weights = top2_weights / (top2_weights.sum(dim=-1, keepdim=True) + 1e-8)
-        gate_info = (top2_weights, top2_idx)
+        # Temperature 0.5 to soften transitions and prevent patchy fields
+        gate_weights = F.softmax(gate_logits / 0.5, dim=-1) # [B, N, num_experts]
 
-        # Track usage during validation
-        if not self.training:
-            with torch.no_grad():
-                counts = torch.bincount(top2_idx.flatten(), minlength=gate_logits.shape[-1])
-                self._expert_calls += counts
-
-        ffn_out = self.ffn(self.norm3(x), gate_info)
+        # Use full weighted sum for spatial continuity in physics fields
+        ffn_out = self.ffn(self.norm3(x), gate_weights)
         x = x + ffn_out
 
 
