@@ -270,8 +270,8 @@ class GNOTModel(nn.Module):
         
         if use_gnn:
             self.mesh_encoder = MeshEncoder(grid_dim, gnn_out_dim, n_layers=gnn_layers)
-            # Router sees Spectral Coords + GNN context
-            router_dim = spectral_dim + gnn_out_dim
+            # Router ONLY sees Spectral Coords for absolute spatial smoothness
+            router_dim = spectral_dim
             input_dim_q = spectral_dim + gnn_out_dim
             input_dim_f = val_dim + gnn_out_dim # inputs column 0,1 are X
         else:
@@ -388,7 +388,8 @@ class GNOTModel(nn.Module):
         if self.use_gnn and elements is not None:
             gnn_feats = self.mesh_encoder(X, elements, n_nodes)
             x_enhanced = torch.cat([x_spectral, gnn_feats], dim=-1)
-            pos_enhanced = x_enhanced
+            # CRITICAL: Router only sees smooth spectral features to prevent patchy gating
+            pos_enhanced = x_spectral 
             # Inputs (8) + GNN (64) = 72
             enhanced_inputs = torch.cat([inputs, gnn_feats], dim=-1)
         else:
