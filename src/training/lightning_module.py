@@ -363,6 +363,10 @@ class GNOTLightning(pl.LightningModule):
 
     def _update_loss_weights(self, task_losses):
         """Dynamic Loss Weighting via GradNorm."""
+        self.loss_weights.requires_grad = True
+        if self.loss_weights.grad is not None:
+            self.loss_weights.grad.zero_()
+
         W = self._get_shared_layer().weight
         
         norms = []
@@ -393,10 +397,6 @@ class GNOTLightning(pl.LightningModule):
         gradnorm_loss = F.l1_loss(norms, target_norms)
         
         # Update weights (Separate from main optimizer)
-        self.loss_weights.requires_grad = True
-        if self.loss_weights.grad is not None:
-            self.loss_weights.grad.zero_()
-            
         gradnorm_loss.backward()
         
         with torch.no_grad():
