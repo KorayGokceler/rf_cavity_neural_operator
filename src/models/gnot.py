@@ -228,7 +228,14 @@ class MeshEncoder(nn.Module):
             edges = torch.cat([e1, e2, e3, e1.flip(1), e2.flip(1), e3.flip(1)], dim=0) # [6*Ni, 2]
             all_edges.append(edges + offset)
             offset += n_nodes[i]
-        return torch.cat(all_edges, dim=0).t() if all_edges else torch.zeros((2, 0), dtype=torch.long)
+        
+        if not all_edges:
+            return torch.zeros((2, 0), dtype=torch.long)
+            
+        edge_index = torch.cat(all_edges, dim=0).t() # [2, TotalEdges]
+        # Memory Optimization: Remove duplicate edges (shared edges between triangles)
+        edge_index = torch.unique(edge_index, dim=1)
+        return edge_index
 
     def forward(self, x, elements, n_nodes):
         B, N, D = x.shape
