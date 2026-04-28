@@ -158,19 +158,7 @@ class GNOTLightning(pl.LightningModule):
         else:
             loss_freq = torch.tensor(0.0, device=pred_field.device)
 
-        # Mesh-aware gradient matching smoothness loss
-        if self.smoothness_weight > 0:
-            elements_list = batch.get('elements', None)
-            if elements_list is not None and len(elements_list) > 0:
-                loss_smooth = self._compute_smoothness_loss(pred_field, aligned_true_field, elements_list, batch_weights)
-            else:
-                loss_smooth = torch.tensor(0.0, device=pred_field.device)
-        else:
-            loss_smooth = torch.tensor(0.0, device=pred_field.device)
-        self.log(f'{prefix}/smooth_loss', loss_smooth, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-
-        # Total Loss
-        total_loss = loss_field + (self.freq_weight * loss_freq) + (0.1 * loss_bnd) + (self.smoothness_weight * loss_smooth)
+        total_loss = loss_field + (self.freq_weight * loss_freq) + (0.1 * loss_bnd)
 
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
@@ -205,37 +193,6 @@ class GNOTLightning(pl.LightningModule):
             targets_valid = aligned_true_field.contiguous().view(-1)
 
         return total_loss, preds_valid, targets_valid
-
-    def _compute_smoothness_loss(self, pred_field, aligned_true_field, elements_list, batch_weights):
-        """Mesh-aware gradient matching loss using triangle edge connectivity.
-        """
-        total_loss = 0.0
-        count = 0
-        B = pred_field.shape[0]
-        
-        for b in range(B):
-            elems = elements_list[b].to(pred_field.device)  # [num_elements, 3]
-            if elems.numel() == 0:
-                continue
-            
-            pred_b = pred_field[b, :, 0]   # [N]
-            true_b = aligned_true_field[b, :, 0]  # [N]
-            
-            # 3 edges per triangle: (v0,v1), (v1,v2), (v0,v2)
-            e0, e1, e2 = elems[:, 0], elems[:, 1], elems[:, 2]
-            
-            # Predicted gradients across edges
-            diff_pred = ((pred_b[e0] - pred_b[e1])**2 + (pred_b[e1] - pred_b[e2])**2 + (pred_b[e2] - pred_b[e0])**2)
-            
-            # True gradients across edges
-            diff_true = ((true_b[e0] - true_b[e1])**2 + (true_b[e1] - true_b[e2])**2 + (true_b[e2] - true_b[e0])**2)
-            
-            # Weighted by mode weight for this sample
-            sample_smooth = F.l1_loss(diff_pred, diff_true)
-            total_loss += sample_smooth * batch_weights[b]
-            count += 1
-            
-        return total_loss / max(count, 1)
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")

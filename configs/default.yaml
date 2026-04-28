@@ -106,7 +106,7 @@ training:
   # Loss (GradNorm tarafından dinamik olarak yönetilir)
   # freq_weight ve mode_loss_weights artık başlangıç değeridir veya GradNorm tarafından override edilir
   freq_weight: 0.5              
-  smoothness_weight: 0.1        
+  smoothness_weight: 0.0        
   mode_loss_weights: [1.0, 1.0, 1.0]
 
   # LR Scheduler
