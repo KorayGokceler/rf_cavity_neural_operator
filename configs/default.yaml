@@ -85,7 +85,7 @@ model:
   dropout: 0.0                  # Attention ve FFN dropout (0.0-0.3)
 
   # Memory optimization
-  use_checkpoint: true          # Gradient checkpointing (GPU VRAM tasarrufu)
+  use_checkpoint: false         # Gradient checkpointing (GPU VRAM tasarrufu)
 
 
 # ─────────────────────────────────────────────────────
