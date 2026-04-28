@@ -242,8 +242,9 @@ class GNOTModel(nn.Module):
         # Input features + Query point Raw Context + Query point RFF context
         self.input_func_encoder = MLPEncoder(val_dim + grid_dim + self.rff_dim, embed_dim)
         
-        # NOTE: Entrance FiLM (film_query/film_cond) kaldırıldı.
-        # Trunk'ı başlangıçta mode-blind olmaya zorluyoruz; sadece geometriyi temsil etmeli.
+        # Entrance Mode Embedding: Query'yi (X) ve Condition'ı (Y) en başta mode-aware yapar.
+        self.mode_emb_entrance = nn.Embedding(num_field_modes, embed_dim)
+        nn.init.normal_(self.mode_emb_entrance.weight, mean=0.0, std=0.02)
 
         # Minimal architecture: Shared -> Mode-Specific (Deep)
         shared_layers = n_shared_layers
@@ -352,6 +353,12 @@ class GNOTModel(nn.Module):
 
         x_emb = self.query_encoder(x_enhanced)
         y_emb = self.input_func_encoder(enhanced_inputs)
+
+        # Entrance Mode Injection: Embedding'leri daha en başta mod bilgisiyle harmanlıyoruz.
+        mode_indices = theta_in[:, 0]  # [B]
+        m_emb_init = self.mode_emb_entrance(mode_indices).unsqueeze(1) # [B, 1, D]
+        x_emb = x_emb + m_emb_init
+        y_emb = y_emb + m_emb_init
         
         condition_emb = y_emb
         condition_mask = mask if mask is not None else None
@@ -363,7 +370,6 @@ class GNOTModel(nn.Module):
         global_context = self.pooler(condition_emb, condition_mask)
 
         # Trunk (Shared processing) — mode-aware
-        mode_indices = theta_in[:, 0]  # [B] — integer mode index per sample
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
                 x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, mode_indices, x_f_pass, mask, condition_mask, global_context, use_reentrant=False)
