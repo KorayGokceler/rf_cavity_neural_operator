@@ -191,6 +191,7 @@ def main():
         accelerator="auto",
         devices=devices,
         strategy=strategy,
+        gradient_clip_val=tc.gradient_clip_val,
         callbacks=[checkpoint_callback, lr_monitor, early_stop, viz_callback, progress_bar],
         logger=tb_logger,
         log_every_n_steps=tc.log_every_n_steps,
