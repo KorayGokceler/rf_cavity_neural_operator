@@ -78,7 +78,7 @@ def main():
         print(f"Config loaded from: {args.config}")
         print(f"Model: embed_dim={mc.embed_dim}, heads={mc.n_heads}, "
               f"L_shared={mc.n_shared_layers}, L_mode={mc.n_mode_layers}")
-        print(f"Experts={mc.num_experts}, num_field_modes={mc.num_field_modes}")
+        print(f"Experts={mc.num_experts}, num_field_modes={mc.num_field_modes}, use_gnn={getattr(mc, 'use_gnn', True)}")
         print(f"Training: lr={tc.learning_rate}, batch_size={tc.batch_size}, epochs={tc.max_epochs}, "
               f"scheduler={tc.scheduler}")
         n_gpus = torch.cuda.device_count()
