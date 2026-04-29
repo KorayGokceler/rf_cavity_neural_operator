@@ -381,6 +381,11 @@ class GNOTModel(nn.Module):
         n_nodes = mask.sum(dim=1).long() if mask is not None else torch.full((B,), N, device=X.device)
         elements = batch.get('elements', None)
 
+        # DEBUG: GNN durumunu ilk forward pass'te doğrula
+        if not hasattr(self, "_gnn_check_done"):
+            print(f"\n[DEBUG] GNOTModel Forward - use_gnn: {self.use_gnn}, elements present: {elements is not None}")
+            self._gnn_check_done = True
+
         # 0. Spectral Coordinate Encoding
         x_spectral = self.spatial_encoder(X)
 
