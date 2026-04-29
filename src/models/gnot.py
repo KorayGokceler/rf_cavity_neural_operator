@@ -225,7 +225,7 @@ class MeshEncoder(nn.Module):
             e3 = tri[:, [2, 0]]
             edges = torch.cat([e1, e2, e3, e1.flip(1), e2.flip(1), e3.flip(1)], dim=0) # [6*Ni, 2]
             all_edges.append(edges + offset)
-            offset += n_nodes[i]
+            offset += n_nodes[i].item()  # .item() eklendi: offset'in CPU int olarak kalmasını sağlar
         
         if not all_edges:
             return torch.zeros((2, 0), dtype=torch.long)

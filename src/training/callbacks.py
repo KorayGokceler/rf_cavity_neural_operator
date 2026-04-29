@@ -40,8 +40,17 @@ class FieldVisualizationCallback(pl.Callback):
             print(f"Warning: Could not get validation batch for visualization: {e}")
             return
         
-        # Move to device
-        batch = {k: (v.to(pl_module.device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+        # Move to device (including lists of tensors like 'elements')
+        def to_device(obj, device):
+            if isinstance(obj, torch.Tensor):
+                return obj.to(device)
+            if isinstance(obj, list):
+                return [to_device(i, device) for i in obj]
+            if isinstance(obj, dict):
+                return {k: to_device(v, device) for k, v in obj.items()}
+            return obj
+            
+        batch = to_device(batch, pl_module.device)
         
         with torch.no_grad():
             outputs = pl_module(batch)
