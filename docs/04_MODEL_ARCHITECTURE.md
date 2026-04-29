@@ -1,4 +1,4 @@
-# 04 — Model Mimarisi (GNOT)
+peki featur# 04 — Model Mimarisi (GNOT)
 
 > **Dosya:** `src/models/gnot.py`  
 > **Model:** `GNOTModel`  

@@ -7,6 +7,7 @@
 # ─────────────────────────────────────────────────────
 dataset:
   data_path: "data/mode1_only.pkl"
+  active_mode_index: 1          # EKSİKTİ EKLENDİ: Tek mod eğitiminde Theta_in'i 0'a zorlar
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
@@ -15,7 +16,7 @@ dataset:
 #  2. MODEL ARCHITECTURE
 # ─────────────────────────────────────────────────────
 model:
-  val_dim: 6
+  val_dim: 8
   grid_dim: 2
   theta_dim: 1
   embed_dim: 128

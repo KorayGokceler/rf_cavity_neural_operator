@@ -77,6 +77,12 @@ class RFCavityToGNOT:
         cov = np.cov(bnd_centered.T)
         eigenvalues, eigenvectors = np.linalg.eigh(cov)
         principal_axis = eigenvectors[:, -1]  # en büyük eigenvalue'nun eigenvector'ü
+        
+        # PCA ekseni için işaret sabitleme (Sign Disambiguation)
+        # Vektörün x bileşeni negatifse (veya x sıfırken y negatifse) yönünü ters çevir.
+        # Bu, rastgele 180 derece dönüşleri (takla atmayı) engeller.
+        if principal_axis[0] < 0 or (principal_axis[0] == 0 and principal_axis[1] < 0):
+            principal_axis = -principal_axis
 
         # Her nokta için: (nokta - merkez) vektörünün ana eksene göre açısı
         node_vecs = nodes_norm - nodes_norm.mean(axis=0)
