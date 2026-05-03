@@ -1,6 +1,7 @@
 import torch
 import os
 import argparse
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.tri import Triangulation
 from torch.utils.data import DataLoader
@@ -11,40 +12,47 @@ from src.training.lightning_module import GNOTLightning
 def plot_geometry_comparison(geom_id, modes_data, save_path, elements):
     """
     Plots all modes of a geometry in a single figure.
-    Each mode gets a row with Ground Truth and Prediction columns.
+    Each mode gets a row with Ground Truth, Prediction, and Error columns.
     """
     n_modes = len(modes_data)
     # Sort modes by their index
     sorted_modes = sorted(modes_data.items())
-    
-    fig, axes = plt.subplots(n_modes, 2, figsize=(12, 5 * n_modes), squeeze=False)
+
+    fig, axes = plt.subplots(n_modes, 3, figsize=(18, 5 * n_modes), squeeze=False)
     fig.suptitle(f"Geometry ID: {geom_id}", fontsize=16, fontweight='bold', y=0.98)
-    
+
     for i, (m_idx, data) in enumerate(sorted_modes):
         coords = data['coords']
-        target = data['target']
-        pred = data['pred']
+        target = data['target'].flatten()
+        pred = data['pred'].flatten()
         f_true = data['f_true']
         f_pred = data['f_pred']
         rel_l2 = data['rel_l2']
         sign_info = data['sign_info']
-        
+
         tri = Triangulation(coords[:, 0], coords[:, 1], elements)
-        
+
         # Ground Truth
-        im1 = axes[i, 0].tripcolor(tri, target.flatten(), cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
+        im1 = axes[i, 0].tripcolor(tri, target, cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
         axes[i, 0].set_title(f"Mode {m_idx} - Ground Truth\nFreq: {f_true:.2f} GHz", fontsize=12)
         fig.colorbar(im1, ax=axes[i, 0])
-        
+
         # Prediction
-        im2 = axes[i, 1].tripcolor(tri, pred.flatten(), cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
+        im2 = axes[i, 1].tripcolor(tri, pred, cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
         axes[i, 1].set_title(f"Mode {m_idx} - GNOT Prediction{sign_info}\nFreq: {f_pred:.2f} GHz (Rel L2: {rel_l2:.3f})", fontsize=12)
         fig.colorbar(im2, ax=axes[i, 1])
-        
+
+        # Error (pred - truth) — symmetric colormap centred at 0
+        error = pred - target
+        err_max = max(np.abs(error).max(), 1e-8)
+        im3 = axes[i, 2].tripcolor(tri, error, cmap='RdBu_r', shading='gouraud', vmin=-err_max, vmax=err_max)
+        axes[i, 2].set_title(f"Mode {m_idx} - Error (pred - truth)\nmax |err|: {err_max:.3f}", fontsize=12)
+        fig.colorbar(im3, ax=axes[i, 2])
+
         for ax in axes[i]:
             ax.set_aspect('equal')
             ax.axis('off')
-            
+
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(save_path, dpi=120, bbox_inches='tight')
     plt.close(fig)

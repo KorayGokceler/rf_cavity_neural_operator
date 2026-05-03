@@ -61,21 +61,29 @@ class FieldVisualizationCallback(pl.Callback):
 
         for i in range(min(self.num_samples, len(preds))):
             m = mask[i] if mask is not None else slice(None)
-            
+
             # Extract only valid nodes for visualization
             valid_coords = coords[i, m].cpu().numpy()
             valid_targets = targets[i, m].cpu().numpy()
             valid_preds = preds[i, m].cpu().numpy()
 
+            # Sign-agnostic alignment for visualization (eigenmode global sign)
+            t_flat = valid_targets.flatten()
+            p_flat = valid_preds.flatten()
+            err_pos = np.linalg.norm(p_flat - t_flat)
+            err_neg = np.linalg.norm(p_flat + t_flat)
+            if err_neg < err_pos:
+                valid_preds = -valid_preds
+
             m_idx = batch['Theta_in'][i].item()
-            
+
             fig = self._plot_comparison(
                 valid_coords,
                 valid_targets,
                 valid_preds,
                 title=f"Epoch {trainer.current_epoch} - Mode {int(m_idx)} - Sample {i}"
             )
-            
+
             # Log to TensorBoard (guard against missing logger)
             if trainer.logger and hasattr(trainer.logger, 'experiment'):
                 trainer.logger.experiment.add_figure(
@@ -84,23 +92,36 @@ class FieldVisualizationCallback(pl.Callback):
             plt.close(fig)
 
     def _plot_comparison(self, coords, target, pred, title=""):
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
         # Simple triangulation for point cloud visualization
         # Note: This assumes points are somewhat regularly distributed
         tri = Triangulation(coords[:, 0], coords[:, 1])
-        
-        im1 = axes[0].tripcolor(tri, target.flatten(), cmap='RdBu_r', shading='gouraud')
+        target_flat = target.flatten()
+        pred_flat = pred.flatten()
+        error_flat = pred_flat - target_flat
+
+        # Symmetric color scale for ground truth and prediction
+        vmax = max(np.abs(target_flat).max(), np.abs(pred_flat).max(), 1e-8)
+
+        im1 = axes[0].tripcolor(tri, target_flat, cmap='RdBu_r', shading='gouraud', vmin=-vmax, vmax=vmax)
         axes[0].set_title("Ground Truth")
         fig.colorbar(im1, ax=axes[0])
-        
-        im2 = axes[1].tripcolor(tri, pred.flatten(), cmap='RdBu_r', shading='gouraud')
+
+        im2 = axes[1].tripcolor(tri, pred_flat, cmap='RdBu_r', shading='gouraud', vmin=-vmax, vmax=vmax)
         axes[1].set_title("Prediction")
         fig.colorbar(im2, ax=axes[1])
-        
+
+        # Error plot — symmetric colormap centred at 0
+        err_max = max(np.abs(error_flat).max(), 1e-8)
+        rel_l2 = np.linalg.norm(error_flat) / (np.linalg.norm(target_flat) + 1e-8)
+        im3 = axes[2].tripcolor(tri, error_flat, cmap='RdBu_r', shading='gouraud', vmin=-err_max, vmax=err_max)
+        axes[2].set_title(f"Error (pred - truth) | rel L2: {rel_l2:.4f}")
+        fig.colorbar(im3, ax=axes[2])
+
         for ax in axes:
             ax.set_aspect('equal')
             ax.axis('off')
-            
+
         fig.suptitle(title)
         return fig
