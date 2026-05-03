@@ -104,11 +104,11 @@ training:
   gradient_clip_val: 1.0        # Gradyan patlamasını önle (NaN fix)
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
 
-  # Loss (GradNorm tarafından dinamik olarak yönetilir)
-  # freq_weight ve mode_loss_weights artık başlangıç değeridir veya GradNorm tarafından override edilir
-  freq_weight: 0.5              
-  smoothness_weight: 0.0        
-  mode_loss_weights: [1.0, 1.0, 1.0]
+  # Loss
+  freq_weight: 0.5
+  smoothness_weight: 0.0
+  # Higher weights for harder bipolar modes (dipole=1, quadrupole=2)
+  mode_loss_weights: [1.0, 2.0, 2.0]
 
   # LR Scheduler
   scheduler: "custom_cosine"

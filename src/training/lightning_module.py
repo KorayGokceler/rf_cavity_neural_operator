@@ -77,60 +77,74 @@ class GNOTLightning(pl.LightningModule):
         true_field = batch['Y_field']      # [B, N, 1]
         B = pred_field.shape[0]
         theta_in = batch['Theta_in'][:, 0] # [B]
-        
+
         # --- MODE WEIGHTING SETUP ---
         mode_weights_tensor = torch.tensor(self.mode_loss_weights, device=pred_field.device) # [num_modes]
         batch_weights = mode_weights_tensor[theta_in] # [B]
 
-        # --- PHYSICS-INFORMED NEURAL NETWORK (PINN) BOUNDARY CONSTRAINT ---
-        dist_bnd = batch['Input_funcs'][:, :, 2]  # [B, N]
-        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1).expand_as(pred_field) # [B, N, 1]
-        
-        if bnd_mask.any():
-            # Weighted boundary loss: compute per-sample boundary loss then weight it
-            # bnd_mask: [B, N, 1]
-            sq_diff = (pred_field ** 2) * bnd_mask.float() # [B, N, 1]
-            # Average over nodes for each sample
-            sample_bnd_loss = sq_diff.sum(dim=(1, 2)) / (bnd_mask.sum(dim=(1, 2)).clamp(min=1.0)) # [B]
-            loss_bnd = (sample_bnd_loss * batch_weights).mean()
-        else:
-            loss_bnd = torch.tensor(0.0, device=pred_field.device)
-            
-        self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
-        
-        # Hard Constraint
-        pred_field = pred_field * (~bnd_mask).float()
-        # ------------------------------------------------------------------
-
         # --- PHASE (SIGN) REALIGNMENT ---
+        # Done BEFORE boundary zeroing so the full prediction is used for sign detection.
+        # This is critical for bipolar modes (dipole, quadrupole) where zeroing boundaries
+        # would remove information needed to determine the global sign.
         with torch.no_grad():
             if mask is not None:
                 m_f = mask.unsqueeze(-1).expand_as(pred_field).float()
                 diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
                 diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
             else:
-                diff_pos = ((pred_field - true_field) ** 2).mean(dim=1)  # [B, 1]
-                diff_neg = ((pred_field + true_field) ** 2).mean(dim=1)  # [B, 1]
-            
-            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1) # [B, 1, 1]
-        
+                diff_pos = ((pred_field - true_field) ** 2).sum(dim=1)
+                diff_neg = ((pred_field + true_field) ** 2).sum(dim=1)
+            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1)  # [B, 1, 1]
+
         aligned_true_field = true_field * signs
         # ------------------------------------------------------------------
 
-        # --- FIELD LOSS (Peak-Weighted Hybrid MSE + L1) ---
-        if mask is not None:
-            m = mask.float()
-            n_v = m.sum(dim=1).clamp(min=1.0)  # [B]
-            w = 1.0 + 5.0 * aligned_true_field.abs().squeeze(-1)  # [B, N]
-            diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))  # [B, N]
-            mse = ((diff ** 2) * w * m).sum(dim=1) / n_v  # [B]
-            l1 = (diff.abs() * m).sum(dim=1) / n_v
-            sample_field_losses = mse # Only MSE
+        # --- PHYSICS-INFORMED NEURAL NETWORK (PINN) BOUNDARY CONSTRAINT ---
+        dist_bnd = batch['Input_funcs'][:, :, 2]  # [B, N]
+        # Exclude padding nodes (dist=0 due to padding) from boundary mask using node mask
+        interior_or_valid = mask.unsqueeze(-1) if mask is not None else torch.ones_like(pred_field, dtype=torch.bool)
+        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1) & interior_or_valid  # [B, N, 1]
+
+        if bnd_mask.any():
+            sq_diff = (pred_field ** 2) * bnd_mask.float()
+            sample_bnd_loss = sq_diff.sum(dim=(1, 2)) / (bnd_mask.sum(dim=(1, 2)).clamp(min=1.0))
+            loss_bnd = (sample_bnd_loss * batch_weights).mean()
         else:
-            w = 1.0 + 5.0 * aligned_true_field.abs().squeeze(-1)
-            diff = (pred_field.squeeze(-1) - aligned_true_field.squeeze(-1))
-            mse = ((diff ** 2) * w).mean(dim=1)
-            sample_field_losses = mse # Only MSE
+            loss_bnd = torch.tensor(0.0, device=pred_field.device)
+
+        self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
+
+        # Hard constraint: zero predictions at boundary nodes
+        pred_field = pred_field * (~bnd_mask).float()
+        # ------------------------------------------------------------------
+
+        # --- FIELD LOSS: Relative L2 + L1 hybrid ---
+        # rel_l2_loss directly optimises the eval metric.
+        # l1 term provides uniform gradient signal at low-amplitude regions
+        # (nodal lines of dipole/quadrupole modes) that rel_l2 alone de-emphasises.
+        eps = 1e-8
+        if mask is not None:
+            m = mask.float()           # [B, N]
+            m_f = m.unsqueeze(-1)      # [B, N, 1]
+            n_v = m.sum(dim=1).clamp(min=1.0)  # [B]
+
+            diff_sq = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
+            true_sq = (aligned_true_field ** 2 * m_f).sum(dim=1)                 # [B, 1]
+            rel_l2_loss = (diff_sq / (true_sq + eps)).squeeze(-1)                # [B]
+
+            diff = pred_field.squeeze(-1) - aligned_true_field.squeeze(-1)       # [B, N]
+            l1 = (diff.abs() * m).sum(dim=1) / n_v                               # [B]
+
+            sample_field_losses = rel_l2_loss + 0.1 * l1
+        else:
+            diff_sq = ((pred_field - aligned_true_field) ** 2).sum(dim=1)
+            true_sq = (aligned_true_field ** 2).sum(dim=1)
+            rel_l2_loss = (diff_sq / (true_sq + eps)).squeeze(-1)
+
+            diff = pred_field.squeeze(-1) - aligned_true_field.squeeze(-1)
+            l1 = diff.abs().mean(dim=1)
+
+            sample_field_losses = rel_l2_loss + 0.1 * l1
 
         # Apply per-sample mode weighting
         loss_field = (sample_field_losses * batch_weights).mean()
@@ -148,9 +162,9 @@ class GNOTLightning(pl.LightningModule):
             # Weighted Frequency Loss
             sample_freq_loss = F.mse_loss(freq_pred, freq_true, reduction='none').squeeze(-1) # [B]
             loss_freq = (sample_freq_loss * batch_weights).mean()
-            
+
             self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-            
+
             if self.freq_stats:
                 freq_pred_ghz = freq_pred * self.freq_stats['std'] + self.freq_stats['mean']
                 freq_true_ghz = freq_true * self.freq_stats['std'] + self.freq_stats['mean']
@@ -164,16 +178,8 @@ class GNOTLightning(pl.LightningModule):
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
-        # Relative L2 Error
-        if mask is not None:
-            m_f = mask.unsqueeze(-1).float()
-            diff_sq = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
-            true_sq = ((aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
-        else:
-            diff_sq = ((pred_field - aligned_true_field) ** 2).sum(dim=1)
-            true_sq = ((aligned_true_field) ** 2).sum(dim=1)
-            
-        rel_l2_all = torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + 1e-8)  # [B, 1]
+        # Relative L2 Error (reuse diff_sq / true_sq computed above)
+        rel_l2_all = torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + eps)  # [B, 1]
         rel_l2 = rel_l2_all.mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
@@ -392,29 +398,21 @@ class GNOTLightning(pl.LightningModule):
                 }
             }
         elif self.hparams.scheduler == 'custom_cosine':
-            # Custom logic: 
-            # 0-10: Constant 1e-4 (if base lr is 1e-4)
-            # 10+: Drop to 5e-5 and Cosine decay to cosine_eta_min
+            # Phase 1 (epochs 0-9):  constant at base_lr (warm-up / stable start)
+            # Phase 2 (epoch 10+):   cosine decay from base_lr down to cosine_eta_min
             def lr_lambda(epoch):
                 base_lr = self.hparams.lr
-                drop_lr = 5e-5
-                if epoch < 10:
+                eta_min = self.hparams.cosine_eta_min
+                warmup_epochs = 10
+                if epoch < warmup_epochs:
                     return 1.0
-                else:
-                    # Remaining epochs after the constant phase
-                    total_cos_epochs = self.trainer.max_epochs - 10
-                    if total_cos_epochs <= 0: return drop_lr / base_lr
-                    
-                    progress = (epoch - 10) / total_cos_epochs
-                    progress = min(1.0, max(0.0, progress))
-                    
-                    # Cosine decay factor from 1.0 down to eta_min / drop_lr
-                    eta_min = self.hparams.cosine_eta_min
-                    cosine_factor = 0.5 * (1.0 + math.cos(math.pi * progress))
-                    
-                    # Target LR for this epoch
-                    target_lr = eta_min + (drop_lr - eta_min) * cosine_factor
-                    return target_lr / base_lr
+                total_cos_epochs = self.trainer.max_epochs - warmup_epochs
+                if total_cos_epochs <= 0:
+                    return eta_min / base_lr
+                progress = min(1.0, (epoch - warmup_epochs) / total_cos_epochs)
+                cosine_factor = 0.5 * (1.0 + math.cos(math.pi * progress))
+                target_lr = eta_min + (base_lr - eta_min) * cosine_factor
+                return target_lr / base_lr
 
             scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
             return {
