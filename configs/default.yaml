@@ -122,7 +122,7 @@ training:
   cosine_eta_min: 1.0e-6
 
   # Early stopping
-  patience: 15                  # Val loss iyileşmezse dur (5k veride epoch başına gradyan adımı 5x → daha az sabır yeterli)
+  patience: 50                  # Val loss iyileşmezse dur
 
   # DataLoader
   num_workers: 4                # Colab'da 4, Windows'ta 0 yapın
