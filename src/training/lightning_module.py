@@ -20,7 +20,8 @@ class GNOTLightning(pl.LightningModule):
                  cosine_eta_min=1e-6,
                  gradient_clip_val=None,
                  use_gnn=True, gnn_layers=2, gnn_out_dim=64,
-                 dropout=0.0):
+                 dropout=0.0,
+                 permutation_invariant_dipole=True):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
@@ -57,6 +58,7 @@ class GNOTLightning(pl.LightningModule):
         else:
             self.mode_loss_weights = list(mode_loss_weights)
         self.freq_stats = None
+        self.permutation_invariant_dipole = permutation_invariant_dipole
 
         # Optional: Metrics to evaluate and measure model's success
         self.train_r2 = torchmetrics.R2Score()
@@ -145,6 +147,39 @@ class GNOTLightning(pl.LightningModule):
             l1 = diff.abs().mean(dim=1)
 
             sample_field_losses = rel_l2_loss + 0.1 * l1
+
+        # --- PERMUTATION-INVARIANT DIPOLE LOSS ---
+        # For geometries where both mode 1 and mode 2 appear in the same batch,
+        # try both assignment orders and keep the one with lower total loss.
+        # Safety net for any residual orientation ambiguity after canonical rotation.
+        if self.permutation_invariant_dipole and 'geom_id' in batch:
+            geom_ids_batch = batch['geom_id'].squeeze(-1)  # [B]
+            updated_losses = sample_field_losses.clone()
+            for g_id in geom_ids_batch.unique():
+                i1 = ((geom_ids_batch == g_id) & (theta_in == 1)).nonzero(as_tuple=True)[0]
+                i2 = ((geom_ids_batch == g_id) & (theta_in == 2)).nonzero(as_tuple=True)[0]
+                if len(i1) == 0 or len(i2) == 0:
+                    continue
+                idx_1, idx_2 = i1[0], i2[0]
+                p1, t1 = pred_field[idx_1], aligned_true_field[idx_1]  # [N, 1]
+                p2, t2 = pred_field[idx_2], aligned_true_field[idx_2]  # [N, 1]
+                m_g = mask[idx_1].float().unsqueeze(-1) if mask is not None else torch.ones_like(p1)
+                n_v_g = m_g.sum().clamp(min=1.0)
+                # Swapped losses with per-pair sign correction
+                with torch.no_grad():
+                    sign_12 = torch.where(
+                        ((p1 - t2) ** 2 * m_g).sum() <= ((p1 + t2) ** 2 * m_g).sum(), 1.0, -1.0)
+                    sign_21 = torch.where(
+                        ((p2 - t1) ** 2 * m_g).sum() <= ((p2 + t1) ** 2 * m_g).sum(), 1.0, -1.0)
+                l_swp_1 = ((sign_12 * p1 - t2) ** 2 * m_g).sum() / n_v_g + \
+                          0.1 * ((sign_12 * p1 - t2).abs() * m_g).sum() / n_v_g
+                l_swp_2 = ((sign_21 * p2 - t1) ** 2 * m_g).sum() / n_v_g + \
+                          0.1 * ((sign_21 * p2 - t1).abs() * m_g).sum() / n_v_g
+                if (l_swp_1 + l_swp_2 < updated_losses[idx_1] + updated_losses[idx_2]).detach():
+                    updated_losses[idx_1] = l_swp_1
+                    updated_losses[idx_2] = l_swp_2
+            sample_field_losses = updated_losses
+        # ------------------------------------------
 
         # Apply per-sample mode weighting
         loss_field = (sample_field_losses * batch_weights).mean()

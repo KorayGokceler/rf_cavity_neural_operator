@@ -117,22 +117,36 @@ def generate_sample_data(s_id):
         vecs_real = vecs.real
         freqs = (299792458 * np.sqrt(np.abs(vals_real))) / (2 * np.pi) / 1e9
 
-        # --- KALICI DÜZELTME: MODE TRACKING / ALIGNMENT ---
-        # 1. ve 2. Mod (Index 1 ve 2) Dipol modlarıdır ve Mode Crossing yaşarlar.
-        # Bu algoritma Index 1'i daima Dikey (Kuzey-Güney), Index 2'yi Yatay (Doğu-Batı) hizalar.
+        # --- CANONICAL DIPOLE ROTATION ---
+        # Modes 1 and 2 are dipole modes that span a degenerate subspace.
+        # Instead of a heuristic axis swap, project the subspace onto a canonical
+        # frame defined by the cavity's own PCA principal axis.  This gives a
+        # consistent orientation even for near-degenerate (nearly circular) shapes
+        # where the old C_x/C_y swap was unstable.
         n_nodes = len(nodes)
-        x_c = nodes[:, 0] - np.mean(nodes[:, 0])
-        y_c = nodes[:, 1] - np.mean(nodes[:, 1])
+        nodes_c = nodes - nodes.mean(axis=0)
 
-        mode_1 = vecs_real[:n_nodes, 1]
-        
-        C_x = np.abs(np.sum(mode_1 * x_c))
-        C_y = np.abs(np.sum(mode_1 * y_c))
+        # PCA on mesh nodes → principal axis of the cavity shape
+        cov = np.cov(nodes_c.T)
+        _, evecs = np.linalg.eigh(cov)
+        principal = evecs[:, -1]           # eigenvector of largest eigenvalue
+        if principal[0] < 0 or (principal[0] == 0 and principal[1] < 0):
+            principal = -principal         # sign disambiguation: always point to +x half-plane
 
-        if C_x > C_y:
-            # Mode 1 yatay çıkmış, demek ki çözücü gürültü sebebiyle ters sıralamış! Takas (Swap):
-            vecs_real[:, [1, 2]] = vecs_real[:, [2, 1]]
-            freqs[[1, 2]] = freqs[[2, 1]]
+        e1_nodes = vecs_real[:n_nodes, 1].copy()
+        e2_nodes = vecs_real[:n_nodes, 2].copy()
+        proj = nodes_c @ principal         # [N] node positions along principal axis
+
+        c1 = np.dot(e1_nodes, proj)        # dipole moment of mode-1 along principal axis
+        c2 = np.dot(e2_nodes, proj)        # dipole moment of mode-2 along principal axis
+        theta = np.arctan2(c2, c1)
+
+        # Apply rotation to full P2 eigenvectors (all DOF, not just vertex nodes)
+        e1_full = vecs_real[:, 1].copy()
+        e2_full = vecs_real[:, 2].copy()
+        vecs_real[:, 1] = np.cos(theta) * e1_full + np.sin(theta) * e2_full
+        vecs_real[:, 2] = -np.sin(theta) * e1_full + np.cos(theta) * e2_full
+        # Frequencies are not swapped: rotation is within the subspace, not a permutation
         # --------------------------------------------------
 
         return {

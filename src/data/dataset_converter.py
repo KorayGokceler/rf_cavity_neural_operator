@@ -109,9 +109,46 @@ class RFCavityToGNOT:
             'X': nodes_norm.astype(np.float32),
             'Input_funcs': geom_features,
             'elements': elements,
+            'principal_axis': principal_axis,  # used by dipole canonicalization; not saved to disk
         }
 
-    def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None, format='pkl', 
+    def _canonicalize_dipole_subspace(self, vecs, nodes_norm, principal_axis):
+        """Rotate the degenerate dipole subspace (modes 1 & 2) into a canonical frame.
+
+        Projects the 2D eigenspace onto coordinates defined by the cavity's own
+        principal axis, making orientation consistent across all geometries
+        — including near-degenerate cases where the FEM solver returns an
+        arbitrary rotation within the degenerate subspace.
+
+        Mode 1 → component with maximum positive dipole moment along principal_axis.
+        Mode 2 → component perpendicular to mode 1 within the subspace.
+        """
+        if vecs.shape[1] < 3:
+            return vecs
+
+        e1 = vecs[:, 1].copy()
+        e2 = vecs[:, 2].copy()
+
+        # Node positions relative to centroid — used as the dipole spatial basis
+        node_pos = nodes_norm - nodes_norm.mean(axis=0)
+        proj_along = node_pos @ principal_axis  # [N]
+
+        # Dipole moment of each eigenvector along the principal axis
+        c1 = np.dot(e1, proj_along)
+        c2 = np.dot(e2, proj_along)
+
+        # Rotation angle: theta = argmax_θ (c1 cos θ + c2 sin θ)
+        theta = np.arctan2(c2, c1)
+
+        v_aligned = np.cos(theta) * e1 + np.sin(theta) * e2   # aligns with principal axis
+        v_perp    = -np.sin(theta) * e1 + np.cos(theta) * e2  # perpendicular to principal axis
+
+        vecs = vecs.copy()
+        vecs[:, 1] = v_aligned
+        vecs[:, 2] = v_perp
+        return vecs
+
+    def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None, format='pkl',
                         freq_mean=None, freq_std=None):
         print(f"Converting: {self.h5_filepath} to {format.upper()}")
 
@@ -133,6 +170,15 @@ class RFCavityToGNOT:
                     self.geometry_pool[sample_id] = self.extract_geometry_features(nodes, elements)
                     self.stats['n_geometries'] += 1
                     self.stats['mesh_sizes'].append(len(nodes))
+
+                # Canonicalize the dipole subspace (modes 1 & 2) before per-mode processing.
+                # Rotates the degenerate eigenvector pair so that mode 1 consistently aligns
+                # with the cavity's PCA principal axis across all geometries, eliminating the
+                # arbitrary FEM orientation that causes inconsistent training targets.
+                if 1 in mode_indices and 2 in mode_indices and vecs.shape[1] >= 3:
+                    pa = self.geometry_pool[sample_id]['principal_axis']
+                    nodes_norm_geo = self.geometry_pool[sample_id]['X']
+                    vecs = self._canonicalize_dipole_subspace(vecs, nodes_norm_geo, pa)
 
                 for i, m_idx in enumerate(mode_indices):
                     if m_idx >= len(freqs):

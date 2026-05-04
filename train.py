@@ -156,9 +156,10 @@ def main():
         use_gnn=getattr(mc, 'use_gnn', True),
         gnn_layers=getattr(mc, 'gnn_layers', 2),
         gnn_out_dim=getattr(mc, 'gnn_out_dim', 64),
-        dropout=getattr(mc, 'dropout', 0.0)
+        dropout=getattr(mc, 'dropout', 0.0),
+        permutation_invariant_dipole=getattr(tc, 'permutation_invariant_dipole', True),
     )
-    
+
     # Pass frequency statistics to the model for physical units logging
     if hasattr(train_dataset, 'stats') and train_dataset.stats:
         model.freq_stats = train_dataset.stats

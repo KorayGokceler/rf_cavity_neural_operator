@@ -135,6 +135,9 @@ training:
   viz_every_n_epochs: 10        # Field görselleştirme sıklığı
   progress_bar_refresh_rate: 1
 
+  # Near-degenerate mode handling (Approach B)
+  permutation_invariant_dipole: true  # Swap mode 1/2 assignment if it gives lower loss
+
   # Debug
   fast_dev_run: false           # true ile 1 iterasyon test
 
