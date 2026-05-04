@@ -10,9 +10,9 @@
 #  1. DATA GENERATION (dataset_generator.py)
 # ─────────────────────────────────────────────────────
 data_gen:
-  h5_filename: "rf_cavity_1000_dataset.h5"
+  h5_filename: "rf_cavity_5000_dataset.h5"
   plot_dir: "dataset_plots"
-  n_total: 1000                 # Üretilecek toplam geometri
+  n_total: 5000                 # Üretilecek toplam geometri
   n_plot: 100                   # Görselleştirilecek örnek sayısı
   generation_mode: "random"     # "random" veya "calibration"
   
@@ -39,8 +39,8 @@ data_gen:
 #  2. DATA CONVERSION (dataset_converter.py, convert.py)
 # ─────────────────────────────────────────────────────
 data_convert:
-  h5_filepath: "rf_cavity_1000_dataset.h5"
-  output_path: "data/gnot_dataset.pkl"
+  h5_filepath: "rf_cavity_5000_dataset.h5"
+  output_path: "data/gnot_dataset_5k.pkl"
   output_format: "pkl"          # "pkl" veya "h5"
   mode_indices: [0, 1, 2]       # TUM 3 MODE (Monopol, Dipol, vs.)
   max_samples: null             # null = tümü
@@ -50,7 +50,7 @@ data_convert:
 #  3. DATASET (dataset.py)
 # ─────────────────────────────────────────────────────
 dataset:
-  data_path: "data/gnot_dataset.pkl"
+  data_path: "data/gnot_dataset_5k.pkl"
   train_ratio: 0.8
   val_ratio: 0.1
   # test_ratio otomatik: 1 - train - val = 0.1
@@ -99,7 +99,7 @@ training:
   learning_rate: 5.0e-5
   weight_decay: 0.0               # Modelin genlikleri (amplutidleri) baskılamasını engelle
   batch_size: 64
-  max_epochs: 200
+  max_epochs: 100               # 5k veride epoch başına 5x adım var → toplam adım sayısı dengeli
   check_val_every_n_epoch: 1    # Her epoch sonunda doğrulama yap
   gradient_clip_val: 1.0        # Gradyan patlamasını önle (NaN fix)
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
@@ -122,7 +122,7 @@ training:
   cosine_eta_min: 1.0e-6
 
   # Early stopping
-  patience: 25                  # Val loss iyileşmezse dur
+  patience: 15                  # Val loss iyileşmezse dur (5k veride epoch başına gradyan adımı 5x → daha az sabır yeterli)
 
   # DataLoader
   num_workers: 4                # Colab'da 4, Windows'ta 0 yapın
@@ -130,7 +130,7 @@ training:
 
   # Logging & Visualization
   log_dir: "training_logs"
-  exp_name: "gnot_old_data_v1"
+  exp_name: "gnot_5k_v1"
   log_every_n_steps: 10
   viz_every_n_epochs: 10        # Field görselleştirme sıklığı
   progress_bar_refresh_rate: 1
