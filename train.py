@@ -78,7 +78,7 @@ def main():
         print(f"Config loaded from: {args.config}")
         print(f"Model: embed_dim={mc.embed_dim}, heads={mc.n_heads}, "
               f"L_shared={mc.n_shared_layers}, L_mode={mc.n_mode_layers}")
-        print(f"Experts={mc.num_experts}, num_field_modes={mc.num_field_modes}, use_gnn={getattr(mc, 'use_gnn', True)}")
+        print(f"Experts={mc.num_experts}, num_field_modes={mc.num_field_modes}")
         print(f"Training: lr={tc.learning_rate}, batch_size={tc.batch_size}, epochs={tc.max_epochs}, "
               f"scheduler={tc.scheduler}")
         n_gpus = torch.cuda.device_count()
@@ -153,10 +153,9 @@ def main():
         onecycle_div_factor=getattr(tc, 'onecycle_div_factor', 25.0),
         onecycle_final_div_factor=getattr(tc, 'onecycle_final_div_factor', 1e4),
         cosine_eta_min=getattr(tc, 'cosine_eta_min', 1.0e-6),
-        use_gnn=getattr(mc, 'use_gnn', True),
-        gnn_layers=getattr(mc, 'gnn_layers', 2),
-        gnn_out_dim=getattr(mc, 'gnn_out_dim', 64),
         dropout=getattr(mc, 'dropout', 0.0),
+        rff_dim=getattr(mc, 'rff_dim', 64),
+        rff_length_scale=getattr(mc, 'rff_length_scale', 0.1),
         permutation_invariant_dipole=getattr(tc, 'permutation_invariant_dipole', True),
     )
 

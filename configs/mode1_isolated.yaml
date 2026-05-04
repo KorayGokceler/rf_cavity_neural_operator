@@ -28,8 +28,7 @@ model:
   
   # İzolasyon Ayarları
   num_field_modes: 1            # SADECE 1 MOD (Mode 1 verisi buraya 0 olarak gelecek)
-  use_gnn: false                # GNN DEVRE DIŞI
-  
+
   use_checkpoint: true
 
 # ─────────────────────────────────────────────────────

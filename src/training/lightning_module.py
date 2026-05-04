@@ -19,8 +19,8 @@ class GNOTLightning(pl.LightningModule):
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
                  cosine_eta_min=1e-6,
                  gradient_clip_val=None,
-                 use_gnn=True, gnn_layers=2, gnn_out_dim=64,
                  dropout=0.0,
+                 rff_dim=64, rff_length_scale=0.1,
                  permutation_invariant_dipole=True):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
@@ -44,10 +44,9 @@ class GNOTLightning(pl.LightningModule):
             num_field_modes=num_field_modes,
             use_checkpoint=use_checkpoint,
             predict_frequency=predict_frequency,
-            use_gnn=use_gnn,
-            gnn_layers=gnn_layers,
-            gnn_out_dim=gnn_out_dim,
-            dropout=dropout
+            dropout=dropout,
+            rff_dim=rff_dim,
+            rff_length_scale=rff_length_scale,
         )
         self.freq_weight = freq_weight
         self.smoothness_weight = smoothness_weight
