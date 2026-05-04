@@ -96,10 +96,10 @@ model:
 # ─────────────────────────────────────────────────────
 training:
   # Optimization
-  learning_rate: 5.0e-5
+  learning_rate: 1.0e-4
   weight_decay: 0.0               # Modelin genlikleri (amplutidleri) baskılamasını engelle
-  batch_size: 64
-  max_epochs: 100               # 5k veride epoch başına 5x adım var → toplam adım sayısı dengeli
+  batch_size: 32
+  max_epochs: 300
   check_val_every_n_epoch: 1    # Her epoch sonunda doğrulama yap
   gradient_clip_val: 1.0        # Gradyan patlamasını önle (NaN fix)
   strategy: "auto"              # "auto" (single GPU) veya "ddp" (multi-GPU)
