@@ -40,7 +40,7 @@ class FieldVisualizationCallback(pl.Callback):
             print(f"Warning: Could not get validation batch for visualization: {e}")
             return
         
-        # Move to device (including lists of tensors like 'elements')
+        # Move batch tensors to device
         def to_device(obj, device):
             if isinstance(obj, torch.Tensor):
                 return obj.to(device)

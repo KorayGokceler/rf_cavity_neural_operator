@@ -41,6 +41,9 @@ class GNOTDataset(Dataset):
             self.samples_metadata = all_samples
             for i, s in enumerate(all_samples):
                 sample_to_geom.append((i, s['geom_id']))
+            # GNN removed — free triangle connectivity from RAM, it's no longer needed at training time
+            for geom in self.geometry_pool.values():
+                geom.pop('elements', None)
 
         # 2. Group samples by geometry to split by geometry (no data leakage)
         geom_to_samples = collections.defaultdict(list)
@@ -135,7 +138,6 @@ class GNOTDataset(Dataset):
             geom = f['geometry_pool'][str(g_id)]
             x = geom['X'][:]
             input_features = geom['Input_funcs'][:]
-            elements = geom['elements'][:]
             y_val = sample['Y'][:]           # [N, 1]
             raw_theta = sample['Theta'][:]   # [mode_idx, freq]
         else:
@@ -144,7 +146,6 @@ class GNOTDataset(Dataset):
             geom = self.geometry_pool[g_id]
             x = geom['X']
             input_features = geom['Input_funcs']
-            elements = geom['elements']
             y_val = sample['Y']              # [N, 1]
             raw_theta = sample['Theta']      # [mode_idx, freq]
 
@@ -169,14 +170,6 @@ class GNOTDataset(Dataset):
         n_nodes = x.shape[0]
         if self.max_nodes is not None and n_nodes > self.max_nodes:
             rand_idx = torch.randperm(n_nodes)[:self.max_nodes].numpy()
-            
-            # Remap elements: keep only triangles with all vertices in subsampled set
-            old_to_new = np.full(n_nodes, -1, dtype=np.int64)
-            old_to_new[rand_idx] = np.arange(len(rand_idx))
-            remapped = old_to_new[elements]  # [num_elements, 3]
-            valid = (remapped >= 0).all(axis=1)
-            elements = remapped[valid].astype(np.int32)
-            
             x = x[rand_idx]
             input_features = input_features[rand_idx]
             y_val = y_val[rand_idx]
@@ -188,7 +181,6 @@ class GNOTDataset(Dataset):
             'Theta_in': torch.tensor([mode_idx], dtype=torch.long),  # [1]
             'Y_freq': torch.tensor([norm_freq], dtype=torch.float32), # [1]
             'geom_id': torch.tensor([int(g_id)], dtype=torch.long),
-            'elements': torch.from_numpy(elements).long()
         }
 
 def gnot_collate_fn(batch):
@@ -198,7 +190,6 @@ def gnot_collate_fn(batch):
     batch_theta = [item['Theta_in'] for item in batch]
     batch_freq = [item['Y_freq'] for item in batch]
     batch_geom_id = [item['geom_id'] for item in batch]
-    batch_elements = [item['elements'] for item in batch]
 
     X_padded = pad_sequence(batch_x, batch_first=True, padding_value=0.0)
     Inputs_padded = pad_sequence(batch_inputs, batch_first=True, padding_value=0.0)
@@ -221,5 +212,4 @@ def gnot_collate_fn(batch):
         'Y_freq': Freq_stacked,          # [B, 1]
         'geom_id': geom_id_stacked,
         'Mask': mask,
-        'elements': batch_elements
     }
