@@ -30,13 +30,31 @@ def main():
     # ==========================================
     if not args.skip_gen:
         print("\n[1/3] VERİ ÜRETİMİ (DATA GENERATION) BAŞLIYOR...")
+        dg = cfg.get('data_gen', {})
+        sharp_n_pts = dg.get('sharp_n_pts_range', [7, 13])
+        sharp_r     = dg.get('sharp_r_range', [0.02, 0.046])
+        smooth_harm = dg.get('smooth_harmonics', [2, 8])
         gen_args = [
             "python", "src/data_gen/dataset_generator.py",
-            "--h5_filename", cfg.get('data_gen', {}).get('h5_filename', 'rf_cavity_1000_dataset.h5'),
-            "--plot_dir", cfg.get('data_gen', {}).get('plot_dir', 'dataset_plots'),
-            "--n_total", str(cfg.get('data_gen', {}).get('n_total', 1000)),
-            "--n_plot", str(cfg.get('data_gen', {}).get('n_plot', 100)),
-            "--mode", cfg.get('data_gen', {}).get('generation_mode', 'random')
+            "--h5_filename",         dg.get('h5_filename', 'rf_cavity_1000_dataset.h5'),
+            "--plot_dir",            dg.get('plot_dir', 'dataset_plots'),
+            "--n_total",             str(dg.get('n_total', 1000)),
+            "--n_plot",              str(dg.get('n_plot', 100)),
+            "--mode",                dg.get('generation_mode', 'random'),
+            # FEM Solver
+            "--n_eigen_modes",       str(dg.get('n_eigen_modes', 3)),
+            "--eigen_sigma",         str(dg.get('eigen_sigma', 500.0)),
+            # Mesh control
+            "--mesh_size_min",       str(dg.get('mesh_size_min', 0.0012)),
+            "--mesh_size_max",       str(dg.get('mesh_size_max', 0.005)),
+            "--mesh_dist_min",       str(dg.get('mesh_dist_min', 0.002)),
+            "--mesh_dist_max",       str(dg.get('mesh_dist_max', 0.03)),
+            # Geometry randomization
+            "--sharp_n_pts_range",   str(sharp_n_pts[0]), str(sharp_n_pts[1]),
+            "--sharp_r_range",       str(sharp_r[0]),     str(sharp_r[1]),
+            "--smooth_base_r",       str(dg.get('smooth_base_r', 0.035)),
+            "--smooth_perturb",      str(dg.get('smooth_perturb', 0.008)),
+            "--smooth_harmonics",    str(smooth_harm[0]), str(smooth_harm[1]),
         ]
         
         try:
@@ -55,13 +73,17 @@ def main():
         print("\n" + "─"*60)
         print("[2/3] FİZİKSEL FEATURE ÇIKARIMI (DATA CONVERSION) BAŞLIYOR...")
         
+        dc = cfg.get('data_convert', {})
+        max_samples = dc.get('max_samples', None)
         convert_args = [
             "python", "convert.py",
-            "--h5_filepath", cfg.get('data_convert', {}).get('h5_filepath', 'rf_cavity_1000_dataset.h5'),
-            "--output_path", cfg.get('data_convert', {}).get('output_path', 'data/gnot_dataset.pkl'),
-            "--output_format", cfg.get('data_convert', {}).get('output_format', 'pkl'),
+            "--h5_filepath",   dc.get('h5_filepath', 'rf_cavity_1000_dataset.h5'),
+            "--output_path",   dc.get('output_path', 'data/gnot_dataset.pkl'),
+            "--output_format", dc.get('output_format', 'pkl'),
             "--modes"
-        ] + [str(m) for m in cfg.get('data_convert', {}).get('mode_indices', [0, 1, 2])]
+        ] + [str(m) for m in dc.get('mode_indices', [0, 1, 2])]
+        if max_samples is not None:
+            convert_args += ["--max_samples", str(max_samples)]
         
         try:
             subprocess.run(convert_args, check=True)

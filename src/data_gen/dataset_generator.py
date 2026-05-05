@@ -17,6 +17,20 @@ def parse_args():
     parser.add_argument("--n_total", type=int, default=1000, help="Total number of samples to generate.")
     parser.add_argument("--n_plot", type=int, default=100, help="Number of samples to plot.")
     parser.add_argument("--mode", type=str, default="random", choices=["random", "calibration"], help="Generation mode: random shapes or calibration shapes (square/circle).")
+    # FEM Solver
+    parser.add_argument("--n_eigen_modes", type=int, default=3, help="Number of eigenmodes to solve (k).")
+    parser.add_argument("--eigen_sigma", type=float, default=500.0, help="Shift-invert sigma for eigen solver.")
+    # Mesh control
+    parser.add_argument("--mesh_size_min", type=float, default=0.0012, help="Min mesh size near boundary.")
+    parser.add_argument("--mesh_size_max", type=float, default=0.005, help="Max mesh size at center.")
+    parser.add_argument("--mesh_dist_min", type=float, default=0.002, help="Distance where mesh refinement starts.")
+    parser.add_argument("--mesh_dist_max", type=float, default=0.03, help="Distance where mesh refinement ends.")
+    # Geometry randomization
+    parser.add_argument("--sharp_n_pts_range", type=int, nargs=2, default=[7, 13], metavar=("MIN", "MAX"), help="Corner count range for sharp geometries.")
+    parser.add_argument("--sharp_r_range", type=float, nargs=2, default=[0.02, 0.046], metavar=("MIN", "MAX"), help="Radius range for sharp geometries.")
+    parser.add_argument("--smooth_base_r", type=float, default=0.035, help="Base radius for smooth geometries.")
+    parser.add_argument("--smooth_perturb", type=float, default=0.008, help="Perturbation amplitude for smooth geometries.")
+    parser.add_argument("--smooth_harmonics", type=int, nargs=2, default=[2, 8], metavar=("MIN", "MAX"), help="Harmonic range for smooth geometries.")
     return parser.parse_args()
 
 # Global settings placeholder
@@ -61,15 +75,15 @@ def generate_sample_data(s_id):
             method = np.random.choice(['sharp', 'smooth'])
             if method == 'sharp':
                 shape_type = 'random_sharp'
-                n_pts = np.random.randint(7, 13)
+                n_pts = np.random.randint(ARGS.sharp_n_pts_range[0], ARGS.sharp_n_pts_range[1])
                 delta = 2 * np.pi / n_pts
                 angles = np.array([i * delta + np.random.uniform(-delta/3, delta/3) for i in range(n_pts)])
-                r = np.random.uniform(0.02, 0.046, n_pts)
+                r = np.random.uniform(ARGS.sharp_r_range[0], ARGS.sharp_r_range[1], n_pts)
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
             else:
                 shape_type = 'random_smooth'
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
-                r_raw = 0.035 + sum(np.random.uniform(-0.008, 0.008) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(2, 8))
+                r_raw = ARGS.smooth_base_r + sum(np.random.uniform(-ARGS.smooth_perturb, ARGS.smooth_perturb) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(ARGS.smooth_harmonics[0], ARGS.smooth_harmonics[1]))
                 r = np.clip(r_raw, 0.015, None)
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
             
@@ -93,10 +107,10 @@ def generate_sample_data(s_id):
         gmsh.model.mesh.field.setNumbers(1, "CurvesList", all_boundary_lines)
         gmsh.model.mesh.field.add("Threshold", 2)
         gmsh.model.mesh.field.setNumber(2, "InField", 1)
-        gmsh.model.mesh.field.setNumber(2, "SizeMin", 0.0012)
-        gmsh.model.mesh.field.setNumber(2, "SizeMax", 0.005)
-        gmsh.model.mesh.field.setNumber(2, "DistMin", 0.002)
-        gmsh.model.mesh.field.setNumber(2, "DistMax", 0.03)
+        gmsh.model.mesh.field.setNumber(2, "SizeMin", ARGS.mesh_size_min)
+        gmsh.model.mesh.field.setNumber(2, "SizeMax", ARGS.mesh_size_max)
+        gmsh.model.mesh.field.setNumber(2, "DistMin", ARGS.mesh_dist_min)
+        gmsh.model.mesh.field.setNumber(2, "DistMax", ARGS.mesh_dist_max)
         gmsh.model.mesh.field.setAsBackgroundMesh(2)
 
         gmsh.model.mesh.generate(2)
@@ -111,7 +125,7 @@ def generate_sample_data(s_id):
         K, M = laplace.assemble(basis), mass.assemble(basis)
         D = basis.get_dofs(facets=m.boundary_facets())
         Kc, Mc, xc, Ic = utils.condense(K, M, D=D, expand=True)
-        vals, vecs = utils.solve_eigen(Kc, Mc, x=xc, I=Ic, k=3, sigma=500.0)
+        vals, vecs = utils.solve_eigen(Kc, Mc, x=xc, I=Ic, k=ARGS.n_eigen_modes, sigma=ARGS.eigen_sigma)
         
         vals_real = vals.real
         vecs_real = vecs.real

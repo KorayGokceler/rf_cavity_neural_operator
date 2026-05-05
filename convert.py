@@ -8,7 +8,8 @@ def main():
     parser.add_argument("--output_path", type=str, default="data/gnot_dataset.pkl", help="Path to output file.")
     parser.add_argument("--output_format", type=str, default="pkl", choices=["pkl", "h5"], help="Output format (pkl or h5).")
     parser.add_argument("--modes", type=int, nargs='+', default=[0, 1, 2], help="Mode indices to include (e.g., 0 1 or 1).")
-    
+    parser.add_argument("--max_samples", type=int, default=None, help="Limit number of geometries converted (None = all).")
+
     # Frequency stats override
     parser.add_argument("--freq_mean", type=float, default=None, help="Manual override for frequency mean.")
     parser.add_argument("--freq_std", type=float, default=None, help="Manual override for frequency std.")
@@ -24,7 +25,7 @@ def main():
     converter.convert_dataset(
         output_filepath=args.output_path,
         mode_indices=args.modes,
-        max_samples=None,
+        max_samples=args.max_samples,
         format=args.output_format,
         freq_mean=args.freq_mean,
         freq_std=args.freq_std

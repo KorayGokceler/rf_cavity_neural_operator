@@ -190,7 +190,7 @@ class MLPEncoder(nn.Module):
         return self.net(x)
 
 class GNOTModel(nn.Module):
-    def __init__(self, val_dim=8, grid_dim=2, theta_dim=1, embed_dim=256,
+    def __init__(self, val_dim=8, grid_dim=2, embed_dim=256,
                  n_shared_layers=6, n_mode_layers=1, n_field_head_layers=3,
                  n_heads=8, num_experts=4, num_field_modes=3,
                  use_checkpoint=False, predict_frequency=True,

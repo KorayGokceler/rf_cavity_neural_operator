@@ -16,8 +16,7 @@ data_gen:
   n_plot: 100                   # Görselleştirilecek örnek sayısı
   generation_mode: "random"     # "random" veya "calibration"
   
-  # FEM Solver
-  fem_order: "P2"               # Finite element order
+  # FEM Solver (fem_order P2 sabit — değiştirmek veri formatını kırar)
   n_eigen_modes: 3              # Çözülecek eigenmode sayısı (k)
   eigen_sigma: 500.0            # Shift-invert sigma
   
@@ -66,7 +65,6 @@ model:
   # Input dimensions (veri formatına bağlı)
   val_dim: 8                    # [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area, cos_principal, sin_principal]
   grid_dim: 2                   # Koordinat boyutu (2D)
-  theta_dim: 1                  # Mode index boyutu
 
   # Core architecture
   embed_dim: 256                # Hidden dimension (ana boyut parametresi)

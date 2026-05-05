@@ -7,7 +7,7 @@ import numpy as np
 from src.models.gnot import GNOTModel
 
 class GNOTLightning(pl.LightningModule):
-    def __init__(self, val_dim=6, grid_dim=2, theta_dim=1, hidden_dim=256, 
+    def __init__(self, val_dim=6, grid_dim=2, hidden_dim=256,
                  n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3,
                  lr=1e-3, freq_weight=0.5, smoothness_weight=0.1,
@@ -34,7 +34,6 @@ class GNOTLightning(pl.LightningModule):
         self.model = GNOTModel(
             val_dim=val_dim,
             grid_dim=grid_dim,
-            theta_dim=theta_dim,
             embed_dim=hidden_dim,
             n_shared_layers=n_shared_layers,
             n_mode_layers=n_mode_layers,
@@ -207,7 +206,7 @@ class GNOTLightning(pl.LightningModule):
         else:
             loss_freq = torch.tensor(0.0, device=pred_field.device)
 
-        total_loss = loss_field + (self.freq_weight * loss_freq) + (0.1 * loss_bnd)
+        total_loss = loss_field + (self.freq_weight * loss_freq) + (self.smoothness_weight * loss_bnd)
 
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)

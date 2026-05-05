@@ -11,8 +11,8 @@ class GNOTDataset(Dataset):
     #   4: dir_bnd_y, 5: node_area, 6: cos_principal, 7: sin_principal
     FEATURE_NAMES = ['x_norm', 'y_norm', 'dist_boundary', 'dir_bnd_x', 'dir_bnd_y', 'node_area', 'cos_principal', 'sin_principal']
 
-    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1, 
-                 feature_indices=None, max_nodes=None, active_mode_index=None):
+    def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1,
+                 feature_indices=None, max_nodes=None, active_mode_index=None, random_seed=42):
         print(f"Loading dataset from {data_path}...")
         self.data_path = data_path
         self.is_h5 = str(data_path).endswith('.h5')
@@ -51,7 +51,7 @@ class GNOTDataset(Dataset):
         n_geoms = len(unique_geoms)
         
         # 3. Split by geometry (not by sample) to prevent leakage
-        np.random.seed(42)
+        np.random.seed(random_seed)
         perm_geoms = np.random.permutation(unique_geoms)
         
         n_train_geoms = int(n_geoms * train_ratio)
