@@ -1,8 +1,7 @@
-peki featur# 04 — Model Mimarisi (GNOT)
+# 04 — Model Mimarisi (GNOT)
 
 > **Dosya:** `src/models/gnot.py`  
-> **Model:** `GNOTModel`  
-> **Referans Paper:** GNOT (General Neural Operator Transformer) — `examples/2302.14376v3.pdf`
+> **Model:** `GNOTModel`
 
 ---
 
@@ -12,7 +11,7 @@ GNOT, **neural operator** ailesinden bir Transformer modelidir. Klasik NN'lerden
 
 $$\mathcal{G}_\theta: (\text{Geometri}, \text{Mod İndeksi}) \mapsto \text{Alan Dağılımı } E(x, y)$$
 
-Model bu projeyle 2 çıktı üretir:
+Model iki çıktı üretir:
 1. **Field Prediction:** Her node için alan değeri ($E_i$) → `[B, N, 1]`
 2. **Frequency Prediction:** Rezonans frekansı ($f$) → `[B, 1]`
 
@@ -22,47 +21,49 @@ Model bu projeyle 2 çıktı üretir:
 
 ```
                ┌─────────────────────────────────┐
-               │          GİRDİLER                 │
-               │                                   │
-               │  X: [B, N, 2]    (koordinatlar)   │
+               │          GİRDİLER                │
+               │  X: [B, N, 2]    (koordinatlar)  │
                │  Input_funcs: [B, N, 8] (features)│
-               │  Theta: [B, 1]   (mod indeksi)    │
-               └──────────┬───────────┬────────────┘
+               │  Theta: [B, 1]   (mod indeksi)   │
+               └──────────┬───────────┬───────────┘
                           │           │
-                    ┌─────▼─────┐  ┌──▼──────────────┐
-                    │ RFF(X)     │  │                  │
-                    │ [B,N,64]   │  │                  │
-                    └─────┬─────┘  │                  │
-                          │        │                  │
-               ┌──────────▼────────▼──────────────────┐
-               │  query_encoder([X, RFF])              │
-               │  input_func_encoder([IF, X, RFF])     │
-               │         → x_emb, y_emb [B, N, 256]   │
-               └──────────────────┬────────────────────┘
+               ┌──────────▼──┐  ┌─────▼──────────────────┐
+               │ RFF(X)       │  │ [Input_funcs, X] concat │
+               │ [B, N, 64]   │  │       [B, N, 10]        │
+               └──────────┬──┘  └─────┬──────────────────┘
+                          │            │
+               ┌──────────▼────────────▼──────────┐
+               │  query_encoder(RFF) → x_emb       │
+               │  input_func_encoder([IF,X]) → y_emb│
+               │         → [B, N, 256]              │
+               └──────────────────┬────────────────┘
+                                  │
+               ┌──────────────────▼──────────────┐
+               │  + mode_emb_entrance(theta)      │  ← Mod enjeksiyonu
+               │    (her ikisine de eklenir)       │
+               └──────────────────┬──────────────┘
                                   │
                      ┌────────────▼────────────┐
-                     │  AttentionPool(y_emb)     │
+                     │  AttentionPool(y_emb)    │
                      │  → global_context [B,256] │
-                     └────────────┬──────────────┘
+                     └────────────┬─────────────┘
                                   │
                ┌──────────────────▼──────────────────┐
                │         SHARED TRUNK                 │
-               │    6 × GNOTBlock (mode-blind)        │
-               │    FiLM: KAPALI                      │
+               │    6 × GNOTBlock (paylaşımlı)        │
                └──────────┬──────────────────────────┘
                           │
            ┌──────────────▼──────────────────┐
            │     MODE-SPECIFIC BRANCHES       │
            │                                  │
            │  Mode 0: 1×Block → field_head[0] → alan tahmini
-           │                   → pool → freq_head[0] → frekans_0
+           │                  → pool → freq_head[0] → frekans_0
            │                                  │
            │  Mode 1: 1×Block → field_head[1] → alan tahmini
-           │                   → pool → freq_head[1] → frekans_1
+           │                  → pool → freq_head[1] → frekans_1
            │                                  │
            │  Mode 2: 1×Block → field_head[2] → alan tahmini
-           │                   → pool → freq_head[2] → frekans_2
-           │                                  │
+           │                  → pool → freq_head[2] → frekans_2
            └──────────────────────────────────┘
 ```
 
@@ -74,51 +75,53 @@ Model bu projeyle 2 çıktı üretir:
 
 ```python
 class RandomFourierFeatures:
-    B = randn(2, 32) * scale       # Sabit rastgele frekanslar (learnable DEĞİL)
-    def forward(x):                 # x: [B, N, 2]
-        proj = 2π * (x @ B)        # [B, N, 32]
-        return [sin(proj), cos(proj)]  # [B, N, 64]
+    # B ~ N(0, 1/length_scale²) — sabit, öğrenilmez
+    B = randn(2, 32) * (1.0 / length_scale)   # [2, 32]
+
+    def forward(x):          # x: [B, N, 2]
+        proj = x @ B         # [B, N, 32]
+        scale = sqrt(2 / 64) # Bochner normalizasyonu
+        return scale * [cos(proj), sin(proj)]  # [B, N, 64]
 ```
 
-**Matematiksel Arka Plan:**  
-Standart NN'ler düşük frekanslı fonksiyonları öğrenmeyi tercih eder ("spectral bias"). RF kavitelerinde modlar yüksek uzamsal frekanslar içerir. RFF, koordinatları yüksek boyutlu uzaya taşıyarak bu bias'ı kırar.
+**Matematiksel arka plan (Rahimi & Recht, 2007):**
 
-Bu, Rahimi & Recht (2008) "Random Features for Large-Scale Kernel Machines" çalışmasına dayanır:
+$$\phi(x) = \sqrt{\frac{2}{D}} \begin{bmatrix} \cos(Bx) \\ \sin(Bx) \end{bmatrix}, \quad B_{ij} \sim \mathcal{N}\!\left(0, \frac{1}{\ell^2}\right)$$
 
-$$\phi(x) = \begin{bmatrix} \sin(2\pi B^T x) \\ \cos(2\pi B^T x) \end{bmatrix}$$
+Bu encoding, Gaussian kernel'i yaklaşık olarak ifade eder:
+$$k(x, y) \approx \phi(x)^\top \phi(y) \approx \exp\!\left(-\frac{\|x-y\|^2}{2\ell^2}\right)$$
 
-`B` matrisi **öğrenilmez** — sabit tutulur. Bu, eğitim kararlılığını artırır.
+`length_scale` ($\ell$) parametresi kernel bant genişliğini kontrol eder:
+- Küçük `length_scale` (0.05) → yüksek frekans, ince detaylar
+- Büyük `length_scale` (0.2) → düşük frekans, pürüzsüz
 
-`rff_scale` parametresi, `B`'nin genliğini kontrol eder:
-- `scale=1.0` → Orta frekansları yakalar
-- `scale > 1` → Daha yüksek frekansları temsil edebilir
-- `scale < 1` → Daha düşük, pürüzsüz özellikler
+**Önemli:** `B` matrisi öğrenilmez (`register_buffer`). Bochner teoremi gereği, kernel yaklaşımının yansız olması için frekansların sabit tutulması gerekir. `sqrt(2/D)` faktörü, `k(x,x) = 1` normalizasyonunu sağlar.
+
+**Config parametreleri:** `model.rff_dim` (çıktı boyutu, çift sayı olmalı), `model.rff_length_scale`
 
 ### 2. Linear Attention
 
 ```python
 class LinearAttention:
-    q = ELU(Wq @ query) + 1.0     # Kernel: φ(x) = elu(x) + 1
+    q = ELU(Wq @ query) + 1.0   # Kernel: φ(x) = elu(x) + 1
     k = ELU(Wk @ key) + 1.0
     v = Wv @ value
 
-    # O(N²) yerine O(N) karmaşıklık:
-    kv = einsum('bhnd,bhne->bhde', k, v)     # K'V' matrisini önce hesapla
-    output = einsum('bhnd,bhde->bhne', q, kv) # Sonra Q ile çarp
+    # O(N²) yerine O(N·d²) karmaşıklık:
+    kv = einsum('bhnd,bhne->bhde', k, v)      # K^T V önce [d,d]
+    output = einsum('bhnd,bhde->bhne', q, kv) # Q ile çarp
     output = output / normalization
 ```
 
-**Standart Attention vs Linear Attention:**
-
-| | Standart (Softmax) | Linear |
+| | Standart Softmax | Linear (ELU+1) |
 |---|---|---|
-| Karmaşıklık | $O(N^2 \cdot d)$ | $O(N \cdot d^2)$ |
-| 5000 node | 25M işlem | 327K işlem |
-| Avantaj | Daha ifade gücü | Bellek dostu |
+| Karmaşıklık | $O(N^2 d)$ | $O(N d^2)$ |
+| 1024 node | 1M işlem | 67K işlem |
+| Bellek | $O(N^2)$ | $O(Nd)$ |
 
-RF kavitelerinde mesh boyutları 1000–5000 node arası. Standart attention bu boyutlarda bellek patlatır, linear attention ise ölçeklenebilir.
+RF kavitelerinde mesh boyutları 500–2000 node arası. Linear attention bu boyutlarda hem hızlı hem de bellek dostu.
 
-**ELU + 1 Kernel:** Negatif değerleri yumuşatır ama sıfırlamaz. `+1` eklenmesi tüm değerlerin pozitif olmasını sağlar — bu, kernel trick'in geçerli olması için gereklidir.
+**ELU+1 kernel:** Negatif değerleri yumuşatır ama sıfırlamaz. `+1` tüm değerlerin pozitif olmasını sağlar — kernel trick'in geçerli olması için gereklidir.
 
 ### 3. GNOTBlock (Temel Yapı Taşı)
 
@@ -127,69 +130,51 @@ Her blokta sırasıyla şunlar devreye girer:
 ```
 Input x
    │
-   ├──▶ Cross-Attention(Q=x, KV=condition_emb)    → "Geometri bilgisini sorgula"
+   ├──▶ CrossAttention(Q=x, KV=condition_emb)  → "Geometri bilgisini sorgula"
    │    + Residual
    │
-   ├──▶ Global Context Injection (+ pooler output) → "Kavitenin büyük resmini enjekte et"
+   ├──▶ + global_context.unsqueeze(1)           → "Kavitenin büyük resmini enjekte et"
    │
-   ├──▶ Self-Attention(Q=K=V=x)                   → "Node'lar birbirleriyle konuşsun"
+   ├──▶ SelfAttention(Q=K=V=x)                  → "Node'lar birbirleriyle konuşsun"
    │    + Residual + Mask
    │
-   ├──▶ GeometricGatingFFN(x, gate_from_pos)       → "Uzman seçimi"
-   │    + Residual
-   │
-   └──▶ FiLM(x, mode_idx)                         → "Mod bilgisini aşıla" (opsiyonel)
-         + Mask
+   └──▶ GeometricGatingFFN(x, gate_from_pos)    → "Bölgeye özel dönüşüm"
+        + Residual + Mask
 ```
+
+**Global context injection:** Her blokta `AttentionPool(condition_emb)` sonucu `[B, D]` olarak her node'a eklenir. Bu, dipol modların asimetrisini anlamak için kritik — kavitenin "büyük resmi" tüm noktalara aşılanır.
 
 ### 4. GeometricGatingFFN (Mixture of Experts)
 
 ```python
 class GeometricGatingFFN:
-    experts = [MLP_0, MLP_1, MLP_2, MLP_3]  # 4 uzman
+    experts = [FFN_0, FFN_1, FFN_2, FFN_3]   # 4 uzman (256→1024→256)
 
-    def forward(x, gate_info):
-        gate_logits = local_gating(pos)       # pos → gate kararı
-        top2_weights, top2_idx = softmax(gate_logits).topk(2)
+    def forward(x, pos):
+        gate_logits = local_gating(pos)        # RFF → gate logits [B, N, 4]
+        gate_weights = softmax(logits / 0.5)   # Temperature=0.5 → biraz keskin
 
-        for expert_i in selected_experts:
-            output += weight_i * expert_i(x)
+        # DENSE: Tüm expertler çalışır, ağırlıklı toplanır
+        output = Σ_i  gate_weights[i] * experts[i](x)
 ```
 
-**Fiziksel Motivasyon:**  
-Kavite içinde farklı bölgeler farklı fizik sergiler:
-- **Sınır yakını:** Alan hızla düşer → keskin gradyan
-- **Merkez:** Düzgün dağılım
-- **Köşeler:** Singularity-benzeri davranış
+**Neden dense (hepsi çalışır)?**
+Physics field tahminlerinde **uzamsal süreklilik** kritiktir. Top-k (keskin seçim) komşu node'lar arasında görsel artifact yaratır — `(x=0.5, y=0.3)` bir expert'ten, `(x=0.51, y=0.3)` başka bir expert'ten gelebilir. Dense weighted sum bu süreksizliği önler.
 
-Her "uzman" bu bölgelerden birini öğrenmeye uzmanlaşır. `pos` (koordinat/RFF) bilgisi hangi uzmanın seçileceğini belirler.
+**Temperature=0.5:** Softmax'ı biraz keskinleştirir (bir expert daha baskın hale gelir) ama sıfırlamaz. Geçişler hâlâ pürüzsüz.
 
-**Top-2 Seçimi:** Her nokta için en iyi 2 uzman seçilir ve ağırlıklarına göre birleştirilir. Bu, saf MoE'dan daha yumuşak bir geçiş sağlar.
+**Fiziksel motivasyon:** Kavite içinde farklı bölgeler farklı fizik sergiler:
+- Sınır yakını: hızlı düşen alan → keskin gradyan
+- Merkez: düzgün dağılım
+- Köşeler: singularity-benzeri davranış
 
-### 5. FiLM (Feature-wise Linear Modulation)
+Her expert farklı bir bölge tipine uzmanlaşır.
 
-```python
-class FiLMConditioner:
-    emb = Embedding(num_modes=20, dim=2*D)  # Her mod için gamma ve beta
-
-    def forward(x, mode_idx):
-        params = emb(mode_idx)               # [B, 2*D]
-        gamma, beta = params.chunk(2)        # Her biri [B, D]
-        return x * (1 + gamma) + beta         # Affine transform
-```
-
-**Neden FiLM?** Mode indeksinin modele enjekte edilmesinin birçok yolu var:
-- ❌ **Concatenation:** LayerNorm tarafından yıkanır
-- ❌ **Addition:** LayerNorm mean-shift'i sıfırlar
-- ✅ **FiLM (Affine):** `gamma * x` çarpımsal olduğu için LayerNorm'dan sağ çıkar
-
-**Başlatma:** `std=0.02` ile küçük normal dağılım. Bu, başlangıçta `gamma ≈ 0, beta ≈ 0` → model identity ile başlar. Sıfır ile başlatıldığında tüm modlar aynı davranır ve ayrışamaz.
-
-### 6. AttentionPool (Learned Global Pooling)
+### 5. AttentionPool (Learned Global Pooling)
 
 ```python
 class AttentionPool:
-    query = nn.Parameter(randn(1, 1, D))  # Öğrenilebilir "özet" token'ı
+    query = nn.Parameter(randn(1, 1, D))   # Öğrenilebilir özet token
     attn = MultiheadAttention(D, heads)
 
     def forward(x, mask):
@@ -197,73 +182,82 @@ class AttentionPool:
         return out.squeeze(1)  # [B, D]
 ```
 
-Tüm node bilgisini tek bir vektöre sıkıştırır. Standart `mean pooling`'den farklı olarak:
-- Bazı node'lara daha fazla "dikkat" verebilir
-- Öğrenilebilir bir özet çıkarır
+Tüm node bilgisini tek bir vektöre sıkıştırır. Standart `mean pooling`'den farklı olarak bazı node'lara daha fazla "dikkat" verebilir.
 
-**Kullanım yerleri:** Frekans branch'inde (global bilgi) ve her blokta (global context injection).
+**Kullanım yerleri:**
+1. Her GNOTBlock'ta `global_context` üretmek için (`condition_emb`'den pool)
+2. Frekans tahmini için mode-specific global özet (`x_m`'den pool → freq_head)
+
+### 6. Mode Conditioning
+
+Mode indeksi modele iki kanaldan girer:
+
+```python
+# Giriş (entrance) enjeksiyonu — hem query hem KV'ye eklenir
+m_emb_init = mode_emb_entrance(mode_indices).unsqueeze(1)  # [B, 1, D]
+x_emb = x_emb + m_emb_init
+y_emb = y_emb + m_emb_init
+```
+
+`mode_emb_entrance`: `nn.Embedding(num_field_modes=3, embed_dim)`, `std=0.02` ile başlatılmış.
+
+**Neden addition?** LayerNorm sonrası addition, FiLM'e kıyasla daha sade ama bu mimaride yeterli — embedding vektörü trunk boyunca gradyan ile optimize edilir.
 
 ---
 
-## 🔀 Mode-Specific Branching Mekanizması
+## 🔀 Mode-Specific Branching
 
-Forward pass'te model sample'ları mod indeksine göre sıralar ve her modu kendi branch'inden geçirir:
+Forward pass'te model sample'ları mod maskesiyle ayırır ve her modu kendi branch'inden geçirir:
 
 ```python
-sort_idx = theta_int.argsort()        # Batch'i mod sırasına koy
-unsort_idx = sort_idx.argsort()        # Geri dönüş indeksi
-
-for mode_val in [0, 1, 2]:
-    x_m = x_sorted[start:end]          # Bu modun sample'ları
+for mode_val in range(num_field_modes):
+    mode_mask = (mode_indices == mode_val)   # [B] bool
+    if not mode_mask.any():
+        continue
+    x_m = x_emb[mode_mask]                  # [B_m, N, D]
     for block in mode_field_blocks[mode_val]:
         x_m = block(x_m, ...)
-    field_parts.append(field_heads[mode_val](x_m))
-
-field_pred = cat(field_parts)[unsort_idx]  # Orijinal sıraya geri dön
+    field_pred[mode_mask] = field_heads[mode_val](x_m)
+    if freq_heads:
+        freq_pred[mode_mask] = freq_heads[mode_val](pool(x_m))
 ```
 
-**Neden gerekli?**  
-Mode 0 (monopol: radyal simetrik) ve Mode 1 (dipol: asimetrik) çok farklı fizik sergiler. Eğer aynı parametreler ikisini de öğrenmeye çalışırsa → **gradyan çakışması.** Mode 0'ın gradyanı, Mode 1'in parametrelerini bozar ve tersi.
-
-Mode-specific branching ile her modun gradyanı sadece kendi parametrelerine etki eder.
+**Neden gerekli?** Mode 0 (monopol, radyal simetrik) ve Mode 1 (dipol, asimetrik) çok farklı fizik. Aynı parametreler ikisini öğrenmeye çalışırsa gradyan çakışması olur. Mode-specific branching ile her modun gradyanı sadece kendi parametrelerine etki eder.
 
 ---
 
 ## 📊 Parametre Sayısı Tahmini
 
+(`embed_dim=256`, `n_shared=6`, `n_mode=1`, `n_field_head_layers=3`, `num_experts=4`)
+
 | Bileşen | Yaklaşık Parametre |
 |---------|-------------------|
 | RFF (B matrisi, frozen) | ~128 (öğrenilmez) |
-| query_encoder | ~200K |
-| input_func_encoder | ~200K |
-| Shared blocks (6×) | ~6×1.6M = 9.6M |
-| Mode field blocks (3×1×) | ~3×1.6M = 4.8M |
-| Field heads (3×) | ~100K |
-| Freq heads (3×, per-mode) | ~300K |
+| query_encoder (64→256) | ~50K |
+| input_func_encoder (10→256) | ~70K |
+| mode_emb_entrance (3×256) | ~800 |
+| Shared blocks (6 × GNOTBlock) | ~6 × 2.2M = 13.2M |
+| Mode field blocks (3×1×) | ~3 × 2.2M = 6.6M |
+| Field heads (3×, 3-layer) | ~3 × 400K = 1.2M |
+| Freq heads (3×) | ~3 × 130K = 390K |
 | AttentionPool | ~200K |
-| FiLM conditioners | ~50K |
-| **TOPLAM** | **~15.2M parametre** |
+| **TOPLAM** | **~22M parametre** |
 
-> **Not:** Ayrı freq_blocks (eski ~3.2M) kaldırılmıştı. Şimdiki 6-trunk 1-branch mimarisiyle genel geometrik algı artırılırken total parametre sayısı düşürüldü. Ayrıca `predict_frequency: false` ile frekans loss hesabını tamamen kapatıp ağı sadece alan tahminine yönlendirmek mümkündür.
+> GNOTBlock başına: 2×LinearAttn (~0.5M) + GeometricGatingFFN (4 uzman×(256×1024+1024×256) = 2M) + gate_network (64→128→4, ~35K) + LayerNorms ≈ 2.2M
 
 ---
 
 ## ⚠️ Geliştirme Önerileri
 
 ### Mimari
-1. **Graph Neural Network Entegrasyonu:** Şu an mesh bağlantıları (`elements`) modelde kullanılmıyor. GNN katmanları (Message Passing) eklenebilir → komşuluk bilgisi doğrudan öğrenilir.
-2. **Positional Encoding Alternatifleri:** RFF yerine **Sinusoidal PE** veya **Learnable Fourier Features** denenebilir.
-3. **Flash Attention:** Linear Attention yerine `flash_attn` kütüphanesi ile donanım hızlandırmalı softmax attention denenebilir. Küçük-orta mesh boyutlarında daha iyi kalite verebilir.
-4. **Deeper Shared Trunk:** `n_shared_layers=4` → 6'ya çıkarılabilir. Geometrik temsil daha güçlenir.
+1. **Soft Top-2 Experts:** Mevcut dense MoE yerine top-2 + renormalize yaklaşımı RAM'i yarıya indirir. Dipol modlardaki spatial continuity için yeterince smooth.
+2. **Flash Attention:** Linear attention yerine `flash_attn` kütüphanesi denenebilir. Küçük-orta mesh boyutlarında daha iyi kalite verebilir.
+3. **Deeper Shared Trunk:** `n_shared_layers=6` → 8'e çıkarılabilir. Geometrik temsil güçlenir.
+4. **Learnable RFF:** `B` matrisi `nn.Parameter` yapılabilir. Frekans spektrumuna adaptif hale gelir ama Bochner garantisini kaybeder.
 
 ### Fizik-Bilinçli Geliştirmeler
-5. **Helmholtz Residual Loss:** Tahmin edilen alanın $\nabla^2 E + k^2 E = 0$ denklemini ne kadar sağladığı ek bir loss terimi olarak eklenebilir.
-6. **Orthogonality Constraint:** Modlar birbirine dik olmalı: $\int E_m \cdot E_n \, dA = \delta_{mn}$. Bu, ek bir regularization olarak uygulanabilir.
-7. **Adaptive Mode Count:** Sabit 3 mod yerine, kavite şekline göre dinamik mod sayısı.
-
-### Performans
-8. **Mixed Precision (AMP):** `torch.cuda.amp` ile float16 kullanarak ~2x hızlanma + bellek tasarrufu.
-9. **Gradient Checkpointing:** Zaten `use_checkpoint=True` desteği var. Aktifleştirildiğinde RAM tasarrufu sağlar ama eğitim ~%20 yavaşlar.
+5. **Helmholtz Residual Loss:** `∇²E + k²E = 0` denkleminin residualı ek loss terimi olarak.
+6. **Sobolev Loss:** Alan yanı sıra gradyan `∇E` de hedeflenirse fiziksel pürüzsüzlük zorunlu hale gelir.
 
 ---
 
@@ -274,4 +268,4 @@ Mode-specific branching ile her modun gradyanı sadece kendi parametrelerine etk
 - Config'te mimari parametreleri: [[08_CONFIG_REFERENCE]]
 - Fizik arka planı: [[09_PHYSICS_BACKGROUND]]
 
-#model #transformer #attention #moe #film #gnot
+#model #transformer #attention #moe #rff #gnot

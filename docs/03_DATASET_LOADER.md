@@ -20,7 +20,7 @@
 # Geometrileri (sample'ları DEĞİL) shuffle et
 perm_geoms = np.random.permutation(unique_geoms)
 
-train_geoms = perm_geoms[:n_train_geoms]      # %80
+train_geoms = perm_geoms[:n_train_geoms]        # %80
 val_geoms   = perm_geoms[n_train:n_train+n_val] # %10
 test_geoms  = perm_geoms[n_train+n_val:]        # %10
 ```
@@ -32,7 +32,19 @@ Bu yapı, geometrileri atomik birim olarak ayırarak sızıntıyı önler:
 - Geometri 77'nin tüm modları → val
 - Hiçbir geometri iki farklı split'te bulunmaz
 
-### 2. Node Sub-Sampling (VRAM Optimizasyonu)
+### 2. RAM Optimizasyonu — Elements Temizliği
+
+PKL formatında yüklemede, üçgen bağlantı matrisleri (`elements`) artık eğitim sırasında kullanılmadığından init aşamasında bellekten atılır:
+
+```python
+# Serbest bırak — eğitim modeline elements gerekmez
+for geom in self.geometry_pool.values():
+    geom.pop('elements', None)
+```
+
+5000 geometrili bir datasette bu ~120 MB RAM tasarrufu sağlar. `elements` verisi ne batch'e eklenir ne de modele iletilir.
+
+### 3. Node Sub-Sampling (VRAM Optimizasyonu)
 
 ```python
 if self.max_nodes is not None and n_nodes > self.max_nodes:
@@ -42,13 +54,13 @@ if self.max_nodes is not None and n_nodes > self.max_nodes:
     y_field = y_field[rand_idx]
 ```
 
-Config'te `max_nodes: 2048` ayarlı. Bazı meshler 4000+ node içerebilir. Bu, padding yüzünden VRAM patlamasına neden olur:
+Config'te `max_nodes: 1024` ayarlı. Bazı meshler 4000+ node içerebilir. Bu, padding yüzünden VRAM patlamasına neden olur:
 - 3000 node'lu 1 mesh + 1500 node'lu 15 mesh = 16×3000 = 48000 boyutlu tensor
-- Sub-sampling ile: 16×2048 = 32768 → *%32 VRAM tasarrufu*
+- Sub-sampling ile: 16×1024 = 16384 → *%66 VRAM tasarrufu*
 
 **RNG Dikkat:** `torch.randperm` kullanılıyor (`np.random` değil). Çünkü DataLoader worker'ları aynı numpy seed'i paylaşabilir, ama PyTorch her worker'a ayrı seed atar.
 
-### 3. Frekans Normalizasyonu
+### 4. Frekans Normalizasyonu
 
 ```python
 norm_freq = (raw_freq - stats['mean']) / stats['std']  # z-score
@@ -56,7 +68,7 @@ norm_freq = (raw_freq - stats['mean']) / stats['std']  # z-score
 
 Frekanslar GHz cinsinden (~2-15 GHz arası). Loss fonksiyonunda MSE kullanılacağı için, büyük değerler baskın hale gelir. Z-score ile tüm frekanslar ~(-2, +2) aralığına çekilir.
 
-### 4. Feature Ablation Desteği
+### 5. Feature Ablation Desteği
 
 ```python
 if self.feature_indices is not None:
@@ -83,13 +95,13 @@ def gnot_collate_fn(batch):
 **Çıktı:**
 ```
 {
-    'X':          [B, max_N, 2]     → Padded koordinatlar
-    'Input_funcs':[B, max_N, 8]     → Padded features
-    'Y_field':    [B, max_N, 1]     → Padded hedef alan
-    'Y_freq':     [B, 1]            → Normalize frekans
-    'Theta_in':   [B, 1]            → Mode indeksi (0, 1, 2)
-    'Mask':       [B, max_N]        → Boolean padding maskesi
-    'elements':   list of [M_i, 3]  → Her mesh'in bağlantıları (pad yapılmaz)
+    'X':          [B, max_N, 2]   → Padded koordinatlar
+    'Input_funcs':[B, max_N, 8]   → Padded features
+    'Y_field':    [B, max_N, 1]   → Padded hedef alan
+    'Y_freq':     [B, 1]          → Normalize frekans
+    'Theta_in':   [B, 1]          → Mode indeksi (0, 1, 2)
+    'geom_id':    [B, 1]          → Geometri kimliği (permütasyon kaybı için)
+    'Mask':       [B, max_N]      → Boolean padding maskesi
 }
 ```
 

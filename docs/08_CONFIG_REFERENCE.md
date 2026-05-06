@@ -11,12 +11,12 @@ Config sistemi `src/config.py` tarafından yönetilir. `ConfigDict` sınıfı, Y
 ```python
 cfg = load_config("configs/default.yaml")
 cfg.model.embed_dim      # → 256
-cfg.training.batch_size   # → 16
+cfg.training.batch_size  # → 32
 ```
 
 CLI'dan override edebilirsin:
 ```bash
-python train.py --config configs/default.yaml --override model.embed_dim=128 training.lr=0.001
+python train.py --config configs/default.yaml --override model.embed_dim=128 training.learning_rate=0.001
 ```
 
 ---
@@ -27,12 +27,11 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 
 | Parametre | Varsayılan | Açıklama |
 |-----------|-----------|----------|
-| `h5_filename` | `rf_cavity_1000_dataset.h5` | Çıktı dosya adı |
-| `n_total` | 1000 | Üretilecek toplam geometri sayısı |
+| `h5_filename` | `rf_cavity_5000_dataset.h5` | Çıktı dosya adı |
+| `n_total` | 5000 | Üretilecek toplam geometri sayısı |
 | `n_plot` | 100 | Görselleştirilecek örnek sayısı |
 | `generation_mode` | `random` | `random` veya `calibration` |
-| `fem_order` | `P2` | Finite element order |
-| `n_eigen_modes` | 3 | Çözülecek mode sayısı |
+| `n_eigen_modes` | 3 | Çözülecek eigenmode sayısı (k) |
 | `eigen_sigma` | 500.0 | Shift-invert sigma |
 | `mesh_size_min` | 0.0012 | Sınır yakını mesh boyutu |
 | `mesh_size_max` | 0.005 | Merkez mesh boyutu |
@@ -44,10 +43,14 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `smooth_perturb` | 0.008 | Pertürbasyon genliği |
 | `smooth_harmonics` | [2, 8] | Fourier harmonik aralığı |
 
+> **Not:** FEM element tipi P2 olarak sabit bırakılmıştır. P1'e geçmek veri formatını kırar.
+
 ### 2. Data Conversion (`data_convert:`)
 
 | Parametre | Varsayılan | Açıklama |
 |-----------|-----------|----------|
+| `h5_filepath` | `rf_cavity_5000_dataset.h5` | Girdi H5 dosyası |
+| `output_path` | `data/gnot_dataset_5k.pkl` | Çıktı dosya yolu |
 | `output_format` | `pkl` | `pkl` veya `h5` |
 | `mode_indices` | [0, 1, 2] | Hangi modlar dahil? |
 | `max_samples` | null | Sınırlama (null = tümü) |
@@ -56,11 +59,12 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 
 | Parametre | Varsayılan | Açıklama |
 |-----------|-----------|----------|
-| `data_path` | `data/gnot_dataset.pkl` | İşlenmiş veri yolu |
+| `data_path` | `data/gnot_dataset_5k.pkl` | İşlenmiş veri yolu |
 | `train_ratio` | 0.8 | Eğitim oranı |
 | `val_ratio` | 0.1 | Doğrulama oranı (test = 0.1) |
-| `random_seed` | 42 | Split seed'i |
-| `max_nodes` | 2048 | Sub-sampling limiti |
+| `random_seed` | 42 | Geometri split seed'i |
+| `max_nodes` | 1024 | Sub-sampling limiti (null = devre dışı) |
+| `active_mode_index` | null | null = tüm modlar; 0/1/2 = tek mod eğitimi |
 
 ### 4. Model (`model:`)
 
@@ -68,40 +72,43 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 |-----------|-----------|----------|------|
 | `val_dim` | 8 | Feature boyutu | Feature sayısı değişirse güncelle |
 | `grid_dim` | 2 | Koordinat boyutu (2D) | 3D için 3 yapılır |
-| `theta_dim` | 1 | Koşul boyutu | |
 | `embed_dim` | 256 | Hidden dimension | ↑ = daha güçlü ama yavaş |
 | `n_shared_layers` | 6 | Shared trunk derinliği | ↑ = daha iyi geometri temsili |
 | `n_mode_layers` | 1 | Mode-specific derinlik | ↑ = daha iyi mod ayrımı |
+| `n_field_head_layers` | 3 | Tahmin kafası derinliği | ↑ = daha güçlü decoder |
 | `n_heads` | 8 | Attention head sayısı | embed_dim / n_heads tamsayı olmalı |
 | `num_experts` | 4 | MoE expert sayısı | 4-8 arası önerilir |
 | `num_field_modes` | 3 | Toplam mod sayısı | Veriyle uyumlu olmalı |
 | `predict_frequency` | true | Frekans tahmini | false = sadece alana odaklan |
-| `rff_scale` | 1.0 | RFF frekans ölçeği | ↑ = daha yüksek frekans capture |
+| `rff_dim` | 64 | RFF çıktı boyutu (çift olmalı) | ↑ = daha zengin koordinat temsili |
+| `rff_length_scale` | 0.1 | Gaussian kernel uzunluk ölçeği | Normalize koordinatlar için 0.05–0.2 |
 | `dropout` | 0.0 | Regularization | 0.1-0.3 denenebilir |
-| `use_checkpoint` | true | Gradient checkpointing | true = VRAM↓, hız↓ |
+| `use_checkpoint` | false | Gradient checkpointing | true = VRAM↓, hız↓ |
 
 ### 5. Training (`training:`)
 
 | Parametre | Varsayılan | Açıklama |
 |-----------|-----------|----------|
-| `learning_rate` | 2e-4 | Başlangıç öğrenme oranı |
+| `learning_rate` | 1e-4 | Başlangıç öğrenme oranı |
 | `weight_decay` | 0.0 | L2 regularization (bilinçli olarak 0) |
-| `batch_size` | 16 | Batch boyutu |
-| `max_epochs` | 500 | Maksimum epoch |
-| `gradient_clip_val` | 2.0 | Gradyan kırpma |
-| `freq_weight` | 0.5 | Frekans loss ağırlığı |
-| `ortho_weight` | 0.01 | Ortogonalite loss ağırlığı (0=kapalı)|
-| `mode_loss_weights` | [1.0, 1.0, 1.0] | Mode-specific ağırlıklar |
-| `lr_mode_specific`| [2e-4, 8e-5, 8e-5]| Modlara özel öğrenme oranları |
-| `lr_freq_heads` | 1.0e-4 | Frekans başlıklarına özel LR |
-| `scheduler` | `reducelr` | LR scheduler tipi |
-| `reducelr_patience` | 10 | ReduceLROnPlateau sabırlılığı |
-| `reducelr_factor` | 0.5 | ReduceLROnPlateau LR küçültme çarpanı|
-| `patience` | 25 | Early stopping sabırlılığı |
+| `batch_size` | 32 | Batch boyutu |
+| `max_epochs` | 300 | Maksimum epoch |
+| `gradient_clip_val` | 1.0 | Gradyan kırpma |
+| `freq_weight` | 0.5 | Frekans loss ağırlığı (α) |
+| `smoothness_weight` | 0.0 | Boundary loss ağırlığı (λ); 0 = kapalı |
+| `mode_loss_weights` | [1.0, 2.0, 2.0] | Mode-specific ağırlıklar |
+| `lr_mode_specific` | null | Modlara özel öğrenme oranları (null = base_lr kullan) |
+| `lr_freq_heads` | null | Frekans başlıklarına özel LR (null = base_lr) |
+| `scheduler` | `custom_cosine` | LR scheduler tipi |
+| `cosine_eta_min` | 1e-6 | custom_cosine / cosine'de minimum LR |
+| `patience` | 50 | Early stopping sabırlılığı |
 | `num_workers` | 4 | DataLoader worker sayısı |
 | `strategy` | `auto` | `auto` veya `ddp` |
-| `exp_name` | `gnot_old_data_v1` | Deney ismi |
+| `exp_name` | `gnot_5k_v1` | Deney ismi |
 | `viz_every_n_epochs` | 10 | Görselleştirme sıklığı |
+| `permutation_invariant_dipole` | true | Mode 1/2 permütasyonu denenirse loss düşüyor mu? |
+
+> **Scheduler seçenekleri:** `custom_cosine` (varsayılan), `cosine`, `onecycle`, `reducelr`
 
 ### 6. Inference (`inference:`)
 
@@ -133,10 +140,10 @@ python train.py --fast_dev_run
 python train.py --override model.embed_dim=64 model.n_shared_layers=2
 
 # Sadece Mode 0 eğitimi
-python train.py --override model.num_field_modes=1
+python train.py --config configs/mode1_isolated.yaml
 
-# Büyük batch, düşük LR
-python train.py --override training.batch_size=32 training.learning_rate=1e-4
+# Farklı scheduler
+python train.py --override training.scheduler=cosine training.cosine_eta_min=1e-7
 ```
 
 ---

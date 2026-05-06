@@ -1,7 +1,6 @@
 # 🏠 RF Cavity Neural Operator — Dashboard
 
-> **Branch:** `old-data-generation`  
-> **Son Güncelleme:** 2026-04-26  
+> **Son Güncelleme:** 2026-05-06  
 > **Amaç:** 2D RF kavitelerin rezonans frekanslarını ve alan dağılımlarını GNOT ile tahmin etmek.
 
 ---
@@ -23,6 +22,7 @@ rf_cavity_neural_operator/
 │       ├── lightning_module.py        → [[05_TRAINING_SYSTEM]]
 │       └── callbacks.py              → [[05_TRAINING_SYSTEM]]
 │
+├── run_pipeline.py                   → Tam pipeline (gen → convert → train)
 ├── train.py                          → [[05_TRAINING_SYSTEM]]
 ├── infer.py                          → [[06_INFERENCE]]
 ├── convert.py                        → [[02_FEATURE_ENGINEERING]]
@@ -34,6 +34,7 @@ rf_cavity_neural_operator/
 ├── 📂 configs/
 │   ├── default.yaml                  → [[08_CONFIG_REFERENCE]]
 │   ├── kaggle_2gpu.yaml
+│   ├── mode1_isolated.yaml
 │   └── 📂 ablation/
 │
 ├── 📂 scripts/                       → [[07_VALIDATION_TOOLS]]
@@ -82,6 +83,8 @@ rf_cavity_neural_operator/
 │                  │     │ + convert.py      │     │ module.py        │
 └─────────────────┘     └──────────────────┘     └────────┬────────┘
                                                           │
+         ▲ Tüm adımlar run_pipeline.py ile otomatikleştirilebilir ▲
+                                                          │
                                                           ▼
                                                  ┌─────────────────┐
                                                  │  4. TAHMIN       │
@@ -101,8 +104,11 @@ rf_cavity_neural_operator/
 - [x] GNOT modeli kodlanmış ve çalışıyor
 - [x] Multi-GPU (DDP) desteği mevcut
 - [x] Ablation study altyapısı hazır
-- [ ] `Notlarim.txt` tamamlanmamış — `dataset_converter.py` kısmı eksik
-- [ ] `architecture_details.md` branch'te mevcut değil
+- [x] RFF (Random Fourier Features) spatial encoder implemente edildi
+- [x] GNN kaldırıldı — RAM optimize edildi (~120 MB tasarruf)
+- [x] Config parametreleri tamamen wired (dead param yok)
+- [x] Permütasyon-invaryant dipol kaybı eklendi (mode 1/2 robustness)
+- [x] 5000 geometri dataseti hedefleniyor
 
 ---
 
