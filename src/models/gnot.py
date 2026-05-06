@@ -229,7 +229,8 @@ class GNOTModel(nn.Module):
         ])
         
         self.final_ln = nn.LayerNorm(embed_dim)
-        self.pooler = AttentionPool(embed_dim, n_heads)
+        self.pooler = AttentionPool(embed_dim, n_heads)       # global context for trunk
+        self.freq_pooler = AttentionPool(embed_dim, n_heads)  # frequency prediction only
 
         # Dynamic Mode-specific field heads
         self.field_heads = nn.ModuleList()
@@ -365,7 +366,7 @@ class GNOTModel(nn.Module):
 
             # Frequency prediction
             if self.freq_heads is not None:
-                mode_global = self.pooler(x_m, m_mask)
+                mode_global = self.freq_pooler(x_m, m_mask)
                 freq_pred[mode_mask] = self.freq_heads[mode_val](mode_global).float()  # [B_m, 1]
 
         return {'field': field_pred, 'freq': freq_pred}
