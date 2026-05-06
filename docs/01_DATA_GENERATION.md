@@ -61,8 +61,8 @@ Sonuç: Düzensiz yıldız/poligon geometrileri.
 ### Smooth (Yumuşak) Geometriler
 ```python
 t = linspace(0, 2π, 100)
-h_min, h_max = ARGS.smooth_harmonics   # ör. [2, 8]
-r(t) = ARGS.smooth_base_r + Σ_{k=h_min}^{h_max} a_k·cos(k·t + φ_k)
+h_min, h_max = ARGS.smooth_harmonics   # ör. [2, 8] → range(2, 8) = k ∈ {2..7}
+r(t) = ARGS.smooth_base_r + Σ_{k=h_min}^{h_max - 1} a_k·cos(k·t + φ_k)
 ```
 Burada `a_k ~ U(-ARGS.smooth_perturb, ARGS.smooth_perturb)` ve `φ_k ~ U(0, 2π)`.
 

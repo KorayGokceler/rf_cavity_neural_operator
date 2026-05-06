@@ -10,7 +10,7 @@ class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, hidden_dim=256,
                  n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
                  n_heads=4, num_experts=4, num_field_modes=3,
-                 lr=1e-3, freq_weight=0.5, smoothness_weight=0.1,
+                 lr=1e-3, freq_weight=0.5, smoothness_weight=0.0,
                  mode_loss_weights=None,
                  lr_mode_specific=None, lr_freq_heads=None,
                  scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,

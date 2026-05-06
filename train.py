@@ -137,7 +137,7 @@ def main():
         num_field_modes=mc.num_field_modes,
         lr=tc.learning_rate,
         freq_weight=tc.freq_weight,
-        smoothness_weight=getattr(tc, 'smoothness_weight', 0.1),
+        smoothness_weight=getattr(tc, 'smoothness_weight', 0.0),
         mode_loss_weights=tc.mode_loss_weights,
         lr_mode_specific=getattr(tc, 'lr_mode_specific', None),
         lr_freq_heads=getattr(tc, 'lr_freq_heads', None),

@@ -41,7 +41,9 @@ class RFCavityToGNOT:
         areas = np.zeros(n_nodes)
         for tri in elements:
             v0, v1, v2 = nodes[tri[0]], nodes[tri[1]], nodes[tri[2]]
-            tri_area = 0.5 * abs(np.cross(v1 - v0, v2 - v0))
+            # 2D cross product: |a_x * b_y - a_y * b_x| (NumPy 2.0 np.cross için 3D zorunlu)
+            a, b = v1 - v0, v2 - v0
+            tri_area = 0.5 * abs(a[0] * b[1] - a[1] * b[0])
             for k in range(3):
                 areas[tri[k]] += tri_area / 3.0
         # Normalize to [0, 1]

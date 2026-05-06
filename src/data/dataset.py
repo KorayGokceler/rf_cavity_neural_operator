@@ -69,25 +69,28 @@ class GNOTDataset(Dataset):
 
         # 4. Flatten: collect all individual sample indices belonging to active geometries
         self.active_samples = []
-        for g_id in active_geoms:
-            indices = geom_to_samples[g_id]
-            # Optional: Filter by mode
-            if active_mode_index is not None:
-                filtered = []
-                for s_idx in indices:
-                    # We need to peek at the mode before adding
-                    if self.is_h5:
-                        import h5py
-                        with h5py.File(self.data_path, 'r') as f:
-                            m_idx = int(f['samples'][str(s_idx)].attrs.get('mode_idx', f['samples'][str(s_idx)]['Theta'][0]))
-                    else:
+        # H5 dosyasını N kere açmamak için bir kez açıp tüm filtrelemeyi tek pass'te yap
+        if active_mode_index is not None and self.is_h5:
+            import h5py
+            with h5py.File(self.data_path, 'r') as f_filter:
+                samples_grp = f_filter['samples']
+                for g_id in active_geoms:
+                    for s_idx in geom_to_samples[g_id]:
+                        sample = samples_grp[str(s_idx)]
+                        m_idx = int(sample.attrs.get('mode_idx', sample['Theta'][0]))
+                        if m_idx == active_mode_index:
+                            self.active_samples.append(s_idx)
+        else:
+            for g_id in active_geoms:
+                indices = geom_to_samples[g_id]
+                if active_mode_index is not None:
+                    # PKL: samples_metadata bellekte, hızlı
+                    for s_idx in indices:
                         m_idx = int(self.samples_metadata[s_idx]['Theta'][0])
-                    
-                    if m_idx == active_mode_index:
-                        filtered.append(s_idx)
-                self.active_samples.extend(filtered)
-            else:
-                self.active_samples.extend(indices)
+                        if m_idx == active_mode_index:
+                            self.active_samples.append(s_idx)
+                else:
+                    self.active_samples.extend(indices)
         
         # Store geometry pool reference for PKL access
         if not self.is_h5:
