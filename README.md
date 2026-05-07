@@ -109,8 +109,15 @@ python train.py --config configs/default.yaml --override training.fast_dev_run=t
 ### Inference
 
 ```bash
-python infer.py --config configs/default.yaml
+python infer.py \
+  --checkpoint training_logs/gnot_5k_v1/best-epoch=XX-val_field_rel_l2=0.XXXX.ckpt \
+  --data_path data/gnot_dataset_5k.pkl \
+  --split val \
+  --num_samples 5 \
+  --output_dir inference_plots
 ```
+
+The checkpoint path is under `training_logs/<exp_name>/best-*.ckpt`. Use `--split test` to evaluate on held-out geometries. Output is one PNG per geometry showing ground truth, prediction, and error for all 3 modes.
 
 ---
 
