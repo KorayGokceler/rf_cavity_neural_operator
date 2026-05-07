@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
 
-def plot_geometry_comparison(geom_id, modes_data, save_path, elements):
+def plot_geometry_comparison(geom_id, modes_data, save_path):
     """
     Plots all modes of a geometry in a single figure.
     Each mode gets a row with Ground Truth, Prediction, and Error columns.
@@ -30,7 +30,7 @@ def plot_geometry_comparison(geom_id, modes_data, save_path, elements):
         rel_l2 = data['rel_l2']
         sign_info = data['sign_info']
 
-        tri = Triangulation(coords[:, 0], coords[:, 1], elements)
+        tri = Triangulation(coords[:, 0], coords[:, 1])
 
         # Ground Truth
         im1 = axes[i, 0].tripcolor(tri, target, cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
@@ -94,7 +94,6 @@ def main(args):
             preds = outputs['field']
             targets = batch['Y_field']
             coords = batch['X']
-            elements_batch = batch['elements']
             mask = batch.get('Mask', None)
             geom_ids = batch['geom_id'].squeeze(-1).cpu().numpy()
             theta_ins = batch['Theta_in'].squeeze(-1).cpu().numpy()
@@ -137,7 +136,7 @@ def main(args):
                     sign_info = ""
 
                 if g_id not in geometries_results:
-                    geometries_results[g_id] = {'modes': {}, 'elements': elements_batch[i].cpu().numpy()}
+                    geometries_results[g_id] = {'modes': {}}
                 
                 geometries_results[g_id]['modes'][m_idx] = {
                     'coords': coords[i, m].cpu().numpy(),
@@ -164,7 +163,7 @@ def main(args):
     print(f"Plotting {len(geometries_results)} geometries...")
     for idx, (g_id, data) in enumerate(geometries_results.items()):
         save_path = os.path.join(args.output_dir, f"sample_geom_{g_id:04d}_all_modes.png")
-        plot_geometry_comparison(g_id, data['modes'], save_path, data['elements'])
+        plot_geometry_comparison(g_id, data['modes'], save_path)
         print(f"[{idx+1}/{len(geometries_results)}] Saved grouped plot for Geometry {g_id} to {save_path}")
 
     print("Inference and grouped visualization completed successfully!")
