@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
 
-def plot_geometry_comparison(geom_id, modes_data, save_path):
+def plot_geometry_comparison(geom_id, modes_data, save_path, elements=None):
     """
     Plots all modes of a geometry in a single figure.
     Each mode gets a row with Ground Truth, Prediction, and Error columns.
@@ -30,7 +30,12 @@ def plot_geometry_comparison(geom_id, modes_data, save_path):
         rel_l2 = data['rel_l2']
         sign_info = data['sign_info']
 
-        tri = Triangulation(coords[:, 0], coords[:, 1])
+        # Use FEM mesh connectivity when available — auto-Delaunay on adaptive meshes
+        # produces sliver triangles (dense near boundary) that appear as stripe artifacts.
+        if elements is not None:
+            tri = Triangulation(coords[:, 0], coords[:, 1], elements)
+        else:
+            tri = Triangulation(coords[:, 0], coords[:, 1])
 
         # Ground Truth
         im1 = axes[i, 0].tripcolor(tri, target, cmap='RdBu_r', shading='gouraud', vmin=-1, vmax=1)
@@ -80,7 +85,28 @@ def main(args):
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=gnot_collate_fn)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    
+
+    # Load triangle connectivity from the raw data file for proper FEM mesh visualization.
+    # The dataset pops 'elements' from geometry_pool at init to save RAM, so we read it
+    # directly here without going through GNOTDataset.
+    elements_pool = {}
+    data_path_str = str(args.data_path)
+    if data_path_str.endswith('.pkl'):
+        import pickle as _pkl
+        with open(args.data_path, 'rb') as ef:
+            raw = _pkl.load(ef)
+        for g_id, geom in raw['geometry_pool'].items():
+            if 'elements' in geom:
+                elements_pool[int(g_id)] = geom['elements']
+    elif data_path_str.endswith('.h5'):
+        import h5py
+        with h5py.File(args.data_path, 'r') as ef:
+            for g_id_str in ef['geometry_pool']:
+                grp = ef['geometry_pool'][g_id_str]
+                if 'elements' in grp:
+                    elements_pool[int(g_id_str)] = grp['elements'][:]
+    print(f"Loaded mesh connectivity for {len(elements_pool)} geometries.")
+
     print(f"Running inference for {args.num_samples} geometries...")
     
     geometries_results = {}
@@ -136,7 +162,7 @@ def main(args):
                     sign_info = ""
 
                 if g_id not in geometries_results:
-                    geometries_results[g_id] = {'modes': {}}
+                    geometries_results[g_id] = {'modes': {}, 'elements': elements_pool.get(g_id)}
                 
                 geometries_results[g_id]['modes'][m_idx] = {
                     'coords': coords[i, m].cpu().numpy(),
@@ -163,7 +189,7 @@ def main(args):
     print(f"Plotting {len(geometries_results)} geometries...")
     for idx, (g_id, data) in enumerate(geometries_results.items()):
         save_path = os.path.join(args.output_dir, f"sample_geom_{g_id:04d}_all_modes.png")
-        plot_geometry_comparison(g_id, data['modes'], save_path)
+        plot_geometry_comparison(g_id, data['modes'], save_path, data.get('elements'))
         print(f"[{idx+1}/{len(geometries_results)}] Saved grouped plot for Geometry {g_id} to {save_path}")
 
     print("Inference and grouped visualization completed successfully!")
