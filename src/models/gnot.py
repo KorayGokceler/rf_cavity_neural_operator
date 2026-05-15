@@ -210,10 +210,21 @@ class GNOTModel(nn.Module):
         self.query_encoder = MLPEncoder(input_dim_q, embed_dim)
         # Input features + Geometry Context
         self.input_func_encoder = MLPEncoder(input_dim_f, embed_dim)
-        
-        # Entrance Mode Embedding
-        self.mode_emb_entrance = nn.Embedding(num_field_modes, embed_dim)
-        nn.init.normal_(self.mode_emb_entrance.weight, mean=0.0, std=0.02)
+
+        # ── Frequency-first slot decoding ────────────────────────────────────
+        # There is no more `mode_idx` input.  The model predicts the full set of
+        # K eigenfrequencies from a global geometry context, then decodes one
+        # field per slot conditioned on its (predicted) frequency.
+        self.freq_embed = nn.Sequential(
+            nn.Linear(1, embed_dim // 4), nn.SiLU(),
+            nn.Linear(embed_dim // 4, embed_dim)
+        )
+        self.slot_queries = nn.Parameter(torch.randn(num_field_modes, embed_dim))
+        nn.init.normal_(self.slot_queries, mean=0.0, std=0.02)
+        self.freq_head_global = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2), nn.SiLU(),
+            nn.Linear(embed_dim // 2, num_field_modes)
+        )
 
         self.shared_blocks = nn.ModuleList([
             GNOTBlock(embed_dim, n_heads, num_experts=num_experts, coords_dim=router_dim, dropout=dropout)
@@ -229,8 +240,7 @@ class GNOTModel(nn.Module):
         ])
         
         self.final_ln = nn.LayerNorm(embed_dim)
-        self.pooler = AttentionPool(embed_dim, n_heads)       # global context for trunk
-        self.freq_pooler = AttentionPool(embed_dim, n_heads)  # frequency prediction only
+        self.pooler = AttentionPool(embed_dim, n_heads)       # global context for trunk + freq
 
         # Dynamic Mode-specific field heads
         self.field_heads = nn.ModuleList()
@@ -268,19 +278,10 @@ class GNOTModel(nn.Module):
             layers.append(nn.Linear(curr_dim, 1))
             self.field_heads.append(nn.Sequential(*layers))
 
-        # Per-mode frequency heads: her mod kendi frekansını tahmin eder.
-        # Fiziksel olarak doğru — her eigenmode'un kendi rezonans frekansı vardır.
-        if predict_frequency:
-            self.freq_heads = nn.ModuleList([
-                nn.Sequential(
-                    nn.Linear(embed_dim, embed_dim),
-                    nn.LayerNorm(embed_dim),
-                    nn.GELU(),
-                    nn.Linear(embed_dim, 1)
-                ) for _ in range(num_field_modes)
-            ])
-        else:
-            self.freq_heads = None
+        # Frequency is now predicted by a single global head (`freq_head_global`)
+        # that emits all K eigenfrequencies at once from the pooled geometry
+        # context.  Per-mode frequency heads are gone.
+        self.predict_frequency = predict_frequency
 
         # Initialize heads with small weights to prevent early training explosion
         self._init_weights()
@@ -291,17 +292,15 @@ class GNOTModel(nn.Module):
                 nn.init.trunc_normal_(m.weight, std=0.01)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-        if self.freq_heads is not None:
-            for m in self.freq_heads.modules():
-                if isinstance(m, nn.Linear):
-                    nn.init.trunc_normal_(m.weight, std=0.01)
-                    if m.bias is not None:
-                        nn.init.constant_(m.bias, 0)
+        for m in self.freq_head_global.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.trunc_normal_(m.weight, std=0.01)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, batch):
         X = batch['X']
         inputs = batch['Input_funcs']
-        theta_in = batch['Theta_in']  # [B, 1] — mode index per sample
         mask = batch.get('Mask', None)
         B, N, _ = X.shape
 
@@ -310,66 +309,59 @@ class GNOTModel(nn.Module):
         pos_enhanced = x_rff
         enhanced_inputs = torch.cat([inputs, X], dim=-1)
 
-        # 2. Embedding Layers
+        # 2. Embedding Layers — fully mode-agnostic (no mode_idx input anymore)
         x_emb = self.query_encoder(x_rff)
         y_emb = self.input_func_encoder(enhanced_inputs)
 
-        # Entrance Mode Injection
-        mode_indices = theta_in[:, 0]  # [B]
-        m_emb_init = self.mode_emb_entrance(mode_indices).unsqueeze(1) # [B, 1, D]
-        x_emb = x_emb + m_emb_init
-        y_emb = y_emb + m_emb_init
-        
         condition_emb = y_emb
         condition_mask = mask if mask is not None else None
-        
+
         # Global Context Extraction
         global_context = self.pooler(condition_emb, condition_mask)
 
-        # Trunk (Shared processing) — mode-aware
+        # Trunk (Shared processing) — geometry only.
+        # `mode_idx` argument of GNOTBlock is kept for signature compatibility
+        # but is unused inside the block; pass a zero placeholder.
+        mode_placeholder = torch.zeros(B, dtype=torch.long, device=X.device)
         for block in self.shared_blocks:
             if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, mode_indices, pos_enhanced, mask, condition_mask, global_context, use_reentrant=False)
+                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, mode_placeholder, pos_enhanced, mask, condition_mask, global_context, use_reentrant=False)
             else:
-                x_emb = block(x_emb, condition_emb, mode_indices, pos_enhanced, mask, condition_mask, global_context)
+                x_emb = block(x_emb, condition_emb, mode_placeholder, pos_enhanced, mask, condition_mask, global_context)
 
-        # --- Dynamic Routing ---
-        N = X.shape[1]
-        field_pred = torch.zeros(B, N, 1, device=X.device, dtype=x_emb.dtype)
-        freq_pred = torch.zeros(B, 1, device=X.device, dtype=x_emb.dtype) if self.freq_heads is not None else None
-        
-        for mode_val in range(self.num_field_modes):
-            mode_mask = (mode_indices == mode_val)  # [B] bool
-            if not mode_mask.any():
-                continue
-            
-            x_m = x_emb[mode_mask]
-            c_m = condition_emb[mode_mask]
-            pos_m = pos_enhanced[mode_mask]
-            m_mask = mask[mode_mask] if mask is not None else None
-            c_mask = condition_mask[mode_mask] if condition_mask is not None else None
-            gc_m = global_context[mode_mask]  # [B_m, D]
-            B_m = x_m.shape[0]
-            th_m = torch.full((B_m,), mode_val, dtype=torch.long, device=X.device)
-            
-            for m_block in self.mode_field_blocks[mode_val]:
+        # --- Frequency-first decoding -------------------------------------
+        # Predict all K eigenfrequencies from the global geometry context,
+        # then always sort them ascending so the slot order is canonical.
+        c = self.pooler(x_emb, condition_mask)            # [B, D] global context
+        f_pred = self.freq_head_global(c)                 # [B, K]
+        f_pred = torch.sort(f_pred, dim=-1).values        # always sorted ascending
+
+        # --- Per-slot field decoding (all K slots run for every sample) ---
+        field_preds = []
+        for k in range(self.num_field_modes):
+            # Slot query conditioned on this slot's predicted frequency.
+            f_k = f_pred[:, k:k + 1]                        # [B, 1]
+            q_k = self.slot_queries[k].unsqueeze(0) + self.freq_embed(f_k)  # [B, D]
+
+            # Inject the slot/frequency query as a per-node additive bias and
+            # cross-attend it against the geometry node features via the
+            # existing slot-k decoder blocks.
+            x_m = x_emb + q_k.unsqueeze(1)                  # [B, N, D]
+
+            for m_block in self.mode_field_blocks[k]:
                 if self.use_checkpoint and self.training:
-                    x_m = torch.utils.checkpoint.checkpoint(m_block, x_m, c_m, th_m, pos_m, m_mask, c_mask, gc_m, use_reentrant=False)
+                    x_m = torch.utils.checkpoint.checkpoint(
+                        m_block, x_m, condition_emb, mode_placeholder, pos_enhanced,
+                        mask, condition_mask, global_context, use_reentrant=False)
                 else:
-                    x_m = m_block(x_m, c_m, th_m, pos_m, m_mask, c_mask, gc_m)
-            
-            # Final normalization before output head
+                    x_m = m_block(x_m, condition_emb, mode_placeholder, pos_enhanced,
+                                  mask, condition_mask, global_context)
+
             x_m = self.final_ln(x_m)
-            
-            # Field prediction
-            field_pred[mode_mask] = self.field_heads[mode_val](x_m).float()  # [B_m, N, 1]
+            field_preds.append(self.field_heads[k](x_m).float())  # [B, N, 1]
 
-            # Frequency prediction
-            if self.freq_heads is not None:
-                mode_global = self.freq_pooler(x_m, m_mask)
-                freq_pred[mode_mask] = self.freq_heads[mode_val](mode_global).float()  # [B_m, 1]
-
-        return {'field': field_pred, 'freq': freq_pred}
+        field = torch.cat(field_preds, dim=-1)             # [B, N, K]
+        return {'field': field, 'freq': f_pred}            # [B,N,K], [B,K]
 
     def reset_expert_calls(self):
         for m in self.modules():
@@ -384,3 +376,7 @@ class GNOTModel(nn.Module):
                 safe_name = name.replace('.', '_')
                 calls_dict[safe_name] = m._expert_calls.clone()
         return calls_dict
+
+
+# Public alias — the model takes (geometry) and predicts all K modes at once.
+GNOT = GNOTModel
