@@ -54,42 +54,39 @@ class FieldVisualizationCallback(pl.Callback):
         
         with torch.no_grad():
             outputs = pl_module(batch)
-            preds = outputs['field']
-            targets = batch['Y_field']
+            preds = outputs['field']            # [B, N, K]
+            targets = batch['Y_field']          # [B, N, K]
             coords = batch['X']
             mask = batch.get('Mask', None)
 
+        K = preds.shape[-1]
         for i in range(min(self.num_samples, len(preds))):
             m = mask[i] if mask is not None else slice(None)
-
-            # Extract only valid nodes for visualization
             valid_coords = coords[i, m].cpu().numpy()
-            valid_targets = targets[i, m].cpu().numpy()
-            valid_preds = preds[i, m].cpu().numpy()
 
-            # Sign-agnostic alignment for visualization (eigenmode global sign)
-            t_flat = valid_targets.flatten()
-            p_flat = valid_preds.flatten()
-            err_pos = np.linalg.norm(p_flat - t_flat)
-            err_neg = np.linalg.norm(p_flat + t_flat)
-            if err_neg < err_pos:
-                valid_preds = -valid_preds
+            for k in range(K):  # one figure per mode (ascending freq order)
+                valid_targets = targets[i, m, k].cpu().numpy()
+                valid_preds = preds[i, m, k].cpu().numpy()
 
-            m_idx = batch['Theta_in'][i].item()
+                # Sign-agnostic alignment for visualization (eigenmode sign)
+                err_pos = np.linalg.norm(valid_preds - valid_targets)
+                err_neg = np.linalg.norm(valid_preds + valid_targets)
+                if err_neg < err_pos:
+                    valid_preds = -valid_preds
 
-            fig = self._plot_comparison(
-                valid_coords,
-                valid_targets,
-                valid_preds,
-                title=f"Epoch {trainer.current_epoch} - Mode {int(m_idx)} - Sample {i}"
-            )
-
-            # Log to TensorBoard (guard against missing logger)
-            if trainer.logger and hasattr(trainer.logger, 'experiment'):
-                trainer.logger.experiment.add_figure(
-                    f"Validation/Field_Comparison_{i}", fig, global_step=trainer.global_step
+                fig = self._plot_comparison(
+                    valid_coords,
+                    valid_targets,
+                    valid_preds,
+                    title=f"Epoch {trainer.current_epoch} - Mode {k} (asc. freq) - Sample {i}"
                 )
-            plt.close(fig)
+
+                if trainer.logger and hasattr(trainer.logger, 'experiment'):
+                    trainer.logger.experiment.add_figure(
+                        f"Validation/Field_Comparison_s{i}_m{k}", fig,
+                        global_step=trainer.global_step
+                    )
+                plt.close(fig)
 
     def _plot_comparison(self, coords, target, pred, title=""):
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
