@@ -133,8 +133,14 @@ training:
   viz_every_n_epochs: 10        # Field görselleştirme sıklığı
   progress_bar_refresh_rate: 1
 
-  # Near-degenerate mode handling (Approach B)
-  permutation_invariant_dipole: true  # Swap mode 1/2 assignment if it gives lower loss
+  # Spectral-subspace / degeneracy handling (set-prediction loss)
+  #   The model predicts all K modes; the loss matches predicted vs true
+  #   frequencies (K! permutations) and uses a Grassmannian / soft-Procrustes
+  #   subspace distance so degenerate eigenspaces are handled correctly.
+  degeneracy_mode: soft         # "soft" | "hard"
+  near_deg_threshold: 0.05      # [hard] |Δf|/f_mean < threshold → same cluster
+  deg_sigma_rel: 0.5            # [soft] σ = deg_sigma_rel × mean spectral gap
+  freq_match_weight: 0.5        # weight of freq in matching cost
 
   # Debug
   fast_dev_run: false           # true ile 1 iterasyon test
