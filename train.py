@@ -94,23 +94,19 @@ def main():
         print(f"Ablation: using features {feature_indices} → {names}")
     if max_nodes is not None and local_rank == 0:
         print(f"Node sub-sampling: max_nodes={max_nodes}")
-    active_mode_index = getattr(dc, 'active_mode_index', None)
-    if active_mode_index is not None and local_rank == 0:
-        print(f"Single-Mode Training: only mode {active_mode_index} will be used.")
-    
     random_seed = getattr(dc, 'random_seed', 42)
     train_dataset = GNOTDataset(dc.data_path, split='train',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                active_mode_index=active_mode_index, random_seed=random_seed)
+                                random_seed=random_seed)
     val_dataset   = GNOTDataset(dc.data_path, split='val',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                active_mode_index=active_mode_index, random_seed=random_seed)
+                                random_seed=random_seed)
     test_dataset  = GNOTDataset(dc.data_path, split='test',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                active_mode_index=active_mode_index, random_seed=random_seed)
+                                random_seed=random_seed)
 
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
@@ -156,7 +152,10 @@ def main():
         dropout=getattr(mc, 'dropout', 0.0),
         rff_dim=getattr(mc, 'rff_dim', 64),
         rff_length_scale=getattr(mc, 'rff_length_scale', 0.1),
-        permutation_invariant_dipole=getattr(tc, 'permutation_invariant_dipole', True),
+        degeneracy_mode=getattr(tc, 'degeneracy_mode', 'soft'),
+        near_deg_threshold=getattr(tc, 'near_deg_threshold', 0.05),
+        deg_sigma_rel=getattr(tc, 'deg_sigma_rel', 0.5),
+        freq_match_weight=getattr(tc, 'freq_match_weight', 0.5),
     )
 
     # Pass frequency statistics to the model for physical units logging
@@ -213,14 +212,19 @@ def main():
         print("Starting fast_dev_run training to verify pipeline...")
         
     trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume)
-    
-    if local_rank == 0:
-        print("Running final evaluation on held-out test split...")
-    ckpt_path = "best" if not tc.fast_dev_run else None
-    trainer.test(dataloaders=test_loader, ckpt_path=ckpt_path)
-    
-    if tc.fast_dev_run and local_rank == 0:
-        print("Verification complete! To run full training, do not use --fast_dev_run flag.")
+
+    if tc.fast_dev_run:
+        # fast_dev_run disables checkpointing, so "best" is unavailable; run a
+        # quick sanity test on the in-memory model instead of loading a ckpt.
+        if local_rank == 0:
+            print("Running fast_dev_run sanity test on in-memory model...")
+        trainer.test(model, dataloaders=test_loader)
+        if local_rank == 0:
+            print("Verification complete! To run full training, do not use --fast_dev_run flag.")
+    else:
+        if local_rank == 0:
+            print("Running final evaluation on held-out test split...")
+        trainer.test(dataloaders=test_loader, ckpt_path="best")
 
 if __name__ == '__main__':
     main()

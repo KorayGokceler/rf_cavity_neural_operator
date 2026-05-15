@@ -3,8 +3,140 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 import torchmetrics
 import math
+import itertools
 import numpy as np
 from src.models.gnot import GNOTModel
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Set-prediction loss helpers (frequency matching + Grassmannian subspace)
+# ════════════════════════════════════════════════════════════════════════════
+
+def match_frequencies(f_pred, f_true):
+    """Enumerate K! permutations and return the one minimising the squared
+    frequency assignment cost.
+
+    Args:
+        f_pred: [K] predicted (sorted) frequencies for one sample.
+        f_true: [K] ground-truth frequencies for one sample.
+    Returns:
+        list[int] best permutation p such that f_pred[p[i]] matches f_true[i].
+    """
+    K = f_true.shape[0]
+    fp = f_pred.detach().float().tolist()
+    ft = f_true.detach().float().tolist()
+    best_perm = min(
+        itertools.permutations(range(K)),
+        key=lambda p: sum((fp[p[i]] - ft[i]) ** 2 for i in range(K)),
+    )
+    return list(best_perm)
+
+
+def detect_clusters(f_true_matched, threshold):
+    """Group mode indices by relative frequency proximity (for 'hard' mode).
+
+    Two consecutive (sorted) modes belong to the same cluster when
+        |f_i - f_j| / max(|f_mean|, eps) < threshold.
+
+    Args:
+        f_true_matched: [K] target frequencies aligned to prediction order.
+        threshold: relative gap threshold.
+    Returns:
+        list[list[int]] e.g. [[0], [1, 2]] or [[0], [1], [2]].
+    """
+    f = f_true_matched.detach().float().tolist()
+    K = len(f)
+    f_mean = sum(abs(v) for v in f) / max(K, 1)
+    denom = max(abs(f_mean), 1e-6)
+    clusters = [[0]]
+    for i in range(1, K):
+        if abs(f[i] - f[i - 1]) / denom < threshold:
+            clusters[-1].append(i)
+        else:
+            clusters.append([i])
+    return clusters
+
+
+def _masked_orthonormalize(E, mask=None):
+    """Return an orthonormal basis (over the masked rows) for the column span
+    of E using a numerically stable reduced QR.
+
+    Args:
+        E: [N, n] matrix whose columns span the subspace.
+        mask: [N] boolean (True = valid node) or None.
+    Returns:
+        Q: [N, n] with masked rows zeroed and Q^T Q = I over valid rows.
+    """
+    if mask is not None:
+        m = mask.to(E.dtype).unsqueeze(-1)  # [N, 1]
+        E = E * m
+    # Reduced QR; add tiny ridge for stability when columns are near-collinear
+    # (degenerate/near-degenerate eigenvectors).
+    Q, R = torch.linalg.qr(E, mode='reduced')
+    # Fix sign ambiguity of QR (not required for Grassmannian but keeps R* sane)
+    diag = torch.diagonal(R, dim1=-2, dim2=-1)
+    sign = torch.sign(diag)
+    sign = torch.where(sign == 0, torch.ones_like(sign), sign)
+    Q = Q * sign.unsqueeze(-2)
+    if mask is not None:
+        Q = Q * mask.to(Q.dtype).unsqueeze(-1)
+    return Q
+
+
+def grassmannian_loss(E_hat, E_tgt, mask=None):
+    """Grassmannian subspace distance:  n - ||Q_hat^T Q_tgt||_F^2.
+
+    Equals 0 when the two subspaces coincide and n when fully orthogonal.
+    For n == 1 this reduces exactly to 1 - cos^2(theta) between the two
+    vectors, i.e. the standard sign-invariant field similarity.
+
+    Args:
+        E_hat, E_tgt: [N, n] predicted / target subspace bases.
+        mask: [N] boolean or None.
+    """
+    n = E_hat.shape[-1]
+    Qh = _masked_orthonormalize(E_hat, mask)
+    Qt = _masked_orthonormalize(E_tgt, mask)
+    M = Qh.transpose(-2, -1) @ Qt          # [n, n]
+    return n - (M ** 2).sum()
+
+
+def soft_procrustes_loss(E_hat, E_tgt, f_matched, sigma, mask=None):
+    """Frequency-weighted soft Procrustes alignment loss.
+
+    W[i,j] = exp(-(f_i - f_j)^2 / sigma^2) softly couples only the
+    near-degenerate modes; well-separated modes keep an (almost) identity
+    weighting so this gracefully reduces to a per-mode field loss.
+
+        M_w = (E_hat^T E_tgt) * W      (elementwise)
+        SVD: M_w = U S V^T  ->  R* = V U^T   (orthogonal alignment)
+        loss = relative_L2(E_hat, E_tgt @ R*)
+
+    Args:
+        E_hat, E_tgt: [N, K] columns are the (mask-applied) mode fields.
+        f_matched: [K] target frequencies (prediction-aligned order).
+        sigma: scalar coupling bandwidth.
+        mask: [N] boolean or None.
+    """
+    if mask is not None:
+        m = mask.to(E_hat.dtype).unsqueeze(-1)  # [N, 1]
+        E_hat = E_hat * m
+        E_tgt = E_tgt * m
+
+    fi = f_matched.view(-1, 1)
+    fj = f_matched.view(1, -1)
+    sigma2 = (sigma ** 2) + 1e-12
+    W = torch.exp(-((fi - fj) ** 2) / sigma2)  # [K, K]
+
+    M = (E_hat.transpose(-2, -1) @ E_tgt) * W  # [K, K]
+    # Orthogonal Procrustes: best R aligning E_tgt onto E_hat.
+    U, S, Vh = torch.linalg.svd(M)
+    R = Vh.transpose(-2, -1) @ U.transpose(-2, -1)  # [K, K], R* = V U^T
+
+    E_tgt_rot = E_tgt @ R                       # [N, K]
+    num = ((E_hat - E_tgt_rot) ** 2).sum()
+    den = (E_tgt ** 2).sum() + 1e-8
+    return num / den
 
 class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, hidden_dim=256,
@@ -21,7 +153,10 @@ class GNOTLightning(pl.LightningModule):
                  gradient_clip_val=None,
                  dropout=0.0,
                  rff_dim=64, rff_length_scale=0.1,
-                 permutation_invariant_dipole=True):
+                 degeneracy_mode='soft',
+                 near_deg_threshold=0.05,
+                 deg_sigma_rel=0.5,
+                 freq_match_weight=0.5):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
@@ -50,13 +185,15 @@ class GNOTLightning(pl.LightningModule):
         self.freq_weight = freq_weight
         self.smoothness_weight = smoothness_weight
         self.predict_frequency = predict_frequency
-        # Per-mode loss weights: [w0, w1, w2] — zayıf modlara daha yüksek ağırlık verilebilir
-        if mode_loss_weights is None:
-            self.mode_loss_weights = [1.0] * num_field_modes
-        else:
-            self.mode_loss_weights = list(mode_loss_weights)
+        self.num_field_modes = num_field_modes
         self.freq_stats = None
-        self.permutation_invariant_dipole = permutation_invariant_dipole
+        # Set-prediction / degeneracy handling
+        assert degeneracy_mode in ('soft', 'hard'), \
+            f"degeneracy_mode must be 'soft' or 'hard', got {degeneracy_mode}"
+        self.degeneracy_mode = degeneracy_mode
+        self.near_deg_threshold = near_deg_threshold
+        self.deg_sigma_rel = deg_sigma_rel
+        self.freq_match_weight = freq_match_weight
 
         # Optional: Metrics to evaluate and measure model's success
         self.train_r2 = torchmetrics.R2Score()
@@ -71,166 +208,122 @@ class GNOTLightning(pl.LightningModule):
 
     def _compute_loss(self, batch, prefix):
         outputs = self.model(batch)
-        mask = batch.get('Mask', None)  # [B, N] boolean
+        mask = batch.get('Mask', None)               # [B, N] boolean
 
-        pred_field = outputs['field']      # [B, N, 1]
-        true_field = batch['Y_field']      # [B, N, 1]
-        B = pred_field.shape[0]
-        theta_in = batch['Theta_in'][:, 0] # [B]
+        pred_field = outputs['field']                # [B, N, K]
+        true_field = batch['Y_field']                # [B, N, K]
+        f_pred = outputs['freq']                     # [B, K] (model-sorted)
+        f_true = batch['Y_freq']                     # [B, K] (dataset-sorted)
+        B, N, K = pred_field.shape
+        eps = 1e-8
 
-        # --- MODE WEIGHTING SETUP ---
-        mode_weights_tensor = torch.tensor(self.mode_loss_weights, device=pred_field.device) # [num_modes]
-        batch_weights = mode_weights_tensor[theta_in] # [B]
-
-        # --- PHASE (SIGN) REALIGNMENT ---
-        # Done BEFORE boundary zeroing so the full prediction is used for sign detection.
-        # This is critical for bipolar modes (dipole, quadrupole) where zeroing boundaries
-        # would remove information needed to determine the global sign.
-        with torch.no_grad():
-            if mask is not None:
-                m_f = mask.unsqueeze(-1).expand_as(pred_field).float()
-                diff_pos = ((pred_field - true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
-                diff_neg = ((pred_field + true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
-            else:
-                diff_pos = ((pred_field - true_field) ** 2).sum(dim=1)
-                diff_neg = ((pred_field + true_field) ** 2).sum(dim=1)
-            signs = torch.where(diff_pos <= diff_neg, 1.0, -1.0).unsqueeze(1)  # [B, 1, 1]
-
-        aligned_true_field = true_field * signs
-        # ------------------------------------------------------------------
-
-        # --- PHYSICS-INFORMED NEURAL NETWORK (PINN) BOUNDARY CONSTRAINT ---
-        dist_bnd = batch['Input_funcs'][:, :, 2]  # [B, N]
-        # Exclude padding nodes (dist=0 due to padding) from boundary mask using node mask
-        interior_or_valid = mask.unsqueeze(-1) if mask is not None else torch.ones_like(pred_field, dtype=torch.bool)
-        bnd_mask = (dist_bnd < 1e-4).unsqueeze(-1) & interior_or_valid  # [B, N, 1]
+        # --- PINN BOUNDARY CONSTRAINT (applied to every mode column) -------
+        dist_bnd = batch['Input_funcs'][:, :, 2]     # [B, N]
+        valid_mask = mask if mask is not None else torch.ones(B, N, dtype=torch.bool, device=pred_field.device)
+        bnd_mask = (dist_bnd < 1e-4) & valid_mask    # [B, N]
+        bnd_mask_f = bnd_mask.unsqueeze(-1).float()  # [B, N, 1]
 
         if bnd_mask.any():
-            sq_diff = (pred_field ** 2) * bnd_mask.float()
-            sample_bnd_loss = sq_diff.sum(dim=(1, 2)) / (bnd_mask.sum(dim=(1, 2)).clamp(min=1.0))
-            loss_bnd = (sample_bnd_loss * batch_weights).mean()
+            sq_diff = (pred_field ** 2) * bnd_mask_f                  # [B, N, K]
+            loss_bnd = sq_diff.sum() / (bnd_mask_f.sum() * K).clamp(min=1.0)
         else:
             loss_bnd = torch.tensor(0.0, device=pred_field.device)
-
         self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Hard constraint: zero predictions at boundary nodes
-        pred_field = pred_field * (~bnd_mask).float()
-        # ------------------------------------------------------------------
+        # Hard constraint: zero predictions at boundary nodes (all modes)
+        pred_field = pred_field * (1.0 - bnd_mask_f)
 
-        # --- FIELD LOSS: Relative L2 + L1 hybrid ---
-        # rel_l2_loss directly optimises the eval metric.
-        # l1 term provides uniform gradient signal at low-amplitude regions
-        # (nodal lines of dipole/quadrupole modes) that rel_l2 alone de-emphasises.
-        eps = 1e-8
-        if mask is not None:
-            m = mask.float()           # [B, N]
-            m_f = m.unsqueeze(-1)      # [B, N, 1]
-            n_v = m.sum(dim=1).clamp(min=1.0)  # [B]
+        # --- SET-PREDICTION ALIGNMENT (per batch item) --------------------
+        # f_pred / f_true are both individually sorted ascending, but the model
+        # may still mis-order which physical mode each slot captured.  Resolve
+        # by enumerating K! frequency permutations and reordering predictions
+        # to match the target order.
+        device = pred_field.device
+        loss_freq = torch.zeros((), device=device)
+        loss_field = torch.zeros((), device=device)
+        rel_l2_per_mode = torch.zeros(K, device=device)
+        rel_l2_count = torch.zeros(K, device=device)
 
-            diff_sq = ((pred_field - aligned_true_field) ** 2 * m_f).sum(dim=1)  # [B, 1]
-            true_sq = (aligned_true_field ** 2 * m_f).sum(dim=1)                 # [B, 1]
-            rel_l2_loss = (diff_sq / (true_sq + eps)).squeeze(-1)                # [B]
+        # Spectral gap for soft sigma (relative to mean target gap in batch)
+        for b in range(B):
+            fp_b = f_pred[b]                          # [K]
+            ft_b = f_true[b]                          # [K]
+            perm = match_frequencies(fp_b, ft_b)
+            perm_t = torch.tensor(perm, device=device, dtype=torch.long)
 
-            diff = pred_field.squeeze(-1) - aligned_true_field.squeeze(-1)       # [B, N]
-            l1 = (diff.abs() * m).sum(dim=1) / n_v                               # [B]
+            fp_aligned = fp_b[perm_t]                 # [K] reordered to target order
+            E_hat = pred_field[b][:, perm_t]          # [N, K] reorder mode columns
+            E_tgt = true_field[b]                     # [N, K]
+            m_b = valid_mask[b]                       # [N]
 
-            sample_field_losses = rel_l2_loss + 0.1 * l1
-        else:
-            diff_sq = ((pred_field - aligned_true_field) ** 2).sum(dim=1)
-            true_sq = (aligned_true_field ** 2).sum(dim=1)
-            rel_l2_loss = (diff_sq / (true_sq + eps)).squeeze(-1)
+            # Frequency regression loss (aligned)
+            loss_freq = loss_freq + F.mse_loss(fp_aligned, ft_b)
 
-            diff = pred_field.squeeze(-1) - aligned_true_field.squeeze(-1)
-            l1 = diff.abs().mean(dim=1)
+            if self.degeneracy_mode == 'hard':
+                clusters = detect_clusters(ft_b, self.near_deg_threshold)
+                fl_b = torch.zeros((), device=device)
+                for cl in clusters:
+                    cl_t = torch.tensor(cl, device=device, dtype=torch.long)
+                    g = grassmannian_loss(E_hat[:, cl_t], E_tgt[:, cl_t], m_b)
+                    fl_b = fl_b + g
+                loss_field = loss_field + fl_b
+            else:  # 'soft'
+                # sigma = deg_sigma_rel * mean spectral gap of this sample
+                if K > 1:
+                    gaps = (ft_b[1:] - ft_b[:-1]).abs()
+                    mean_gap = gaps.mean().clamp(min=1e-4)
+                else:
+                    mean_gap = torch.tensor(1.0, device=device)
+                sigma = self.deg_sigma_rel * mean_gap
+                loss_field = loss_field + soft_procrustes_loss(
+                    E_hat, E_tgt, ft_b, sigma, m_b)
 
-            sample_field_losses = rel_l2_loss + 0.1 * l1
+            # --- per-mode sign-agnostic relative L2 (reporting only) ------
+            with torch.no_grad():
+                m_f = m_b.float().unsqueeze(-1)       # [N, 1]
+                for k in range(K):
+                    eh = E_hat[:, k:k + 1]
+                    et = E_tgt[:, k:k + 1]
+                    num_p = (((eh - et) ** 2) * m_f).sum()
+                    num_n = (((eh + et) ** 2) * m_f).sum()
+                    den = ((et ** 2) * m_f).sum() + eps
+                    rl = torch.sqrt(torch.minimum(num_p, num_n) / den)
+                    rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
+                    rel_l2_count[k] = rel_l2_count[k] + 1.0
 
-        # --- PERMUTATION-INVARIANT DIPOLE LOSS ---
-        # For geometries where both mode 1 and mode 2 appear in the same batch,
-        # try both assignment orders and keep the one with lower total loss.
-        # Safety net for any residual orientation ambiguity after canonical rotation.
-        if self.permutation_invariant_dipole and 'geom_id' in batch:
-            geom_ids_batch = batch['geom_id'].squeeze(-1)  # [B]
-            updated_losses = sample_field_losses.clone()
-            for g_id in geom_ids_batch.unique():
-                i1 = ((geom_ids_batch == g_id) & (theta_in == 1)).nonzero(as_tuple=True)[0]
-                i2 = ((geom_ids_batch == g_id) & (theta_in == 2)).nonzero(as_tuple=True)[0]
-                if len(i1) == 0 or len(i2) == 0:
-                    continue
-                idx_1, idx_2 = i1[0], i2[0]
-                p1, t1 = pred_field[idx_1], aligned_true_field[idx_1]  # [N, 1]
-                p2, t2 = pred_field[idx_2], aligned_true_field[idx_2]  # [N, 1]
-                m_g = mask[idx_1].float().unsqueeze(-1) if mask is not None else torch.ones_like(p1)
-                n_v_g = m_g.sum().clamp(min=1.0)
-                # Swapped losses with per-pair sign correction
-                with torch.no_grad():
-                    sign_12 = torch.where(
-                        ((p1 - t2) ** 2 * m_g).sum() <= ((p1 + t2) ** 2 * m_g).sum(), 1.0, -1.0)
-                    sign_21 = torch.where(
-                        ((p2 - t1) ** 2 * m_g).sum() <= ((p2 + t1) ** 2 * m_g).sum(), 1.0, -1.0)
-                l_swp_1 = ((sign_12 * p1 - t2) ** 2 * m_g).sum() / n_v_g + \
-                          0.1 * ((sign_12 * p1 - t2).abs() * m_g).sum() / n_v_g
-                l_swp_2 = ((sign_21 * p2 - t1) ** 2 * m_g).sum() / n_v_g + \
-                          0.1 * ((sign_21 * p2 - t1).abs() * m_g).sum() / n_v_g
-                if (l_swp_1 + l_swp_2 < updated_losses[idx_1] + updated_losses[idx_2]).detach():
-                    updated_losses[idx_1] = l_swp_1
-                    updated_losses[idx_2] = l_swp_2
-            sample_field_losses = updated_losses
-        # ------------------------------------------
+        loss_freq = loss_freq / max(B, 1)
+        loss_field = loss_field / max(B, 1)
 
-        # Apply per-sample mode weighting
-        loss_field = (sample_field_losses * batch_weights).mean()
-
-        # Per-mode loss logging
-        for mode_val in range(len(self.mode_loss_weights)):
-            mode_mask_sel = (theta_in == mode_val)
-            if mode_mask_sel.any():
-                m_loss = sample_field_losses[mode_mask_sel].mean()
-                self.log(f'{prefix}/mode_{mode_val}_loss', m_loss, on_step=False, on_epoch=True, prog_bar=False, batch_size=B)
-
-        if self.predict_frequency and outputs.get('freq') is not None:
-            freq_pred = outputs['freq']          # [B, 1]
-            freq_true = batch['Y_freq']          # [B, 1]
-            # Weighted Frequency Loss
-            sample_freq_loss = F.mse_loss(freq_pred, freq_true, reduction='none').squeeze(-1) # [B]
-            loss_freq = (sample_freq_loss * batch_weights).mean()
-
-            self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-
-            if self.freq_stats:
-                freq_pred_ghz = freq_pred * self.freq_stats['std'] + self.freq_stats['mean']
-                freq_true_ghz = freq_true * self.freq_stats['std'] + self.freq_stats['mean']
-                mae_ghz = F.l1_loss(freq_pred_ghz, freq_true_ghz)
-                self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-        else:
-            loss_freq = torch.tensor(0.0, device=pred_field.device)
+        if not (self.predict_frequency and outputs.get('freq') is not None):
+            loss_freq = torch.zeros((), device=device)
 
         total_loss = loss_field + (self.freq_weight * loss_freq) + (self.smoothness_weight * loss_bnd)
 
+        # --- logging -----------------------------------------------------
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
-        # Relative L2 Error (reuse diff_sq / true_sq computed above)
-        rel_l2_all = torch.sqrt(diff_sq) / (torch.sqrt(true_sq) + eps)  # [B, 1]
-        rel_l2 = rel_l2_all.mean()
+        rel_l2_count = rel_l2_count.clamp(min=1.0)
+        rel_l2_mean_per_mode = rel_l2_per_mode / rel_l2_count
+        rel_l2 = rel_l2_mean_per_mode.mean()
         self.log(f'{prefix}/field_rel_l2', rel_l2, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
+        for k in range(K):
+            self.log(f'{prefix}/mode_{k}_rel_l2', rel_l2_mean_per_mode[k],
+                     on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
-        # Per-mode Relative L2
-        for mode_val in range(len(self.mode_loss_weights)):
-            mode_mask_sel = (theta_in == mode_val)
-            if mode_mask_sel.any():
-                mode_rel = rel_l2_all[mode_mask_sel].mean()
-                self.log(f'{prefix}/mode_{mode_val}_rel_l2', mode_rel, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+        if self.predict_frequency and outputs.get('freq') is not None and self.freq_stats:
+            with torch.no_grad():
+                fp_ghz = f_pred * self.freq_stats['std'] + self.freq_stats['mean']
+                ft_ghz = f_true * self.freq_stats['std'] + self.freq_stats['mean']
+                mae_ghz = F.l1_loss(fp_ghz, ft_ghz)
+                self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Tensors for torchmetrics (R2, MAE)
-        if mask is not None:
-            mask_flat = mask.unsqueeze(-1).expand_as(pred_field)
-            preds_valid = pred_field[mask_flat].contiguous()
-            targets_valid = aligned_true_field[mask_flat].contiguous()
-        else:
-            preds_valid = pred_field.contiguous().view(-1)
-            targets_valid = aligned_true_field.contiguous().view(-1)
+        # Tensors for torchmetrics (R2, MAE) — flatten all valid (node, mode).
+        with torch.no_grad():
+            mask_km = valid_mask.unsqueeze(-1).expand_as(pred_field)  # [B, N, K]
+            preds_valid = pred_field[mask_km].contiguous()
+            targets_valid = true_field[mask_km].contiguous()
 
         return total_loss, preds_valid, targets_valid
 
@@ -361,16 +454,16 @@ class GNOTLightning(pl.LightningModule):
                         param_groups.append({"params": mode_params, "lr": mode_lr})
                         print(f"Optimizer: Mode {mode_idx} branch trained with lr={mode_lr}")
 
-        # Freq Heads LR
+        # Freq Head LR (single global head now)
         if self.lr_freq_heads is not None and self.predict_frequency:
             freq_params = []
-            for p in self.model.freq_heads.parameters():
+            for p in self.model.freq_head_global.parameters():
                 if id(p) not in handled_param_ids:
                     freq_params.append(p)
                     handled_param_ids.add(id(p))
             if len(freq_params) > 0:
                 param_groups.append({"params": freq_params, "lr": self.lr_freq_heads})
-                print(f"Optimizer: Frequency heads trained with lr={self.lr_freq_heads}")
+                print(f"Optimizer: Frequency head trained with lr={self.lr_freq_heads}")
 
         # Base param group (General trunk, embeddings, unhandled parts)
         base_params = []
