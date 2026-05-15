@@ -233,33 +233,29 @@ class GNOTLightning(pl.LightningModule):
         # Hard constraint: zero predictions at boundary nodes (all modes)
         pred_field = pred_field * (1.0 - bnd_mask_f)
 
-        # --- SET-PREDICTION ALIGNMENT (per batch item) --------------------
-        # f_pred / f_true are both individually sorted ascending, but the model
-        # may still mis-order which physical mode each slot captured.  Resolve
-        # by enumerating K! frequency permutations and reordering predictions
-        # to match the target order.
+        # --- PER-SAMPLE LOSS (both freq arrays are ascending-sorted, so slot k
+        #     always trains against the k-th target mode by frequency order) ---
+        # NOTE: match_frequencies was removed because both f_pred (torch.sort in
+        # the model) and f_true (np.argsort in the dataset) are ascending-sorted.
+        # By the rearrangement inequality the optimal K! assignment is always the
+        # identity, so the K! enumeration was dead code executed every step.
         device = pred_field.device
         loss_freq = torch.zeros((), device=device)
         loss_field = torch.zeros((), device=device)
         rel_l2_per_mode = torch.zeros(K, device=device)
         rel_l2_count = torch.zeros(K, device=device)
-        aligned_pred_field = torch.zeros_like(pred_field)   # [B, N, K] — for R2/MAE
+        # Detach for metric bookkeeping — no gradient needed past this point.
+        aligned_pred_field = pred_field.detach().clone()     # [B, N, K] — for R2/MAE
 
-        # Spectral gap for soft sigma (relative to mean target gap in batch)
         for b in range(B):
-            fp_b = f_pred[b]                          # [K]
-            ft_b = f_true[b]                          # [K]
-            perm = match_frequencies(fp_b, ft_b)
-            perm_t = torch.tensor(perm, device=device, dtype=torch.long)
-
-            fp_aligned = fp_b[perm_t]                 # [K] reordered to target order
-            E_hat = pred_field[b][:, perm_t]          # [N, K] reorder mode columns
-            aligned_pred_field[b] = E_hat             # store for metrics
+            fp_b = f_pred[b]                          # [K]  ascending (model-sorted)
+            ft_b = f_true[b]                          # [K]  ascending (dataset-sorted)
+            E_hat = pred_field[b]                     # [N, K]  identity slot→mode mapping
             E_tgt = true_field[b]                     # [N, K]
-            m_b = valid_mask[b]                       # [N]
+            m_b   = valid_mask[b]                     # [N]
 
-            # Frequency regression loss (aligned)
-            loss_freq = loss_freq + F.mse_loss(fp_aligned, ft_b)
+            # Frequency regression loss (sorted-to-sorted MSE)
+            loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
 
             if self.degeneracy_mode == 'hard':
                 clusters = detect_clusters(ft_b, self.near_deg_threshold)
