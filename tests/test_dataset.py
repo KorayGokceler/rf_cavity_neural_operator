@@ -1,11 +1,12 @@
-"""Tests for GNOTDataset and gnot_collate_fn.
+"""Tests for GNOTDataset and gnot_collate_fn (spectral-subspace arch).
 
-Kritik invariantlar:
-- Geometri-bazlı split (data leakage yok)
+Invariants:
+- One item == one geometry == ALL K modes (Y_field [N,K], Y_freq [K])
+- Geometry-based split (no data leakage)
 - random_seed reproducibility
-- max_nodes sub-sampling
-- Collate output shapes ve mask doğruluğu
-- 'elements' batch'te DEĞIL
+- max_nodes sub-sampling uses the SAME node set for every mode
+- Collate output shapes & mask correctness
+- 'elements' / 'Theta_in' NOT in batch
 """
 import pickle
 import tempfile
@@ -68,21 +69,15 @@ def synthetic_pkl(tmp_path):
 
 
 def test_geometry_split_no_leakage(synthetic_pkl):
-    """Aynı geometri ID'si train/val/test setlerinden yalnızca birinde olmalı."""
+    """A geometry ID must appear in exactly one of train/val/test."""
     pkl_path, n_geoms, n_modes = synthetic_pkl
     train = GNOTDataset(pkl_path, split='train', train_ratio=0.6, val_ratio=0.2)
     val = GNOTDataset(pkl_path, split='val', train_ratio=0.6, val_ratio=0.2)
     test = GNOTDataset(pkl_path, split='test', train_ratio=0.6, val_ratio=0.2)
 
-    def geom_ids(ds):
-        ids = set()
-        for s_idx in ds.active_samples:
-            ids.add(ds.sample_geom_lookup[s_idx])
-        return ids
-
-    train_ids = geom_ids(train)
-    val_ids = geom_ids(val)
-    test_ids = geom_ids(test)
+    train_ids = set(train.active_geoms)
+    val_ids = set(val.active_geoms)
+    test_ids = set(test.active_geoms)
 
     assert train_ids.isdisjoint(val_ids)
     assert train_ids.isdisjoint(test_ids)
@@ -90,21 +85,30 @@ def test_geometry_split_no_leakage(synthetic_pkl):
     assert (train_ids | val_ids | test_ids) == set(range(n_geoms))
 
 
+def test_one_item_per_geometry(synthetic_pkl):
+    """len(dataset) == number of geometries in the split (not per-mode)."""
+    pkl_path, n_geoms, n_modes = synthetic_pkl
+    train = GNOTDataset(pkl_path, split='train', train_ratio=0.6, val_ratio=0.2)
+    val = GNOTDataset(pkl_path, split='val', train_ratio=0.6, val_ratio=0.2)
+    test = GNOTDataset(pkl_path, split='test', train_ratio=0.6, val_ratio=0.2)
+    assert len(train) + len(val) + len(test) == n_geoms
+    assert len(train) == len(train.active_geoms)
+
+
 def test_random_seed_reproducibility(synthetic_pkl):
-    """Aynı random_seed → aynı split."""
+    """Same random_seed → same split."""
     pkl_path, _, _ = synthetic_pkl
     a = GNOTDataset(pkl_path, split='train', random_seed=42)
     b = GNOTDataset(pkl_path, split='train', random_seed=42)
-    assert a.active_samples == b.active_samples
+    assert a.active_geoms == b.active_geoms
 
 
 def test_random_seed_changes_split(synthetic_pkl):
-    """Farklı seed → genelde farklı split."""
+    """Different seed → generally different split."""
     pkl_path, _, _ = synthetic_pkl
     a = GNOTDataset(pkl_path, split='train', random_seed=42)
     b = GNOTDataset(pkl_path, split='train', random_seed=123)
-    # Çok küçük ihtimalle aynı çıkabilirler — ama 10 geometride bu pratikte imkansız
-    assert a.active_samples != b.active_samples
+    assert a.active_geoms != b.active_geoms
 
 
 def test_elements_removed_from_geometry_pool(synthetic_pkl):
@@ -115,15 +119,28 @@ def test_elements_removed_from_geometry_pool(synthetic_pkl):
         assert 'elements' not in geom, f"elements found in geom {g_id}"
 
 
-def test_getitem_no_elements_key(synthetic_pkl):
-    """__getitem__ output dict'inde 'elements' OLMAMALI."""
-    pkl_path, _, _ = synthetic_pkl
+def test_getitem_no_elements_no_theta(synthetic_pkl):
+    """__getitem__ must not contain 'elements' or 'Theta_in'."""
+    pkl_path, _, n_modes = synthetic_pkl
     ds = GNOTDataset(pkl_path, split='train')
     item = ds[0]
     assert 'elements' not in item
-    # Beklenen anahtarlar
-    expected = {'X', 'Input_funcs', 'Y_field', 'Theta_in', 'Y_freq', 'geom_id'}
+    assert 'Theta_in' not in item
+    expected = {'X', 'Input_funcs', 'Y_field', 'Y_freq', 'geom_id'}
     assert expected.issubset(item.keys())
+    # All K modes bundled
+    assert item['Y_field'].shape[1] == n_modes
+    assert item['Y_freq'].shape == (n_modes,)
+    assert item['Y_field'].shape[0] == item['X'].shape[0]
+
+
+def test_freq_sorted_ascending(synthetic_pkl):
+    """Y_freq is sorted ascending and Y_field columns follow that order."""
+    pkl_path, _, _ = synthetic_pkl
+    ds = GNOTDataset(pkl_path, split='train')
+    for i in range(len(ds)):
+        f = ds[i]['Y_freq']
+        assert torch.all(f[1:] >= f[:-1])
 
 
 def test_getitem_tensor_dtypes(synthetic_pkl):
@@ -133,18 +150,20 @@ def test_getitem_tensor_dtypes(synthetic_pkl):
     assert item['X'].dtype == torch.float32
     assert item['Input_funcs'].dtype == torch.float32
     assert item['Y_field'].dtype == torch.float32
-    assert item['Theta_in'].dtype == torch.long
     assert item['Y_freq'].dtype == torch.float32
+    assert item['geom_id'].dtype == torch.long
 
 
-def test_max_nodes_truncation(synthetic_pkl):
-    pkl_path, _, _ = synthetic_pkl
+def test_max_nodes_truncation_shared_nodes(synthetic_pkl):
+    """max_nodes caps every mode column to the SAME node set."""
+    pkl_path, _, n_modes = synthetic_pkl
     ds = GNOTDataset(pkl_path, split='train', max_nodes=15)
     for i in range(len(ds)):
         item = ds[i]
         assert item['X'].shape[0] <= 15
         assert item['Input_funcs'].shape[0] <= 15
-        assert item['Y_field'].shape[0] <= 15
+        assert item['Y_field'].shape[0] == item['X'].shape[0]
+        assert item['Y_field'].shape[1] == n_modes
 
 
 def test_max_nodes_no_truncation_when_smaller(synthetic_pkl):
@@ -159,7 +178,7 @@ def test_max_nodes_no_truncation_when_smaller(synthetic_pkl):
 
 
 def test_collate_output_shapes(synthetic_pkl):
-    pkl_path, _, _ = synthetic_pkl
+    pkl_path, _, n_modes = synthetic_pkl
     ds = GNOTDataset(pkl_path, split='train')
     batch = [ds[i] for i in range(min(4, len(ds)))]
     out = gnot_collate_fn(batch)
@@ -168,8 +187,9 @@ def test_collate_output_shapes(synthetic_pkl):
     assert out['X'].dim() == 3 and out['X'].shape[0] == B
     assert out['Input_funcs'].shape[:2] == out['X'].shape[:2]
     assert out['Y_field'].shape[:2] == out['X'].shape[:2]
-    assert out['Theta_in'].shape == (B, 1)
-    assert out['Y_freq'].shape == (B, 1)
+    assert out['Y_field'].shape[2] == n_modes
+    assert 'Theta_in' not in out
+    assert out['Y_freq'].shape == (B, n_modes)
     assert out['geom_id'].shape == (B, 1)
     assert out['Mask'].shape == out['X'].shape[:2]
     assert out['Mask'].dtype == torch.bool
@@ -208,31 +228,34 @@ def test_collate_padded_values_zero(synthetic_pkl):
             assert (out['X'][i, n_real:] == 0).all()
 
 
-def test_active_mode_filter(synthetic_pkl):
-    """active_mode_index seçilirse sadece o moddan örnek olmalı + Theta_in 0'a remap edilmeli."""
-    pkl_path, _, _ = synthetic_pkl
-    ds = GNOTDataset(pkl_path, split='train', active_mode_index=1)
-    for i in range(len(ds)):
-        item = ds[i]
-        # Tek mod aktif → Theta_in 0'a remap edilir (model num_field_modes=1 ile çalışır)
-        assert item['Theta_in'].item() == 0
+def test_dict_config_constructor(synthetic_pkl):
+    """RFCavityDataset(cfg_dict, split=...) convenience must work."""
+    from src.data.dataset import RFCavityDataset
+    pkl_path, _, n_modes = synthetic_pkl
+    cfg = {'dataset': {'data_path': pkl_path, 'train_ratio': 0.6,
+                       'val_ratio': 0.2, 'random_seed': 7}}
+    ds = RFCavityDataset(cfg, split='train')
+    item = ds[0]
+    assert item['Y_field'].shape[1] == n_modes
 
 
 def test_freq_normalization(synthetic_pkl):
-    """Y_freq z-score normalize edilmeli (mean=5.0, std=1.0)."""
+    """Y_freq z-score normalised with builder stats (mean=5.0, std=1.0).
+
+    Builder freqs are [5, 6, 7] for modes [0,1,2]; after normalisation and
+    ascending sort the values become [0, 1, 2]."""
     pkl_path, _, _ = synthetic_pkl
     ds = GNOTDataset(pkl_path, split='train')
     item = ds[0]
-    raw_freq = ds.samples_metadata[ds.active_samples[0]]['Theta'][1]
-    expected_norm = (raw_freq - 5.0) / 1.0
-    assert abs(item['Y_freq'].item() - expected_norm) < 1e-5
+    f = item['Y_freq']
+    assert torch.allclose(f, torch.tensor([0.0, 1.0, 2.0]), atol=1e-5)
 
 
 def test_train_val_test_ratios_sum(synthetic_pkl):
-    """train+val+test = total_geoms (round'ing tolerasyonu ile)."""
+    """train+val+test geometry count == total geometries."""
     pkl_path, n_geoms, n_modes = synthetic_pkl
     train = GNOTDataset(pkl_path, split='train', train_ratio=0.7, val_ratio=0.2)
     val = GNOTDataset(pkl_path, split='val', train_ratio=0.7, val_ratio=0.2)
     test = GNOTDataset(pkl_path, split='test', train_ratio=0.7, val_ratio=0.2)
-    total = len(train.active_samples) + len(val.active_samples) + len(test.active_samples)
-    assert total == n_geoms * n_modes
+    total = len(train) + len(val) + len(test)
+    assert total == n_geoms

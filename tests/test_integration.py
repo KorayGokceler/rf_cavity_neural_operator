@@ -66,7 +66,6 @@ def test_dataset_to_model_forward(tmp_path):
         n_shared_layers=1, n_mode_layers=1, n_field_head_layers=2,
         n_heads=2, num_experts=2, num_field_modes=3,
         lr=1e-3, freq_weight=0.5, smoothness_weight=0.0,
-        mode_loss_weights=[1.0, 1.0, 1.0],
         scheduler='custom_cosine',
         predict_frequency=True,
         rff_dim=8,
@@ -77,8 +76,9 @@ def test_dataset_to_model_forward(tmp_path):
     with torch.no_grad():
         out = model(batch)
 
-    assert out['field'].shape == (batch['X'].shape[0], batch['X'].shape[1], 1)
-    assert out['freq'].shape == (batch['X'].shape[0], 1)
+    assert out['field'].shape == (batch['X'].shape[0], batch['X'].shape[1], n_modes)
+    assert out['freq'].shape == (batch['X'].shape[0], n_modes)
+    assert (out['freq'][:, 1:] >= out['freq'][:, :-1]).all()
     assert torch.isfinite(out['field']).all()
     assert torch.isfinite(out['freq']).all()
 
@@ -94,11 +94,10 @@ def test_dataset_to_loss_backward(tmp_path):
         n_shared_layers=1, n_mode_layers=1, n_field_head_layers=2,
         n_heads=2, num_experts=2, num_field_modes=3,
         lr=1e-3, freq_weight=0.5, smoothness_weight=0.1,
-        mode_loss_weights=[1.0, 2.0, 2.0],
         scheduler='custom_cosine',
         predict_frequency=True,
         rff_dim=8,
-        permutation_invariant_dipole=True,
+        degeneracy_mode='soft',
     )
 
     batch = next(iter(loader))

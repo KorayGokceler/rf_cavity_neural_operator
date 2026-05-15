@@ -1,25 +1,22 @@
-"""End-to-end forward pass tests for GNOTModel.
+"""End-to-end forward pass tests for GNOTModel (spectral-subspace arch).
 
-Kritik invariantlar:
-- Çıktı şekli: field [B, N, 1], freq [B, 1] (varsa)
-- Mask uygulanması (padding nodelar attention'a karışmamalı)
-- Çoklu mod batch'i: her sample doğru mod-spesifik branch'a yönlendirilmeli
-- Forward NaN üretmemeli
-- predict_frequency=False ise freq=None
+Invariants:
+- Output shape: field [B, N, K], freq [B, K]
+- freq is always sorted ascending
+- No mode_idx / Theta_in input — every slot runs for every sample
+- Mask handling (padding nodes do not produce NaN)
+- Forward must not produce NaN
 """
 import pytest
 import torch
 
-from src.models.gnot import GNOTModel, RandomFourierFeatures, GeometricGatingFFN, AttentionPool
+from src.models.gnot import GNOTModel, GNOT, RandomFourierFeatures, GeometricGatingFFN, AttentionPool
 
 
-def _make_batch(B=2, N=20, val_dim=8, modes=None):
-    if modes is None:
-        modes = [0] * B
+def _make_batch(B=2, N=20, val_dim=8):
     return {
         'X': torch.randn(B, N, 2),
         'Input_funcs': torch.randn(B, N, val_dim),
-        'Theta_in': torch.tensor(modes, dtype=torch.long).unsqueeze(-1),
         'Mask': torch.ones(B, N, dtype=torch.bool),
     }
 
@@ -35,68 +32,68 @@ def _build_small_model(predict_frequency=True, num_field_modes=3):
 
 
 def test_forward_output_shapes():
-    model = _build_small_model()
-    batch = _make_batch(B=3, N=15, modes=[0, 1, 2])
+    model = _build_small_model(num_field_modes=3)
+    batch = _make_batch(B=3, N=15)
     out = model(batch)
-    assert out['field'].shape == (3, 15, 1)
-    assert out['freq'].shape == (3, 1)
+    assert out['field'].shape == (3, 15, 3)
+    assert out['freq'].shape == (3, 3)
 
 
-def test_forward_no_frequency_branch():
-    model = _build_small_model(predict_frequency=False)
-    batch = _make_batch(B=2, N=10, modes=[0, 1])
+def test_freq_always_sorted_ascending():
+    """The global frequency head output is always sorted ascending."""
+    torch.manual_seed(11)
+    model = _build_small_model(num_field_modes=3)
+    batch = _make_batch(B=5, N=20)
     out = model(batch)
-    assert out['field'].shape == (2, 10, 1)
-    assert out['freq'] is None
+    f = out['freq']
+    assert (f[:, 1:] >= f[:, :-1]).all()
+
+
+def test_alias_GNOT_equals_model():
+    assert GNOT is GNOTModel
 
 
 def test_forward_finite_output():
-    """Çıktıda NaN/inf olmamalı."""
+    """No NaN/inf in outputs."""
     torch.manual_seed(0)
-    model = _build_small_model()
-    batch = _make_batch(B=4, N=20, modes=[0, 0, 1, 2])
+    model = _build_small_model(num_field_modes=3)
+    batch = _make_batch(B=4, N=20)
     out = model(batch)
     assert torch.isfinite(out['field']).all()
     assert torch.isfinite(out['freq']).all()
 
 
 def test_forward_with_padding_mask():
-    """Padding ile birlikte forward çalışmalı."""
+    """Forward must work (and stay finite) with padding."""
     torch.manual_seed(1)
-    model = _build_small_model()
-    batch = _make_batch(B=2, N=20, modes=[0, 1])
-    # 2. örneği yarım yap (padding ekle)
+    model = _build_small_model(num_field_modes=3)
+    batch = _make_batch(B=2, N=20)
     batch['Mask'][1, 10:] = False
     out = model(batch)
     assert torch.isfinite(out['field']).all()
-    # Padding bölgesinde ne çıkarsa çıksın — model bunu mask'lemez (loss'ta mask uygulanır),
-    # ama forward NaN üretmemeli
-    assert out['field'].shape == (2, 20, 1)
+    assert out['field'].shape == (2, 20, 3)
+    assert out['freq'].shape == (2, 3)
 
 
-def test_mode_routing_independence():
-    """Aynı geometri farklı mode_id'lerle farklı çıktı üretmeli."""
+def test_all_slots_distinct():
+    """Each of the K slots should generally produce a different field."""
     torch.manual_seed(2)
-    model = _build_small_model()
-    model.eval()  # dropout devre dışı
-    batch_0 = _make_batch(B=1, N=15, modes=[0])
-    batch_1 = _make_batch(B=1, N=15, modes=[1])
-    # Aynı X ve Input_funcs kullan
-    batch_1['X'] = batch_0['X'].clone()
-    batch_1['Input_funcs'] = batch_0['Input_funcs'].clone()
+    model = _build_small_model(num_field_modes=3)
+    model.eval()
+    batch = _make_batch(B=1, N=15)
     with torch.no_grad():
-        out_0 = model(batch_0)
-        out_1 = model(batch_1)
-    # Farklı mode → farklı field tahmini
-    assert not torch.allclose(out_0['field'], out_1['field'])
+        out = model(batch)
+    f = out['field'][0]  # [N, K]
+    assert not torch.allclose(f[:, 0], f[:, 1])
+    assert not torch.allclose(f[:, 1], f[:, 2])
 
 
 def test_deterministic_eval_mode():
-    """Eval modunda aynı input → aynı output (dropout kapalı, gates deterministic)."""
+    """Eval mode: same input → same output."""
     torch.manual_seed(3)
-    model = _build_small_model()
+    model = _build_small_model(num_field_modes=3)
     model.eval()
-    batch = _make_batch(B=2, N=10, modes=[0, 1])
+    batch = _make_batch(B=2, N=10)
     with torch.no_grad():
         out1 = model(batch)
         out2 = model(batch)
@@ -145,29 +142,24 @@ def test_attention_pool_no_mask():
     assert out.shape == (2, 8)
 
 
-def test_full_batch_with_mixed_modes_finite():
-    """Karışık modları ile büyükçe bir batch — tüm output finite olmalı."""
+def test_full_batch_finite():
+    """A larger batch — all outputs finite, correct shapes."""
     torch.manual_seed(7)
     model = _build_small_model(num_field_modes=3)
     B, N = 6, 25
-    modes = [0, 1, 2, 0, 1, 2]
-    batch = _make_batch(B=B, N=N, modes=modes)
+    batch = _make_batch(B=B, N=N)
     out = model(batch)
     assert torch.isfinite(out['field']).all()
     assert torch.isfinite(out['freq']).all()
-    # Her mode için sample sayısı
-    for m in range(3):
-        count = sum(1 for x in modes if x == m)
-        # Sadece doğru mode_field_blocks'a yönlendirildiğinden emin olamıyoruz forward içinden,
-        # ama field_pred boyutunun korunduğunu test edebiliriz
-        assert (batch['Theta_in'].squeeze(-1) == m).sum().item() == count
+    assert out['field'].shape == (B, N, 3)
+    assert out['freq'].shape == (B, 3)
 
 
 def test_gradient_flow_to_shared_blocks():
-    """Backward sonrası shared_blocks parametrelerinin gradı olmalı."""
+    """After backward, shared_blocks params must have gradient."""
     torch.manual_seed(8)
-    model = _build_small_model()
-    batch = _make_batch(B=2, N=10, modes=[0, 1])
+    model = _build_small_model(num_field_modes=3)
+    batch = _make_batch(B=2, N=10)
     out = model(batch)
     loss = out['field'].sum() + out['freq'].sum()
     loss.backward()
@@ -180,24 +172,18 @@ def test_gradient_flow_to_shared_blocks():
     assert has_grad
 
 
-def test_mode_specific_gradient_isolation():
-    """Mode 0'ın çıktısının gradı yalnızca mode_field_blocks[0]'a akmalı, [1] ve [2]'ye değil."""
+def test_all_slot_decoders_receive_gradient():
+    """Every slot decoder runs for every sample now, so all mode_field_blocks
+    must receive gradient from the combined field output."""
     torch.manual_seed(9)
     model = _build_small_model(num_field_modes=3)
-    # Sadece mode 0 ile bir batch
-    batch = _make_batch(B=2, N=10, modes=[0, 0])
+    batch = _make_batch(B=2, N=10)
     out = model(batch)
-    # Mode 0 field'ından geri yay
     out['field'].sum().backward()
 
-    # mode_field_blocks[0] gradient almalı
-    grad_0_sum = 0.0
-    for p in model.mode_field_blocks[0].parameters():
-        if p.grad is not None:
-            grad_0_sum += p.grad.abs().sum().item()
-    assert grad_0_sum > 0
-
-    # mode_field_blocks[1] ve [2] gradient almamalı (None ya da 0)
-    for mode_branch in [model.mode_field_blocks[1], model.mode_field_blocks[2]]:
-        for p in mode_branch.parameters():
-            assert p.grad is None or p.grad.abs().sum().item() == 0
+    for k in range(3):
+        gsum = 0.0
+        for p in model.mode_field_blocks[k].parameters():
+            if p.grad is not None:
+                gsum += p.grad.abs().sum().item()
+        assert gsum > 0, f"slot {k} decoder received no gradient"
