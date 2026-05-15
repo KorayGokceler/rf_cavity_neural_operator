@@ -321,10 +321,20 @@ class GNOTLightning(pl.LightningModule):
                 mae_ghz = F.l1_loss(fp_ghz, ft_ghz)
                 self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Tensors for torchmetrics (R2, MAE) — use Hungarian-aligned predictions.
+        # Tensors for torchmetrics (R2, MAE).
+        # Sign is physically arbitrary for eigenvectors (loss is sign-invariant),
+        # so flip each mode column to the sign that minimises squared error before
+        # handing off to R2/MAE — otherwise a valid -sign prediction gives R2≈-3.
         with torch.no_grad():
-            mask_km = valid_mask.unsqueeze(-1).expand_as(aligned_pred_field)  # [B, N, K]
-            preds_valid = aligned_pred_field[mask_km].contiguous()
+            sign_aligned = aligned_pred_field.clone()
+            m_exp = valid_mask.float().unsqueeze(-1)          # [B, N, 1]
+            pos_err = ((sign_aligned - true_field) ** 2 * m_exp).sum(dim=1)   # [B, K]
+            neg_err = ((sign_aligned + true_field) ** 2 * m_exp).sum(dim=1)   # [B, K]
+            flip = (neg_err < pos_err).float().unsqueeze(1)   # [B, 1, K]  1=flip
+            sign_aligned = sign_aligned * (1.0 - 2.0 * flip)
+
+            mask_km = valid_mask.unsqueeze(-1).expand_as(sign_aligned)        # [B, N, K]
+            preds_valid = sign_aligned[mask_km].contiguous()
             targets_valid = true_field[mask_km].contiguous()
 
         return total_loss, preds_valid, targets_valid
