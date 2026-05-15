@@ -243,6 +243,7 @@ class GNOTLightning(pl.LightningModule):
         loss_field = torch.zeros((), device=device)
         rel_l2_per_mode = torch.zeros(K, device=device)
         rel_l2_count = torch.zeros(K, device=device)
+        aligned_pred_field = torch.zeros_like(pred_field)   # [B, N, K] — for R2/MAE
 
         # Spectral gap for soft sigma (relative to mean target gap in batch)
         for b in range(B):
@@ -253,6 +254,7 @@ class GNOTLightning(pl.LightningModule):
 
             fp_aligned = fp_b[perm_t]                 # [K] reordered to target order
             E_hat = pred_field[b][:, perm_t]          # [N, K] reorder mode columns
+            aligned_pred_field[b] = E_hat             # store for metrics
             E_tgt = true_field[b]                     # [N, K]
             m_b = valid_mask[b]                       # [N]
 
@@ -319,10 +321,10 @@ class GNOTLightning(pl.LightningModule):
                 mae_ghz = F.l1_loss(fp_ghz, ft_ghz)
                 self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
 
-        # Tensors for torchmetrics (R2, MAE) — flatten all valid (node, mode).
+        # Tensors for torchmetrics (R2, MAE) — use Hungarian-aligned predictions.
         with torch.no_grad():
-            mask_km = valid_mask.unsqueeze(-1).expand_as(pred_field)  # [B, N, K]
-            preds_valid = pred_field[mask_km].contiguous()
+            mask_km = valid_mask.unsqueeze(-1).expand_as(aligned_pred_field)  # [B, N, K]
+            preds_valid = aligned_pred_field[mask_km].contiguous()
             targets_valid = true_field[mask_km].contiguous()
 
         return total_loss, preds_valid, targets_valid
