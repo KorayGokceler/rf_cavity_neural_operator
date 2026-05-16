@@ -33,24 +33,30 @@ def match_frequencies(f_pred, f_true):
 
 
 def detect_clusters(f_true_matched, threshold):
-    """Group mode indices by relative frequency proximity (for 'hard' mode).
+    """Group mode indices by absolute frequency proximity (for 'hard' mode).
 
-    Two consecutive (sorted) modes belong to the same cluster when
-        |f_i - f_j| / max(|f_mean|, eps) < threshold.
+    Two consecutive (sorted) modes belong to the same cluster when their
+    absolute gap on the (normalized) frequency scale is small:
+
+        |f_i - f_{i-1}| < threshold.
+
+    Frequencies are standardized (z-scored) upstream, so an absolute gap is
+    well-defined and scale-consistent across samples; a relative gap divided
+    by a near-zero standardized mean is numerically unstable and was the prior
+    bug. ``threshold`` (default 0.05) is therefore an absolute distance on the
+    normalized frequency axis.
 
     Args:
         f_true_matched: [K] target frequencies aligned to prediction order.
-        threshold: relative gap threshold.
+        threshold: absolute gap threshold on the normalized frequency scale.
     Returns:
         list[list[int]] e.g. [[0], [1, 2]] or [[0], [1], [2]].
     """
     f = f_true_matched.detach().float().tolist()
     K = len(f)
-    f_mean = sum(abs(v) for v in f) / max(K, 1)
-    denom = max(abs(f_mean), 1e-6)
     clusters = [[0]]
     for i in range(1, K):
-        if abs(f[i] - f[i - 1]) / denom < threshold:
+        if abs(f[i] - f[i - 1]) < threshold:
             clusters[-1].append(i)
         else:
             clusters.append([i])
@@ -102,22 +108,38 @@ def grassmannian_loss(E_hat, E_tgt, mask=None):
 
 
 def soft_procrustes_loss(E_hat, E_tgt, f_matched, sigma, mask=None):
-    """Frequency-weighted soft Procrustes alignment loss.
+    """Frequency-weighted soft-subspace alignment loss.
 
-    W[i,j] = exp(-(f_i - f_j)^2 / sigma^2) softly couples only the
-    near-degenerate modes; well-separated modes keep an (almost) identity
-    weighting so this gracefully reduces to a per-mode field loss.
+    Only near-degenerate modes (small |f_i - f_j| relative to ``sigma``) are
+    allowed to mix through an orthogonal Procrustes rotation; well-separated
+    modes fall back to a per-mode sign-invariant relative L2.
 
-        M_w = (E_hat^T E_tgt) * W      (elementwise)
-        SVD: M_w = U S V^T  ->  R* = V U^T   (orthogonal alignment)
-        loss = relative_L2(E_hat, E_tgt @ R*)
+    The previous formulation built ``M = (E_hat^T E_tgt) * W`` and took its
+    SVD.  Element-wise masking of a Gram matrix does NOT yield a valid
+    Procrustes rotation once three or more modes are involved (the off-block
+    couplings of a 3-way degeneracy are silently dropped), so the recovered
+    ``R`` was not orthogonal-optimal.  Instead we now:
+
+        1. compute the *un-weighted* orthogonal Procrustes rotation ``R`` from
+           the full Gram matrix and **detach** it — it is an alignment
+           *target*, not a differentiable shortcut that could collapse the
+           prediction onto a rotated copy of the target;
+        2. gate rotation freedom per-mode by how strongly that mode couples to
+           any other one:  ``alpha_j = max_{i != j} W[i, j]``;
+        3. blend the rotated target (degenerate limit, alpha→1) with the
+           sign-aligned raw target (separated limit, alpha→0).
+
+    For well-separated modes this is exactly the standard sign-invariant
+    relative L2; for a degenerate block it is the Grassmannian subspace
+    distance realised through the optimal within-block rotation.
 
     Args:
         E_hat, E_tgt: [N, K] columns are the (mask-applied) mode fields.
         f_matched: [K] target frequencies (prediction-aligned order).
-        sigma: scalar coupling bandwidth.
+        sigma: scalar coupling bandwidth (ABSOLUTE, on the z-scored freq axis).
         mask: [N] boolean or None.
     """
+    K = f_matched.shape[-1]
     if mask is not None:
         m = mask.to(E_hat.dtype).unsqueeze(-1)  # [N, 1]
         E_hat = E_hat * m
@@ -126,16 +148,28 @@ def soft_procrustes_loss(E_hat, E_tgt, f_matched, sigma, mask=None):
     fi = f_matched.view(-1, 1)
     fj = f_matched.view(1, -1)
     sigma2 = (sigma ** 2) + 1e-12
-    W = torch.exp(-((fi - fj) ** 2) / sigma2)  # [K, K]
+    W = torch.exp(-((fi - fj) ** 2) / sigma2)  # [K, K], diag == 1
 
-    M = (E_hat.transpose(-2, -1) @ E_tgt) * W  # [K, K]
-    # Orthogonal Procrustes: best R aligning E_tgt onto E_hat.
-    U, S, Vh = torch.linalg.svd(M)
-    R = Vh.transpose(-2, -1) @ U.transpose(-2, -1)  # [K, K], R* = V U^T
+    with torch.no_grad():
+        # Un-weighted orthogonal Procrustes:  argmin_R ||E_hat - E_tgt R||_F.
+        C = E_hat.transpose(-2, -1) @ E_tgt          # [K, K]
+        U, _, Vh = torch.linalg.svd(C)
+        R = Vh.transpose(-2, -1) @ U.transpose(-2, -1)   # [K, K], R = V U^T
 
-    E_tgt_rot = E_tgt @ R                       # [N, K]
-    num = ((E_hat - E_tgt_rot) ** 2).sum()
-    den = (E_tgt ** 2).sum() + 1e-8
+        # Per-mode mixing gate: strongest coupling of mode j to any other mode.
+        eye = torch.eye(K, device=W.device, dtype=W.dtype)
+        alpha = (W * (1.0 - eye)).max(dim=0).values  # [K] in [0, 1]
+
+        # Sign-aligned raw target (sign-invariant for well-separated modes).
+        s = torch.sign((E_hat * E_tgt).sum(dim=0, keepdim=True))  # [1, K]
+        s = torch.where(s == 0, torch.ones_like(s), s)
+
+    E_tgt_rot = E_tgt @ R                            # [N, K] subspace-aligned
+    E_tgt_sgn = E_tgt * s                            # [N, K] sign-aligned
+    E_eff = alpha * E_tgt_rot + (1.0 - alpha) * E_tgt_sgn
+
+    num = ((E_hat - E_eff) ** 2).sum()
+    den = (E_eff ** 2).sum() + 1e-8
     return num / den
 
 class GNOTLightning(pl.LightningModule):
@@ -156,6 +190,8 @@ class GNOTLightning(pl.LightningModule):
                  degeneracy_mode='soft',
                  near_deg_threshold=0.05,
                  deg_sigma_rel=0.5,
+                 deg_sigma_abs=0.3,
+                 slot_ortho_weight=0.1,
                  freq_match_weight=0.5):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
@@ -192,7 +228,11 @@ class GNOTLightning(pl.LightningModule):
             f"degeneracy_mode must be 'soft' or 'hard', got {degeneracy_mode}"
         self.degeneracy_mode = degeneracy_mode
         self.near_deg_threshold = near_deg_threshold
+        # deg_sigma_rel kept only for checkpoint/back-compat; the soft loss now
+        # uses the absolute deg_sigma_abs (see _compute_loss for the rationale).
         self.deg_sigma_rel = deg_sigma_rel
+        self.deg_sigma_abs = deg_sigma_abs
+        self.slot_ortho_weight = slot_ortho_weight
         self.freq_match_weight = freq_match_weight
 
         # Optional: Metrics to evaluate and measure model's success
@@ -229,9 +269,12 @@ class GNOTLightning(pl.LightningModule):
         else:
             loss_bnd = torch.tensor(0.0, device=pred_field.device)
         self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
-
-        # Hard constraint: zero predictions at boundary nodes (all modes)
-        pred_field = pred_field * (1.0 - bnd_mask_f)
+        # NOTE: no hard zeroing of pred_field at boundary nodes.  The FEM target
+        # field is NOT identically zero on the detected boundary band
+        # (mean|Y_bnd| ~= 0.5), so multiplying predictions by (1 - bnd_mask)
+        # forced the network toward a physically wrong field and produced a
+        # systematically corrupted gradient.  Boundary behaviour is instead a
+        # *soft* penalty (loss_bnd, weighted by smoothness_weight).
 
         # --- PER-SAMPLE LOSS (both freq arrays are ascending-sorted, so slot k
         #     always trains against the k-th target mode by frequency order) ---
@@ -242,6 +285,7 @@ class GNOTLightning(pl.LightningModule):
         device = pred_field.device
         loss_freq = torch.zeros((), device=device)
         loss_field = torch.zeros((), device=device)
+        loss_ortho = torch.zeros((), device=device)
         rel_l2_per_mode = torch.zeros(K, device=device)
         rel_l2_count = torch.zeros(K, device=device)
         # Detach for metric bookkeeping — no gradient needed past this point.
@@ -266,15 +310,33 @@ class GNOTLightning(pl.LightningModule):
                     fl_b = fl_b + g
                 loss_field = loss_field + fl_b
             else:  # 'soft'
-                # sigma = deg_sigma_rel * mean spectral gap of this sample
-                if K > 1:
-                    gaps = (ft_b[1:] - ft_b[:-1]).abs()
-                    mean_gap = gaps.mean().clamp(min=1e-4)
-                else:
-                    mean_gap = torch.tensor(1.0, device=device)
-                sigma = self.deg_sigma_rel * mean_gap
+                # CRITICAL: sigma is an ABSOLUTE bandwidth on the z-scored
+                # frequency axis, NOT deg_sigma_rel * mean_gap.  The mean gap
+                # between standardized frequencies is ~O(1), so the old scaling
+                # pinned every off-diagonal coupling at exp(-1/deg_sigma_rel^2)
+                # regardless of the actual degeneracy — the soft subspace
+                # coupling never activated.  A fixed sigma (in normalized-freq
+                # units) makes W genuinely degeneracy-sensitive.
+                sigma = self.deg_sigma_abs
                 loss_field = loss_field + soft_procrustes_loss(
                     E_hat, E_tgt, ft_b, sigma, m_b)
+
+                # Slot-collapse guard: the subspace loss is invariant to
+                # within-block rotations, so two near-degenerate slots could
+                # collapse onto the same direction (subspace loses a dimension).
+                # Penalize squared cosine between slot fields, weighted by how
+                # strongly the two modes couple (W).  Well-separated modes
+                # (W ~= 0) are left free; degenerate ones are pushed apart.
+                fi = ft_b.view(-1, 1)
+                fj = ft_b.view(1, -1)
+                W_b = torch.exp(-((fi - fj) ** 2) / (sigma ** 2 + 1e-12))  # [K,K]
+                m_col = m_b.to(E_hat.dtype).unsqueeze(-1)                  # [N,1]
+                Eh_n = F.normalize(E_hat * m_col, dim=0, eps=eps)          # [N,K]
+                G = Eh_n.transpose(-2, -1) @ Eh_n                          # [K,K]
+                eye_k = torch.eye(K, device=device, dtype=W_b.dtype)
+                # 0.5 * sum over all i!=j  ==  sum over i<j  (G, W symmetric)
+                loss_ortho = loss_ortho + 0.5 * (
+                    (W_b * (1.0 - eye_k)) * (G ** 2)).sum()
 
             # --- per-mode sign-agnostic relative L2 (reporting only) ------
             with torch.no_grad():
@@ -291,16 +353,21 @@ class GNOTLightning(pl.LightningModule):
 
         loss_freq = loss_freq / max(B, 1)
         loss_field = loss_field / max(B, 1)
+        loss_ortho = loss_ortho / max(B, 1)
 
         if not (self.predict_frequency and outputs.get('freq') is not None):
             loss_freq = torch.zeros((), device=device)
 
-        total_loss = loss_field + (self.freq_weight * loss_freq) + (self.smoothness_weight * loss_bnd)
+        total_loss = (loss_field
+                      + (self.freq_weight * loss_freq)
+                      + (self.smoothness_weight * loss_bnd)
+                      + (self.slot_ortho_weight * loss_ortho))
 
         # --- logging -----------------------------------------------------
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/ortho_loss', loss_ortho, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
 
         rel_l2_count = rel_l2_count.clamp(min=1.0)
         rel_l2_mean_per_mode = rel_l2_per_mode / rel_l2_count

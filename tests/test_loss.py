@@ -2,7 +2,7 @@
 
 Invariants:
 - _compute_loss runs end-to-end for soft and hard degeneracy modes
-- Boundary constraint zeros predictions / penalises boundary energy
+- Boundary energy is a soft penalty only (predictions are NOT hard-zeroed)
 - Loss stays finite (incl. degenerate / zero-target edge cases)
 - Frequency matching cost is permutation-aware
 - smoothness_weight=0 → loss_bnd does not contribute to total
@@ -85,12 +85,22 @@ def test_compute_loss_no_freq_branch():
     assert torch.isfinite(loss)
 
 
-def test_boundary_prediction_zeroed():
-    """Predictions at boundary nodes are hard-zeroed before metrics."""
+def test_boundary_not_hard_zeroed():
+    """Regression for FIX 2: predictions at boundary nodes must NOT be
+    hard-zeroed.  The FEM target is not identically zero on the detected
+    boundary band, so `pred_field *= (1 - bnd_mask)` trained the network
+    toward a wrong field.  After the fix the predictions handed to the
+    metrics are the model's continuous output — no exact-zero rows injected.
+    """
     m = _make_module('soft')
-    batch = _make_batch(B=2, N=10)
-    _, preds, _ = m._compute_loss(batch, "val")
+    batch = _make_batch(B=2, N=10)   # nodes 0,1 are boundary (dist_bnd == 0)
+    loss, preds, _ = m._compute_loss(batch, "val")
     assert torch.isfinite(preds).all()
+    # Continuous Gaussian-driven output: an exact 0.0 only appears if a
+    # boundary hard-zero multiply was (re)introduced.
+    assert (preds == 0.0).sum().item() == 0, "boundary hard-zeroing reappeared"
+    # Boundary energy is still tracked as a soft penalty for logging.
+    assert torch.isfinite(loss)
 
 
 def test_loss_finite_with_zero_targets():

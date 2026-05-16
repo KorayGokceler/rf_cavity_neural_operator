@@ -155,6 +155,8 @@ def main():
         degeneracy_mode=getattr(tc, 'degeneracy_mode', 'soft'),
         near_deg_threshold=getattr(tc, 'near_deg_threshold', 0.05),
         deg_sigma_rel=getattr(tc, 'deg_sigma_rel', 0.5),
+        deg_sigma_abs=getattr(tc, 'deg_sigma_abs', 0.3),
+        slot_ortho_weight=getattr(tc, 'slot_ortho_weight', 0.1),
         freq_match_weight=getattr(tc, 'freq_match_weight', 0.5),
     )
 

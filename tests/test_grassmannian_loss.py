@@ -146,3 +146,38 @@ def test_soft_procrustes_reduces_to_field_loss_when_separated():
     f = torch.tensor([1.0, 5.0, 12.0])
     loss = soft_procrustes_loss(E_hat, E_tgt, f, sigma=0.01).item()
     assert loss < 1e-3, loss
+
+
+def test_soft_procrustes_three_way_degeneracy():
+    """Regression test for the 3-way-degeneracy fix.
+
+    The old loss built M = (E_hat^T E_tgt) * W and took its SVD; for a triple
+    degeneracy that element-wise mask drops valid off-block couplings, so the
+    recovered rotation is NOT orthogonal-optimal and an arbitrary SO(3)
+    rotation of the target subspace produces a spuriously large loss.
+
+    With the detached un-weighted Procrustes + per-mode soft blend, an SO(3)
+    rotation of a fully degenerate triple must leave the loss ~0.
+    """
+    torch.manual_seed(7)
+    N = 128
+    E_tgt = torch.randn(N, 3)
+
+    # Random proper rotation in SO(3) via QR of a Gaussian matrix.
+    A = torch.randn(3, 3)
+    Q, R = torch.linalg.qr(A)
+    Q = Q * torch.sign(torch.diagonal(R)).unsqueeze(0)
+    if torch.det(Q) < 0:
+        Q[:, 0] = -Q[:, 0]
+    E_hat = E_tgt @ Q.t()                 # prediction = rotated target subspace
+
+    f_deg = torch.tensor([4.0, 4.0001, 4.0002])   # fully degenerate triple
+    loss_deg = soft_procrustes_loss(E_hat, E_tgt, f_deg, sigma=0.3).item()
+    assert loss_deg < 1e-3, ("3-way degenerate SO(3) not invariant", loss_deg)
+
+    # Well-separated frequencies: the same rotation now MIXES physically
+    # distinct modes, so the loss must NOT be ~0 (rotation freedom is gated off
+    # per-mode by alpha -> the model is held to the per-mode field).
+    f_sep = torch.tensor([1.0, 6.0, 13.0])
+    loss_sep = soft_procrustes_loss(E_hat, E_tgt, f_sep, sigma=0.3).item()
+    assert loss_sep > 0.1, ("separated modes wrongly allowed to rotate", loss_sep)

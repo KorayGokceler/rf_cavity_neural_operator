@@ -138,8 +138,10 @@ training:
   #   frequencies (K! permutations) and uses a Grassmannian / soft-Procrustes
   #   subspace distance so degenerate eigenspaces are handled correctly.
   degeneracy_mode: soft         # "soft" | "hard"
-  near_deg_threshold: 0.05      # [hard] |Δf|/f_mean < threshold → same cluster
-  deg_sigma_rel: 0.5            # [soft] σ = deg_sigma_rel × mean spectral gap
+  near_deg_threshold: 0.05      # [hard] absolute |Δf| on z-scored axis → same cluster
+  deg_sigma_abs: 0.3            # [soft] ABSOLUTE σ on z-scored freq axis (active knob)
+  deg_sigma_rel: 0.5            # [DEPRECATED] kept for checkpoint back-compat, unused
+  slot_ortho_weight: 0.1        # [soft] penalize collapse of near-degenerate slots
   freq_match_weight: 0.5        # weight of freq in matching cost
 
   # Debug
