@@ -16,3 +16,10 @@ __pycache__/
 
 # Obsidian settings (user-specific)
 .obsidian/
+
+# Training / inference run artifacts (generated, not source)
+training_logs/
+inference_results/
+dataset_plots/
+lightning_logs/
+*.ckpt
