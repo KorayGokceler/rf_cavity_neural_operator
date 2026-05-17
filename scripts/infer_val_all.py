@@ -33,13 +33,43 @@ if _ROOT not in sys.path:
 
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
-from infer import _near_degenerate_clusters
+from infer import (_near_degenerate_clusters, plot_geometry_comparison,
+                   _near_degenerate_note)
 from scripts.diagnose_data_floor import _sign_agnostic_rel_l2, _subspace_rel_l2_w
 
 
+def _load_elements_pool(data_path):
+    """geom_id -> triangle connectivity, for FEM-correct triangulation."""
+    pool = {}
+    p = str(data_path)
+    try:
+        if p.endswith('.pkl'):
+            import pickle
+            with open(data_path, 'rb') as f:
+                raw = pickle.load(f)
+            for gid, g in raw['geometry_pool'].items():
+                if 'elements' in g:
+                    pool[int(gid)] = np.asarray(g['elements'])
+        elif p.endswith('.h5'):
+            import h5py
+            with h5py.File(data_path, 'r') as f:
+                for gid in f['geometry_pool']:
+                    grp = f['geometry_pool'][gid]
+                    if 'elements' in grp:
+                        pool[int(gid)] = grp['elements'][:]
+    except Exception as e:
+        print(f"  (warning: could not load mesh elements: {e})")
+    return pool
+
+
 def evaluate_split(model, dataset, device, batch_size, deg_threshold,
-                   dump_rows):
-    """Run the model over every geometry in `dataset`; return (agg, per_geom)."""
+                   dump_rows, plot_dir=None, elements_pool=None,
+                   split_name=''):
+    """Run the model over every geometry in `dataset`; return (agg, per_geom).
+
+    If `plot_dir` is set, also save a GT | Prediction | Error figure for
+    EVERY geometry (no cap), one PNG per geometry.
+    """
     dl = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                     collate_fn=gnot_collate_fn)
     fs = getattr(model, 'freq_stats', None)
@@ -87,6 +117,7 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
 
                 row = {'geom_id': gid, 'n_nodes': nv}
                 rl_uni, rl_w = [], []
+                signs = np.ones(K)
                 for kk in range(K):
                     ru = _sign_agnostic_rel_l2(Eh[:, kk], Et[:, kk])
                     rw = _sign_agnostic_rel_l2(Eh[:, kk], Et[:, kk], w)
@@ -97,6 +128,7 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                     # sign-aligned R^2 contribution
                     s = -1.0 if (np.sum((Eh[:, kk] + Et[:, kk]) ** 2)
                                  < np.sum((Eh[:, kk] - Et[:, kk]) ** 2)) else 1.0
+                    signs[kk] = s
                     sse += float(np.sum((s * Eh[:, kk] - Et[:, kk]) ** 2))
                     sst += float(np.sum((Et[:, kk] - Et[:, kk].mean()) ** 2))
 
@@ -126,14 +158,42 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                 row['mean_relL2_areaw'] = float(np.mean(rl_w))
                 per_geom.append(row)
 
+                coords = batch['X'][i][m].cpu().numpy()
                 if dump_rows is not None:
                     dump_rows[gid] = {
-                        'coords': batch['X'][i][m].cpu().numpy(),
+                        'coords': coords,
                         'pred': Eh, 'target': Et,
                         'freq_true_ghz': ft_ph[i],
                         'freq_pred_ghz': (fp_ph[i] if fp_ph is not None
                                           else np.full(K, np.nan)),
                     }
+
+                if plot_dir is not None:
+                    modes = {}
+                    for kk in range(K):
+                        fp_v = float(fp_ph[i][kk]) if fp_ph is not None \
+                            else float('nan')
+                        modes[kk] = {
+                            'coords': coords,
+                            'target': Et[:, kk],
+                            'pred': signs[kk] * Eh[:, kk],
+                            'f_true': float(ft_ph[i][kk]),
+                            'f_pred': fp_v,
+                            'rel_l2': rl_uni[kk],
+                            'sign_info': ' (sign-flipped)' if signs[kk] < 0
+                            else '',
+                        }
+                    el = elements_pool.get(gid) if elements_pool else None
+                    try:
+                        if el is not None and int(np.max(el)) >= nv:
+                            el = None      # indices don't match kept nodes
+                        save_path = os.path.join(
+                            plot_dir, f"{split_name}_geom_{gid:04d}.png")
+                        plot_geometry_comparison(
+                            gid, modes, save_path, el,
+                            _near_degenerate_note(ft_ph[i]))
+                    except Exception as e:
+                        print(f"  (warning: plot failed for geom {gid}: {e})")
 
     def ms(key, rows):
         v = [r[key] for r in rows if not np.isnan(r.get(key, np.nan))]
@@ -197,12 +257,21 @@ def main():
     ap.add_argument('--json', default=None, help='aggregate metrics JSON')
     ap.add_argument('--dump_npz', default=None,
                     help='dump all preds/targets/coords for offline plotting')
+    ap.add_argument('--plot_dir', default=None,
+                    help='save a GT|Pred|Error figure for EVERY geometry here')
     args = ap.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Loading checkpoint: {args.checkpoint}")
     model = GNOTLightning.load_from_checkpoint(args.checkpoint)
     model.eval().to(device)
+
+    elements_pool = {}
+    if args.plot_dir:
+        os.makedirs(args.plot_dir, exist_ok=True)
+        elements_pool = _load_elements_pool(args.data_path)
+        print(f"Plotting enabled -> {args.plot_dir}  "
+              f"(mesh elements for {len(elements_pool)} geometries)")
 
     splits = ['train', 'val', 'test'] if args.split == 'all' else [args.split]
     report = {}
@@ -213,7 +282,10 @@ def main():
         if getattr(ds, 'stats', None):
             model.freq_stats = ds.stats
         agg, rows = evaluate_split(model, ds, device, args.batch_size,
-                                   args.deg_threshold, dump)
+                                   args.deg_threshold, dump,
+                                   plot_dir=args.plot_dir,
+                                   elements_pool=elements_pool,
+                                   split_name=sp)
         print_agg(sp, agg)
         report[sp] = agg
         for r in rows:
