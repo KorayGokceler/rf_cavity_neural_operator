@@ -340,18 +340,41 @@ class GNOTLightning(pl.LightningModule):
                 loss_ortho = loss_ortho + 0.5 * (
                     (W_b * (1.0 - eye_k)) * (G ** 2)).sum()
 
-            # --- per-mode sign-agnostic relative L2 (reporting only) ------
+            # --- relative L2 (reporting only) --------------------------------
+            # Singleton modes: per-mode sign-agnostic rel L2 (unchanged).
+            # Near-degenerate clusters: a fixed slot↔mode comparison is unfair
+            # because any within-block rotation is a physically equivalent
+            # eigenbasis, so it inflated the logged metric while the loss
+            # (Grassmannian/Procrustes) was already subspace-correct.  Mirror
+            # the evaluation convention (infer_val_all.py near_deg_subspace_relL2):
+            # project each target column onto the predicted cluster subspace and
+            # report the projection-residual rel L2.
             with torch.no_grad():
                 m_f = m_b.float().unsqueeze(-1)       # [N, 1]
-                for k in range(K):
-                    eh = E_hat[:, k:k + 1]
-                    et = E_tgt[:, k:k + 1]
-                    num_p = (((eh - et) ** 2) * m_f).sum()
-                    num_n = (((eh + et) ** 2) * m_f).sum()
-                    den = ((et ** 2) * m_f).sum() + eps
-                    rl = torch.sqrt(torch.minimum(num_p, num_n) / den)
-                    rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
-                    rel_l2_count[k] = rel_l2_count[k] + 1.0
+                clusters = detect_clusters(ft_b, self.near_deg_threshold)
+                for cl in clusters:
+                    if len(cl) == 1:
+                        k = cl[0]
+                        eh = E_hat[:, k:k + 1]
+                        et = E_tgt[:, k:k + 1]
+                        num_p = (((eh - et) ** 2) * m_f).sum()
+                        num_n = (((eh + et) ** 2) * m_f).sum()
+                        den = ((et ** 2) * m_f).sum() + eps
+                        rl = torch.sqrt(torch.minimum(num_p, num_n) / den)
+                        rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
+                        rel_l2_count[k] = rel_l2_count[k] + 1.0
+                    else:
+                        cl_t = torch.tensor(cl, device=device, dtype=torch.long)
+                        Q = _masked_orthonormalize(E_hat[:, cl_t], m_b)  # [N,|cl|]
+                        for k in cl:
+                            et = E_tgt[:, k:k + 1] * m_f          # [N, 1]
+                            coeff = Q.transpose(-2, -1) @ et       # [|cl|, 1]
+                            et_proj = Q @ coeff                    # [N, 1]
+                            num = ((et - et_proj) ** 2).sum()
+                            den = (et ** 2).sum() + eps
+                            rl = torch.sqrt(num / den)
+                            rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
+                            rel_l2_count[k] = rel_l2_count[k] + 1.0
 
         loss_freq = loss_freq / max(B, 1)
         loss_field = loss_field / max(B, 1)
@@ -403,6 +426,50 @@ class GNOTLightning(pl.LightningModule):
             targets_valid = true_field[mask_km].contiguous()
 
         return total_loss, preds_valid, targets_valid
+
+    def on_fit_start(self):
+        """One-time diagnostic: how many train geometries are near-degenerate.
+
+        Uses the same detect_clusters + near_deg_threshold as the loss/metric so
+        the count matches what training actually treats as degenerate.  Cheap:
+        only reads per-mode Theta[1] (raw freq), never node fields.
+        """
+        if self.global_rank != 0:
+            return
+        try:
+            ds = self.trainer.train_dataloader.dataset
+            thr = self.near_deg_threshold
+            n_deg_geo = 0
+            n_deg_modes = 0
+            total = len(ds.active_geoms)
+            for g_id in ds.active_geoms:
+                s_idx = ds.geom_to_samples[g_id]
+                if getattr(ds, 'is_h5', False):
+                    f = ds._get_h5_handle()
+                    raw = np.array([float(f['samples'][str(j)]['Theta'][1])
+                                    for j in s_idx], dtype=np.float64)
+                else:
+                    raw = np.array([float(ds.samples_metadata[j]['Theta'][1])
+                                    for j in s_idx], dtype=np.float64)
+                if ds.stats:
+                    fn = (raw - ds.stats['mean']) / ds.stats['std']
+                else:
+                    fn = raw
+                fn = np.sort(fn)  # __getitem__ uses ascending-freq order
+                cls = detect_clusters(torch.from_numpy(fn), thr)
+                deg = [c for c in cls if len(c) > 1]
+                if deg:
+                    n_deg_geo += 1
+                    n_deg_modes += sum(len(c) for c in deg)
+            msg = (f"[degeneracy] train: {n_deg_geo}/{total} geometries "
+                   f"near-degenerate ({n_deg_modes} modes), thr={thr:.4f}")
+            print(msg)
+            if self.logger is not None:
+                self.logger.experiment.add_text(
+                    'dataset/near_degeneracy', msg, 0)
+                self.log('dataset/near_deg_geoms', float(n_deg_geo))
+        except Exception as e:
+            print(f"[degeneracy] count skipped: {e}")
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
