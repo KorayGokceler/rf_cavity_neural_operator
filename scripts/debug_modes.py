@@ -108,25 +108,25 @@ for mode_val in [0, 1, 2]:
             print(f"    ⚠️  mode_field_block[{mode_val}].{name}: grad=NONE!")
     print(f"    Mode block[{mode_val}] grad norm: {block_grad:.6f} ({block_count} params)")
 
-    # Mode-specific head gradients
+    # Mode-specific branch head gradients (DeepONet coefficient heads)
     head_grad = 0.0
     head_count = 0
-    for name, param in model.field_heads[mode_val].named_parameters():
+    for name, param in model.branch_net[mode_val].named_parameters():
         if param.grad is not None:
             head_grad += param.grad.norm().item()
             head_count += 1
         else:
-            print(f"    ⚠️  field_head[{mode_val}].{name}: grad=NONE!")
-    print(f"    Mode head[{mode_val}] grad norm: {head_grad:.6f} ({head_count} params)")
+            print(f"    ⚠️  branch_net[{mode_val}].{name}: grad=NONE!")
+    print(f"    Mode branch_net[{mode_val}] grad norm: {head_grad:.6f} ({head_count} params)")
 
     # Diğer modların block'ları gradient almıyor olmalı
     for other in [0, 1, 2]:
         if other == mode_val:
             continue
         other_grad = sum(p.grad.norm().item() for p in model.mode_field_blocks[other].parameters() if p.grad is not None)
-        other_head_grad = sum(p.grad.norm().item() for p in model.field_heads[other].parameters() if p.grad is not None)
+        other_head_grad = sum(p.grad.norm().item() for p in model.branch_net[other].parameters() if p.grad is not None)
         if other_grad > 0 or other_head_grad > 0:
-            print(f"    ⚠️  Mode {other} block/head gradient sızıntısı! block={other_grad:.6f}, head={other_head_grad:.6f}")
+            print(f"    ⚠️  Mode {other} block/branch gradient sızıntısı! block={other_grad:.6f}, branch={other_head_grad:.6f}")
         else:
             print(f"    ✓  Mode {other} block/head gradient = 0 (izole)")
 

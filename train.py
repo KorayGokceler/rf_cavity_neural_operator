@@ -152,6 +152,7 @@ def main():
         dropout=getattr(mc, 'dropout', 0.0),
         rff_dim=getattr(mc, 'rff_dim', 64),
         rff_length_scale=getattr(mc, 'rff_length_scale', 0.1),
+        n_basis=getattr(mc, 'n_basis', 16),
         degeneracy_mode=getattr(tc, 'degeneracy_mode', 'soft'),
         near_deg_threshold=getattr(tc, 'near_deg_threshold', 0.05),
         deg_sigma_rel=getattr(tc, 'deg_sigma_rel', 0.5),

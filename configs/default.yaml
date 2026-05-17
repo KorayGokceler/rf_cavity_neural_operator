@@ -82,6 +82,9 @@ model:
   rff_dim: 64                   # RFF çıktı boyutu (sin/cos olarak ikiye bölünür → çift olmalı)
   rff_length_scale: 0.1         # Gaussian kernel uzunluk ölçeği (normalize koordinatlar için 0.05–0.2)
 
+  # DeepONet decoder (paylaşılan baz + per-mode katsayılar)
+  n_basis: 16                   # Baz fonksiyonu sayısı J (önerilen: J ≥ K; 2×K – 8×K arası)
+
   # Regularization
   dropout: 0.0                  # Attention ve FFN dropout (0.0-0.3)
 

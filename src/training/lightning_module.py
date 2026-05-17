@@ -187,6 +187,7 @@ class GNOTLightning(pl.LightningModule):
                  gradient_clip_val=None,
                  dropout=0.0,
                  rff_dim=64, rff_length_scale=0.1,
+                 n_basis=16,
                  degeneracy_mode='soft',
                  near_deg_threshold=0.05,
                  deg_sigma_rel=0.5,
@@ -217,6 +218,7 @@ class GNOTLightning(pl.LightningModule):
             dropout=dropout,
             rff_dim=rff_dim,
             rff_length_scale=rff_length_scale,
+            n_basis=n_basis,
         )
         self.freq_weight = freq_weight
         self.smoothness_weight = smoothness_weight
@@ -520,8 +522,8 @@ class GNOTLightning(pl.LightningModule):
                     for p in self.model.mode_field_blocks[mode_idx].parameters():
                         mode_params.append(p)
                         handled_param_ids.add(id(p))
-                    # Mode Field Heads
-                    for p in self.model.field_heads[mode_idx].parameters():
+                    # Mode branch heads (DeepONet coefficient heads)
+                    for p in self.model.branch_net[mode_idx].parameters():
                         mode_params.append(p)
                         handled_param_ids.add(id(p))
                     

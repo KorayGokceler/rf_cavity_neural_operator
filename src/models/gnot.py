@@ -195,7 +195,8 @@ class GNOTModel(nn.Module):
                  n_heads=8, num_experts=4, num_field_modes=3,
                  use_checkpoint=False, predict_frequency=True,
                  dropout=0.0,
-                 rff_dim=64, rff_length_scale=0.1):
+                 rff_dim=64, rff_length_scale=0.1,
+                 n_basis=16):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
@@ -241,42 +242,52 @@ class GNOTModel(nn.Module):
         
         self.final_ln = nn.LayerNorm(embed_dim)
         self.pooler = AttentionPool(embed_dim, n_heads)       # global context for trunk + freq
+        self.n_basis = n_basis
 
-        # Dynamic Mode-specific field heads
-        self.field_heads = nn.ModuleList()
-        for _ in range(num_field_modes):
-            layers = []
+        # ── DeepONet decoder ──────────────────────────────────────────────────
+        # trunk_net  : shared, geometry-conditioned basis Φ [B, N, J]
+        #              Operates on x_emb (post shared_blocks, mode-agnostic).
+        #              Computed once per sample, used by all K modes.
+        # branch_net : K independent heads producing per-mode coefficients α_k [B, J].
+        #              Pools the per-mode representation x_m from mode_field_blocks.
+        # Output     : field [B, N, K] = einsum('bnj,bjk->bnk', Φ, stack(α_k))
+        #
+        # Degenerate subspace benefit: degenerate modes (e.g. dipole pair) differ
+        # only in α — the shared Φ naturally represents their common subspace.
+        trunk_layers = [nn.LayerNorm(embed_dim)]
+        curr_dim = embed_dim
+        if n_field_head_layers > 2:
+            trunk_layers.extend([
+                nn.Linear(curr_dim, embed_dim * 2),
+                nn.LayerNorm(embed_dim * 2),
+                nn.GELU()
+            ])
+            curr_dim = embed_dim * 2
+            for _ in range(n_field_head_layers - 3):
+                trunk_layers.extend([
+                    nn.Linear(curr_dim, curr_dim),
+                    nn.LayerNorm(curr_dim),
+                    nn.GELU()
+                ])
+        if n_field_head_layers >= 2:
+            trunk_layers.extend([
+                nn.Linear(curr_dim, embed_dim),
+                nn.LayerNorm(embed_dim),
+                nn.GELU()
+            ])
             curr_dim = embed_dim
-            
-            # If depth > 2, expand first
-            if n_field_head_layers > 2:
-                layers.extend([
-                    nn.Linear(curr_dim, embed_dim * 2),
-                    nn.LayerNorm(embed_dim * 2),
-                    nn.GELU()
-                ])
-                curr_dim = embed_dim * 2
-                
-                # Intermediate layers
-                for _ in range(n_field_head_layers - 3):
-                    layers.extend([
-                        nn.Linear(curr_dim, curr_dim),
-                        nn.LayerNorm(curr_dim),
-                        nn.GELU()
-                    ])
-            
-            # Penultimate layer: shrink back to embed_dim
-            if n_field_head_layers >= 2:
-                layers.extend([
-                    nn.Linear(curr_dim, embed_dim),
-                    nn.LayerNorm(embed_dim),
-                    nn.GELU()
-                ])
-                curr_dim = embed_dim
-            
-            # Final output layer
-            layers.append(nn.Linear(curr_dim, 1))
-            self.field_heads.append(nn.Sequential(*layers))
+        trunk_layers.append(nn.Linear(curr_dim, n_basis))
+        self.trunk_net = nn.Sequential(*trunk_layers)
+
+        # branch_net: per-mode 2-layer MLP [D → D → J]
+        self.branch_net = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, n_basis),
+            )
+            for _ in range(num_field_modes)
+        ])
 
         # Frequency is now predicted by a single global head (`freq_head_global`)
         # that emits all K eigenfrequencies at once from the pooled geometry
@@ -287,11 +298,23 @@ class GNOTModel(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        for m in self.field_heads.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.01)
+        # trunk_net: moderate init; final layer small → Φ bounded near zero at start.
+        trunk_linears = [m for m in self.trunk_net.modules() if isinstance(m, nn.Linear)]
+        for m in trunk_linears:
+            nn.init.trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        nn.init.trunc_normal_(trunk_linears[-1].weight, std=0.01)
+
+        # branch_net: final layer small → α ≈ 0 → field ≈ 0 initially.
+        for branch in self.branch_net:
+            branch_linears = [m for m in branch.modules() if isinstance(m, nn.Linear)]
+            for m in branch_linears:
+                nn.init.trunc_normal_(m.weight, std=0.02)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+            nn.init.trunc_normal_(branch_linears[-1].weight, std=0.01)
+
         for m in self.freq_head_global.modules():
             if isinstance(m, nn.Linear):
                 nn.init.trunc_normal_(m.weight, std=0.01)
@@ -336,16 +359,22 @@ class GNOTModel(nn.Module):
         f_pred = self.freq_head_global(c)                 # [B, K]
         f_pred = torch.sort(f_pred, dim=-1).values        # always sorted ascending
 
-        # --- Per-slot field decoding (all K slots run for every sample) ---
-        field_preds = []
+        # --- DeepONet shared basis: computed once from geometry trunk -----------
+        # Φ [B, N, J] — J basis functions evaluated at every node.
+        # trunk_net sees x_emb (shared, mode-agnostic) so Φ is the same
+        # for all K modes; mode-specificity lives entirely in α_k.
+        Phi = self.trunk_net(x_emb)                          # [B, N, J]
+        if mask is not None:
+            Phi = Phi * mask.unsqueeze(-1)                   # zero padding nodes
+
+        # --- Per-slot coefficient decoding (α_k for each mode k) -------------
+        alphas = []
         for k in range(self.num_field_modes):
             # Slot query conditioned on this slot's predicted frequency.
             f_k = f_pred[:, k:k + 1]                        # [B, 1]
             q_k = self.slot_queries[k].unsqueeze(0) + self.freq_embed(f_k)  # [B, D]
 
-            # Inject the slot/frequency query as a per-node additive bias and
-            # cross-attend it against the geometry node features via the
-            # existing slot-k decoder blocks.
+            # Inject slot/frequency bias and run mode-specific attention blocks.
             x_m = x_emb + q_k.unsqueeze(1)                  # [B, N, D]
 
             for m_block in self.mode_field_blocks[k]:
@@ -358,10 +387,24 @@ class GNOTModel(nn.Module):
                                   mask, condition_mask, global_context)
 
             x_m = self.final_ln(x_m)
-            field_preds.append(self.field_heads[k](x_m).float())  # [B, N, 1]
 
-        field = torch.cat(field_preds, dim=-1)             # [B, N, K]
-        return {'field': field, 'freq': f_pred}            # [B,N,K], [B,K]
+            # Masked mean-pool → per-mode summary vector [B, D], then map to α_k [B, J].
+            if mask is not None:
+                mf = mask.unsqueeze(-1).to(x_m.dtype)        # [B, N, 1]
+                pooled = (x_m * mf).sum(1) / mf.sum(1).clamp(min=1.0)
+            else:
+                pooled = x_m.mean(1)                          # [B, D]
+
+            alphas.append(self.branch_net[k](pooled))        # [B, J]
+
+        # Reconstruct all K fields in a single batched matmul:
+        #   field [B, N, K] = Φ [B, N, J] × A [B, J, K]
+        A = torch.stack(alphas, dim=-1)                      # [B, J, K]
+        field = torch.einsum('bnj,bjk->bnk', Phi, A).float() # [B, N, K]
+        if mask is not None:
+            field = field * mask.unsqueeze(-1)               # ensure padding = 0
+
+        return {'field': field, 'freq': f_pred}              # [B,N,K], [B,K]
 
     def reset_expert_calls(self):
         for m in self.modules():
