@@ -5,31 +5,58 @@ import torchmetrics
 import math
 import itertools
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 from src.models.gnot import GNOTModel
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  Set-prediction loss helpers (frequency matching + Grassmannian subspace)
+#  Set-prediction loss helpers (OT matching + soft-Grassmannian subspace)
 # ════════════════════════════════════════════════════════════════════════════
 
-def match_frequencies(f_pred, f_true):
-    """Enumerate K! permutations and return the one minimising the squared
-    frequency assignment cost.
+def ot_match(f_pred, f_true, E_hat, E_tgt, mask, freq_w):
+    """Optimal (Hungarian) assignment of predicted slots to target modes.
+
+    The cost combines normalized-frequency distance and a sign-agnostic
+    relative field L2.  Near-degenerate modes therefore get matched within
+    their own subspace automatically — no cluster threshold, no assumption
+    about which modes are degenerate.  Matching is solved on *detached*
+    tensors (no gradient through the argmin, as in DETR); the returned
+    permutation only re-orders the differentiable field/freq tensors.
 
     Args:
-        f_pred: [K] predicted (sorted) frequencies for one sample.
-        f_true: [K] ground-truth frequencies for one sample.
+        f_pred, f_true: [K] frequencies (any order).
+        E_hat, E_tgt:   [N, K] predicted / target mode fields.
+        mask:           [N] boolean (True = valid node) or None.
+        freq_w:         scalar weight of the frequency term in the cost.
     Returns:
-        list[int] best permutation p such that f_pred[p[i]] matches f_true[i].
+        perm: LongTensor [K] — predicted slot index for each target mode j,
+              i.e. ``E_hat[:, perm]`` is aligned column-wise to ``E_tgt``.
     """
-    K = f_true.shape[0]
-    fp = f_pred.detach().float().tolist()
-    ft = f_true.detach().float().tolist()
-    best_perm = min(
-        itertools.permutations(range(K)),
-        key=lambda p: sum((fp[p[i]] - ft[i]) ** 2 for i in range(K)),
-    )
-    return list(best_perm)
+    K = f_true.shape[-1]
+    with torch.no_grad():
+        if mask is not None:
+            m = mask.to(E_hat.dtype).unsqueeze(-1)         # [N, 1]
+            Eh = E_hat * m
+            Et = E_tgt * m
+        else:
+            Eh, Et = E_hat, E_tgt
+
+        df = f_pred.view(-1, 1) - f_true.view(1, -1)        # [Kp, Kt]
+        cost_f = df ** 2
+
+        eh2 = (Eh ** 2).sum(0).view(-1, 1)                  # [Kp, 1]
+        et2 = (Et ** 2).sum(0).view(1, -1)                  # [1, Kt]
+        cross = Eh.transpose(-2, -1) @ Et                   # [Kp, Kt]  <eh_i, et_j>
+        num_p = eh2 + et2 - 2.0 * cross                     # ||eh - et||^2
+        num_n = eh2 + et2 + 2.0 * cross                     # ||eh + et||^2
+        num = torch.minimum(num_p, num_n)                   # sign-agnostic
+        cost_field = num / (et2 + 1e-8)                     # [Kp, Kt] rel L2^2
+
+        C = (freq_w * cost_f + cost_field).detach().cpu().numpy()
+        row, col = linear_sum_assignment(C)                 # row sorted 0..K-1
+        perm = np.empty(K, dtype=np.int64)
+        perm[col] = row                                     # perm[true j] = pred slot
+    return torch.as_tensor(perm, device=E_hat.device)
 
 
 def detect_clusters(f_true_matched, threshold):
@@ -315,12 +342,12 @@ class GNOTLightning(pl.LightningModule):
         # systematically corrupted gradient.  Boundary behaviour is instead a
         # *soft* penalty (loss_bnd, weighted by smoothness_weight).
 
-        # --- PER-SAMPLE LOSS (both freq arrays are ascending-sorted, so slot k
-        #     always trains against the k-th target mode by frequency order) ---
-        # NOTE: match_frequencies was removed because both f_pred (torch.sort in
-        # the model) and f_true (np.argsort in the dataset) are ascending-sorted.
-        # By the rearrangement inequality the optimal K! assignment is always the
-        # identity, so the K! enumeration was dead code executed every step.
+        # --- PER-SAMPLE LOSS ------------------------------------------------
+        # Predicted slots are assigned to target modes per-sample by an optimal
+        # (Hungarian) transport on a frequency + sign-agnostic-field cost.  This
+        # behaves like a numerical solver: the network just emits K (freq,
+        # field) pairs and the loss discovers the correspondence — no ascending-
+        # sort assumption, no cluster threshold, scales to any K.
         device = pred_field.device
         loss_freq = torch.zeros((), device=device)
         loss_field = torch.zeros((), device=device)
@@ -331,13 +358,21 @@ class GNOTLightning(pl.LightningModule):
         aligned_pred_field = pred_field.detach().clone()     # [B, N, K] — for R2/MAE
 
         for b in range(B):
-            fp_b = f_pred[b]                          # [K]  ascending (model-sorted)
-            ft_b = f_true[b]                          # [K]  ascending (dataset-sorted)
-            E_hat = pred_field[b]                     # [N, K]  identity slot→mode mapping
+            fp_b = f_pred[b]                          # [K]
+            ft_b = f_true[b]                          # [K]
+            E_hat = pred_field[b]                     # [N, K]
             E_tgt = true_field[b]                     # [N, K]
             m_b   = valid_mask[b]                     # [N]
 
-            # Frequency regression loss (sorted-to-sorted MSE)
+            # OT (Hungarian) assignment: predicted slot -> target mode j.
+            # perm/index_select is differentiable w.r.t. the field/freq values;
+            # only the assignment itself is detached.
+            perm = ot_match(fp_b, ft_b, E_hat, E_tgt, m_b, self.freq_match_weight)
+            E_hat = E_hat[:, perm]                    # align predicted columns
+            fp_b = fp_b[perm]
+            aligned_pred_field[b] = aligned_pred_field[b][:, perm]  # R2/MAE consistent
+
+            # Frequency regression loss (OT-matched MSE)
             loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
 
             if self.degeneracy_mode == 'hard':

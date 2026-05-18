@@ -13,7 +13,7 @@ import torch
 
 from src.training.lightning_module import (
     GNOTLightning,
-    match_frequencies,
+    ot_match,
     grassmannian_loss,
     soft_procrustes_loss,
 )
@@ -119,13 +119,34 @@ def test_smoothness_weight_zero_excludes_bnd():
     assert total.item() == pytest.approx(2.75)
 
 
-def test_frequency_matching_is_permutation_aware():
+def test_ot_match_is_permutation_aware():
     f_true = torch.tensor([1.0, 2.0, 9.0])
     # prediction in a scrambled order
     f_pred = torch.tensor([9.0, 1.0, 2.0])
-    perm = match_frequencies(f_pred, f_true)
-    aligned = f_pred[torch.tensor(perm)]
+    E = torch.zeros(5, 3)  # zeroed fields → cost reduces to frequency only
+    perm = ot_match(f_pred, f_true, E, E, None, freq_w=1.0)
+    aligned = f_pred[perm]
     assert torch.allclose(aligned, f_true, atol=1e-6)
+
+
+def test_ot_match_degenerate_uses_field_to_disambiguate():
+    """For a degenerate frequency pair the assignment must fall back to the
+    sign-agnostic field cost (no cluster threshold needed)."""
+    f_true = torch.tensor([0.0, 1.0, 1.0])   # modes 1 & 2 degenerate
+    f_pred = torch.tensor([0.0, 1.0, 1.0])
+    N = 16
+    torch.manual_seed(0)
+    v0 = torch.randn(N); v1 = torch.randn(N); v2 = torch.randn(N)
+    E_tgt = torch.stack([v0, v1, v2], dim=1)              # [N, 3]
+    # Prediction swaps the degenerate pair and flips a sign.
+    E_hat = torch.stack([v0, -v2, v1], dim=1)             # [N, 3]
+    perm = ot_match(f_pred, f_true, E_hat, E_tgt, None, freq_w=1.0)
+    aligned = E_hat[:, perm]
+    # Each aligned column must match its target up to sign.
+    for k in range(3):
+        same = torch.allclose(aligned[:, k], E_tgt[:, k], atol=1e-5)
+        flip = torch.allclose(aligned[:, k], -E_tgt[:, k], atol=1e-5)
+        assert same or flip, k
 
 
 def test_grassmannian_zero_for_same_subspace():

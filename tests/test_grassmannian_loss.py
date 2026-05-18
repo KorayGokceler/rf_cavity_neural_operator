@@ -13,7 +13,7 @@ import math
 import torch
 
 from src.training.lightning_module import (
-    match_frequencies,
+    ot_match,
     detect_clusters,
     grassmannian_loss,
     soft_procrustes_loss,
@@ -47,13 +47,15 @@ def test_n1_reduces_to_standard():
 
 
 def test_permutation_invariance():
-    """match_frequencies recovers any permutation of the targets, and the
-    resulting aligned frequency MSE is ~0 regardless of prediction order."""
+    """ot_match recovers any permutation of the targets (pure-frequency cost
+    with zeroed fields), so the aligned frequency MSE is ~0 regardless of
+    prediction order."""
     f_true = torch.tensor([1.0, 2.5, 5.0])
+    E = torch.zeros(8, 3)  # zeroed fields → cost reduces to frequency only
     for p in itertools.permutations(range(3)):
         f_pred = f_true[list(p)].clone()
-        perm = match_frequencies(f_pred, f_true)
-        aligned = f_pred[torch.tensor(perm)]
+        perm = ot_match(f_pred, f_true, E, E, None, freq_w=1.0)
+        aligned = f_pred[perm]
         assert torch.allclose(aligned, f_true, atol=1e-6), (p, perm, aligned)
 
     # Grassmannian field loss must also be invariant to a target column perm
