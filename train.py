@@ -8,7 +8,7 @@ from src.training.callbacks import FieldVisualizationCallback
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.data.dataset import GNOTDataset, gnot_collate_fn
-from src.training.lightning_module import GNOTLightning
+from src.training.lightning_module import GNOTLightning, count_near_degenerate
 from src.config import load_config, config_to_flat_dict
 
 import argparse
@@ -164,6 +164,14 @@ def main():
     # Pass frequency statistics to the model for physical units logging
     if hasattr(train_dataset, 'stats') and train_dataset.stats:
         model.freq_stats = train_dataset.stats
+
+    # One-time diagnostic: how many train geometries are near-degenerate
+    # (same detect_clusters + threshold the loss/metric uses).
+    if local_rank == 0:
+        deg_thr = getattr(tc, 'near_deg_threshold', 0.05)
+        n_deg, n_deg_modes, n_tot = count_near_degenerate(train_dataset, deg_thr)
+        print(f"[degeneracy] train: {n_deg}/{n_tot} geometries near-degenerate "
+              f"({n_deg_modes} modes), thr={deg_thr:.4f}")
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"{tc.log_dir}/{tc.exp_name}",

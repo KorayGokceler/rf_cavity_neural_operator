@@ -63,6 +63,42 @@ def detect_clusters(f_true_matched, threshold):
     return clusters
 
 
+def count_near_degenerate(dataset, threshold):
+    """How many train geometries contain a near-degenerate mode cluster.
+
+    Mirrors exactly what training sees: same per-geometry normalized,
+    ascending-sorted frequencies as GNOTDataset.__getitem__ and the same
+    detect_clusters threshold used by the loss/metric.  Cheap — reads only
+    per-mode Theta[1] (raw freq), never node fields.
+
+    Returns (n_deg_geoms, n_deg_modes, total_geoms).
+    """
+    n_deg_geo = 0
+    n_deg_modes = 0
+    geoms = dataset.active_geoms
+    use_h5 = getattr(dataset, 'is_h5', False)
+    h5 = dataset._get_h5_handle() if use_h5 else None
+    stats = dataset.stats
+    for g_id in geoms:
+        s_idx = dataset.geom_to_samples[g_id]
+        if use_h5:
+            raw = [float(h5['samples'][str(j)]['Theta'][1]) for j in s_idx]
+        else:
+            raw = [float(dataset.samples_metadata[j]['Theta'][1])
+                   for j in s_idx]
+        if stats:
+            fn = [(r - stats['mean']) / stats['std'] for r in raw]
+        else:
+            fn = list(raw)
+        fn.sort()  # __getitem__ orders modes by ascending normalized freq
+        cl = detect_clusters(torch.tensor(fn, dtype=torch.float32), threshold)
+        deg = [c for c in cl if len(c) > 1]
+        if deg:
+            n_deg_geo += 1
+            n_deg_modes += sum(len(c) for c in deg)
+    return n_deg_geo, n_deg_modes, len(geoms)
+
+
 def _masked_orthonormalize(E, mask=None):
     """Return an orthonormal basis (over the masked rows) for the column span
     of E using a numerically stable reduced QR.
@@ -426,50 +462,6 @@ class GNOTLightning(pl.LightningModule):
             targets_valid = true_field[mask_km].contiguous()
 
         return total_loss, preds_valid, targets_valid
-
-    def on_fit_start(self):
-        """One-time diagnostic: how many train geometries are near-degenerate.
-
-        Uses the same detect_clusters + near_deg_threshold as the loss/metric so
-        the count matches what training actually treats as degenerate.  Cheap:
-        only reads per-mode Theta[1] (raw freq), never node fields.
-        """
-        if self.global_rank != 0:
-            return
-        try:
-            ds = self.trainer.train_dataloader.dataset
-            thr = self.near_deg_threshold
-            n_deg_geo = 0
-            n_deg_modes = 0
-            total = len(ds.active_geoms)
-            for g_id in ds.active_geoms:
-                s_idx = ds.geom_to_samples[g_id]
-                if getattr(ds, 'is_h5', False):
-                    f = ds._get_h5_handle()
-                    raw = np.array([float(f['samples'][str(j)]['Theta'][1])
-                                    for j in s_idx], dtype=np.float64)
-                else:
-                    raw = np.array([float(ds.samples_metadata[j]['Theta'][1])
-                                    for j in s_idx], dtype=np.float64)
-                if ds.stats:
-                    fn = (raw - ds.stats['mean']) / ds.stats['std']
-                else:
-                    fn = raw
-                fn = np.sort(fn)  # __getitem__ uses ascending-freq order
-                cls = detect_clusters(torch.from_numpy(fn), thr)
-                deg = [c for c in cls if len(c) > 1]
-                if deg:
-                    n_deg_geo += 1
-                    n_deg_modes += sum(len(c) for c in deg)
-            msg = (f"[degeneracy] train: {n_deg_geo}/{total} geometries "
-                   f"near-degenerate ({n_deg_modes} modes), thr={thr:.4f}")
-            print(msg)
-            if self.logger is not None:
-                self.logger.experiment.add_text(
-                    'dataset/near_degeneracy', msg, 0)
-                self.log('dataset/near_deg_geoms', float(n_deg_geo))
-        except Exception as e:
-            print(f"[degeneracy] count skipped: {e}")
 
     def training_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "train")
