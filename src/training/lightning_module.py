@@ -280,6 +280,7 @@ class GNOTLightning(pl.LightningModule):
         
         self.val_mae = torchmetrics.MeanAbsoluteError()
         self.test_mae = torchmetrics.MeanAbsoluteError()
+        self._val_rl2_buffer: list = []   # per-geometry per-mode rel L2, for histograms
 
     def forward(self, batch):
         return self.model(batch)
@@ -387,6 +388,7 @@ class GNOTLightning(pl.LightningModule):
             # report the projection-residual rel L2.
             with torch.no_grad():
                 m_f = m_b.float().unsqueeze(-1)       # [N, 1]
+                sample_rl = torch.zeros(K, device=device)
                 clusters = detect_clusters(ft_b, self.near_deg_threshold)
                 for cl in clusters:
                     if len(cl) == 1:
@@ -399,6 +401,7 @@ class GNOTLightning(pl.LightningModule):
                         rl = torch.sqrt(torch.minimum(num_p, num_n) / den)
                         rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
                         rel_l2_count[k] = rel_l2_count[k] + 1.0
+                        sample_rl[k] = rl
                     else:
                         cl_t = torch.tensor(cl, device=device, dtype=torch.long)
                         Q = _masked_orthonormalize(E_hat[:, cl_t], m_b)  # [N,|cl|]
@@ -411,6 +414,9 @@ class GNOTLightning(pl.LightningModule):
                             rl = torch.sqrt(num / den)
                             rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
                             rel_l2_count[k] = rel_l2_count[k] + 1.0
+                            sample_rl[k] = rl
+                if prefix == 'val':
+                    self._val_rl2_buffer.append(sample_rl.cpu())
 
         loss_freq = loss_freq / max(B, 1)
         loss_field = loss_field / max(B, 1)
@@ -486,6 +492,7 @@ class GNOTLightning(pl.LightningModule):
     def on_validation_epoch_start(self):
         if hasattr(self.model, 'reset_expert_calls'):
             self.model.reset_expert_calls()
+        self._val_rl2_buffer = []
 
     def on_validation_epoch_end(self):
         # Only print on rank 0 to avoid duplicate output in DDP
@@ -557,6 +564,18 @@ class GNOTLightning(pl.LightningModule):
         
         print(f"  GLOBAL VAL  │  Rel L2: {global_val_l2:.4f}  │  R²: {global_val_r2:.4f}")
         print(f"{'━'*64}\n")
+
+        # Per-geometry rel L2 error distribution histograms (every 5 epochs).
+        # Each entry in _val_rl2_buffer is a [K] tensor (one geometry), so
+        # stacking gives [N_val, K]; one histogram per mode.
+        _HIST_EVERY = 5
+        if self._val_rl2_buffer and self.current_epoch % _HIST_EVERY == 0:
+            rl_all = torch.stack(self._val_rl2_buffer)  # [N_val, K]
+            for k in range(rl_all.shape[1]):
+                self.logger.experiment.add_histogram(
+                    f'val/mode_{k}_rel_l2_dist',
+                    rl_all[:, k],
+                    global_step=self.current_epoch)
 
     def test_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "test")
