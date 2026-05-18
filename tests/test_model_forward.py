@@ -155,8 +155,8 @@ def test_full_batch_finite():
     assert out['freq'].shape == (B, 3)
 
 
-def test_gradient_flow_to_shared_blocks():
-    """After backward, shared_blocks params must have gradient."""
+def test_gradient_flow_to_mode_field_blocks():
+    """After backward, all mode_field_blocks must receive gradient."""
     torch.manual_seed(8)
     model = _build_small_model(num_field_modes=3)
     batch = _make_batch(B=2, N=10)
@@ -164,12 +164,13 @@ def test_gradient_flow_to_shared_blocks():
     loss = out['field'].sum() + out['freq'].sum()
     loss.backward()
 
-    has_grad = False
-    for name, p in model.shared_blocks.named_parameters():
-        if p.grad is not None and p.grad.abs().sum().item() > 0:
-            has_grad = True
-            break
-    assert has_grad
+    for k, blocks in enumerate(model.mode_field_blocks):
+        has_grad = False
+        for name, p in blocks.named_parameters():
+            if p.grad is not None and p.grad.abs().sum().item() > 0:
+                has_grad = True
+                break
+        assert has_grad, f"mode_field_blocks[{k}] has no gradient"
 
 
 def test_all_slot_decoders_receive_gradient():

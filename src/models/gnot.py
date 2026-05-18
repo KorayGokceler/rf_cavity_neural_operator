@@ -227,11 +227,6 @@ class GNOTModel(nn.Module):
             nn.Linear(embed_dim // 2, num_field_modes)
         )
 
-        self.shared_blocks = nn.ModuleList([
-            GNOTBlock(embed_dim, n_heads, num_experts=num_experts, coords_dim=router_dim, dropout=dropout)
-            for _ in range(n_shared_layers)
-        ])
-        
         # Mode-specific field branches
         self.mode_field_blocks = nn.ModuleList([
             nn.ModuleList([
@@ -342,15 +337,9 @@ class GNOTModel(nn.Module):
         # Global Context Extraction
         global_context = self.pooler(condition_emb, condition_mask)
 
-        # Trunk (Shared processing) — geometry only.
         # `mode_idx` argument of GNOTBlock is kept for signature compatibility
         # but is unused inside the block; pass a zero placeholder.
         mode_placeholder = torch.zeros(B, dtype=torch.long, device=X.device)
-        for block in self.shared_blocks:
-            if self.use_checkpoint and self.training:
-                x_emb = torch.utils.checkpoint.checkpoint(block, x_emb, condition_emb, mode_placeholder, pos_enhanced, mask, condition_mask, global_context, use_reentrant=False)
-            else:
-                x_emb = block(x_emb, condition_emb, mode_placeholder, pos_enhanced, mask, condition_mask, global_context)
 
         # --- Frequency-first decoding -------------------------------------
         # Predict all K eigenfrequencies from the global geometry context,
@@ -359,16 +348,12 @@ class GNOTModel(nn.Module):
         f_pred = self.freq_head_global(c)                 # [B, K]
         f_pred = torch.sort(f_pred, dim=-1).values        # always sorted ascending
 
-        # --- DeepONet shared basis: computed once from geometry trunk -----------
-        # Φ [B, N, J] — J basis functions evaluated at every node.
-        # trunk_net sees x_emb (shared, mode-agnostic) so Φ is the same
-        # for all K modes; mode-specificity lives entirely in α_k.
-        Phi = self.trunk_net(x_emb)                          # [B, N, J]
-        if mask is not None:
-            Phi = Phi * mask.unsqueeze(-1)                   # zero padding nodes
-
-        # --- Per-slot coefficient decoding (α_k for each mode k) -------------
-        alphas = []
+        # --- Per-slot decoder: each mode gets its own GNOT blocks + basis ----
+        # All modes start from the same raw x_emb (shared encoder output).
+        # Per-mode blocks handle cross-attention with geometry independently,
+        # then trunk_net maps the resulting per-mode representation to Φ_k [B,N,J].
+        # field_k = Φ_k · α_k (inner product over J), ensuring full separation.
+        fields = []
         for k in range(self.num_field_modes):
             # Slot query conditioned on this slot's predicted frequency.
             f_k = f_pred[:, k:k + 1]                        # [B, 1]
@@ -388,21 +373,27 @@ class GNOTModel(nn.Module):
 
             x_m = self.final_ln(x_m)
 
-            # Masked mean-pool → per-mode summary vector [B, D], then map to α_k [B, J].
+            # Per-mode basis Φ_k from per-mode representation [B, N, J].
+            Phi_k = self.trunk_net(x_m)
+            if mask is not None:
+                Phi_k = Phi_k * mask.unsqueeze(-1)
+
+            # Masked mean-pool → per-mode summary [B, D] → α_k [B, J].
             if mask is not None:
                 mf = mask.unsqueeze(-1).to(x_m.dtype)        # [B, N, 1]
                 pooled = (x_m * mf).sum(1) / mf.sum(1).clamp(min=1.0)
             else:
                 pooled = x_m.mean(1)                          # [B, D]
 
-            alphas.append(self.branch_net[k](pooled))        # [B, J]
+            alpha_k = self.branch_net[k](pooled)              # [B, J]
 
-        # Reconstruct all K fields in a single batched matmul:
-        #   field [B, N, K] = Φ [B, N, J] × A [B, J, K]
-        A = torch.stack(alphas, dim=-1)                      # [B, J, K]
-        field = torch.einsum('bnj,bjk->bnk', Phi, A).float() # [B, N, K]
+            # field_k [B, N] = inner product of per-mode basis and coefficients
+            field_k = (Phi_k * alpha_k.unsqueeze(1)).sum(-1)  # [B, N]
+            fields.append(field_k.unsqueeze(-1))              # [B, N, 1]
+
+        field = torch.cat(fields, dim=-1).float()             # [B, N, K]
         if mask is not None:
-            field = field * mask.unsqueeze(-1)               # ensure padding = 0
+            field = field * mask.unsqueeze(-1)
 
         return {'field': field, 'freq': f_pred}              # [B,N,K], [B,K]
 
