@@ -235,52 +235,30 @@ class GNOTModel(nn.Module):
             ]) for _ in range(num_field_modes)
         ])
         
-        self.final_ln = nn.LayerNorm(embed_dim)
-        self.pooler = AttentionPool(embed_dim, n_heads)       # global context for trunk + freq
-        self.n_basis = n_basis
+        self.pooler = AttentionPool(embed_dim, n_heads)       # global context + freq
 
-        # ── DeepONet decoder ──────────────────────────────────────────────────
-        # trunk_net  : shared, geometry-conditioned basis Φ [B, N, J]
-        #              Operates on x_emb (post shared_blocks, mode-agnostic).
-        #              Computed once per sample, used by all K modes.
-        # branch_net : K independent heads producing per-mode coefficients α_k [B, J].
-        #              Pools the per-mode representation x_m from mode_field_blocks.
-        # Output     : field [B, N, K] = einsum('bnj,bjk->bnk', Φ, stack(α_k))
-        #
-        # Degenerate subspace benefit: degenerate modes (e.g. dipole pair) differ
-        # only in α — the shared Φ naturally represents their common subspace.
-        trunk_layers = [nn.LayerNorm(embed_dim)]
-        curr_dim = embed_dim
-        if n_field_head_layers > 2:
-            trunk_layers.extend([
-                nn.Linear(curr_dim, embed_dim * 2),
-                nn.LayerNorm(embed_dim * 2),
-                nn.GELU()
-            ])
-            curr_dim = embed_dim * 2
-            for _ in range(n_field_head_layers - 3):
-                trunk_layers.extend([
-                    nn.Linear(curr_dim, curr_dim),
-                    nn.LayerNorm(curr_dim),
-                    nn.GELU()
-                ])
-        if n_field_head_layers >= 2:
-            trunk_layers.extend([
-                nn.Linear(curr_dim, embed_dim),
-                nn.LayerNorm(embed_dim),
-                nn.GELU()
-            ])
-            curr_dim = embed_dim
-        trunk_layers.append(nn.Linear(curr_dim, n_basis))
-        self.trunk_net = nn.Sequential(*trunk_layers)
+        # ── Per-mode direct field head ────────────────────────────────────────
+        # No DeepONet factorization (no Φ basis / α coefficients).  Each mode
+        # has its own pointwise MLP that maps the per-mode node representation
+        # x_m [B, N, D] directly to a scalar field value [B, N, 1].
+        # Depth is controlled by n_field_head_layers.  Heads are independent
+        # across modes; near-degenerate handling lives entirely in the loss.
+        def _make_field_head(dim, n_layers):
+            layers = [nn.LayerNorm(dim)]
+            curr = dim
+            if n_layers > 2:
+                layers += [nn.Linear(curr, dim * 2), nn.LayerNorm(dim * 2), nn.GELU()]
+                curr = dim * 2
+                for _ in range(n_layers - 3):
+                    layers += [nn.Linear(curr, curr), nn.LayerNorm(curr), nn.GELU()]
+            if n_layers >= 2:
+                layers += [nn.Linear(curr, dim), nn.LayerNorm(dim), nn.GELU()]
+                curr = dim
+            layers.append(nn.Linear(curr, 1))
+            return nn.Sequential(*layers)
 
-        # branch_net: per-mode 2-layer MLP [D → D → J]
-        self.branch_net = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(embed_dim, embed_dim),
-                nn.GELU(),
-                nn.Linear(embed_dim, n_basis),
-            )
+        self.field_heads = nn.ModuleList([
+            _make_field_head(embed_dim, n_field_head_layers)
             for _ in range(num_field_modes)
         ])
 
@@ -293,22 +271,15 @@ class GNOTModel(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        # trunk_net: moderate init; final layer small → Φ bounded near zero at start.
-        trunk_linears = [m for m in self.trunk_net.modules() if isinstance(m, nn.Linear)]
-        for m in trunk_linears:
-            nn.init.trunc_normal_(m.weight, std=0.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        nn.init.trunc_normal_(trunk_linears[-1].weight, std=0.01)
-
-        # branch_net: final layer small → α ≈ 0 → field ≈ 0 initially.
-        for branch in self.branch_net:
-            branch_linears = [m for m in branch.modules() if isinstance(m, nn.Linear)]
-            for m in branch_linears:
+        # field_heads: moderate init; final layer small → field ≈ 0 at start
+        # (prevents early training explosion).
+        for head in self.field_heads:
+            head_linears = [m for m in head.modules() if isinstance(m, nn.Linear)]
+            for m in head_linears:
                 nn.init.trunc_normal_(m.weight, std=0.02)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            nn.init.trunc_normal_(branch_linears[-1].weight, std=0.01)
+            nn.init.trunc_normal_(head_linears[-1].weight, std=0.01)
 
         for m in self.freq_head_global.modules():
             if isinstance(m, nn.Linear):
@@ -348,11 +319,11 @@ class GNOTModel(nn.Module):
         f_pred = self.freq_head_global(c)                 # [B, K]
         f_pred = torch.sort(f_pred, dim=-1).values        # always sorted ascending
 
-        # --- Per-slot decoder: each mode gets its own GNOT blocks + basis ----
+        # --- Per-slot decoder: each mode owns its GNOT blocks + field head ---
         # All modes start from the same raw x_emb (shared encoder output).
-        # Per-mode blocks handle cross-attention with geometry independently,
-        # then trunk_net maps the resulting per-mode representation to Φ_k [B,N,J].
-        # field_k = Φ_k · α_k (inner product over J), ensuring full separation.
+        # Per-mode blocks handle cross-attention with geometry independently.
+        # No DeepONet factorization: the field is regressed directly from the
+        # per-mode node representation by field_heads[k] (pointwise MLP).
         fields = []
         for k in range(self.num_field_modes):
             # Slot query conditioned on this slot's predicted frequency.
@@ -371,29 +342,14 @@ class GNOTModel(nn.Module):
                     x_m = m_block(x_m, condition_emb, mode_placeholder, pos_enhanced,
                                   mask, condition_mask, global_context)
 
-            x_m = self.final_ln(x_m)
-
-            # Per-mode basis Φ_k from per-mode representation [B, N, J].
-            Phi_k = self.trunk_net(x_m)
-            if mask is not None:
-                Phi_k = Phi_k * mask.unsqueeze(-1)
-
-            # Masked mean-pool → per-mode summary [B, D] → α_k [B, J].
-            if mask is not None:
-                mf = mask.unsqueeze(-1).to(x_m.dtype)        # [B, N, 1]
-                pooled = (x_m * mf).sum(1) / mf.sum(1).clamp(min=1.0)
-            else:
-                pooled = x_m.mean(1)                          # [B, D]
-
-            alpha_k = self.branch_net[k](pooled)              # [B, J]
-
-            # field_k [B, N] = inner product of per-mode basis and coefficients
-            field_k = (Phi_k * alpha_k.unsqueeze(1)).sum(-1)  # [B, N]
-            fields.append(field_k.unsqueeze(-1))              # [B, N, 1]
+            # Direct field head: [B, N, D] -> [B, N, 1]. The head starts with
+            # its own LayerNorm, so no separate final_ln is needed.
+            field_k = self.field_heads[k](x_m)                # [B, N, 1]
+            fields.append(field_k)
 
         field = torch.cat(fields, dim=-1).float()             # [B, N, K]
         if mask is not None:
-            field = field * mask.unsqueeze(-1)
+            field = field * mask.unsqueeze(-1)                # padding = 0
 
         return {'field': field, 'freq': f_pred}              # [B,N,K], [B,K]
 
