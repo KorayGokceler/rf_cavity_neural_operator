@@ -13,3 +13,6 @@ __pycache__/
 # IDE settings
 .vscode/
 .idea/
+
+# Training outputs
+training_logs/
