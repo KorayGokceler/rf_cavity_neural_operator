@@ -131,38 +131,6 @@ def generate_sample_data(s_id):
         vecs_real = vecs.real
         freqs = (299792458 * np.sqrt(np.abs(vals_real))) / (2 * np.pi) / 1e9
 
-        # --- CANONICAL DIPOLE ROTATION ---
-        # Modes 1 and 2 are dipole modes that span a degenerate subspace.
-        # Instead of a heuristic axis swap, project the subspace onto a canonical
-        # frame defined by the cavity's own PCA principal axis.  This gives a
-        # consistent orientation even for near-degenerate (nearly circular) shapes
-        # where the old C_x/C_y swap was unstable.
-        n_nodes = len(nodes)
-        nodes_c = nodes - nodes.mean(axis=0)
-
-        # PCA on mesh nodes → principal axis of the cavity shape
-        cov = np.cov(nodes_c.T)
-        _, evecs = np.linalg.eigh(cov)
-        principal = evecs[:, -1]           # eigenvector of largest eigenvalue
-        if principal[0] < 0 or (principal[0] == 0 and principal[1] < 0):
-            principal = -principal         # sign disambiguation: always point to +x half-plane
-
-        e1_nodes = vecs_real[:n_nodes, 1].copy()
-        e2_nodes = vecs_real[:n_nodes, 2].copy()
-        proj = nodes_c @ principal         # [N] node positions along principal axis
-
-        c1 = np.dot(e1_nodes, proj)        # dipole moment of mode-1 along principal axis
-        c2 = np.dot(e2_nodes, proj)        # dipole moment of mode-2 along principal axis
-        theta = np.arctan2(c2, c1)
-
-        # Apply rotation to full P2 eigenvectors (all DOF, not just vertex nodes)
-        e1_full = vecs_real[:, 1].copy()
-        e2_full = vecs_real[:, 2].copy()
-        vecs_real[:, 1] = np.cos(theta) * e1_full + np.sin(theta) * e2_full
-        vecs_real[:, 2] = -np.sin(theta) * e1_full + np.cos(theta) * e2_full
-        # Frequencies are not swapped: rotation is within the subspace, not a permutation
-        # --------------------------------------------------
-
         return {
             'id': s_id, 'nodes': nodes, 'elements': elements,
             'freqs': freqs, 'vecs': vecs_real, 'n_nodes': len(nodes),
