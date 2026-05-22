@@ -1,5 +1,11 @@
 # 🔬 Rayleigh Quotient Analizi — Senin Sisteme Uygulanabilirlik
 
+> **Güncelleme (2026-05):** Rowan et al. (arXiv:2506.04375) — *Solving Engineering
+> Eigenvalue Problems with Neural Networks Using the Rayleigh Quotient* — bu
+> yaklaşımı kâğıt-doğrulanmış hâliyle entegre ettik. Bu doküman tarihsel
+> analizi (önceki "ertelendi" kararı) ve **mevcut hibrit implementasyonun**
+> nasıl çalıştığını birlikte özetler.
+>
 > **Bağlam:** Bir kaynak multi-head Rayleigh Quotient + Orthogonality yaklaşımını önermiş.
 > Bu analiz, GNOT mimarisine uygunluğunu ve alternatiflerini değerlendirir.
 
@@ -145,13 +151,91 @@ Tüm bu analiz ışığında, senin sistemine en uygun yaklaşım:
 
 ## 5. Sonuç ve Aksiyon Planı
 
-| Adım | Ne Yapılacak | Öncelik |
-|------|-------------|---------|
-| 1 | **Orthogonality Loss ekle** (Soft Constraint, cosine similarity) | 🔴 Yüksek |
-| 2 | **Per-mode freq prediction** (zaten yapıldı ✓) | ✅ Tamamlandı |
-| 3 | Eğitimi çalıştır, ortho loss'un etkisini gözlemle | Sonraki adım |
-| 4 | Rayleigh Residual ($\nabla^2 E + k^2 E$) araştır | 🟡 Orta vadeli |
-| 5 | Full Rayleigh Quotient (autograd ile) | 🔵 Uzun vadeli |
+| Adım | Ne Yapılacak | Durum |
+|------|-------------|-------|
+| 1 | **Orthogonality Loss ekle** (Soft Constraint, cosine similarity) | ✅ Tamamlandı |
+| 2 | **Per-mode freq prediction** | ✅ Tamamlandı |
+| 3 | **Full Rayleigh Quotient** (autograd VE FEM K,M iki yol) | ✅ Tamamlandı |
+| 4 | **Hard Gram-Schmidt** forward içinde | ✅ Tamamlandı |
+| 5 | **Curriculum** (fizik warmup → supervised geçişi) | ✅ Tamamlandı |
+| 6 | **Parametric expected Rayleigh** | ✅ Tamamlandı |
+
+---
+
+## 6. Mevcut Hibrit Implementation (Rowan 2506.04375 entegrasyonu)
+
+### Eklenen modüller
+
+| Bileşen | Dosya | Rol |
+|---------|-------|-----|
+| Rayleigh + GS + ordering + parametric | `src/training/physics_losses.py` | Fizik kayıpları |
+| Forward-içi sert GS | `src/models/gnot.py` (`use_gram_schmidt`) | Slot ortogonalitesi garantisi |
+| Curriculum scheduler | `PhysicsCurriculum` (physics_losses.py) | Faz A/B/C ağırlıkları |
+| P1 FEM K, M önbelleği | `src/data/dataset_converter.py` (`_assemble_p1_K_M`) | autograd alternatifi |
+| Dataset yükleme | `src/data/dataset.py` | Sparse K, M tensörlerini batch'e taşır |
+| LightningModule entegrasyonu | `src/training/lightning_module.py` `_compute_loss` | Toplam kaybı oluşturur |
+
+### Curriculum çizelgesi
+
+```
+Faz A (epoch < e1=20):    pure physics warmup
+Faz B (e1..e2=80):        linear ramp — supervised devreye girer
+Faz C (epoch >= e2):      supervised dominant + küçük fizik anchor
+```
+
+`enable_curriculum: false` ile devre dışı bırakılabilir; o zaman fixed-weight
+ablation çalıştırılır.
+
+### Toplam kayıp
+
+```
+L = w_field    · L_field           # Grassmannian / soft-Procrustes
+  + w_freq     · L_freq            # frekans MSE
+  + w_smooth   · L_bnd             # PINN sınır cezası
+  + w_slot_o   · L_ortho           # soft cosine (GS açıkken w_slot_o=0)
+  + w_rayleigh · L_rayleigh        # R[E_pred] ↔ (2πf_pred/c)² tutarlılığı
+  + w_order    · L_order           # hinge λ_k ≤ λ_{k+1}
+  + w_param    · L_param           # mini-batch Rayleigh beklentisi
+```
+
+Tüm w'ler curriculum tarafından epoch-bağımlı olarak ölçeklendirilir.
+
+### Rayleigh hesabı — iki yol
+
+| Mode | Maliyet | Gereksinim |
+|------|---------|------------|
+| `autograd` | 2-3× bellek (kâğıttaki gibi spatial autograd) | `coords.requires_grad=True` |
+| `fem` | sparse `K @ E` + `M @ E` — autograd yok | Yeni dataset (K, M önbelleği) |
+
+### Birim/birim kalibrasyonu
+
+Tahmin edilen frekans GHz cinsinden, geometri normalize edildi (`L=0.1 m`).
+Tutarlılık kaybı:
+```
+f_GHz   = f_norm · σ + μ                       (denormalize)
+k²_phys = (2π · f_GHz · 1e9 / c)²              (1/m²)
+k²_norm = k²_phys · L²                         (dimensionless)
+L_rayleigh = mean( ((R - k²_norm) / k²_norm)² )
+```
+
+### Çalıştırma
+
+```bash
+# Hibrit (curriculum + GS + Rayleigh) açık
+python train.py --config configs/physics_rayleigh.yaml
+
+# Baseline (saf supervised) — default davranış
+python train.py --config configs/default.yaml
+```
+
+### Doğrulama
+
+- `tests/test_physics_loss.py` — 11 birim test (1D Fourier eigenvalue,
+  FEM yolu, GS ortogonalite, ordering hinge, curriculum fazları).
+- `tests/test_dataset_K_M_cache.py` — P1 K, M assembly sin(πx)sin(πy)
+  eigenfunction için 2π² eigenvalue'sunu %2 hata ile döndürüyor.
+- `tests/test_physics_lightning_smoke.py` — Lightning modülü Faz A ve Faz
+  C'de backprop yapabiliyor; forward GS sonrası alanlar area-orthogonal.
 
 ---
 

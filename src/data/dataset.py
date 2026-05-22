@@ -151,12 +151,28 @@ class GNOTDataset(Dataset):
         g_id = self.active_geoms[idx]
         sample_indices = self.geom_to_samples[g_id]  # ordered by mode index
 
+        K_sparse_arrays = None     # Optional P1 stiffness/mass FEM cache
+        M_sparse_arrays = None
+        KM_shape = None
+
         if self.is_h5:
             f = self._get_h5_handle()
             first = f['samples'][str(sample_indices[0])]
             geom = f['geometry_pool'][str(first.attrs['geom_id'])]
             x = np.asarray(geom['X'][:])
             input_features = np.asarray(geom['Input_funcs'][:])
+            if 'K_data' in geom:
+                K_sparse_arrays = (
+                    np.asarray(geom['K_data'][:]),
+                    np.asarray(geom['K_indices'][:]),
+                    np.asarray(geom['K_indptr'][:]),
+                )
+                M_sparse_arrays = (
+                    np.asarray(geom['M_data'][:]),
+                    np.asarray(geom['M_indices'][:]),
+                    np.asarray(geom['M_indptr'][:]),
+                )
+                KM_shape = tuple(int(s) for s in geom['K_shape'][:])
             mode_fields = []
             raw_freqs = []
             for s_idx in sample_indices:
@@ -168,6 +184,18 @@ class GNOTDataset(Dataset):
             geom = self.geometry_pool[first['geom_id']]
             x = np.asarray(geom['X'])
             input_features = np.asarray(geom['Input_funcs'])
+            if 'K_data' in geom:
+                K_sparse_arrays = (
+                    np.asarray(geom['K_data']),
+                    np.asarray(geom['K_indices']),
+                    np.asarray(geom['K_indptr']),
+                )
+                M_sparse_arrays = (
+                    np.asarray(geom['M_data']),
+                    np.asarray(geom['M_indices']),
+                    np.asarray(geom['M_indptr']),
+                )
+                KM_shape = tuple(int(s) for s in geom['K_shape'])
             mode_fields = []
             raw_freqs = []
             for s_idx in sample_indices:
@@ -203,13 +231,33 @@ class GNOTDataset(Dataset):
             input_features = input_features[rand_idx]
             y_field = y_field[rand_idx]
 
-        return {
+        out = {
             'X': torch.from_numpy(np.ascontiguousarray(x)).float(),
             'Input_funcs': torch.from_numpy(np.ascontiguousarray(input_features)).float(),
             'Y_field': torch.from_numpy(np.ascontiguousarray(y_field)).float(),  # [N, K]
             'Y_freq': torch.from_numpy(np.ascontiguousarray(norm_freqs)).float(),  # [K]
             'geom_id': torch.tensor([int(g_id)], dtype=torch.long),
         }
+
+        if K_sparse_arrays is not None:
+            # Sub-sampled batches lose mesh connectivity → K, M aren't usable;
+            # only emit them on full-mesh samples (max_nodes disabled or N small).
+            if self.max_nodes is None or x.shape[0] <= self.max_nodes:
+                Kd, Ki, Kp = K_sparse_arrays
+                Md, Mi, Mp = M_sparse_arrays
+                out['K_sparse'] = torch.sparse_csr_tensor(
+                    crow_indices=torch.from_numpy(Kp).long(),
+                    col_indices=torch.from_numpy(Ki).long(),
+                    values=torch.from_numpy(Kd).float(),
+                    size=KM_shape,
+                )
+                out['M_sparse'] = torch.sparse_csr_tensor(
+                    crow_indices=torch.from_numpy(Mp).long(),
+                    col_indices=torch.from_numpy(Mi).long(),
+                    values=torch.from_numpy(Md).float(),
+                    size=KM_shape,
+                )
+        return out
 
 
 # Backwards/forwards-compatible alias used by some scripts/tests.
@@ -235,7 +283,7 @@ def gnot_collate_fn(batch):
     for i, l in enumerate(lengths):
         mask[i, :l] = True
 
-    return {
+    out = {
         'X': X_padded,
         'Input_funcs': Inputs_padded,
         'Y_field': Y_field_padded,       # [B, N, K]
@@ -243,3 +291,12 @@ def gnot_collate_fn(batch):
         'geom_id': geom_id_stacked,
         'Mask': mask,
     }
+
+    # Optional FEM sparse caches — kept as per-sample lists because each
+    # mesh has a different node count (cannot be padded as sparse tensors).
+    K_list = [item.get('K_sparse') for item in batch]
+    M_list = [item.get('M_sparse') for item in batch]
+    if all(k is not None for k in K_list):
+        out['K_sparse'] = K_list
+        out['M_sparse'] = M_list
+    return out

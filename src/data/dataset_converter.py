@@ -4,7 +4,52 @@ import pickle
 from pathlib import Path
 from tqdm import tqdm
 from scipy.spatial import cKDTree
+from scipy.sparse import csr_matrix
 from collections import defaultdict
+
+
+def _assemble_p1_K_M(nodes, elements):
+    """Build P1 (linear-element) stiffness K and consistent mass M.
+
+    Implements the analytical per-element formulas for 2D triangular linear
+    elements so we do NOT need scikit-fem at conversion time.  K and M are
+    returned as scipy.sparse.csr_matrix on the FULL node set (Dirichlet BC
+    is enforced softly in the loss via the boundary band, not via condensation).
+
+    Args:
+        nodes:    [N, 2] node coordinates.
+        elements: [E, 3] triangle vertex indices into `nodes`.
+    Returns:
+        K_csr, M_csr: csr_matrix of shape (N, N).
+    """
+    N = nodes.shape[0]
+    rows, cols, K_vals, M_vals = [], [], [], []
+    for tri in elements:
+        i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+        x0, y0 = nodes[i0]
+        x1, y1 = nodes[i1]
+        x2, y2 = nodes[i2]
+        # Twice the signed area (used as Jacobian)
+        twoA = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+        area = 0.5 * abs(twoA)
+        if area <= 0.0:
+            continue
+        # Shape-function gradient coefficients
+        b = np.array([y1 - y2, y2 - y0, y0 - y1])
+        c = np.array([x2 - x1, x0 - x2, x1 - x0])
+        K_el = (np.outer(b, b) + np.outer(c, c)) / (4.0 * area)
+        # Consistent mass: (area / 12) * [[2,1,1],[1,2,1],[1,1,2]]
+        M_el = (area / 12.0) * (np.ones((3, 3)) + np.eye(3))
+        idx = [i0, i1, i2]
+        for a in range(3):
+            for b_ in range(3):
+                rows.append(idx[a])
+                cols.append(idx[b_])
+                K_vals.append(K_el[a, b_])
+                M_vals.append(M_el[a, b_])
+    K_csr = csr_matrix((K_vals, (rows, cols)), shape=(N, N))
+    M_csr = csr_matrix((M_vals, (rows, cols)), shape=(N, N))
+    return K_csr, M_csr
 
 class RFCavityToGNOT:
     def __init__(self, h5_filepath: str):
@@ -51,7 +96,7 @@ class RFCavityToGNOT:
             areas = areas / (areas.max() + 1e-10)
         return areas.reshape(-1, 1).astype(np.float32)
 
-    def extract_geometry_features(self, nodes, elements):
+    def extract_geometry_features(self, nodes, elements, compute_fem_matrices=True):
         # Isotropic Normalization: En-boy oranını (aspect ratio) koruyarak merkezi 0'a çek.
         center_raw = nodes.mean(axis=0)
         nodes_centered = nodes - center_raw
@@ -107,11 +152,30 @@ class RFCavityToGNOT:
             sin_angle,                          # [7]   sin(angle to principal axis)
         ], axis=1).astype(np.float32)
 
-        return {
+        result = {
             'X': nodes_norm.astype(np.float32),
             'Input_funcs': geom_features,
             'elements': elements,
         }
+
+        # P1 stiffness K and consistent mass M, in normalised coordinates.
+        # These power the FEM-Rayleigh path in training without needing
+        # autograd through the network.  See physics_losses.rayleigh_quotient
+        # mode="fem" and Rowan et al. Section 4.2.
+        if compute_fem_matrices:
+            try:
+                K_csr, M_csr = _assemble_p1_K_M(nodes_norm, elements)
+                result['K_data']    = K_csr.data.astype(np.float32)
+                result['K_indices'] = K_csr.indices.astype(np.int32)
+                result['K_indptr']  = K_csr.indptr.astype(np.int32)
+                result['M_data']    = M_csr.data.astype(np.float32)
+                result['M_indices'] = M_csr.indices.astype(np.int32)
+                result['M_indptr']  = M_csr.indptr.astype(np.int32)
+                result['K_shape']   = np.array(K_csr.shape, dtype=np.int32)
+            except Exception as e:
+                # FEM matrix assembly is optional — fall back to autograd path.
+                print(f"  [warn] P1 K/M assembly failed: {e}")
+        return result
 
     def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None, format='pkl',
                         freq_mean=None, freq_std=None):
@@ -202,6 +266,11 @@ class RFCavityToGNOT:
                     g_sub.create_dataset('X', data=g_data['X'], compression="gzip")
                     # Input_funcs is now a plain numpy array
                     g_sub.create_dataset('Input_funcs', data=g_data['Input_funcs'], compression="gzip")
+                    # P1 FEM K, M caches (optional — present only if computed)
+                    if 'K_data' in g_data:
+                        for key in ('K_data', 'K_indices', 'K_indptr',
+                                    'M_data', 'M_indices', 'M_indptr', 'K_shape'):
+                            g_sub.create_dataset(key, data=g_data[key], compression="gzip")
                 
                 # Samples
                 samp_grp = f_out.create_group('samples')

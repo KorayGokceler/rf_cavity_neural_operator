@@ -147,6 +147,22 @@ training:
   slot_ortho_weight: 0.1        # [soft] penalize collapse of near-degenerate slots
   freq_match_weight: 0.5        # weight of freq in matching cost
 
+  # ─────────────────────────────────────────────────────
+  # Physics-informed losses (Rowan et al. arXiv:2506.04375)
+  # All flags default OFF — purely supervised behaviour preserved.
+  # ─────────────────────────────────────────────────────
+  enable_physics_loss: false    # master switch — turn on to compute any of the below
+  enable_curriculum: false      # 3-phase scheduler (physics warmup → ramp → supervised)
+  curriculum_e1: 20             # end of physics-only phase (epoch)
+  curriculum_e2: 80             # end of linear ramp phase (epoch)
+  rayleigh_weight: 0.0          # R[E_k] vs k²_pred consistency loss weight (Phase C anchor)
+  rayleigh_mode: "autograd"     # "autograd" (∇E via autograd) | "fem" (precomputed K, M)
+  param_rayleigh_weight: 0.0    # E_a[R_k(a)] expectation over geometry batch (Eq. 16/18)
+  use_gram_schmidt: false       # hard area-weighted GS over predicted K mode columns
+  order_weight: 0.0             # hinge λ_k ≤ λ_{k+1}+margin on predicted freqs
+  order_margin: 0.01            # ordering hinge margin (z-scored freq units)
+  length_scale: 0.1             # geometry length scale (m) — see dataset_generator.py L
+
   # Debug
   fast_dev_run: false           # true ile 1 iterasyon test
 

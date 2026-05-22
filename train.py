@@ -159,6 +159,18 @@ def main():
         deg_sigma_abs=getattr(tc, 'deg_sigma_abs', 0.3),
         slot_ortho_weight=getattr(tc, 'slot_ortho_weight', 0.1),
         freq_match_weight=getattr(tc, 'freq_match_weight', 0.5),
+        # ── Physics-informed (Rayleigh / Gram-Schmidt / curriculum) ──
+        enable_physics_loss=getattr(tc, 'enable_physics_loss', False),
+        enable_curriculum=getattr(tc, 'enable_curriculum', False),
+        curriculum_e1=getattr(tc, 'curriculum_e1', 20),
+        curriculum_e2=getattr(tc, 'curriculum_e2', 80),
+        rayleigh_weight=getattr(tc, 'rayleigh_weight', 0.0),
+        rayleigh_mode=getattr(tc, 'rayleigh_mode', 'autograd'),
+        param_rayleigh_weight=getattr(tc, 'param_rayleigh_weight', 0.0),
+        use_gram_schmidt=getattr(tc, 'use_gram_schmidt', False),
+        order_weight=getattr(tc, 'order_weight', 0.0),
+        order_margin=getattr(tc, 'order_margin', 0.01),
+        length_scale=getattr(tc, 'length_scale', 0.1),
     )
 
     # Pass frequency statistics to the model for physical units logging

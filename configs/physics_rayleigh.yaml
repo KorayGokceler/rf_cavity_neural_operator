@@ -1,0 +1,119 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity — Hybrid Physics + Data-driven training
+#  (Rowan et al. arXiv:2506.04375 Rayleigh quotient + Gram-Schmidt)
+#
+#  Curriculum: physics warmup (epochs 0..20) → ramp (20..80) → supervised
+#  dominant (>80) with a residual physics anchor.  Hard area-weighted
+#  Gram-Schmidt is applied inside the model forward.
+# ═══════════════════════════════════════════════════════════════
+
+# Inherits ALL settings from default.yaml unless overridden below.
+# Run with:  python train.py --config configs/physics_rayleigh.yaml
+
+data_gen:
+  h5_filename: "rf_cavity_5000_dataset.h5"
+  plot_dir: "dataset_plots"
+  n_total: 5000
+  n_plot: 100
+  generation_mode: "random"
+  n_eigen_modes: 3
+  eigen_sigma: 500.0
+  mesh_size_min: 0.0012
+  mesh_size_max: 0.005
+  mesh_dist_min: 0.002
+  mesh_dist_max: 0.03
+  sharp_n_pts_range: [7, 13]
+  sharp_r_range: [0.02, 0.046]
+  smooth_base_r: 0.035
+  smooth_perturb: 0.008
+  smooth_harmonics: [2, 8]
+
+data_convert:
+  h5_filepath: "rf_cavity_5000_dataset.h5"
+  output_path: "data/gnot_dataset_5k.pkl"
+  output_format: "pkl"
+  mode_indices: [0, 1, 2]
+  max_samples: null
+
+dataset:
+  data_path: "data/gnot_dataset_5k.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  max_nodes: 1024
+  active_mode_index: null
+
+model:
+  val_dim: 8
+  grid_dim: 2
+  embed_dim: 256
+  n_shared_layers: 0
+  n_mode_layers: 3
+  n_field_head_layers: 3
+  n_heads: 8
+  num_experts: 4
+  predict_frequency: true
+  num_field_modes: 3
+  rff_dim: 64
+  rff_length_scale: 0.1
+  n_basis: 16
+  dropout: 0.0
+  use_checkpoint: false
+
+training:
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  batch_size: 16                  # Smaller batch — autograd Rayleigh ~2x memory
+  max_epochs: 300
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  strategy: "auto"
+
+  freq_weight: 0.5
+  smoothness_weight: 0.0
+  mode_loss_weights: [1.0, 2.0, 2.0]
+
+  scheduler: "custom_cosine"
+  onecycle_pct_start: 0.3
+  onecycle_div_factor: 25
+  onecycle_final_div_factor: 1.0e+4
+  cosine_eta_min: 1.0e-6
+  patience: 50
+
+  num_workers: 4
+  pin_memory: true
+
+  log_dir: "training_logs"
+  exp_name: "gnot_5k_physics_rayleigh"
+  log_every_n_steps: 10
+  viz_every_n_epochs: 10
+  progress_bar_refresh_rate: 1
+
+  # Subspace handling — GS replaces the soft cosine penalty, so we set its
+  # weight to zero and lean on the analytic projection for orthogonality.
+  degeneracy_mode: soft
+  near_deg_threshold: 0.05
+  deg_sigma_abs: 0.3
+  deg_sigma_rel: 0.5
+  slot_ortho_weight: 0.0          # disabled — GS handles orthogonality
+  freq_match_weight: 0.5
+
+  # ── Physics-informed losses (ENABLED) ─────────────────────────────
+  enable_physics_loss: true
+  enable_curriculum: true
+  curriculum_e1: 20               # Phase A end: pure physics warmup
+  curriculum_e2: 80               # Phase B end: ramp blends in supervised
+  rayleigh_weight: 0.05           # Phase C residual anchor weight
+  rayleigh_mode: "autograd"       # use "fem" once dataset_converter caches K, M
+  param_rayleigh_weight: 0.0      # parametric expectation (off; mini-batch mean covers it)
+  use_gram_schmidt: true          # hard area-weighted GS in model.forward
+  order_weight: 0.01              # ordering hinge anchor
+  order_margin: 0.01
+  length_scale: 0.1               # m — matches dataset_generator.py L=0.1
+
+  fast_dev_run: false
+
+inference:
+  checkpoint_path: null
+  output_dir: "inference_results"
+  num_visualize: 5

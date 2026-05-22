@@ -196,10 +196,16 @@ class GNOTModel(nn.Module):
                  use_checkpoint=False, predict_frequency=True,
                  dropout=0.0,
                  rff_dim=64, rff_length_scale=0.1,
-                 n_basis=16):
+                 n_basis=16,
+                 use_gram_schmidt=False):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
+        # Hard Gram-Schmidt orthogonalization of the K predicted mode columns
+        # using node-area weights (Rowan et al. 2025, Eq. 8). Replaces the
+        # soft slot-cosine penalty with an analytic projection so degenerate
+        # slots cannot collapse onto the same direction.
+        self.use_gram_schmidt = use_gram_schmidt
 
         # 1. Coordinate Encoding — Random Fourier Features (Gaussian kernel)
         self.spatial_encoder = RandomFourierFeatures(grid_dim, rff_dim, length_scale=rff_length_scale)
@@ -350,6 +356,18 @@ class GNOTModel(nn.Module):
         field = torch.cat(fields, dim=-1).float()             # [B, N, K]
         if mask is not None:
             field = field * mask.unsqueeze(-1)                # padding = 0
+
+        # Hard area-weighted Gram-Schmidt across the K mode columns.
+        # f_pred is already sorted ascending (line above), so column k=0
+        # corresponds to the lowest eigenfrequency. GS makes column k
+        # orthogonal to columns 0..k-1 under ∫ E_i E_j dA — exactly the
+        # physical orthogonality of distinct Helmholtz eigenfunctions.
+        if self.use_gram_schmidt:
+            from src.training.physics_losses import gram_schmidt_modes
+            node_area = inputs[..., 5]                        # [B, N]
+            field = gram_schmidt_modes(field, area=node_area, mask=mask)
+            if mask is not None:
+                field = field * mask.unsqueeze(-1)
 
         return {'field': field, 'freq': f_pred}              # [B,N,K], [B,K]
 

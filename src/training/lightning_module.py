@@ -7,6 +7,16 @@ import itertools
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from src.models.gnot import GNOTModel
+from src.training.physics_losses import (
+    rayleigh_quotient,
+    eigenvalue_ordering_loss,
+    parametric_expected_rayleigh,
+    PhysicsCurriculum,
+)
+
+
+# Speed of light (m/s) — used to convert predicted frequency (GHz) to k² = (2πf/c)²
+SPEED_OF_LIGHT = 299_792_458.0
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -256,7 +266,19 @@ class GNOTLightning(pl.LightningModule):
                  deg_sigma_rel=0.5,
                  deg_sigma_abs=0.3,
                  slot_ortho_weight=0.1,
-                 freq_match_weight=0.5):
+                 freq_match_weight=0.5,
+                 # ── Physics-informed losses (Rayleigh / Gram-Schmidt) ──
+                 enable_physics_loss=False,
+                 enable_curriculum=False,
+                 curriculum_e1=20,
+                 curriculum_e2=80,
+                 rayleigh_weight=0.0,
+                 rayleigh_mode='autograd',
+                 param_rayleigh_weight=0.0,
+                 use_gram_schmidt=False,
+                 order_weight=0.0,
+                 order_margin=0.01,
+                 length_scale=0.1):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
@@ -282,6 +304,7 @@ class GNOTLightning(pl.LightningModule):
             rff_dim=rff_dim,
             rff_length_scale=rff_length_scale,
             n_basis=n_basis,
+            use_gram_schmidt=use_gram_schmidt,
         )
         self.freq_weight = freq_weight
         self.smoothness_weight = smoothness_weight
@@ -300,6 +323,37 @@ class GNOTLightning(pl.LightningModule):
         self.slot_ortho_weight = slot_ortho_weight
         self.freq_match_weight = freq_match_weight
 
+        # ── Physics-informed losses (Rayleigh / Gram-Schmidt / ordering) ──
+        # Defaults keep the legacy supervised-only behaviour exactly.
+        self.enable_physics_loss = enable_physics_loss
+        self.rayleigh_weight = rayleigh_weight
+        self.rayleigh_mode = rayleigh_mode
+        self.param_rayleigh_weight = param_rayleigh_weight
+        self.use_gram_schmidt = use_gram_schmidt
+        self.order_weight = order_weight
+        self.order_margin = order_margin
+        # Length scale used by the data-gen pipeline (`L=0.1 m` in
+        # dataset_generator.py). Required to convert predicted GHz frequencies
+        # into the same units as the Rayleigh quotient computed in normalised
+        # geometry coordinates.
+        self.length_scale = length_scale
+        # Curriculum scheduler — three phases (physics warmup → ramp → supervised).
+        self.curriculum = PhysicsCurriculum(
+            e1=curriculum_e1,
+            e2=curriculum_e2,
+            w_field=1.0,                 # field-loss weight in Phase C
+            w_freq=freq_weight,
+            w_smooth=smoothness_weight,
+            w_slot_ortho=slot_ortho_weight,
+            w_phys_rayleigh=1.0,
+            w_phys_order=max(order_weight, 0.1),
+            w_phys_param=max(param_rayleigh_weight, 0.2),
+            w_rayleigh_anchor=rayleigh_weight,
+            w_order_anchor=order_weight,
+            w_param_anchor=param_rayleigh_weight,
+            enabled=enable_curriculum,
+        )
+
         # Optional: Metrics to evaluate and measure model's success
         self.train_r2 = torchmetrics.R2Score()
         self.val_r2 = torchmetrics.R2Score()
@@ -313,6 +367,18 @@ class GNOTLightning(pl.LightningModule):
         return self.model(batch)
 
     def _compute_loss(self, batch, prefix):
+        # ── Physics-loss prep: enable autograd through node coordinates so
+        # that Rayleigh quotient ∂E/∂x can be computed downstream. We only
+        # turn this on when the autograd Rayleigh path is actually active,
+        # because it inflates memory ~2x (see docs/13_RAYLEIGH_ANALYSIS.md).
+        w_sched = self.curriculum.weights(self.current_epoch)
+        need_rayleigh = (
+            self.enable_physics_loss
+            and (w_sched['rayleigh'] > 0 or w_sched['param'] > 0)
+        )
+        if need_rayleigh and self.rayleigh_mode == 'autograd':
+            batch['X'] = batch['X'].detach().requires_grad_(True)
+
         outputs = self.model(batch)
         mask = batch.get('Mask', None)               # [B, N] boolean
 
@@ -460,16 +526,83 @@ class GNOTLightning(pl.LightningModule):
         if not (self.predict_frequency and outputs.get('freq') is not None):
             loss_freq = torch.zeros((), device=device)
 
-        total_loss = (loss_field
-                      + (self.freq_weight * loss_freq)
-                      + (self.smoothness_weight * loss_bnd)
-                      + (self.slot_ortho_weight * loss_ortho))
+        # ── Physics-driven loss terms (Rowan et al. arXiv:2506.04375) ──
+        loss_rayleigh = torch.zeros((), device=device)
+        loss_param_rayleigh = torch.zeros((), device=device)
+        loss_order = torch.zeros((), device=device)
+        if self.enable_physics_loss:
+            node_area = batch['Input_funcs'][..., 5]               # [B, N]
+
+            # K, M sparse caches if available on the batch (rayleigh_mode='fem')
+            K_sparse = batch.get('K_sparse', None)
+            M_sparse = batch.get('M_sparse', None)
+
+            # Rayleigh quotient R[E_k] of predicted fields. Per-mode [B, K].
+            if w_sched['rayleigh'] > 0 or w_sched['param'] > 0:
+                R_pred = rayleigh_quotient(
+                    pred_field,
+                    coords=batch['X'] if self.rayleigh_mode == 'autograd' else None,
+                    area=node_area,
+                    mask=valid_mask,
+                    mode=self.rayleigh_mode,
+                    K_sparse=K_sparse,
+                    M_sparse=M_sparse,
+                )                                                   # [B, K]
+
+                # Convert predicted frequency → squared wavenumber in the
+                # same (normalised-coordinate) units as R_pred:
+                #   f_GHz  = f_norm·σ + μ
+                #   k²_phys = (2π·f_GHz·1e9 / c)²      (1/m²)
+                #   k²_norm = k²_phys · L²              (dimensionless, L=length_scale)
+                if self.freq_stats is not None and self.predict_frequency:
+                    mu = float(self.freq_stats['mean'])
+                    sigma = float(self.freq_stats['std'])
+                    f_GHz = f_pred * sigma + mu
+                    k2_phys = ((2.0 * math.pi * f_GHz * 1e9) / SPEED_OF_LIGHT) ** 2
+                    lam_pred = k2_phys * (self.length_scale ** 2)   # [B, K]
+                    # Relative MSE so the loss is scale-agnostic across modes
+                    rel = (R_pred - lam_pred) / (lam_pred.abs() + 1e-6)
+                    loss_rayleigh = (rel ** 2).mean()
+                else:
+                    # No frequency head: Rayleigh becomes the eigenvalue target
+                    # itself (paper Section 4) — directly minimise R averaged
+                    # over modes, scaled by mode index to encourage ordering.
+                    loss_rayleigh = R_pred.mean()
+
+                # Parametric expected Rayleigh — paper Section 5 (Eq. 16/18).
+                # Mini-batch mean of Rayleigh; geometry distribution ρ(a) is
+                # uniform by construction (random shapes per sample).
+                loss_param_rayleigh = R_pred.mean()
+
+            # Eigenvalue ordering hinge: encourages λ_k ≤ λ_{k+1}. Operates on
+            # predicted frequencies (already sorted by the model, so this is a
+            # cheap safety net rather than the primary mechanism).
+            if w_sched['order'] > 0 and outputs.get('freq') is not None:
+                loss_order = eigenvalue_ordering_loss(f_pred, margin=self.order_margin)
+
+        # ── Total loss: supervised + physics, curriculum-weighted ──────────
+        total_loss = (
+            w_sched['field']      * loss_field
+            + w_sched['freq']     * loss_freq
+            + w_sched['smooth']   * loss_bnd
+            + w_sched['slot_ortho'] * loss_ortho
+            + w_sched['rayleigh'] * loss_rayleigh
+            + w_sched['order']    * loss_order
+            + w_sched['param']    * loss_param_rayleigh
+        )
 
         # --- logging -----------------------------------------------------
         self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
         self.log(f'{prefix}/ortho_loss', loss_ortho, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+        if self.enable_physics_loss:
+            self.log(f'{prefix}/rayleigh_loss', loss_rayleigh, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+            self.log(f'{prefix}/param_rayleigh_loss', loss_param_rayleigh, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+            self.log(f'{prefix}/order_loss', loss_order, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+            # Log curriculum weights so we can see the phase transition in TB
+            self.log(f'{prefix}/w_field', float(w_sched['field']), on_step=False, on_epoch=True, batch_size=B, sync_dist=True)
+            self.log(f'{prefix}/w_rayleigh', float(w_sched['rayleigh']), on_step=False, on_epoch=True, batch_size=B, sync_dist=True)
 
         rel_l2_count = rel_l2_count.clamp(min=1.0)
         rel_l2_mean_per_mode = rel_l2_per_mode / rel_l2_count
