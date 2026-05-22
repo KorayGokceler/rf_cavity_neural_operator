@@ -64,7 +64,7 @@ def _load_elements_pool(data_path):
 
 def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                    dump_rows, plot_dir=None, elements_pool=None,
-                   split_name=''):
+                   split_name='', geom_pool=None):
     """Run the model over every geometry in `dataset`; return (agg, per_geom).
 
     If `plot_dir` is set, also save a GT | Prediction | Error figure for
@@ -115,7 +115,10 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                             1e-8, None)
                 nv = int(m.sum())
 
-                row = {'geom_id': gid, 'n_nodes': nv}
+                shape_type = 'unknown'
+                if geom_pool and gid in geom_pool:
+                    shape_type = geom_pool[gid].get('shape_type', 'unknown')
+                row = {'geom_id': gid, 'n_nodes': nv, 'shape_type': shape_type}
                 rl_uni, rl_w = [], []
                 signs = np.ones(K)
                 for kk in range(K):
@@ -281,11 +284,13 @@ def main():
         ds = GNOTDataset(args.data_path, split=sp)
         if getattr(ds, 'stats', None):
             model.freq_stats = ds.stats
+        geom_pool = getattr(ds, 'geometry_pool', None)
         agg, rows = evaluate_split(model, ds, device, args.batch_size,
                                    args.deg_threshold, dump,
                                    plot_dir=args.plot_dir,
                                    elements_pool=elements_pool,
-                                   split_name=sp)
+                                   split_name=sp,
+                                   geom_pool=geom_pool)
         print_agg(sp, agg)
         report[sp] = agg
         for r in rows:

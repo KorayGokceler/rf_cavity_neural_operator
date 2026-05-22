@@ -12,6 +12,7 @@ Figures produced in --out_dir:
   fig4_spatial_error.png      error binned by boundary distance
   fig5_degen_comparison.png   degenerate vs well-separated error comparison
   fig6_ranking_table.png      matplotlib table of top-20 worst geometries
+  fig7_shape_type_breakdown.png  per-shape-type violin + mode heatmap
   val_metrics_ranked.csv      full CSV sorted by mean rel-L2 (worst first)
 
 Usage:
@@ -554,7 +555,8 @@ def fig6_ranking_table(df, K, out_dir):
     top = df_sorted.head(20)
     mode_cols = [f'mode{k}_relL2' for k in range(K)
                  if f'mode{k}_relL2' in df.columns]
-    display_cols = ['geom_id', 'n_nodes', sort_col] + mode_cols + ['is_near_degenerate']
+    display_cols = (['geom_id', 'n_nodes', sort_col] + mode_cols
+                    + ['shape_type', 'is_near_degenerate'])
     display_cols = [c for c in display_cols if c in top.columns]
     tbl = top[display_cols].copy()
 
@@ -590,6 +592,100 @@ def fig6_ranking_table(df, K, out_dir):
     ax.set_title(f'Top-{n_rows} worst geometries (sorted by {sort_col})',
                  fontsize=10, pad=10)
     _savefig(fig, os.path.join(out_dir, 'fig6_ranking_table.png'), dpi=120)
+
+
+# ── figure 7: per-shape-type error breakdown ─────────────────────────────────
+
+def fig7_shape_type_breakdown(df, K, out_dir):
+    """Per-shape-type rel-L2 distribution + per-shape × per-mode heatmap."""
+    y_col = 'mean_relL2_areaw' if 'mean_relL2_areaw' in df.columns else 'mean_relL2'
+
+    if 'shape_type' not in df.columns:
+        print("  [fig7] skipped — 'shape_type' column not in CSV "
+              "(re-convert dataset + re-run infer_val_all.py)")
+        return
+
+    shape_types = sorted(df['shape_type'].dropna().unique())
+    if not shape_types:
+        print("  [fig7] skipped — no shape_type values found")
+        return
+
+    mode_cols = [f'mode{k}_relL2' for k in range(K)
+                 if f'mode{k}_relL2' in df.columns]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # ── Left: violin per shape type ──────────────────────────────────────────
+    ax = axes[0]
+    palette = ['#4C72B0', '#DD8452', '#55A868', '#C44E52', '#8172B2', '#937860']
+    groups = [df.loc[df['shape_type'] == st, y_col].dropna().values
+              for st in shape_types]
+
+    parts = ax.violinplot(groups, positions=range(len(shape_types)),
+                          showmedians=True, showextrema=True)
+    for i, pc in enumerate(parts['bodies']):
+        pc.set_facecolor(palette[i % len(palette)])
+        pc.set_alpha(0.7)
+
+    # Overlay individual points for small groups
+    for i, (st, vals) in enumerate(zip(shape_types, groups)):
+        if len(vals) <= 50:
+            jitter = np.random.default_rng(i).uniform(-0.12, 0.12, len(vals))
+            ax.scatter(i + jitter, vals, s=15, alpha=0.5,
+                       color=palette[i % len(palette)], zorder=3)
+
+    ax.set_yscale('log')
+    ax.set_xticks(range(len(shape_types)))
+    ax.set_xticklabels(
+        [f'{st}\n(n={len(g)})' for st, g in zip(shape_types, groups)],
+        fontsize=9)
+    ax.set_ylabel(y_col)
+    ax.set_title('Error distribution by shape type')
+    ax.grid(axis='y', alpha=0.3)
+
+    # Medians as text annotations
+    for i, vals in enumerate(groups):
+        if len(vals):
+            ax.text(i, np.median(vals) * 0.85, f'{np.median(vals):.3f}',
+                    ha='center', va='top', fontsize=7, color='black')
+
+    # ── Right: heatmap shape_type × mode ──────────────────────────────────────
+    ax2 = axes[1]
+    if mode_cols:
+        heatmap = np.full((len(shape_types), len(mode_cols)), np.nan)
+        for r, st in enumerate(shape_types):
+            mask = df['shape_type'] == st
+            for c, col in enumerate(mode_cols):
+                vals = df.loc[mask, col].dropna().values
+                if len(vals):
+                    heatmap[r, c] = np.median(vals)
+
+        vmax = np.nanmax(heatmap)
+        im = ax2.imshow(heatmap, aspect='auto', cmap='YlOrRd',
+                        vmin=0, vmax=vmax)
+        plt.colorbar(im, ax=ax2, label='Median rel-L2')
+        ax2.set_xticks(range(len(mode_cols)))
+        ax2.set_xticklabels([f'Mode {k}' for k in range(len(mode_cols))],
+                             fontsize=9)
+        ax2.set_yticks(range(len(shape_types)))
+        ax2.set_yticklabels(shape_types, fontsize=9)
+        ax2.set_title('Median rel-L2 by shape type × mode')
+
+        # Cell annotations
+        for r in range(len(shape_types)):
+            for c in range(len(mode_cols)):
+                v = heatmap[r, c]
+                if not np.isnan(v):
+                    ax2.text(c, r, f'{v:.3f}', ha='center', va='center',
+                             fontsize=8,
+                             color='white' if v > 0.6 * vmax else 'black')
+    else:
+        ax2.text(0.5, 0.5, 'No mode columns found', ha='center',
+                 transform=ax2.transAxes)
+        ax2.set_axis_off()
+
+    fig.suptitle('Per-shape-type error breakdown', fontsize=11)
+    _savefig(fig, os.path.join(out_dir, 'fig7_shape_type_breakdown.png'))
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -647,6 +743,7 @@ def main():
     fig4_spatial_error(df, npz_data, K, args.out_dir)
     fig5_degen_comparison(df, K, args.out_dir)
     fig6_ranking_table(df, K, args.out_dir)
+    fig7_shape_type_breakdown(df, K, args.out_dir)
 
     print(f"\nDone. All figures saved to: {args.out_dir}/")
     print("Quick start:\n"
@@ -656,6 +753,7 @@ def main():
           "  fig4 = error by distance from boundary wall\n"
           "  fig5 = degenerate vs well-separated comparison\n"
           "  fig6 = ranked table of worst geometries\n"
+          "  fig7 = per-shape-type breakdown (sharp/smooth/pillbox/elliptical)\n"
           "  val_metrics_ranked.csv = all geometries sorted by error")
 
 

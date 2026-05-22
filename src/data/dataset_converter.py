@@ -132,7 +132,9 @@ class RFCavityToGNOT:
                 vecs = grp['vecs'][:len(nodes), :]
 
                 if sample_id not in self.geometry_pool:
-                    self.geometry_pool[sample_id] = self.extract_geometry_features(nodes, elements)
+                    geom = self.extract_geometry_features(nodes, elements)
+                    geom['shape_type'] = grp.attrs.get('shape_type', 'unknown')
+                    self.geometry_pool[sample_id] = geom
                     self.stats['n_geometries'] += 1
                     self.stats['mesh_sizes'].append(len(nodes))
 
@@ -200,8 +202,9 @@ class RFCavityToGNOT:
                 for g_id, g_data in self.geometry_pool.items():
                     g_sub = geom_grp.create_group(str(g_id))
                     g_sub.create_dataset('X', data=g_data['X'], compression="gzip")
-                    # Input_funcs is now a plain numpy array
                     g_sub.create_dataset('Input_funcs', data=g_data['Input_funcs'], compression="gzip")
+                    if 'shape_type' in g_data:
+                        g_sub.attrs['shape_type'] = g_data['shape_type']
                 
                 # Samples
                 samp_grp = f_out.create_group('samples')
