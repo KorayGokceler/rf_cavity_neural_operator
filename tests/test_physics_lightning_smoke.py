@@ -81,6 +81,24 @@ def test_physics_module_phase_c_loss_finite():
     loss.backward()
 
 
+def test_physics_loss_survives_no_grad_context():
+    """Regression: Lightning's validation_step wraps the call in torch.no_grad,
+    which used to break the autograd Rayleigh path with
+    `element 0 of tensors does not require grad`. The fix re-enables grad
+    locally when the autograd Rayleigh path is active.
+    """
+    m = _make_physics_module()
+    _force_epoch(m, 0)  # Phase A — Rayleigh weight is at maximum
+    batch = _make_batch()
+    with torch.no_grad():
+        loss, _, _ = m._compute_loss(batch, "val")
+    assert torch.isfinite(loss)
+    # Loss should still carry a grad_fn so .backward() would be possible
+    # (we don't actually backprop in validation, but the graph must exist
+    # because Rayleigh built it via autograd.grad → create_graph=True).
+    assert loss.grad_fn is not None
+
+
 def test_gram_schmidt_forward_produces_orthogonal_columns():
     """After GS in forward, the K predicted mode columns are area-orthogonal."""
     m = _make_physics_module()

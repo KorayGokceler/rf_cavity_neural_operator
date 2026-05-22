@@ -376,9 +376,22 @@ class GNOTLightning(pl.LightningModule):
             self.enable_physics_loss
             and (w_sched['rayleigh'] > 0 or w_sched['param'] > 0)
         )
-        if need_rayleigh and self.rayleigh_mode == 'autograd':
-            batch['X'] = batch['X'].detach().requires_grad_(True)
+        need_autograd = need_rayleigh and self.rayleigh_mode == 'autograd'
 
+        # Lightning wraps validation/test under torch.no_grad() by default,
+        # which would prevent autograd.grad from finding a graph for ∇E.
+        # When autograd Rayleigh is active we must re-enable grad tracking
+        # for the entire forward + loss computation, regardless of prefix.
+        import contextlib
+        grad_ctx = torch.enable_grad() if need_autograd else contextlib.nullcontext()
+
+        with grad_ctx:
+            if need_autograd:
+                batch['X'] = batch['X'].detach().requires_grad_(True)
+
+            return self._compute_loss_inner(batch, prefix, w_sched, need_rayleigh)
+
+    def _compute_loss_inner(self, batch, prefix, w_sched, need_rayleigh):
         outputs = self.model(batch)
         mask = batch.get('Mask', None)               # [B, N] boolean
 
