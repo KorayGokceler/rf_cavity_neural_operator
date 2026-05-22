@@ -60,6 +60,33 @@ def _subspace_rel_l2(E_hat_orth, e_tgt):
     return float(np.linalg.norm(residual) / (np.linalg.norm(e_tgt) + 1e-8))
 
 
+def _ot_match_np(fp_norm, ft_norm, E_hat, E_tgt, freq_w=0.5):
+    """Hungarian OT matching of predicted slots to target modes (numpy).
+
+    Identical logic to lightning_module.ot_match but operates on numpy arrays.
+    Returns perm[K] such that E_hat[:, perm] is optimally aligned to E_tgt,
+    i.e. E_hat[:, perm[j]] is the best prediction for target mode j.
+
+    fp_norm / ft_norm: z-scored (normalized) frequencies — same scale used
+    during training so the freq_w coefficient is directly comparable.
+    """
+    from scipy.optimize import linear_sum_assignment
+    K = len(ft_norm)
+    df = fp_norm[:, None] - ft_norm[None, :]       # [Kp, Kt]
+    cost_f = df ** 2
+    eh2 = (E_hat ** 2).sum(0)[:, None]             # [Kp, 1]
+    et2 = (E_tgt ** 2).sum(0)[None, :]             # [1, Kt]
+    cross = E_hat.T @ E_tgt                        # [Kp, Kt]
+    num_p = eh2 + et2 - 2.0 * cross               # ||eh_i - et_j||^2
+    num_n = eh2 + et2 + 2.0 * cross               # ||eh_i + et_j||^2
+    cost_field = np.minimum(num_p, num_n) / (et2 + 1e-8)
+    C = freq_w * cost_f + cost_field
+    row, col = linear_sum_assignment(C)
+    perm = np.empty(K, dtype=np.int64)
+    perm[col] = row                                # perm[true_j] = pred_slot
+    return perm
+
+
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
 def plot_geometry_comparison(geom_id, modes_data, save_path, elements=None, cluster_info=""):
@@ -192,13 +219,26 @@ def main(args):
                     continue
 
                 m_idx = mask[i].cpu().numpy() if mask is not None else np.ones(N, dtype=bool)
-                fp_i  = f_pred_ph[i].cpu().numpy()   # [K]
-                ft_i  = f_true_ph[i].cpu().numpy()   # [K]
+                fp_i  = f_pred_ph[i].cpu().numpy()   # [K] physical GHz
+                ft_i  = f_true_ph[i].cpu().numpy()   # [K] physical GHz
 
                 # Predicted and target fields at valid nodes, normalised to unit max
                 E_hat = preds[i][m_idx].cpu().numpy()     # [N_valid, K]
                 E_tgt = targets[i][m_idx].cpu().numpy()   # [N_valid, K]
                 xy    = coords[i][m_idx].cpu().numpy()    # [N_valid, 2]
+
+                # ── OT matching: align predicted slots to target modes ───────
+                # The model emits K (freq, field) pairs in slot order 0..K-1
+                # which need not match target mode order.  Apply the same
+                # Hungarian assignment used during training so every downstream
+                # comparison is apples-to-apples.
+                fp_norm_i = f_pred[i].cpu().numpy()  # z-scored (for cost)
+                ft_norm_i = f_true[i].cpu().numpy()
+                freq_w = getattr(model, 'freq_match_weight', 0.5)
+                perm = _ot_match_np(fp_norm_i, ft_norm_i, E_hat, E_tgt,
+                                    freq_w=freq_w)
+                E_hat = E_hat[:, perm]    # aligned: column j = prediction for target mode j
+                fp_i  = fp_i[perm]        # reorder physical freq predictions accordingly
 
                 # Normalise each column to [-1, 1] for consistent colour scale
                 def _norm_col(v):
@@ -206,9 +246,10 @@ def main(args):
                     return v / mx if mx > 1e-8 else v
 
                 # ── Subspace postprocessing ──────────────────────────────────
-                # Detect near-degenerate clusters from PREDICTED frequencies
-                # (at inference time we only have the model's output)
-                clusters = _near_degenerate_clusters(fp_i, rel_threshold=args.deg_threshold)
+                # Detect near-degenerate clusters from TRUE frequencies
+                # (after OT, fp_i[j] is the prediction for target mode j, so
+                # we use ft_i to determine which modes form a degenerate pair)
+                clusters = _near_degenerate_clusters(ft_i, rel_threshold=args.deg_threshold)
 
                 modes = {}
                 cluster_parts = []

@@ -34,7 +34,7 @@ if _ROOT not in sys.path:
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning
 from infer import (_near_degenerate_clusters, plot_geometry_comparison,
-                   _near_degenerate_note)
+                   _near_degenerate_note, _ot_match_np)
 from scripts.diagnose_data_floor import _sign_agnostic_rel_l2, _subspace_rel_l2_w
 
 
@@ -115,6 +115,17 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                             1e-8, None)
                 nv = int(m.sum())
 
+                # ── OT matching: align predicted slots to target modes ───────
+                # Same Hungarian assignment as training — without this, slot j
+                # may correspond to any target mode, inflating reported errors.
+                fp_norm_i = (fpn[i].cpu().numpy()
+                             if fpn is not None else ftn[i].cpu().numpy())
+                ft_norm_i = ftn[i].cpu().numpy()
+                freq_w = getattr(model, 'freq_match_weight', 0.5) if fpn is not None else 0.0
+                perm = _ot_match_np(fp_norm_i, ft_norm_i, Eh, Et, freq_w=freq_w)
+                Eh = Eh[:, perm]                              # aligned to target mode order
+                fp_ph_i = (fp_ph[i][perm] if fp_ph is not None else None)
+
                 shape_type = 'unknown'
                 if geom_pool and gid in geom_pool:
                     shape_type = geom_pool[gid].get('shape_type', 'unknown')
@@ -147,11 +158,11 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                 row['near_deg_subspace_relL2'] = (
                     float(np.mean(deg_err)) if deg_err else float('nan'))
 
-                if fp_ph is not None:
-                    fmae = np.abs(fp_ph[i] - ft_ph[i])
+                if fp_ph_i is not None:
+                    fmae = np.abs(fp_ph_i - ft_ph[i])
                     for kk in range(K):
                         row[f'mode{kk}_freq_true_ghz'] = float(ft_ph[i][kk])
-                        row[f'mode{kk}_freq_pred_ghz'] = float(fp_ph[i][kk])
+                        row[f'mode{kk}_freq_pred_ghz'] = float(fp_ph_i[kk])
                         row[f'mode{kk}_freq_abserr_ghz'] = float(fmae[kk])
                     row['freq_mae_ghz'] = float(fmae.mean())
                 else:
@@ -167,14 +178,14 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                         'coords': coords,
                         'pred': Eh, 'target': Et,
                         'freq_true_ghz': ft_ph[i],
-                        'freq_pred_ghz': (fp_ph[i] if fp_ph is not None
+                        'freq_pred_ghz': (fp_ph_i if fp_ph_i is not None
                                           else np.full(K, np.nan)),
                     }
 
                 if plot_dir is not None:
                     modes = {}
                     for kk in range(K):
-                        fp_v = float(fp_ph[i][kk]) if fp_ph is not None \
+                        fp_v = float(fp_ph_i[kk]) if fp_ph_i is not None \
                             else float('nan')
                         modes[kk] = {
                             'coords': coords,
