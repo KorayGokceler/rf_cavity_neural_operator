@@ -46,8 +46,15 @@ logging.getLogger('skfem').setLevel(logging.ERROR)
 # Physical eigenvalues ≈ 1e3–1e5 for these cavity sizes
 LARGE_EIGENVAL = 1e9
 
-# Bucket boundaries (pad condensed DOF count to nearest bucket)
-BUCKET_SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+# Bucket boundaries for padded batching.
+#   Fine mesh (h_min=0.0012) produces n_interior ≈ 5000–8000 DOFs.
+#   Using coarse power-of-2 buckets (4096 → 8192) pads 5000-DOF systems to
+#   8192, wasting 4 GB/sample on an A100.
+#   Fine step-512 buckets limit waste to <512 DOFs per sample.
+BUCKET_SIZES = (
+    [64, 128, 256, 512, 1024, 2048]           # small matrices (coarse mesh / test)
+    + list(range(2560, 16384 + 1, 512))        # large matrices (fine mesh): step-512
+)
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
@@ -339,6 +346,33 @@ def _cpu_arpack_eigensolver(fem_systems, k: int, sigma: float = 500.0):
     return results
 
 
+def _max_batch_for_bucket(bucket_n: int, device: torch.device,
+                          safety_fraction: float = 0.4) -> int:
+    """
+    Compute the maximum safe batch size for a given bucket (matrix) size.
+
+    Memory estimate per sample (float64):
+      8 N×N matrices (K, M, M_reg, C, C_inv, K_w, W, vecs) × N² × 8 bytes
+
+    Args:
+        bucket_n:         padded matrix dimension N
+        safety_fraction:  fraction of GPU memory to use (default 0.4 = 40%)
+
+    Returns:
+        max_batch (≥ 1)
+    """
+    if device.type != 'cuda':
+        return 256   # CPU: no hard OOM limit
+
+    total_bytes = torch.cuda.get_device_properties(device).total_memory
+    budget      = total_bytes * safety_fraction
+
+    # 8 NxN float64 matrices per sample in the Cholesky whitening pipeline
+    bytes_per_sample = 8 * bucket_n * bucket_n * 8   # float64 = 8 bytes
+    max_b = max(1, int(budget / bytes_per_sample))
+    return max_b
+
+
 def batch_gpu_eigensolver(fem_systems, k: int, device: torch.device,
                           arpack_sigma: float = 500.0):
     """
@@ -347,10 +381,16 @@ def batch_gpu_eigensolver(fem_systems, k: int, device: torch.device,
     Dispatch strategy:
       device == cpu  →  scipy ARPACK per sample (fast for sparse k ≪ N)
       device == cuda →  bucket-batched Cholesky-whitened torch.linalg.eigh
+                        with memory-aware sub-batching to avoid OOM
+
+    Memory safety:
+      For each bucket size N, the max sub-batch B is computed so that
+      8 × B × N² × 8 bytes ≤ 40% of total GPU memory.
+      This handles fine meshes with large DOF counts (e.g. h=0.0012 → N~8192).
 
     Args:
-        fem_systems: list of dicts from assemble_fem_system (None = failed)
-        k:           number of smallest eigenpairs to return
+        fem_systems:  list of dicts from assemble_fem_system (None = failed)
+        k:            number of smallest eigenpairs to return
         arpack_sigma: shift for ARPACK (only used on CPU path)
 
     Returns:
@@ -373,33 +413,42 @@ def batch_gpu_eigensolver(fem_systems, k: int, device: torch.device,
         buckets[b].append((i, sys))
 
     for bucket_n, items in buckets.items():
-        # Stack padded matrices
-        K_list, M_list = [], []
-        for _, sys in items:
-            K_list.append(_pad_K(sys['K_dense'], bucket_n))
-            M_list.append(_pad_M(sys['M_dense'], bucket_n))
+        # Compute memory-safe sub-batch size for this bucket
+        sub_batch = _max_batch_for_bucket(bucket_n, device)
 
-        K_t = torch.tensor(np.stack(K_list), dtype=torch.float64, device=device)
-        M_t = torch.tensor(np.stack(M_list), dtype=torch.float64, device=device)
+        # Process in sub-batches to avoid OOM on large DOF matrices
+        for sub_start in range(0, len(items), sub_batch):
+            sub_items = items[sub_start : sub_start + sub_batch]
 
-        with torch.no_grad():
-            vals_t, vecs_t = _generalized_eigh_batched(K_t, M_t, device)
+            K_list, M_list = [], []
+            for _, sys in sub_items:
+                K_list.append(_pad_K(sys['K_dense'], bucket_n))
+                M_list.append(_pad_M(sys['M_dense'], bucket_n))
 
-        vals_np = vals_t.cpu().numpy()   # [B, bucket_n]
-        vecs_np = vecs_t.cpu().numpy()   # [B, bucket_n, bucket_n]
+            K_t = torch.tensor(np.stack(K_list), dtype=torch.float64, device=device)
+            M_t = torch.tensor(np.stack(M_list), dtype=torch.float64, device=device)
 
-        for j, (orig_idx, sys) in enumerate(items):
-            n_c = sys['K_dense'].shape[0]   # actual interior DOF count
+            with torch.no_grad():
+                vals_t, vecs_t = _generalized_eigh_batched(K_t, M_t, device)
 
-            # Take k smallest eigenvalues/vectors (physical; pad has vals >> physical)
-            vals_k = vals_np[j, :k].copy()
-            vecs_k = vecs_np[j, :n_c, :k].copy()   # trim padded rows, k cols
+            vals_np = vals_t.cpu().numpy()   # [B, bucket_n]
+            vecs_np = vecs_t.cpu().numpy()   # [B, bucket_n, bucket_n]
 
-            # Sanity: all k eigenvalues must be << LARGE_EIGENVAL
-            if np.any(vals_k >= LARGE_EIGENVAL * 0.01):
-                print(f"  ⚠️  Sample {sys['id']}: eigenvalue(s) suspiciously large: {vals_k}")
+            # Free GPU tensors immediately
+            del K_t, M_t, vals_t, vecs_t
+            torch.cuda.empty_cache()
 
-            results[orig_idx] = (vals_k, vecs_k)
+            for j, (orig_idx, sys) in enumerate(sub_items):
+                n_c = sys['K_dense'].shape[0]   # actual interior DOF count
+
+                # Take k smallest (ascending eigh order → first k are physical)
+                vals_k = vals_np[j, :k].copy()
+                vecs_k = vecs_np[j, :n_c, :k].copy()   # trim padding rows
+
+                if np.any(vals_k >= LARGE_EIGENVAL * 0.01):
+                    print(f"  ⚠️  Sample {sys['id']}: eigenvalue suspiciously large: {vals_k}")
+
+                results[orig_idx] = (vals_k, vecs_k)
 
     return results
 
