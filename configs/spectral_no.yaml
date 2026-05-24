@@ -72,7 +72,7 @@ model:
   # val_dim=8  → existing gnot_dataset_5k.pkl (original 8 features)
   # val_dim=12 → after re-running dataset_converter (adds dist_2nd, dist_3rd, curvature, convexity)
   # To use extended features: python scripts/convert_dataset.py → produces gnot_dataset_5k_v12.pkl
-  val_dim: 8                    # Change to 12 after reconverting dataset
+  val_dim: 12                   # Dataset gnot_dataset_5k.pkl has 12 features
   grid_dim: 2
 
   # SpectralNO core
