@@ -437,60 +437,69 @@ def batch_gpu_eigensolver(fem_systems, k: int, device: torch.device,
     if device.type == 'cpu':
         return _cpu_arpack_eigensolver(fem_systems, k, sigma=arpack_sigma)
 
-    # ── CUDA path: adaptive batched / sequential eigh ────────────────────────
-    # For large matrices (N > _BATCHED_N_LIMIT ≈ 1024) _generalized_eigh_batched
-    # internally loops over samples using the cuSOLVER native (non-batched)
-    # routines, which are efficient and suppress the cuSOLVER "small-size" warning.
-    # For small matrices it uses the batched path (GPU-parallel across the batch).
-    # Memory safety: bucket + sub-batching keeps peak GPU usage ≤ 40% of VRAM.
+    # ── CUDA path ─────────────────────────────────────────────────────────────
+    # Strategy:
+    #   N ≤ _BATCHED_N_LIMIT (1024): batched GPU eigh — genuine speedup
+    #   N  > _BATCHED_N_LIMIT:       ARPACK on CPU  — sparse k-eigenpair solver
+    #                                 is O(nnz·k) vs O(N³) for dense GPU eigh,
+    #                                 so for large FEM matrices ARPACK always wins.
+    #                                 Default fine mesh (h=0.0012) → N≈7000 → ARPACK.
     n_sys   = len(fem_systems)
     results = [None] * n_sys
 
-    # Group by bucket
-    buckets = defaultdict(list)   # bucket_n → [(original_index, system_dict)]
+    small_items = []   # N ≤ _BATCHED_N_LIMIT → GPU batched eigh
+    large_items = []   # N  > _BATCHED_N_LIMIT → ARPACK
+
     for i, sys in enumerate(fem_systems):
         if sys is None:
             continue
-        b = _bucket_for(sys['K_dense'].shape[0])
-        buckets[b].append((i, sys))
+        n_c = sys['K_dense'].shape[0]
+        if n_c <= _BATCHED_N_LIMIT:
+            small_items.append((i, sys))
+        else:
+            large_items.append((i, sys))
 
-    for bucket_n, items in buckets.items():
-        # Memory-safe sub-batch: limits peak VRAM to ~40% of total
-        sub_batch = _max_batch_for_bucket(bucket_n, device)
+    # Large matrices → ARPACK (faster than dense GPU eigh for large sparse systems)
+    if large_items:
+        sys_list    = [sys for _, sys in large_items]
+        arpack_res  = _cpu_arpack_eigensolver(sys_list, k, sigma=arpack_sigma)
+        for (orig_idx, _), res in zip(large_items, arpack_res):
+            results[orig_idx] = res
 
-        for sub_start in range(0, len(items), sub_batch):
-            sub_items = items[sub_start : sub_start + sub_batch]
+    # Small matrices → GPU batched eigh
+    if small_items:
+        buckets = defaultdict(list)
+        for i, sys in small_items:
+            b = _bucket_for(sys['K_dense'].shape[0])
+            buckets[b].append((i, sys))
 
-            K_list, M_list = [], []
-            for _, sys in sub_items:
-                K_list.append(_pad_K(sys['K_dense'], bucket_n))
-                M_list.append(_pad_M(sys['M_dense'], bucket_n))
+        for bucket_n, items in buckets.items():
+            sub_batch = _max_batch_for_bucket(bucket_n, device)
 
-            K_t = torch.tensor(np.stack(K_list), dtype=torch.float64, device=device)
-            M_t = torch.tensor(np.stack(M_list), dtype=torch.float64, device=device)
+            for sub_start in range(0, len(items), sub_batch):
+                sub_items = items[sub_start : sub_start + sub_batch]
 
-            with torch.no_grad():
-                # Large N → loops internally over samples (no batched-LAPACK warning)
-                # Small N → true batched ops
-                vals_t, vecs_t = _generalized_eigh_batched(K_t, M_t, device)
+                K_list, M_list = [], []
+                for _, sys in sub_items:
+                    K_list.append(_pad_K(sys['K_dense'], bucket_n))
+                    M_list.append(_pad_M(sys['M_dense'], bucket_n))
 
-            vals_np = vals_t.cpu().numpy()   # [B, bucket_n]
-            vecs_np = vecs_t.cpu().numpy()   # [B, bucket_n, bucket_n]
+                K_t = torch.tensor(np.stack(K_list), dtype=torch.float64, device=device)
+                M_t = torch.tensor(np.stack(M_list), dtype=torch.float64, device=device)
 
-            del K_t, M_t, vals_t, vecs_t
-            torch.cuda.empty_cache()
+                with torch.no_grad():
+                    vals_t, vecs_t = _generalized_eigh_batched(K_t, M_t, device)
 
-            for j, (orig_idx, sys) in enumerate(sub_items):
-                n_c = sys['K_dense'].shape[0]   # actual interior DOF count
+                vals_np = vals_t.cpu().numpy()
+                vecs_np = vecs_t.cpu().numpy()
+                del K_t, M_t, vals_t, vecs_t
+                torch.cuda.empty_cache()
 
-                # Take k smallest (ascending eigh order → first k are physical)
-                vals_k = vals_np[j, :k].copy()
-                vecs_k = vecs_np[j, :n_c, :k].copy()   # trim padding rows
-
-                if np.any(vals_k >= LARGE_EIGENVAL * 0.01):
-                    print(f"  ⚠️  Sample {sys['id']}: eigenvalue suspiciously large: {vals_k}")
-
-                results[orig_idx] = (vals_k, vecs_k)
+                for j, (orig_idx, sys) in enumerate(sub_items):
+                    n_c    = sys['K_dense'].shape[0]
+                    vals_k = vals_np[j, :k].copy()
+                    vecs_k = vecs_np[j, :n_c, :k].copy()
+                    results[orig_idx] = (vals_k, vecs_k)
 
     return results
 
