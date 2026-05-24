@@ -10,7 +10,12 @@ def main():
     parser.add_argument("--skip-gen", action="store_true", help="Skip data generation step")
     parser.add_argument("--skip-convert", action="store_true", help="Skip data conversion step")
     parser.add_argument("--skip-train", action="store_true", help="Skip training step")
-    
+    parser.add_argument("--gpu", action="store_true",
+                        help="Use GPU-accelerated data generator (dataset_generator_gpu.py). "
+                             "Falls back to CPU automatically if no CUDA device found.")
+    parser.add_argument("--gpu_batch_size", type=int, default=64,
+                        help="GPU eigensolve batch size (only used with --gpu, default: 64)")
+
     # Kalan argümanları yakala (Colab'da --override training.num_workers=2 gibi geçmek için)
     args, unknown_args = parser.parse_known_args()
 
@@ -29,13 +34,21 @@ def main():
     # 1. VERİ ÜRETİMİ (DATA GENERATION)
     # ==========================================
     if not args.skip_gen:
-        print("\n[1/3] VERİ ÜRETİMİ (DATA GENERATION) BAŞLIYOR...")
         dg = cfg.get('data_gen', {})
         sharp_n_pts = dg.get('sharp_n_pts_range', [7, 13])
         sharp_r     = dg.get('sharp_r_range', [0.02, 0.046])
         smooth_harm = dg.get('smooth_harmonics', [2, 8])
+
+        # Choose generator script
+        if args.gpu:
+            gen_script = "src/data_gen/dataset_generator_gpu.py"
+            print("\n[1/3] VERİ ÜRETİMİ (GPU-HIZLANDIRILMIŞ) BAŞLIYOR...")
+        else:
+            gen_script = "src/data_gen/dataset_generator.py"
+            print("\n[1/3] VERİ ÜRETİMİ (DATA GENERATION) BAŞLIYOR...")
+
         gen_args = [
-            "python", "src/data_gen/dataset_generator.py",
+            "python", gen_script,
             "--h5_filename",         dg.get('h5_filename', 'rf_cavity_1000_dataset.h5'),
             "--plot_dir",            dg.get('plot_dir', 'dataset_plots'),
             "--n_total",             str(dg.get('n_total', 1000)),
@@ -56,7 +69,10 @@ def main():
             "--smooth_perturb",      str(dg.get('smooth_perturb', 0.008)),
             "--smooth_harmonics",    str(smooth_harm[0]), str(smooth_harm[1]),
         ]
-        
+        # GPU-specific flags
+        if args.gpu:
+            gen_args += ["--gpu_batch_size", str(args.gpu_batch_size)]
+
         try:
             subprocess.run(gen_args, check=True)
             print("✅ Veri üretimi başarılı!")
