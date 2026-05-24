@@ -235,6 +235,39 @@ def soft_procrustes_loss(E_hat, E_tgt, f_matched, sigma, mask=None):
     den = (E_eff ** 2).sum() + 1e-8
     return num / den
 
+def _rayleigh_consistency_loss(
+    u_K: torch.Tensor,
+    L_mat: torch.Tensor,
+    M_mat: torch.Tensor,
+    eigenvalues: torch.Tensor,
+) -> torch.Tensor:
+    """Rayleigh quotient consistency loss for SpectralNO.
+
+    For well-conditioned eigenvectors the Rayleigh quotient in the reduced
+    basis should equal the eigenvalue exactly:
+        r_k = (u_k^T L u_k) / (u_k^T M u_k) ≈ λ_k
+
+    This is structurally near-zero for correctly computed eigh solutions.
+    During early training (when L/M matrices change rapidly) this acts as a
+    regularizer that keeps the learned matrices consistent with the
+    eigendecomposition step.
+
+    Args:
+        u_K:         [B, M, K] Galerkin coefficients.
+        L_mat:       [B, M, M] stiffness matrix.
+        M_mat:       [B, M, M] mass matrix.
+        eigenvalues: [B, K] raw Galerkin eigenvalues (detached target).
+    Returns:
+        scalar loss.
+    """
+    Lu = torch.einsum('bml,blk->bmk', L_mat, u_K)       # [B, M, K]
+    Mu = torch.einsum('bml,blk->bmk', M_mat, u_K)       # [B, M, K]
+    rq_num = (u_K * Lu).sum(dim=1)                      # [B, K]
+    rq_den = (u_K * Mu).sum(dim=1).clamp(min=1e-8)     # [B, K]
+    rq = rq_num / rq_den                                # [B, K]
+    return F.mse_loss(rq, eigenvalues.detach())
+
+
 class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, hidden_dim=256,
                  n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
@@ -256,35 +289,60 @@ class GNOTLightning(pl.LightningModule):
                  deg_sigma_rel=0.5,
                  deg_sigma_abs=0.3,
                  slot_ortho_weight=0.1,
-                 freq_match_weight=0.5):
+                 freq_match_weight=0.5,
+                 # SpectralNO-specific params
+                 model_type='gnot',
+                 bc_scale=0.02,
+                 rayleigh_weight=0.1,
+                 orthonormalize_output=False):
         super().__init__()
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
         self.lr_mode_specific = lr_mode_specific
         self.lr_freq_heads = lr_freq_heads
         self.gradient_clip_val = gradient_clip_val
-        
+        self.model_type = model_type
+
         self.save_hyperparameters()
-        
-        self.model = GNOTModel(
-            val_dim=val_dim,
-            grid_dim=grid_dim,
-            embed_dim=hidden_dim,
-            n_shared_layers=n_shared_layers,
-            n_mode_layers=n_mode_layers,
-            n_field_head_layers=n_field_head_layers,
-            n_heads=n_heads,
-            num_experts=num_experts,
-            num_field_modes=num_field_modes,
-            use_checkpoint=use_checkpoint,
-            predict_frequency=predict_frequency,
-            dropout=dropout,
-            rff_dim=rff_dim,
-            rff_length_scale=rff_length_scale,
-            n_basis=n_basis,
-        )
+
+        if model_type == 'spectral_no':
+            from src.models.spectral_no import SpectralNO
+            self.model = SpectralNO(
+                val_dim=val_dim,
+                grid_dim=grid_dim,
+                embed_dim=hidden_dim,
+                n_basis=n_basis,
+                num_field_modes=num_field_modes,
+                rff_dim=rff_dim,
+                rff_length_scale=rff_length_scale,
+                n_heads=n_heads,
+                dropout=dropout,
+                use_checkpoint=use_checkpoint,
+                bc_scale=bc_scale,
+            )
+        else:
+            self.model = GNOTModel(
+                val_dim=val_dim,
+                grid_dim=grid_dim,
+                embed_dim=hidden_dim,
+                n_shared_layers=n_shared_layers,
+                n_mode_layers=n_mode_layers,
+                n_field_head_layers=n_field_head_layers,
+                n_heads=n_heads,
+                num_experts=num_experts,
+                num_field_modes=num_field_modes,
+                use_checkpoint=use_checkpoint,
+                predict_frequency=predict_frequency,
+                dropout=dropout,
+                rff_dim=rff_dim,
+                rff_length_scale=rff_length_scale,
+                n_basis=n_basis,
+                orthonormalize_output=orthonormalize_output,
+            )
+
         self.freq_weight = freq_weight
         self.smoothness_weight = smoothness_weight
+        self.rayleigh_weight = rayleigh_weight
         self.predict_frequency = predict_frequency
         self.num_field_modes = num_field_modes
         self.freq_stats = None
@@ -313,6 +371,181 @@ class GNOTLightning(pl.LightningModule):
         return self.model(batch)
 
     def _compute_loss(self, batch, prefix):
+        """Dispatch to model-specific loss computation."""
+        if self.model_type == 'spectral_no':
+            return self._compute_loss_spectral(batch, prefix)
+        return self._compute_loss_gnot(batch, prefix)
+
+    def _compute_loss_spectral(self, batch, prefix):
+        """Loss for SpectralNO (no OT matching — ordering guaranteed by eigh).
+
+        Handles:
+        1. Sign-agnostic field relative L2 for non-degenerate modes.
+        2. Grassmannian subspace loss for near-degenerate mode clusters.
+        3. Frequency MSE.
+        4. PINN boundary constraint (φ = 0 on ∂Ω).
+        5. Rayleigh quotient consistency (Galerkin matrix consistency).
+        """
+        outputs = self.model(batch)
+        mask = batch.get('Mask', None)
+
+        pred_field  = outputs['field']       # [B, N, K]
+        true_field  = batch['Y_field']       # [B, N, K]
+        f_pred      = outputs['freq']        # [B, K] sorted ascending
+        f_true      = batch['Y_freq']        # [B, K] sorted ascending
+        B, N, K     = pred_field.shape
+        eps = 1e-8
+        device = pred_field.device
+
+        valid_mask = (
+            mask if mask is not None
+            else torch.ones(B, N, dtype=torch.bool, device=device)
+        )
+
+        # ── 1. Boundary PINN constraint ───────────────────────────────────────
+        dist_bnd = batch['Input_funcs'][:, :, 2]     # [B, N]
+        bnd_mask   = (dist_bnd < 1e-4) & valid_mask  # [B, N]
+        bnd_mask_f = bnd_mask.unsqueeze(-1).float()  # [B, N, 1]
+        if bnd_mask.any():
+            loss_bnd = ((pred_field ** 2) * bnd_mask_f).sum() / (
+                bnd_mask_f.sum() * K).clamp(min=1.0)
+        else:
+            loss_bnd = torch.zeros((), device=device)
+        self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=False, batch_size=B, sync_dist=True)
+
+        # ── 2. Field + frequency loss (per-sample) ────────────────────────────
+        loss_freq  = torch.zeros((), device=device)
+        loss_field = torch.zeros((), device=device)
+        rel_l2_per_mode = torch.zeros(K, device=device)
+        rel_l2_count    = torch.zeros(K, device=device)
+        aligned_pred_field = pred_field.detach().clone()
+
+        for b in range(B):
+            fp_b   = f_pred[b]         # [K]  sorted by eigenvalue order
+            ft_b   = f_true[b]         # [K]  sorted ascending
+            E_hat  = pred_field[b]     # [N, K]
+            E_tgt  = true_field[b]     # [N, K]
+            m_b    = valid_mask[b]     # [N]
+            m_f    = m_b.float().unsqueeze(-1)   # [N, 1]
+
+            # Frequency MSE (ordering guaranteed by eigh → already matched)
+            loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
+
+            # Field loss: cluster-based Grassmannian / sign-agnostic
+            clusters = detect_clusters(ft_b, self.near_deg_threshold)
+            fl_b = torch.zeros((), device=device)
+            for cl in clusters:
+                cl_t = torch.tensor(cl, device=device, dtype=torch.long)
+                if len(cl) == 1:
+                    # Sign-agnostic relative L2
+                    k = cl[0]
+                    eh = E_hat[:, k:k + 1]
+                    et = E_tgt[:, k:k + 1]
+                    denom = ((et ** 2) * m_f).sum().clamp(min=eps)
+                    num_p = (((eh - et) ** 2) * m_f).sum()
+                    num_n = (((eh + et) ** 2) * m_f).sum()
+                    fl_b = fl_b + torch.minimum(num_p, num_n) / denom
+                else:
+                    # Degenerate subspace: Grassmannian distance
+                    fl_b = fl_b + grassmannian_loss(
+                        E_hat[:, cl_t], E_tgt[:, cl_t], m_b)
+            loss_field = loss_field + fl_b
+
+            # Relative L2 reporting (mirrors GNOT logic)
+            with torch.no_grad():
+                sample_rl = torch.zeros(K, device=device)
+                for cl in clusters:
+                    if len(cl) == 1:
+                        k = cl[0]
+                        eh = E_hat[:, k:k + 1]
+                        et = E_tgt[:, k:k + 1]
+                        num_p = (((eh - et) ** 2) * m_f).sum()
+                        num_n = (((eh + et) ** 2) * m_f).sum()
+                        den   = ((et ** 2) * m_f).sum() + eps
+                        rl = torch.sqrt(torch.minimum(num_p, num_n) / den)
+                        rel_l2_per_mode[k] += rl
+                        rel_l2_count[k] += 1.0
+                        sample_rl[k] = rl
+                    else:
+                        cl_t = torch.tensor(cl, device=device, dtype=torch.long)
+                        Q = _masked_orthonormalize(E_hat[:, cl_t], m_b)
+                        for k in cl:
+                            et = E_tgt[:, k:k + 1] * m_f
+                            coeff = Q.transpose(-2, -1) @ et
+                            et_proj = Q @ coeff
+                            num = ((et - et_proj) ** 2).sum()
+                            den = (et ** 2).sum() + eps
+                            rl = torch.sqrt(num / den)
+                            rel_l2_per_mode[k] += rl
+                            rel_l2_count[k] += 1.0
+                            sample_rl[k] = rl
+                if prefix == 'val':
+                    self._val_rl2_buffer.append(sample_rl.cpu())
+
+        loss_freq  = loss_freq  / max(B, 1)
+        loss_field = loss_field / max(B, 1)
+
+        # ── 3. Rayleigh consistency (Galerkin matrix regularizer) ─────────────
+        if (self.rayleigh_weight > 0.0
+                and outputs.get('L_mat') is not None
+                and outputs.get('M_mat') is not None
+                and outputs.get('u_K') is not None
+                and outputs.get('eigenvalues') is not None):
+            loss_rayleigh = _rayleigh_consistency_loss(
+                outputs['u_K'], outputs['L_mat'], outputs['M_mat'],
+                outputs['eigenvalues'])
+        else:
+            loss_rayleigh = torch.zeros((), device=device)
+        self.log(f'{prefix}/rayleigh_loss', loss_rayleigh, prog_bar=False,
+                 batch_size=B, sync_dist=True)
+
+        # ── 4. Total loss ─────────────────────────────────────────────────────
+        total_loss = (
+            loss_field
+            + self.freq_weight      * loss_freq
+            + self.smoothness_weight * loss_bnd
+            + self.rayleigh_weight  * loss_rayleigh
+        )
+
+        # ── Logging ───────────────────────────────────────────────────────────
+        self.log(f'{prefix}/loss',       total_loss, on_step=True, on_epoch=True,
+                 prog_bar=True, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True,
+                 prog_bar=False, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/freq_loss',  loss_freq,  on_step=False, on_epoch=True,
+                 prog_bar=False, batch_size=B, sync_dist=True)
+
+        rel_l2_count = rel_l2_count.clamp(min=1.0)
+        rel_l2_mean  = (rel_l2_per_mode / rel_l2_count).mean()
+        self.log(f'{prefix}/field_rel_l2', rel_l2_mean, on_step=True, on_epoch=True,
+                 prog_bar=True, batch_size=B, sync_dist=True)
+        for k in range(K):
+            self.log(f'{prefix}/mode_{k}_rel_l2',
+                     rel_l2_per_mode[k] / rel_l2_count[k],
+                     on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
+
+        if self.predict_frequency and self.freq_stats:
+            with torch.no_grad():
+                fp_ghz = f_pred * self.freq_stats['std'] + self.freq_stats['mean']
+                ft_ghz = f_true * self.freq_stats['std'] + self.freq_stats['mean']
+                self.log(f'{prefix}/freq_mae_ghz', F.l1_loss(fp_ghz, ft_ghz),
+                         on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
+
+        # Sign-aligned for R2/MAE metrics
+        with torch.no_grad():
+            sign_aligned = aligned_pred_field.clone()
+            m_exp = valid_mask.float().unsqueeze(-1)
+            pos_err = ((sign_aligned - true_field) ** 2 * m_exp).sum(dim=1)
+            neg_err = ((sign_aligned + true_field) ** 2 * m_exp).sum(dim=1)
+            flip = (neg_err < pos_err).float().unsqueeze(1)
+            sign_aligned = sign_aligned * (1.0 - 2.0 * flip)
+            mask_km = valid_mask.unsqueeze(-1).expand_as(sign_aligned)
+            preds_valid   = sign_aligned[mask_km].contiguous()
+            targets_valid = true_field[mask_km].contiguous()
+
+        return total_loss, preds_valid, targets_valid
+
+    def _compute_loss_gnot(self, batch, prefix):
         outputs = self.model(batch)
         mask = batch.get('Mask', None)               # [B, N] boolean
 
@@ -625,8 +858,9 @@ class GNOTLightning(pl.LightningModule):
         param_groups = []
         handled_param_ids = set()
 
-        # Mode Specific LRs
-        if self.lr_mode_specific is not None:
+        # Mode Specific LRs (GNOT only — SpectralNO has no mode_field_blocks)
+        if (self.lr_mode_specific is not None
+                and hasattr(self.model, 'mode_field_blocks')):
             for mode_idx, mode_lr in enumerate(self.lr_mode_specific):
                 if mode_lr is not None and mode_idx < len(self.model.mode_field_blocks):
                     # Gather parameters for this mode's blocks and field head
@@ -635,17 +869,20 @@ class GNOTLightning(pl.LightningModule):
                     for p in self.model.mode_field_blocks[mode_idx].parameters():
                         mode_params.append(p)
                         handled_param_ids.add(id(p))
-                    # Mode branch heads (DeepONet coefficient heads)
-                    for p in self.model.branch_net[mode_idx].parameters():
-                        mode_params.append(p)
-                        handled_param_ids.add(id(p))
-                    
+                    # Mode branch heads (only if present)
+                    if hasattr(self.model, 'branch_net'):
+                        for p in self.model.branch_net[mode_idx].parameters():
+                            mode_params.append(p)
+                            handled_param_ids.add(id(p))
+
                     if len(mode_params) > 0:
                         param_groups.append({"params": mode_params, "lr": mode_lr})
                         print(f"Optimizer: Mode {mode_idx} branch trained with lr={mode_lr}")
 
-        # Freq Head LR (single global head now)
-        if self.lr_freq_heads is not None and self.predict_frequency:
+        # Freq Head LR (GNOT only — SpectralNO uses freq_transform)
+        if (self.lr_freq_heads is not None
+                and self.predict_frequency
+                and hasattr(self.model, 'freq_head_global')):
             freq_params = []
             for p in self.model.freq_head_global.parameters():
                 if id(p) not in handled_param_ids:

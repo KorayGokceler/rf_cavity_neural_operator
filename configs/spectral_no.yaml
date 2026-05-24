@@ -1,0 +1,166 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity — SpectralNO Configuration
+#  Spectral Neural Operator via Galerkin reduction
+# ═══════════════════════════════════════════════════════════════
+#
+# Key differences from default.yaml (GNOT):
+#  - model_type: spectral_no  → uses SpectralNO instead of GNOTModel
+#  - val_dim: 12              → extended features (dist_2nd, dist_3rd, curvature, convexity)
+#  - n_basis: 32              → Galerkin reduced-basis size M
+#  - embed_dim: 128           → smaller than GNOT (matrix overhead)
+#  - No OT matching at training (ordering guaranteed by eigh)
+#  - degeneracy_mode: hard    → Grassmannian for degenerate clusters
+#  - augment: true            → rotation+reflection augmentation
+#  - rayleigh_weight: 0.1    → Galerkin consistency regularizer
+#
+# Usage:
+#   python train.py --config configs/spectral_no.yaml
+#   python train.py --config configs/spectral_no.yaml --fast_dev_run
+# ═══════════════════════════════════════════════════════════════
+
+model_type: spectral_no
+
+# ─────────────────────────────────────────────────────
+#  1. DATA GENERATION (same as default)
+# ─────────────────────────────────────────────────────
+data_gen:
+  h5_filename: "rf_cavity_5000_dataset.h5"
+  plot_dir: "dataset_plots"
+  n_total: 5000
+  n_plot: 100
+  generation_mode: "random"
+  n_eigen_modes: 3
+  eigen_sigma: 500.0
+  mesh_size_min: 0.0012
+  mesh_size_max: 0.005
+  mesh_dist_min: 0.002
+  mesh_dist_max: 0.03
+  sharp_n_pts_range: [7, 13]
+  sharp_r_range: [0.02, 0.046]
+  smooth_base_r: 0.035
+  smooth_perturb: 0.008
+  smooth_harmonics: [2, 8]
+
+
+# ─────────────────────────────────────────────────────
+#  2. DATA CONVERSION
+# ─────────────────────────────────────────────────────
+data_convert:
+  h5_filepath: "rf_cavity_5000_dataset.h5"
+  output_path: "data/gnot_dataset_5k_v12.pkl"   # val_dim=12 dataset
+  output_format: "pkl"
+  mode_indices: [0, 1, 2]
+  max_samples: null
+
+
+# ─────────────────────────────────────────────────────
+#  3. DATASET
+# ─────────────────────────────────────────────────────
+dataset:
+  data_path: "data/gnot_dataset_5k.pkl"         # existing dataset (8 features → padded to 12)
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  max_nodes: 1024
+
+
+# ─────────────────────────────────────────────────────
+#  4. MODEL — SpectralNO
+# ─────────────────────────────────────────────────────
+model:
+  # Input features: val_dim MUST match what's in the PKL/H5 dataset file.
+  # val_dim=8  → existing gnot_dataset_5k.pkl (original 8 features)
+  # val_dim=12 → after re-running dataset_converter (adds dist_2nd, dist_3rd, curvature, convexity)
+  # To use extended features: python scripts/convert_dataset.py → produces gnot_dataset_5k_v12.pkl
+  val_dim: 8                    # Change to 12 after reconverting dataset
+  grid_dim: 2
+
+  # SpectralNO core
+  embed_dim: 128                # Smaller than GNOT (Galerkin overhead)
+  n_basis: 32                   # Reduced basis size M (Risk 2: start conservative)
+  num_field_modes: 3            # K eigenpairs to predict
+  rff_dim: 64
+  rff_length_scale: 0.1
+  n_heads: 4                    # AttentionPool heads
+
+  # BC gate smoothness (sigmoid(dist_bnd / bc_scale))
+  bc_scale: 0.02
+
+  # Regularization
+  dropout: 0.0
+  use_checkpoint: false
+
+  # GNOT-specific params (ignored for SpectralNO, kept for config compat)
+  n_shared_layers: 0
+  n_mode_layers: 3
+  n_field_head_layers: 3
+  num_experts: 4
+  predict_frequency: true
+  n_basis_gnot: 16              # GNOT DeepONet basis (different from SpectralNO n_basis)
+  orthonormalize_output: false  # Not needed for SpectralNO (M-orthogonality structural)
+
+
+# ─────────────────────────────────────────────────────
+#  5. TRAINING
+# ─────────────────────────────────────────────────────
+training:
+  learning_rate: 2.0e-4         # Slightly higher than GNOT (simpler architecture)
+  weight_decay: 1.0e-5
+  batch_size: 16                # Smaller (Galerkin matrices per sample)
+  max_epochs: 300
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  strategy: "auto"
+
+  # Loss weights
+  freq_weight: 0.5
+  smoothness_weight: 0.0        # Boundary PINN (optional)
+  mode_loss_weights: null       # SpectralNO doesn't use per-mode weights
+  rayleigh_weight: 0.1          # Galerkin consistency regularizer
+
+  # Degeneracy handling (no OT — eigenvalue ordering is structural)
+  degeneracy_mode: hard         # Grassmannian for degenerate clusters
+  near_deg_threshold: 0.05
+  # Soft Procrustes params (not used for SpectralNO, kept for compat)
+  deg_sigma_abs: 0.3
+  deg_sigma_rel: 0.5
+  slot_ortho_weight: 0.0        # Not needed (M-orthogonality prevents collapse)
+  freq_match_weight: 0.0        # No OT matching
+
+  # Augmentation: rotation + reflection (makes encoder rotation-robust)
+  augment: true
+
+  # LR scheduler
+  scheduler: "custom_cosine"
+  cosine_eta_min: 1.0e-6
+  lr_mode_specific: null
+  lr_freq_heads: null
+  onecycle_pct_start: 0.3
+  onecycle_div_factor: 25
+  onecycle_final_div_factor: 1.0e+4
+
+  # Early stopping
+  patience: 50
+
+  # DataLoader
+  num_workers: 4
+  pin_memory: true
+
+  # Logging
+  log_dir: "training_logs"
+  exp_name: "spectral_no_v1"
+  log_every_n_steps: 10
+  viz_every_n_epochs: 10
+  progress_bar_refresh_rate: 1
+
+  # Debug
+  fast_dev_run: false
+
+
+# ─────────────────────────────────────────────────────
+#  6. INFERENCE
+# ─────────────────────────────────────────────────────
+inference:
+  checkpoint_path: null
+  output_dir: "inference_results_spectral"
+  num_visualize: 5

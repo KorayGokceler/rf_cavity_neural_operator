@@ -227,16 +227,18 @@ def main(args):
                 E_tgt = targets[i][m_idx].cpu().numpy()   # [N_valid, K]
                 xy    = coords[i][m_idx].cpu().numpy()    # [N_valid, 2]
 
-                # ── OT matching: align predicted slots to target modes ───────
-                # The model emits K (freq, field) pairs in slot order 0..K-1
-                # which need not match target mode order.  Apply the same
-                # Hungarian assignment used during training so every downstream
-                # comparison is apples-to-apples.
-                fp_norm_i = f_pred[i].cpu().numpy()  # z-scored (for cost)
-                ft_norm_i = f_true[i].cpu().numpy()
-                freq_w = getattr(model, 'freq_match_weight', 0.5)
-                perm = _ot_match_np(fp_norm_i, ft_norm_i, E_hat, E_tgt,
-                                    freq_w=freq_w)
+                # ── Slot-to-mode alignment ──────────────────────────────────
+                # GNOT: Hungarian OT matching (ordering not guaranteed).
+                # SpectralNO: ordering guaranteed by eigh; no OT needed.
+                _model_type = getattr(model, 'model_type', 'gnot')
+                if _model_type == 'spectral_no':
+                    perm = np.arange(K, dtype=np.int64)  # identity
+                else:
+                    fp_norm_i = f_pred[i].cpu().numpy()  # z-scored (for cost)
+                    ft_norm_i = f_true[i].cpu().numpy()
+                    freq_w = getattr(model, 'freq_match_weight', 0.5)
+                    perm = _ot_match_np(fp_norm_i, ft_norm_i, E_hat, E_tgt,
+                                        freq_w=freq_w)
                 E_hat = E_hat[:, perm]    # aligned: column j = prediction for target mode j
                 fp_i  = fp_i[perm]        # reorder physical freq predictions accordingly
 

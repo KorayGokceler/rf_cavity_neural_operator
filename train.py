@@ -85,28 +85,34 @@ def main():
         strategy = getattr(tc, 'strategy', 'auto')
         print(f"GPUs: {n_gpus}, Strategy: {strategy}")
 
+    model_type = getattr(cfg, 'model_type', 'gnot')  # 'gnot' | 'spectral_no'
     if local_rank == 0:
+        print(f"Model type: {model_type}")
         print("\nLoading datasets...")
     feature_indices = getattr(dc, 'feature_indices', None)
     max_nodes = getattr(dc, 'max_nodes', None)
+    augment = getattr(tc, 'augment', False)
     if feature_indices is not None and local_rank == 0:
-        names = [GNOTDataset.FEATURE_NAMES[i] for i in feature_indices]
+        names = [GNOTDataset.FEATURE_NAMES[i] if i < len(GNOTDataset.FEATURE_NAMES) else f'feat_{i}'
+                 for i in feature_indices]
         print(f"Ablation: using features {feature_indices} → {names}")
     if max_nodes is not None and local_rank == 0:
         print(f"Node sub-sampling: max_nodes={max_nodes}")
+    if augment and local_rank == 0:
+        print("Augmentation: rotation + reflection enabled for train split")
     random_seed = getattr(dc, 'random_seed', 42)
     train_dataset = GNOTDataset(dc.data_path, split='train',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed)
+                                random_seed=random_seed, augment=augment)
     val_dataset   = GNOTDataset(dc.data_path, split='val',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed)
+                                random_seed=random_seed, augment=False)
     test_dataset  = GNOTDataset(dc.data_path, split='test',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed)
+                                random_seed=random_seed, augment=False)
 
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
                               collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
@@ -129,12 +135,12 @@ def main():
         n_mode_layers=mc.n_mode_layers,
         n_field_head_layers=getattr(mc, 'n_field_head_layers', 2),
         n_heads=mc.n_heads,
-        num_experts=mc.num_experts,
+        num_experts=getattr(mc, 'num_experts', 4),
         num_field_modes=mc.num_field_modes,
         lr=tc.learning_rate,
         freq_weight=tc.freq_weight,
         smoothness_weight=getattr(tc, 'smoothness_weight', 0.0),
-        mode_loss_weights=tc.mode_loss_weights,
+        mode_loss_weights=getattr(tc, 'mode_loss_weights', None),
         lr_mode_specific=getattr(tc, 'lr_mode_specific', None),
         lr_freq_heads=getattr(tc, 'lr_freq_heads', None),
         scheduler=tc.scheduler,
@@ -159,6 +165,11 @@ def main():
         deg_sigma_abs=getattr(tc, 'deg_sigma_abs', 0.3),
         slot_ortho_weight=getattr(tc, 'slot_ortho_weight', 0.1),
         freq_match_weight=getattr(tc, 'freq_match_weight', 0.5),
+        # SpectralNO / new params
+        model_type=model_type,
+        bc_scale=getattr(mc, 'bc_scale', 0.02),
+        rayleigh_weight=getattr(tc, 'rayleigh_weight', 0.1),
+        orthonormalize_output=getattr(mc, 'orthonormalize_output', False),
     )
 
     # Pass frequency statistics to the model for physical units logging

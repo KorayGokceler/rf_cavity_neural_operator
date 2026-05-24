@@ -189,6 +189,49 @@ class MLPEncoder(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+def _apply_gram_schmidt(field: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+    """Apply masked Gram-Schmidt orthonormalization to [B, N, K] field columns.
+
+    For each batch element independently, orthonormalizes the K field columns
+    with respect to the L2 inner product over valid (unmasked) nodes.  After
+    orthonormalization the columns satisfy Q^T Q = I (over valid nodes).
+
+    This is an optional post-processing step: it enforces column orthonormality
+    structurally, removing the need for the slot_ortho_weight penalty.
+
+    Args:
+        field: [B, N, K] predicted field values.
+        mask:  [B, N] boolean (True = valid node) or None.
+    Returns:
+        [B, N, K] with orthonormal columns (over valid nodes).
+    """
+    B, N, K = field.shape
+    out = field.clone()
+    m = mask.float().unsqueeze(-1) if mask is not None else None  # [B, N, 1]
+
+    for k in range(K):
+        v = out[:, :, k]          # [B, N]
+        for j in range(k):
+            u = out[:, :, j]      # [B, N]
+            if m is not None:
+                # masked inner products: [B]
+                dot_vu = (v * u * m.squeeze(-1)).sum(dim=1)
+                dot_uu = (u * u * m.squeeze(-1)).sum(dim=1).clamp(min=1e-8)
+            else:
+                dot_vu = (v * u).sum(dim=1)
+                dot_uu = (u * u).sum(dim=1).clamp(min=1e-8)
+            proj = dot_vu / dot_uu   # [B]
+            v = v - proj.unsqueeze(1) * u
+        # Normalize v
+        if m is not None:
+            nrm = (v * v * m.squeeze(-1)).sum(dim=1).clamp(min=1e-8).sqrt()
+        else:
+            nrm = v.norm(dim=1).clamp(min=1e-8)
+        out[:, :, k] = v / nrm.unsqueeze(1)
+
+    return out
+
+
 class GNOTModel(nn.Module):
     def __init__(self, val_dim=8, grid_dim=2, embed_dim=256,
                  n_shared_layers=6, n_mode_layers=1, n_field_head_layers=3,
@@ -196,7 +239,8 @@ class GNOTModel(nn.Module):
                  use_checkpoint=False, predict_frequency=True,
                  dropout=0.0,
                  rff_dim=64, rff_length_scale=0.1,
-                 n_basis=16):
+                 n_basis=16,
+                 orthonormalize_output=False):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
@@ -266,6 +310,7 @@ class GNOTModel(nn.Module):
         # that emits all K eigenfrequencies at once from the pooled geometry
         # context.  Per-mode frequency heads are gone.
         self.predict_frequency = predict_frequency
+        self.orthonormalize_output = orthonormalize_output
 
         # Initialize heads with small weights to prevent early training explosion
         self._init_weights()
@@ -350,6 +395,10 @@ class GNOTModel(nn.Module):
         field = torch.cat(fields, dim=-1).float()             # [B, N, K]
         if mask is not None:
             field = field * mask.unsqueeze(-1)                # padding = 0
+
+        # Optional Gram-Schmidt orthonormalization on field outputs
+        if self.orthonormalize_output:
+            field = _apply_gram_schmidt(field, mask)
 
         return {'field': field, 'freq': f_pred}              # [B,N,K], [B,K]
 

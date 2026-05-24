@@ -20,13 +20,19 @@ class GNOTDataset(Dataset):
         Y_freq       : [K]                 (normalised eigenfrequencies, ascending)
         geom_id      : [1]
     """
-    # Feature channel reference (Input_funcs columns):
+    # Feature channel reference (Input_funcs columns, val_dim=12):
     #   0: x_norm, 1: y_norm, 2: dist_to_boundary, 3: dir_bnd_x,
-    #   4: dir_bnd_y, 5: node_area, 6: cos_principal, 7: sin_principal
-    FEATURE_NAMES = ['x_norm', 'y_norm', 'dist_boundary', 'dir_bnd_x', 'dir_bnd_y', 'node_area', 'cos_principal', 'sin_principal']
+    #   4: dir_bnd_y, 5: node_area, 6: cos_principal, 7: sin_principal,
+    #   8: dist_2nd_boundary, 9: dist_3rd_boundary, 10: curvature, 11: convexity
+    FEATURE_NAMES = [
+        'x_norm', 'y_norm', 'dist_boundary', 'dir_bnd_x', 'dir_bnd_y',
+        'node_area', 'cos_principal', 'sin_principal',
+        'dist_2nd_boundary', 'dist_3rd_boundary', 'curvature', 'convexity',
+    ]
 
     def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1,
-                 feature_indices=None, max_nodes=None, random_seed=42):
+                 feature_indices=None, max_nodes=None, random_seed=42,
+                 augment=False):
         # Allow passing a full config dict (or ConfigDict) instead of a raw path.
         # This keeps the convenience constructor `RFCavityDataset(cfg, split=...)`
         # working while the canonical signature stays path-based.
@@ -39,6 +45,7 @@ class GNOTDataset(Dataset):
             feature_indices = dcfg.get('feature_indices', feature_indices)
             max_nodes = dcfg.get('max_nodes', max_nodes)
             random_seed = dcfg.get('random_seed', random_seed)
+            augment = dcfg.get('augment', augment)
         print(f"Loading dataset from {data_path}...")
         self.data_path = data_path
         self.is_h5 = str(data_path).endswith('.h5')
@@ -105,6 +112,8 @@ class GNOTDataset(Dataset):
         print(f"Split: {split}, Geometries: {len(self.active_geoms)} "
               f"(each yields all {self._infer_num_modes()} modes)")
 
+        self.split = split
+        self.augment = augment
         self.h5_handle = None
 
     def _raw_mode_index(self, s_idx):
@@ -202,6 +211,41 @@ class GNOTDataset(Dataset):
             x = x[rand_idx]
             input_features = input_features[rand_idx]
             y_field = y_field[rand_idx]
+
+        # ── Rotation / Reflection Augmentation (train split only) ────────────
+        # Augmentation makes the encoder more robust to rotation by zeroing
+        # the gauge-dependent cos/sin_principal features (cols 6-7) and
+        # rotating the coordinate and boundary direction features.
+        # NOTE: Y_field values are FEM scalars — they are scalar (rotation-
+        # invariant) so they do NOT change under coordinate rotation.
+        if self.augment and self.split == 'train':
+            theta = np.random.uniform(0.0, 2.0 * np.pi)
+            c_th, s_th = np.cos(theta).astype(np.float32), np.sin(theta).astype(np.float32)
+            R = np.array([[c_th, -s_th], [s_th, c_th]], dtype=np.float32)  # [2, 2]
+
+            # Rotate spatial coordinates
+            x = x @ R.T                                       # [N, 2]
+
+            # Rotate boundary direction features (cols 3-4: dir_bnd_x, dir_bnd_y)
+            if input_features.shape[1] > 4:
+                input_features = input_features.copy()
+                input_features[:, 3:5] = input_features[:, 3:5] @ R.T   # [N, 2]
+
+            # Zero out gauge-dependent principal-axis features (cols 6-7)
+            if input_features.shape[1] > 7:
+                input_features[:, 6] = 0.0   # cos_principal — undefined after rotation
+                input_features[:, 7] = 0.0   # sin_principal
+
+            # Reflection (50 % probability): flip x-axis
+            if np.random.rand() < 0.5:
+                x[:, 0] = -x[:, 0]
+                if input_features.shape[1] > 4:
+                    input_features[:, 3] = -input_features[:, 3]   # dir_bnd_x
+
+            # Update X column 0-1 in input_features as well (they are x_norm, y_norm)
+            if input_features.shape[1] >= 2:
+                input_features[:, 0] = x[:, 0]
+                input_features[:, 1] = x[:, 1]
 
         return {
             'X': torch.from_numpy(np.ascontiguousarray(x)).float(),

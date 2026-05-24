@@ -51,6 +51,58 @@ class RFCavityToGNOT:
             areas = areas / (areas.max() + 1e-10)
         return areas.reshape(-1, 1).astype(np.float32)
 
+    def _compute_boundary_curvature(self, boundary_nodes):
+        """Approximate signed curvature at each boundary node.
+
+        Orders boundary nodes by arclength (greedy nearest-neighbour from
+        the node with smallest x+y), then estimates curvature via the
+        central-difference cross-product of the unit tangent vectors.
+
+        Returns:
+            curvature: [N_bnd] float32 — signed curvature at each boundary
+                node (positive = concave/convex depending on orientation).
+        """
+        n_bnd = len(boundary_nodes)
+        if n_bnd < 3:
+            return np.zeros(n_bnd, dtype=np.float32)
+
+        # Greedy arclength ordering starting from a canonical node
+        start = np.argmin(boundary_nodes[:, 0] + boundary_nodes[:, 1])
+        visited = np.zeros(n_bnd, dtype=bool)
+        order = [start]
+        visited[start] = True
+        tree_bnd = cKDTree(boundary_nodes)
+        for _ in range(n_bnd - 1):
+            dists, idxs = tree_bnd.query(boundary_nodes[order[-1]], k=n_bnd)
+            for idx in idxs:
+                if not visited[idx]:
+                    order.append(idx)
+                    visited[idx] = True
+                    break
+
+        pts = boundary_nodes[order]           # [N_bnd, 2] ordered
+        N = len(pts)
+        curvature_ordered = np.zeros(N, dtype=np.float32)
+        for i in range(N):
+            p_prev = pts[(i - 1) % N]
+            p_curr = pts[i]
+            p_next = pts[(i + 1) % N]
+            t1 = p_curr - p_prev
+            t2 = p_next - p_curr
+            l1 = np.linalg.norm(t1) + 1e-10
+            l2 = np.linalg.norm(t2) + 1e-10
+            t1_u = t1 / l1
+            t2_u = t2 / l2
+            # Signed curvature: cross product of unit tangents / avg arc length
+            cross = t1_u[0] * t2_u[1] - t1_u[1] * t2_u[0]
+            curvature_ordered[i] = cross / (0.5 * (l1 + l2) + 1e-10)
+
+        # Map back to original boundary node indices
+        curvature = np.zeros(n_bnd, dtype=np.float32)
+        for new_idx, orig_idx in enumerate(order):
+            curvature[orig_idx] = curvature_ordered[new_idx]
+        return curvature
+
     def extract_geometry_features(self, nodes, elements):
         # Isotropic Normalization: En-boy oranını (aspect ratio) koruyarak merkezi 0'a çek.
         center_raw = nodes.mean(axis=0)
@@ -62,7 +114,18 @@ class RFCavityToGNOT:
         boundary_indices = self._find_boundary_nodes(elements)
         boundary_nodes = nodes_norm[boundary_indices]
         tree = cKDTree(boundary_nodes)
-        dist_to_boundary, nearest_idx = tree.query(nodes_norm)
+
+        # Query k=3 nearest boundary nodes at once (for dist_1st, 2nd, 3rd)
+        k_query = min(3, len(boundary_nodes))
+        dists_k, nearest_idxs_k = tree.query(nodes_norm, k=k_query)
+        if k_query == 1:
+            dists_k = dists_k.reshape(-1, 1)
+            nearest_idxs_k = nearest_idxs_k.reshape(-1, 1)
+
+        dist_to_boundary = dists_k[:, 0]
+        nearest_idx = nearest_idxs_k[:, 0]
+        dist_2nd = dists_k[:, 1] if k_query >= 2 else dist_to_boundary
+        dist_3rd = dists_k[:, 2] if k_query >= 3 else dist_2nd
 
         # Direction to nearest boundary (normalized) — "duvar hangi yönde?"
         nearest_bnd_points = boundary_nodes[nearest_idx]  # [N, 2]
@@ -79,7 +142,7 @@ class RFCavityToGNOT:
         cov = np.cov(bnd_centered.T)
         eigenvalues, eigenvectors = np.linalg.eigh(cov)
         principal_axis = eigenvectors[:, -1]  # en büyük eigenvalue'nun eigenvector'ü
-        
+
         # PCA ekseni için işaret sabitleme (Sign Disambiguation)
         # Vektörün x bileşeni negatifse (veya x sıfırken y negatifse) yönünü ters çevir.
         # Bu, rastgele 180 derece dönüşleri (takla atmayı) engeller.
@@ -96,8 +159,29 @@ class RFCavityToGNOT:
         cross = (node_vecs[:, 0] * principal_axis[1] - node_vecs[:, 1] * principal_axis[0])
         sin_angle = (cross / node_mags).reshape(-1, 1).astype(np.float32)
 
-        # Combine: [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area, cos_principal, sin_principal]
-        # val_dim = 8
+        # ── NEW: extra features (val_dim 8 → 12) ────────────────────────────
+        # [8] dist_to_2nd_boundary — distance to 2nd nearest boundary node
+        dist_2nd_feat = dist_2nd.reshape(-1, 1).astype(np.float32)
+        # [9] dist_to_3rd_boundary — distance to 3rd nearest boundary node
+        dist_3rd_feat = dist_3rd.reshape(-1, 1).astype(np.float32)
+
+        # [10] local boundary curvature at nearest boundary node, assigned to
+        #      every interior node as the curvature of its closest boundary pt.
+        bnd_curvature = self._compute_boundary_curvature(boundary_nodes)
+        # Clamp to avoid outliers; normalize by max abs curvature
+        bnd_curvature = bnd_curvature / (np.abs(bnd_curvature).max() + 1e-8)
+        node_curvature = bnd_curvature[nearest_idx].reshape(-1, 1).astype(np.float32)
+
+        # [11] convexity sign: positive if node is in a "pocket" (concave region),
+        #      approximated as sign of curvature weighted by dist to boundary.
+        # dist_bnd * curvature: large positive → interior of concave bay
+        convexity = (dist_to_boundary * bnd_curvature[nearest_idx]).reshape(-1, 1).astype(np.float32)
+        convexity = np.clip(convexity, -1.0, 1.0)
+
+        # Combine: [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area,
+        #           cos_principal, sin_principal,
+        #           dist_2nd, dist_3rd, curvature, convexity]
+        # val_dim = 12
         geom_features = np.concatenate([
             nodes_norm,                         # [0,1] x, y
             dist_to_boundary.reshape(-1, 1),    # [2]   dist to boundary
@@ -105,6 +189,10 @@ class RFCavityToGNOT:
             node_area,                          # [5]   local mesh density
             cos_angle,                          # [6]   cos(angle to principal axis)
             sin_angle,                          # [7]   sin(angle to principal axis)
+            dist_2nd_feat,                      # [8]   dist to 2nd nearest boundary
+            dist_3rd_feat,                      # [9]   dist to 3rd nearest boundary
+            node_curvature,                     # [10]  local boundary curvature
+            convexity,                          # [11]  convexity sign
         ], axis=1).astype(np.float32)
 
         return {

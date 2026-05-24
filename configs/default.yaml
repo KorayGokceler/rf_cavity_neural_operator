@@ -63,6 +63,8 @@ dataset:
 # ─────────────────────────────────────────────────────
 model:
   # Input dimensions (veri formatına bağlı)
+  # val_dim=8  → mevcut gnot_dataset_5k.pkl (orijinal)
+  # val_dim=12 → dataset_converter yeniden çalıştırıldıktan sonra (dist_2nd, dist_3rd, curvature, convexity eklendi)
   val_dim: 8                    # [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area, cos_principal, sin_principal]
   grid_dim: 2                   # Koordinat boyutu (2D)
 
@@ -90,6 +92,9 @@ model:
 
   # Memory optimization
   use_checkpoint: false         # Gradient checkpointing (GPU VRAM tasarrufu)
+
+  # Gram-Schmidt orthonormalization on GNOT field outputs (optional)
+  orthonormalize_output: false
 
 
 # ─────────────────────────────────────────────────────
@@ -146,6 +151,12 @@ training:
   deg_sigma_rel: 0.5            # [DEPRECATED] kept for checkpoint back-compat, unused
   slot_ortho_weight: 0.1        # [soft] penalize collapse of near-degenerate slots
   freq_match_weight: 0.5        # weight of freq in matching cost
+
+  # Augmentation (rotation + reflection)
+  augment: false                # true = train split'te rastgele rotasyon + yansıma
+
+  # SpectralNO Rayleigh consistency weight (GNOT'ta yok sayılır)
+  rayleigh_weight: 0.0
 
   # Debug
   fast_dev_run: false           # true ile 1 iterasyon test

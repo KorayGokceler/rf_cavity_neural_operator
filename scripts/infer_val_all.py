@@ -115,16 +115,21 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                             1e-8, None)
                 nv = int(m.sum())
 
-                # ── OT matching: align predicted slots to target modes ───────
-                # Same Hungarian assignment as training — without this, slot j
-                # may correspond to any target mode, inflating reported errors.
-                fp_norm_i = (fpn[i].cpu().numpy()
-                             if fpn is not None else ftn[i].cpu().numpy())
-                ft_norm_i = ftn[i].cpu().numpy()
-                freq_w = getattr(model, 'freq_match_weight', 0.5) if fpn is not None else 0.0
-                perm = _ot_match_np(fp_norm_i, ft_norm_i, Eh, Et, freq_w=freq_w)
+                # ── Slot-to-mode alignment ──────────────────────────────────
+                # GNOT: Hungarian OT matching (slot ordering not guaranteed).
+                # SpectralNO: eigh returns sorted eigenvalues → identity perm.
+                _model_type = getattr(model, 'model_type', 'gnot')
+                if _model_type == 'spectral_no':
+                    perm = np.arange(K, dtype=np.int64)  # identity
+                    fp_ph_i = fp_ph[i] if fp_ph is not None else None
+                else:
+                    fp_norm_i = (fpn[i].cpu().numpy()
+                                 if fpn is not None else ftn[i].cpu().numpy())
+                    ft_norm_i = ftn[i].cpu().numpy()
+                    freq_w = getattr(model, 'freq_match_weight', 0.5) if fpn is not None else 0.0
+                    perm = _ot_match_np(fp_norm_i, ft_norm_i, Eh, Et, freq_w=freq_w)
+                    fp_ph_i = (fp_ph[i][perm] if fp_ph is not None else None)
                 Eh = Eh[:, perm]                              # aligned to target mode order
-                fp_ph_i = (fp_ph[i][perm] if fp_ph is not None else None)
 
                 shape_type = 'unknown'
                 if geom_pool and gid in geom_pool:
