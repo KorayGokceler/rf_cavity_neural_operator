@@ -269,47 +269,84 @@ def _pad_M(M: np.ndarray, target_n: int) -> np.ndarray:
     return out
 
 
+# cuSOLVER batched routines are optimised only for small matrices.
+# For N > this threshold use the (non-batched) native path, looping over samples.
+_BATCHED_N_LIMIT = 1024
+
+
+def _generalized_eigh_single(K_2d: torch.Tensor, M_2d: torch.Tensor):
+    """
+    Generalized eigenvalue for ONE matrix pair: K x = λ M x  (ascending order).
+    Uses non-batched torch.linalg ops → maps to cuSOLVER native routines,
+    which are efficient for large matrices.
+    """
+    N      = K_2d.shape[0]
+    device = K_2d.device
+    eye    = torch.eye(N, device=device, dtype=K_2d.dtype)
+
+    m_diag_mean = M_2d.diagonal().mean()
+    M_reg = M_2d + (1e-10 * m_diag_mean) * eye
+
+    try:
+        C     = torch.linalg.cholesky(M_reg)
+        C_inv = torch.linalg.inv(C)
+        K_w   = C_inv @ K_2d @ C_inv.T
+        K_w   = 0.5 * (K_w + K_w.T)
+        vals, W = torch.linalg.eigh(K_w)
+        vecs    = C_inv.T @ W
+    except RuntimeError:
+        vals, vecs = torch.linalg.eigh(K_2d)
+
+    return vals, vecs   # [N], [N, N]
+
+
 def _generalized_eigh_batched(K_t: torch.Tensor,
                                M_t: torch.Tensor,
                                device: torch.device):
     """
     Batched generalized eigenvalue: K x = λ M x   (ascending order)
 
-    Uses Cholesky whitening:
-        M = C Cᵀ  (lower-tri Cholesky)
-        K_white = C⁻¹ K C⁻ᵀ  →  standard eigh
-        x = C⁻ᵀ w  (back-transform)
+    Dispatch:
+      N ≤ _BATCHED_N_LIMIT  →  batched torch.linalg ops (efficient for small N)
+      N  > _BATCHED_N_LIMIT  →  loop over samples using non-batched ops
+                                (cuSOLVER native path, efficient for large N)
+
+    The cuSOLVER batched routines print a performance WARNING for large matrices
+    (typically N > 512-1024). The per-sample path avoids this.
 
     Args:
         K_t, M_t: [B, N, N] float64 on device
     Returns:
         vals: [B, N]  ascending eigenvalues
         vecs: [B, N, N]  corresponding eigenvectors (generalized)
-
-    Notes:
-        The FEM mass matrix M for P2 elements has entries O(h²) where h is
-        the mesh size. The eps regularization must be MUCH smaller than
-        min(diag(M)) to avoid corrupting eigenvalues.
-        We use eps_rel = 1e-10 × mean(diag(M)) to stay negligible.
     """
-    eye = torch.eye(K_t.shape[-1], device=device, dtype=K_t.dtype).unsqueeze(0)
+    B, N = K_t.shape[0], K_t.shape[1]
 
-    # Relative regularization: eps ≪ min(diag(M))
+    # ── Large matrices: loop over samples (cuSOLVER native path) ─────────────
+    if N > _BATCHED_N_LIMIT:
+        vals_list, vecs_list = [], []
+        for b in range(B):
+            v, u = _generalized_eigh_single(K_t[b], M_t[b])
+            vals_list.append(v)
+            vecs_list.append(u)
+        return torch.stack(vals_list), torch.stack(vecs_list)
+
+    # ── Small matrices: batched ops ───────────────────────────────────────────
+    eye = torch.eye(N, device=device, dtype=K_t.dtype).unsqueeze(0)   # [1,N,N]
+
     m_diag_mean = M_t.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True)  # [B, 1]
-    # Broadcast: [B, 1, 1] for matrix addition
-    eps_mat = (1e-10 * m_diag_mean).unsqueeze(-1) * eye   # [B, N, N]
-    M_reg = M_t + eps_mat
+    eps_mat = (1e-10 * m_diag_mean).unsqueeze(-1) * eye                       # [B, N, N]
+    M_reg   = M_t + eps_mat
 
     try:
-        C      = torch.linalg.cholesky(M_reg)          # [B, N, N] lower-tri
-        C_inv  = torch.linalg.inv(C)                   # [B, N, N]
-        K_w    = C_inv @ K_t @ C_inv.transpose(-1, -2) # [B, N, N]
-        K_w    = 0.5 * (K_w + K_w.transpose(-1, -2))   # symmetrize (numerical noise)
-        vals, W = torch.linalg.eigh(K_w)               # [B,N], [B,N,N] ascending
-        vecs   = C_inv.transpose(-1, -2) @ W           # [B, N, N]
+        C      = torch.linalg.cholesky(M_reg)
+        C_inv  = torch.linalg.inv(C)
+        K_w    = C_inv @ K_t @ C_inv.transpose(-1, -2)
+        K_w    = 0.5 * (K_w + K_w.transpose(-1, -2))
+        vals, W = torch.linalg.eigh(K_w)
+        vecs   = C_inv.transpose(-1, -2) @ W
     except RuntimeError as e:
-        # Cholesky failed (ill-conditioned M) → fall back to standard eigh
-        print(f"    ⚠️  Cholesky whitening failed ({e}), falling back to std eigh")
+        print(f"    ⚠️  Batched Cholesky failed ({e}), falling back to std eigh")
         vals, vecs = torch.linalg.eigh(K_t)
 
     return vals, vecs
@@ -400,7 +437,12 @@ def batch_gpu_eigensolver(fem_systems, k: int, device: torch.device,
     if device.type == 'cpu':
         return _cpu_arpack_eigensolver(fem_systems, k, sigma=arpack_sigma)
 
-    # ── CUDA path: bucket-batched dense eigh ─────────────────────────────────
+    # ── CUDA path: adaptive batched / sequential eigh ────────────────────────
+    # For large matrices (N > _BATCHED_N_LIMIT ≈ 1024) _generalized_eigh_batched
+    # internally loops over samples using the cuSOLVER native (non-batched)
+    # routines, which are efficient and suppress the cuSOLVER "small-size" warning.
+    # For small matrices it uses the batched path (GPU-parallel across the batch).
+    # Memory safety: bucket + sub-batching keeps peak GPU usage ≤ 40% of VRAM.
     n_sys   = len(fem_systems)
     results = [None] * n_sys
 
@@ -413,10 +455,9 @@ def batch_gpu_eigensolver(fem_systems, k: int, device: torch.device,
         buckets[b].append((i, sys))
 
     for bucket_n, items in buckets.items():
-        # Compute memory-safe sub-batch size for this bucket
+        # Memory-safe sub-batch: limits peak VRAM to ~40% of total
         sub_batch = _max_batch_for_bucket(bucket_n, device)
 
-        # Process in sub-batches to avoid OOM on large DOF matrices
         for sub_start in range(0, len(items), sub_batch):
             sub_items = items[sub_start : sub_start + sub_batch]
 
@@ -429,12 +470,13 @@ def batch_gpu_eigensolver(fem_systems, k: int, device: torch.device,
             M_t = torch.tensor(np.stack(M_list), dtype=torch.float64, device=device)
 
             with torch.no_grad():
+                # Large N → loops internally over samples (no batched-LAPACK warning)
+                # Small N → true batched ops
                 vals_t, vecs_t = _generalized_eigh_batched(K_t, M_t, device)
 
             vals_np = vals_t.cpu().numpy()   # [B, bucket_n]
             vecs_np = vecs_t.cpu().numpy()   # [B, bucket_n, bucket_n]
 
-            # Free GPU tensors immediately
             del K_t, M_t, vals_t, vecs_t
             torch.cuda.empty_cache()
 
