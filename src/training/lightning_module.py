@@ -235,37 +235,36 @@ def soft_procrustes_loss(E_hat, E_tgt, f_matched, sigma, mask=None):
     den = (E_eff ** 2).sum() + 1e-8
     return num / den
 
-def _rayleigh_consistency_loss(
-    u_K: torch.Tensor,
-    L_mat: torch.Tensor,
-    M_mat: torch.Tensor,
-    eigenvalues: torch.Tensor,
-) -> torch.Tensor:
-    """Rayleigh quotient consistency loss for SpectralNO.
+def _basis_conditioning_loss(M_mat: torch.Tensor) -> torch.Tensor:
+    """Basis-conditioning regularizer for the physical-Galerkin SpectralNO.
 
-    For well-conditioned eigenvectors the Rayleigh quotient in the reduced
-    basis should equal the eigenvalue exactly:
-        r_k = (u_k^T L u_k) / (u_k^T M u_k) ≈ λ_k
+    Replaces the old Rayleigh-quotient "consistency" term, which was
+    structurally ≈ 0 (the generalized eigh output is M-orthonormal by
+    construction, so u^T L u / u^T M u == λ exactly) and therefore provided no
+    useful gradient.
 
-    This is structurally near-zero for correctly computed eigh solutions.
-    During early training (when L/M matrices change rapidly) this acts as a
-    regularizer that keeps the learned matrices consistent with the
-    eigendecomposition step.
+    Instead we penalize collinearity of the learned basis functions, measured
+    as the off-diagonal mass (L2-Gram) correlations:
+
+        corr_mn = M_mn / sqrt(M_mm M_nn)   (the cosine between ψ_m and ψ_n)
+
+    Driving the off-diagonal of ``corr`` toward zero keeps the reduced basis
+    informative (well-spread), so the K eigenmodes span distinct spatial
+    directions instead of the basis collapsing onto a low-rank set. This is a
+    genuine, non-trivial penalty since M is now the physical mass matrix.
 
     Args:
-        u_K:         [B, M, K] Galerkin coefficients.
-        L_mat:       [B, M, M] stiffness matrix.
-        M_mat:       [B, M, M] mass matrix.
-        eigenvalues: [B, K] raw Galerkin eigenvalues (detached target).
+        M_mat: [B, M, M] physical mass / L2-Gram matrix.
     Returns:
-        scalar loss.
+        scalar loss in [0, 1].
     """
-    Lu = torch.einsum('bml,blk->bmk', L_mat, u_K)       # [B, M, K]
-    Mu = torch.einsum('bml,blk->bmk', M_mat, u_K)       # [B, M, K]
-    rq_num = (u_K * Lu).sum(dim=1)                      # [B, K]
-    rq_den = (u_K * Mu).sum(dim=1).clamp(min=1e-8)     # [B, K]
-    rq = rq_num / rq_den                                # [B, K]
-    return F.mse_loss(rq, eigenvalues.detach())
+    Msz = M_mat.shape[-1]
+    d = torch.diagonal(M_mat, dim1=-2, dim2=-1).clamp(min=1e-8).rsqrt()  # [B, M]
+    corr = M_mat * d.unsqueeze(-1) * d.unsqueeze(-2)                     # [B, M, M]
+    eye = torch.eye(Msz, device=M_mat.device, dtype=M_mat.dtype)
+    off = corr * (1.0 - eye)
+    denom = max(Msz * (Msz - 1), 1)
+    return (off ** 2).sum(dim=(-1, -2)).mean() / denom
 
 
 class GNOTLightning(pl.LightningModule):
@@ -485,18 +484,13 @@ class GNOTLightning(pl.LightningModule):
         loss_freq  = loss_freq  / max(B, 1)
         loss_field = loss_field / max(B, 1)
 
-        # ── 3. Rayleigh consistency (Galerkin matrix regularizer) ─────────────
+        # ── 3. Basis-conditioning regularizer (replaces useless Rayleigh) ─────
         if (self.rayleigh_weight > 0.0
-                and outputs.get('L_mat') is not None
-                and outputs.get('M_mat') is not None
-                and outputs.get('u_K') is not None
-                and outputs.get('eigenvalues') is not None):
-            loss_rayleigh = _rayleigh_consistency_loss(
-                outputs['u_K'], outputs['L_mat'], outputs['M_mat'],
-                outputs['eigenvalues'])
+                and outputs.get('M_mat') is not None):
+            loss_basis = _basis_conditioning_loss(outputs['M_mat'])
         else:
-            loss_rayleigh = torch.zeros((), device=device)
-        self.log(f'{prefix}/rayleigh_loss', loss_rayleigh, prog_bar=False,
+            loss_basis = torch.zeros((), device=device)
+        self.log(f'{prefix}/basis_cond_loss', loss_basis, prog_bar=False,
                  batch_size=B, sync_dist=True)
 
         # ── 4. Total loss ─────────────────────────────────────────────────────
@@ -504,7 +498,7 @@ class GNOTLightning(pl.LightningModule):
             loss_field
             + self.freq_weight      * loss_freq
             + self.smoothness_weight * loss_bnd
-            + self.rayleigh_weight  * loss_rayleigh
+            + self.rayleigh_weight  * loss_basis
         )
 
         # ── Logging ───────────────────────────────────────────────────────────

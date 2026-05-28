@@ -6,12 +6,13 @@
 # Key differences from default.yaml (GNOT):
 #  - model_type: spectral_no  → uses SpectralNO instead of GNOTModel
 #  - val_dim: 12              → extended features (dist_2nd, dist_3rd, curvature, convexity)
-#  - n_basis: 32              → Galerkin reduced-basis size M
+#  - n_basis: 16              → Galerkin reduced-basis size M
 #  - embed_dim: 128           → smaller than GNOT (matrix overhead)
+#  - Galerkin L/M assembled from the basis (physical), NOT predicted by MLP heads
 #  - No OT matching at training (ordering guaranteed by eigh)
 #  - degeneracy_mode: hard    → Grassmannian for degenerate clusters
 #  - augment: true            → rotation+reflection augmentation
-#  - rayleigh_weight: 0.1    → Galerkin consistency regularizer
+#  - rayleigh_weight: 0.1    → basis-conditioning regularizer (anti-collapse)
 #
 # Usage:
 #   python train.py --config configs/spectral_no.yaml
@@ -77,17 +78,18 @@ model:
 
   # SpectralNO core
   embed_dim: 128                # Smaller than GNOT (Galerkin overhead)
-  n_basis: 32                   # Reduced basis size M (Risk 2: start conservative)
+  n_basis: 16                   # Reduced basis size M — smaller to curb overfitting
+                                # (operator is now physical, so fewer basis fns suffice)
   num_field_modes: 3            # K eigenpairs to predict
   rff_dim: 64
   rff_length_scale: 0.1
-  n_heads: 4                    # AttentionPool heads
+  n_heads: 4                    # (unused: matrix-predicting pooler removed)
 
-  # BC gate smoothness (sigmoid(dist_bnd / bc_scale))
+  # BC gate smoothness: gate = 2*sigmoid(dist_bnd/bc_scale) - 1  (= 0 at boundary)
   bc_scale: 0.02
 
   # Regularization
-  dropout: 0.0
+  dropout: 0.1                  # Was 0.0 — added to reduce memorization
   use_checkpoint: false
 
   # GNOT-specific params (ignored for SpectralNO, kept for config compat)
@@ -105,7 +107,7 @@ model:
 # ─────────────────────────────────────────────────────
 training:
   learning_rate: 2.0e-4         # Slightly higher than GNOT (simpler architecture)
-  weight_decay: 1.0e-5
+  weight_decay: 1.0e-4          # Was 1e-5 — stronger L2 to curb overfitting
   batch_size: 16                # Smaller (Galerkin matrices per sample)
   max_epochs: 300
   check_val_every_n_epoch: 1
@@ -116,7 +118,8 @@ training:
   freq_weight: 0.5
   smoothness_weight: 0.0        # Boundary PINN (optional)
   mode_loss_weights: null       # SpectralNO doesn't use per-mode weights
-  rayleigh_weight: 0.1          # Galerkin consistency regularizer
+  rayleigh_weight: 0.1          # Now drives the basis-conditioning regularizer
+                                # (old Rayleigh term was structurally ~0)
 
   # Degeneracy handling (no OT — eigenvalue ordering is structural)
   degeneracy_mode: hard         # Grassmannian for degenerate clusters
