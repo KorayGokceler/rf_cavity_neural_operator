@@ -30,9 +30,19 @@ class GNOTDataset(Dataset):
         'dist_2nd_boundary', 'dist_3rd_boundary', 'curvature', 'convexity',
     ]
 
+    # Gauge-dependent principal-axis channels (zeroed under augmentation).
+    GAUGE_FEATURES = (6, 7)
+
     def __init__(self, data_path, split='train', train_ratio=0.8, val_ratio=0.1,
                  feature_indices=None, max_nodes=None, random_seed=42,
-                 augment=False):
+                 augment=False, zero_gauge_features=None):
+        """
+        zero_gauge_features: zero cos/sin_principal (cols 6-7) for every item.
+            None → same as ``augment and split == 'train'``.  The rotation
+            augmentation zeroes these channels on the train split, so val/test
+            (and inference) of an augmented model must zero them too, otherwise
+            the model sees channels at eval time that were always 0 in training.
+        """
         # Allow passing a full config dict (or ConfigDict) instead of a raw path.
         # This keeps the convenience constructor `RFCavityDataset(cfg, split=...)`
         # working while the canonical signature stays path-based.
@@ -46,6 +56,7 @@ class GNOTDataset(Dataset):
             max_nodes = dcfg.get('max_nodes', max_nodes)
             random_seed = dcfg.get('random_seed', random_seed)
             augment = dcfg.get('augment', augment)
+            zero_gauge_features = dcfg.get('zero_gauge_features', zero_gauge_features)
         print(f"Loading dataset from {data_path}...")
         self.data_path = data_path
         self.is_h5 = str(data_path).endswith('.h5')
@@ -86,12 +97,24 @@ class GNOTDataset(Dataset):
                 key=lambda s_idx: self._raw_mode_index(s_idx)
             )
 
+        # Geometries missing a mode (converter skips m_idx >= len(freqs)) would
+        # give a shorter Y_freq and crash torch.stack in collate → drop them.
+        n_modes = max((len(v) for v in geom_to_samples.values()), default=0)
+        incomplete = [g for g, v in geom_to_samples.items() if len(v) != n_modes]
+        if incomplete:
+            print(f"WARNING: dropping {len(incomplete)} geometries with < {n_modes} modes "
+                  f"(e.g. {incomplete[:5]})")
+            for g in incomplete:
+                del geom_to_samples[g]
+
         unique_geoms = sorted(list(geom_to_samples.keys()))
         n_geoms = len(unique_geoms)
 
         # 3. Split by geometry (not by sample) to prevent leakage
-        np.random.seed(random_seed)
-        perm_geoms = np.random.permutation(unique_geoms)
+        # Local RandomState: same permutation as the old np.random.seed() +
+        # np.random.permutation() (existing splits unchanged) but without
+        # resetting the global numpy RNG that augmentation relies on.
+        perm_geoms = np.random.RandomState(random_seed).permutation(unique_geoms)
 
         n_train_geoms = int(n_geoms * train_ratio)
         n_val_geoms = int(n_geoms * val_ratio)
@@ -114,6 +137,10 @@ class GNOTDataset(Dataset):
 
         self.split = split
         self.augment = augment
+        self.random_seed = random_seed
+        if zero_gauge_features is None:
+            zero_gauge_features = bool(augment and split == 'train')
+        self.zero_gauge_features = bool(zero_gauge_features)
         self.h5_handle = None
 
     def _raw_mode_index(self, s_idx):
@@ -128,6 +155,19 @@ class GNOTDataset(Dataset):
         if not self.geom_to_samples:
             return 0
         return max(len(v) for v in self.geom_to_samples.values())
+
+    def data_dims(self):
+        """(val_dim, K) that __getitem__ yields, without reading node fields."""
+        if self.feature_indices is not None:
+            val_dim = len(self.feature_indices)
+        elif self.is_h5:
+            f = self._get_h5_handle()
+            g_key = next(iter(f['geometry_pool'].keys()))
+            val_dim = int(f['geometry_pool'][g_key]['Input_funcs'].shape[-1])
+        else:
+            geom = next(iter(self.geometry_pool.values()))
+            val_dim = int(np.asarray(geom['Input_funcs']).shape[-1])
+        return val_dim, self._infer_num_modes()
 
     def __len__(self):
         return len(self.active_geoms)
@@ -199,15 +239,21 @@ class GNOTDataset(Dataset):
         norm_freqs = norm_freqs[order]
         y_field = y_field[:, order]
 
-        # Ablation: select feature subset if feature_indices is set
-        if self.feature_indices is not None:
-            input_features = input_features[:, self.feature_indices]
+        # Always work on a private copy: in-place edits below must never mutate
+        # the cached geometry_pool arrays.
+        x = np.array(x, dtype=np.float32, copy=True)
+        input_features = np.array(input_features, dtype=np.float32, copy=True)
 
         # VRAM Optimization: Node Sub-sampling — SAME randperm for all modes so
-        # every mode column refers to the identical node set.
+        # every mode column refers to the identical node set.  val/test use a
+        # fixed per-geometry generator so the monitored val metric does not
+        # fluctuate from epoch to epoch just because different nodes were drawn.
         n_nodes = x.shape[0]
         if self.max_nodes is not None and n_nodes > self.max_nodes:
-            rand_idx = torch.randperm(n_nodes)[:self.max_nodes].numpy()
+            gen = None
+            if self.split != 'train':
+                gen = torch.Generator().manual_seed(int(self.random_seed) * 100003 + int(g_id))
+            rand_idx = torch.randperm(n_nodes, generator=gen)[:self.max_nodes].numpy()
             x = x[rand_idx]
             input_features = input_features[rand_idx]
             y_field = y_field[rand_idx]
@@ -218,6 +264,8 @@ class GNOTDataset(Dataset):
         # rotating the coordinate and boundary direction features.
         # NOTE: Y_field values are FEM scalars — they are scalar (rotation-
         # invariant) so they do NOT change under coordinate rotation.
+        # Augmentation runs on the FULL feature layout (fixed column meaning);
+        # the ablation subset (feature_indices) is selected afterwards.
         if self.augment and self.split == 'train':
             theta = np.random.uniform(0.0, 2.0 * np.pi)
             c_th, s_th = np.cos(theta).astype(np.float32), np.sin(theta).astype(np.float32)
@@ -228,13 +276,7 @@ class GNOTDataset(Dataset):
 
             # Rotate boundary direction features (cols 3-4: dir_bnd_x, dir_bnd_y)
             if input_features.shape[1] > 4:
-                input_features = input_features.copy()
                 input_features[:, 3:5] = input_features[:, 3:5] @ R.T   # [N, 2]
-
-            # Zero out gauge-dependent principal-axis features (cols 6-7)
-            if input_features.shape[1] > 7:
-                input_features[:, 6] = 0.0   # cos_principal — undefined after rotation
-                input_features[:, 7] = 0.0   # sin_principal
 
             # Reflection (50 % probability): flip x-axis
             if np.random.rand() < 0.5:
@@ -247,11 +289,29 @@ class GNOTDataset(Dataset):
                 input_features[:, 0] = x[:, 0]
                 input_features[:, 1] = x[:, 1]
 
+        # Zero out gauge-dependent principal-axis features (cols 6-7): undefined
+        # after rotation.  Applied on EVERY split of an augmented run (see
+        # zero_gauge_features) so train and val/test see the same inputs.
+        if self.zero_gauge_features and input_features.shape[1] > max(self.GAUGE_FEATURES):
+            input_features[:, list(self.GAUGE_FEATURES)] = 0.0
+
+        # dist_to_boundary from the FULL layout (col 2) — the boundary PINN term
+        # needs it even when the ablation subset drops that column.
+        if input_features.shape[1] > 2:
+            dist_bnd = input_features[:, 2].copy()
+        else:
+            dist_bnd = np.full(input_features.shape[0], np.inf, dtype=np.float32)
+
+        # Ablation: select feature subset if feature_indices is set
+        if self.feature_indices is not None:
+            input_features = input_features[:, self.feature_indices]
+
         return {
             'X': torch.from_numpy(np.ascontiguousarray(x)).float(),
             'Input_funcs': torch.from_numpy(np.ascontiguousarray(input_features)).float(),
             'Y_field': torch.from_numpy(np.ascontiguousarray(y_field)).float(),  # [N, K]
             'Y_freq': torch.from_numpy(np.ascontiguousarray(norm_freqs)).float(),  # [K]
+            'Dist_bnd': torch.from_numpy(np.ascontiguousarray(dist_bnd)).float(),  # [N]
             'geom_id': torch.tensor([int(g_id)], dtype=torch.long),
         }
 
@@ -279,7 +339,7 @@ def gnot_collate_fn(batch):
     for i, l in enumerate(lengths):
         mask[i, :l] = True
 
-    return {
+    out = {
         'X': X_padded,
         'Input_funcs': Inputs_padded,
         'Y_field': Y_field_padded,       # [B, N, K]
@@ -287,3 +347,7 @@ def gnot_collate_fn(batch):
         'geom_id': geom_id_stacked,
         'Mask': mask,
     }
+    if all('Dist_bnd' in item for item in batch):
+        out['Dist_bnd'] = pad_sequence([item['Dist_bnd'] for item in batch],
+                                       batch_first=True, padding_value=0.0)  # [B, N]
+    return out
