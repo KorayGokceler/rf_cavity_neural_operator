@@ -62,20 +62,22 @@ dataset:
 #  4. MODEL ARCHITECTURE (gnot.py)
 # ─────────────────────────────────────────────────────
 model:
-  # Input dimensions (veri formatına bağlı)
-  # val_dim=8  → mevcut gnot_dataset_5k.pkl (orijinal)
-  # val_dim=12 → dataset_converter yeniden çalıştırıldıktan sonra (dist_2nd, dist_3rd, curvature, convexity eklendi)
-  val_dim: 8                    # [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area, cos_principal, sin_principal]
+  # Input dimensions (veri formatına bağlı) — train.py veriyle doğrular.
+  # val_dim=12 → güncel dataset_converter çıktısı:
+  #   [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area, cos_principal, sin_principal,
+  #    dist_2nd_bnd, dist_3rd_bnd, curvature, convexity]
+  # val_dim=8  → eski (8-feature) pkl dosyaları. null → veriden otomatik algıla.
+  val_dim: 12
   grid_dim: 2                   # Koordinat boyutu (2D)
 
   # Core architecture
   embed_dim: 256                # Hidden dimension (ana boyut parametresi)
-  n_shared_layers: 0            # Ortak GNOT blokları kaldırıldı — her mod kendi decoder yolunu kullanıyor
+  n_shared_layers: 0            # KULLANILMIYOR (GNOTModel ortak blok kurmuyor; geriye uyumluluk)
   n_mode_layers: 3              # Per-mode decoder derinliği (eski: 6 shared + 1 per-mode = 9 blok → yeni: 3×3 = 9 blok)
   n_field_head_layers: 3        # Tahmin kafası derinliği (decoder capacity)
   n_heads: 8                    # Attention head sayısı (256 / 8 = 32 dim per head)
   num_experts: 4                # GeometricGatingFFN expert sayısı
-  predict_frequency: true       # Frekans tahmini aktif — her mode branch kendi frekansını tahmin eder
+  predict_frequency: true       # false → frekans loss + freq_mae kapanır (global freq head yine çalışır)
 
   # Mode conditioning
   num_field_modes: 3            # 3 mode da egitilecek
@@ -85,7 +87,7 @@ model:
   rff_length_scale: 0.1         # Gaussian kernel uzunluk ölçeği (normalize koordinatlar için 0.05–0.2)
 
   # DeepONet decoder (paylaşılan baz + per-mode katsayılar)
-  n_basis: 16                   # Baz fonksiyonu sayısı J (önerilen: J ≥ K; 2×K – 8×K arası)
+  n_basis: 16                   # KULLANILMIYOR (GNOT DeepONet decoder kaldırıldı; SpectralNO için anlamlı)
 
   # Regularization
   dropout: 0.0                  # Attention ve FFN dropout (0.0-0.3)
@@ -113,8 +115,12 @@ training:
   # Loss
   freq_weight: 0.5
   smoothness_weight: 0.0
-  # Higher weights for harder bipolar modes (dipole=1, quadrupole=2)
-  mode_loss_weights: [1.0, 2.0, 2.0]
+  # NOT USED by the set-prediction (OT / Grassmannian) loss — kept for
+  # back-compat; train.py warns if it is set.
+  mode_loss_weights: null
+  # Field loss on unit-norm columns (eigenmode scale gauge).
+  # null → auto: true for spectral_no / orthonormalize_output, false otherwise.
+  scale_invariant_field: null
 
   # LR Scheduler
   scheduler: "custom_cosine"
