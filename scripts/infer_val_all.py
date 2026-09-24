@@ -31,10 +31,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from src.data.dataset import GNOTDataset, gnot_collate_fn
-from src.training.lightning_module import GNOTLightning
+from src.data.dataset import gnot_collate_fn
 from infer import (_near_degenerate_clusters, plot_geometry_comparison,
-                   _near_degenerate_note, _ot_match_np)
+                   _near_degenerate_note, _ot_match_np, build_dataset,
+                   load_model, rescale_to_target)
 from scripts.diagnose_data_floor import _sign_agnostic_rel_l2, _subspace_rel_l2_w
 
 
@@ -88,7 +88,7 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
             P = out['field']                       # [B,N,K]
             T = batch['Y_field']                   # [B,N,K]
             Mk = batch['Mask']                     # [B,N]
-            IF = batch['Input_funcs']              # [B,N,8]
+            IF = batch['Input_funcs']              # [B,N,val_dim] (12 = current converter; idx5 = node_area)
             gids = batch['geom_id'].squeeze(-1).cpu().numpy()
             ftn = batch['Y_freq']                  # [B,K] normalised asc
             fpn = out.get('freq')                  # [B,K] normalised asc or None
@@ -130,6 +130,8 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                     perm = _ot_match_np(fp_norm_i, ft_norm_i, Eh, Et, freq_w=freq_w)
                     fp_ph_i = (fp_ph[i][perm] if fp_ph is not None else None)
                 Eh = Eh[:, perm]                              # aligned to target mode order
+                if getattr(model, 'scale_invariant_field', False):
+                    Eh = rescale_to_target(Eh, Et)            # amplitude is a gauge
 
                 shape_type = 'unknown'
                 if geom_pool and gid in geom_pool:
@@ -192,15 +194,16 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                     for kk in range(K):
                         fp_v = float(fp_ph_i[kk]) if fp_ph_i is not None \
                             else float('nan')
+                        flip = ' (sign-flipped)' if signs[kk] < 0 else ''
                         modes[kk] = {
                             'coords': coords,
                             'target': Et[:, kk],
                             'pred': signs[kk] * Eh[:, kk],
                             'f_true': float(ft_ph[i][kk]),
                             'f_pred': fp_v,
-                            'rel_l2': rl_uni[kk],
-                            'sign_info': ' (sign-flipped)' if signs[kk] < 0
-                            else '',
+                            'err_val': rl_uni[kk],
+                            'err_label': 'rel-L2',
+                            'mode_label': f'Mode {kk}{flip}',
                         }
                     el = elements_pool.get(gid) if elements_pool else None
                     try:
@@ -280,10 +283,7 @@ def main():
                     help='save a GT|Pred|Error figure for EVERY geometry here')
     args = ap.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Loading checkpoint: {args.checkpoint}")
-    model = GNOTLightning.load_from_checkpoint(args.checkpoint)
-    model.eval().to(device)
+    model, device = load_model(args.checkpoint)
 
     elements_pool = {}
     if args.plot_dir:
@@ -297,7 +297,7 @@ def main():
     all_rows = []
     dump = {} if args.dump_npz else None
     for sp in splits:
-        ds = GNOTDataset(args.data_path, split=sp)
+        ds = build_dataset(model, args.data_path, sp)   # same split/features as training
         if getattr(ds, 'stats', None):
             model.freq_stats = ds.stats
         geom_pool = getattr(ds, 'geometry_pool', None)
