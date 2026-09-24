@@ -3,7 +3,7 @@
 Kritik invariantlar:
 - Boundary node detection (kenarda 1 kez geçen üçgen kenarları)
 - Node area normalization
-- Input features shape and finiteness (val_dim = 12)
+- Input features shape and finiteness (val_dim = 13)
 - Boundary curvature sign is canonical (+ convex, - concave), mirror-invariant
 - convert_dataset: mode ordering, mode_idx, scale, clear errors
 - dist_to_boundary = 0 at boundary nodes
@@ -86,13 +86,13 @@ def test_extract_geometry_features_shape(converter):
     out = converter.extract_geometry_features(nodes, elements)
     n = len(nodes)
     assert out['X'].shape == (n, 2)
-    # val_dim = 12 (commit 41a830d added dist_2nd, dist_3rd, curvature, convexity)
-    assert out['Input_funcs'].shape == (n, 12)
+    # val_dim = 13 (41a830d: dist_2nd, dist_3rd, curvature, convexity; + torsion)
+    assert out['Input_funcs'].shape == (n, 13)
     assert 'principal_axis' not in out  # internal only, not exposed
 
 
 def test_extract_features_input_funcs_finite(converter):
-    """Tüm 12 feature kanalı sonlu olmalı (NaN/inf yok)."""
+    """Tüm 13 feature kanalı sonlu olmalı (NaN/inf yok)."""
     nodes, elements = _square_with_interior_mesh()
     out = converter.extract_geometry_features(nodes, elements)
     assert np.isfinite(out['Input_funcs']).all()
@@ -237,7 +237,8 @@ def test_convert_dataset_pkl_roundtrip(tmp_path):
     data = pickle.load(open(out, 'rb'))
     assert len(data['geometry_pool']) == 3
     geom = data['geometry_pool'][0]
-    assert geom['Input_funcs'].shape == (n, 12) and geom['X'].shape == (n, 2)
+    assert geom['Input_funcs'].shape == (n, 13) and geom['X'].shape == (n, 2)
+    assert geom['torsion_max'] > 0
     assert geom['scale'] > 0
     s = [x for x in data['samples'] if x['geom_id'] == 0]
     # Converter sorts modes by frequency: mode 1 = 4 GHz, mode 2 = 5 GHz
@@ -263,3 +264,14 @@ def test_convert_dataset_clear_errors(tmp_path):
     _write_raw_h5(h5)
     with pytest.raises(ValueError, match="No samples produced"):
         RFCavityToGNOT(str(h5)).convert_dataset(str(tmp_path / 'o.pkl'), mode_indices=[5])
+
+
+def test_torsion_feature_matches_disk_solution(converter):
+    """Unit disk: w = (1 − r²)/4 ⇒ max w = 1/4 and j₀₁²/(4·max w) = λ₁ exactly."""
+    skfem = pytest.importorskip("skfem")
+    m = skfem.MeshTri.init_circle(4)
+    out = converter.extract_geometry_features(m.p.T.copy(), m.t.T.copy())
+    r2 = (out['X'] ** 2).sum(axis=1)                       # normalised coords
+    w = out['Input_funcs'][:, 12] * out['torsion_max']
+    np.testing.assert_allclose(w, np.clip((1 - r2) / 4, 0, None), atol=5e-3)
+    assert abs(out['torsion_max'] - 0.25) < 5e-3

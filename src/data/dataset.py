@@ -20,14 +20,16 @@ class GNOTDataset(Dataset):
         Y_freq       : [K]                 (normalised eigenfrequencies, ascending)
         geom_id      : [1]
     """
-    # Feature channel reference (Input_funcs columns, val_dim=12):
+    # Feature channel reference (Input_funcs columns, val_dim=13):
     #   0: x_norm, 1: y_norm, 2: dist_to_boundary, 3: dir_bnd_x,
     #   4: dir_bnd_y, 5: node_area, 6: cos_principal, 7: sin_principal,
-    #   8: dist_2nd_boundary, 9: dist_3rd_boundary, 10: curvature, 11: convexity
+    #   8: dist_2nd_boundary, 9: dist_3rd_boundary, 10: curvature, 11: convexity,
+    #   12: torsion (w / max w)
     FEATURE_NAMES = [
         'x_norm', 'y_norm', 'dist_boundary', 'dir_bnd_x', 'dir_bnd_y',
         'node_area', 'cos_principal', 'sin_principal',
         'dist_2nd_boundary', 'dist_3rd_boundary', 'curvature', 'convexity',
+        'torsion',
     ]
 
     # Gauge-dependent principal-axis channels (zeroed under augmentation).
@@ -209,6 +211,7 @@ class GNOTDataset(Dataset):
             x = np.asarray(geom['X'][:])
             input_features = np.asarray(geom['Input_funcs'][:])
             scale = geom.attrs.get('scale', None)
+            torsion_max = geom.attrs.get('torsion_max', None)
             elements = np.asarray(geom['elements'][:]) if 'elements' in geom else None
             mode_fields = []
             raw_freqs = []
@@ -222,6 +225,7 @@ class GNOTDataset(Dataset):
             x = np.asarray(geom['X'])
             input_features = np.asarray(geom['Input_funcs'])
             scale = geom.get('scale', None)
+            torsion_max = geom.get('torsion_max', None)
             elements = geom.get('elements', None)
             mode_fields = []
             raw_freqs = []
@@ -331,6 +335,9 @@ class GNOTDataset(Dataset):
         # only): SpectralNO turns its eigenvalue into GHz with it.
         if scale is not None:
             item['Scale'] = torch.tensor(float(scale), dtype=torch.float32)
+        # max of the torsion function (normalised coords): λ₁ ≈ j₀₁²/(4·max w).
+        if torsion_max is not None:
+            item['TorsionMax'] = torch.tensor(float(torsion_max), dtype=torch.float32)
         # Mesh triangles (full mesh only — sub-sampling reindexes the nodes).
         if elements is not None and self.max_nodes is None:
             item['Elements'] = torch.from_numpy(np.asarray(elements, dtype=np.int64))  # [T, 3]
@@ -376,6 +383,8 @@ def gnot_collate_fn(batch):
                                    batch_first=True, padding_value=0.0)      # [B, N]
     if all('Scale' in item for item in batch):
         out['Scale'] = torch.stack([item['Scale'] for item in batch])       # [B]
+    if all('TorsionMax' in item for item in batch):
+        out['TorsionMax'] = torch.stack([item['TorsionMax'] for item in batch])  # [B]
     if all('Elements' in item for item in batch):
         # Padded triangles (0, 0, 0) have zero area → contribute nothing.
         out['Elements'] = pad_sequence([item['Elements'] for item in batch],

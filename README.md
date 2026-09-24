@@ -57,7 +57,9 @@ dataset_generator.py ──► H5 ──► convert.py ──► PKL/H5 (özelli
 Geometri tipleri: **sharp** (7–12 köşeli rastgele poligon), **smooth** (Fourier pertürbasyonlu disk),
 **calibration** (kare / daire / halka — analitik olarak doğrulanabilir, `--mode calibration`).
 Düğüm özellikleri: `x_norm, y_norm, dist_boundary, dir_bnd_x, dir_bnd_y, node_area,
-cos_principal, sin_principal` (8 adet; `val_dim: 12` ile 4 ek özellik).
+cos_principal, sin_principal`, `dist_2nd/3rd_boundary, curvature, convexity` ve `torsion`
+(burulma fonksiyonu $w/\max w$; `val_dim: 13`). `max w` geometri başına saklanır: GNOT frekansı
+$\sqrt{\lambda_1} \approx j_{01}/(2\sqrt{\max w})$ ön bilgisinden başlar, SpectralNO bazı $\psi = w\cdot N(x)$ ile kurar.
 
 ---
 

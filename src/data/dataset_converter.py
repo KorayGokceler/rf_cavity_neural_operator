@@ -30,6 +30,18 @@ class RFCavityToGNOT:
         # Bir kenar sadece tek bir üçgene aitse sınır kenarıdır. Sıralı (deterministik) çıktı.
         return np.unique(self._boundary_edges(elements))
 
+    @staticmethod
+    def _torsion_function(nodes, elements, boundary_indices):
+        """P1 solution of −Δw = 1 in Ω, w = 0 on ∂Ω at the mesh nodes."""
+        import skfem
+        from skfem.models.poisson import laplace, unit_load
+        mesh = skfem.MeshTri(np.ascontiguousarray(nodes.T, dtype=np.float64),
+                             np.ascontiguousarray(np.asarray(elements).T, dtype=np.int64))
+        basis = skfem.Basis(mesh, skfem.ElementTriP1())
+        w = skfem.solve(*skfem.condense(skfem.asm(laplace, basis), skfem.asm(unit_load, basis),
+                                        D=np.asarray(boundary_indices)))
+        return np.clip(w, 0.0, None)
+
     def _compute_node_areas(self, nodes, elements):
         """Her noktanın Voronoi benzeri alanı: komşu üçgen alanlarının 1/3'ü toplamı.
         Mesh yoğunluğu bilgisi verir — fizik çözücü sınıra yakın daha sık mesh kullanır."""
@@ -189,10 +201,16 @@ class RFCavityToGNOT:
         convexity = (dist_to_boundary * bnd_curvature[nearest_idx]).reshape(-1, 1).astype(np.float32)
         convexity = np.clip(convexity, -1.0, 1.0)
 
+        # [12] torsion function w/max(w): −Δw = 1 in Ω, w = 0 on ∂Ω (one P1
+        #      solve).  Smooth "landscape" of the domain; λ₁ ≈ j₀₁²/(4·max w)
+        #      to ~1% (docs/16) → max w is stored as 'torsion_max'.
+        torsion = self._torsion_function(nodes_norm, elements, boundary_indices)
+        torsion_max = float(torsion.max())
+
         # Combine: [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area,
         #           cos_principal, sin_principal,
-        #           dist_2nd, dist_3rd, curvature, convexity]
-        # val_dim = 12
+        #           dist_2nd, dist_3rd, curvature, convexity, torsion]
+        # val_dim = 13
         geom_features = np.concatenate([
             nodes_norm,                         # [0,1] x, y
             dist_to_boundary.reshape(-1, 1),    # [2]   dist to boundary
@@ -204,6 +222,7 @@ class RFCavityToGNOT:
             dist_3rd_feat,                      # [9]   dist to 3rd nearest boundary
             node_curvature,                     # [10]  local boundary curvature
             convexity,                          # [11]  convexity sign
+            (torsion / (torsion_max + 1e-12)).reshape(-1, 1),  # [12] torsion w / max w
         ], axis=1).astype(np.float32)
 
         return {
@@ -215,6 +234,7 @@ class RFCavityToGNOT:
             #   x_phys = X * scale + center,  k^2_phys = k^2_norm / scale^2,
             #   f_phys = c * sqrt(k^2_norm) / (2*pi*scale).
             'scale': float(global_scale),
+            'torsion_max': torsion_max,       # max w in normalised coords (λ₁ prior)
             'center': center_raw.astype(np.float64),
         }
 
@@ -333,6 +353,7 @@ class RFCavityToGNOT:
                     if 'shape_type' in g_data:
                         g_sub.attrs['shape_type'] = g_data['shape_type']
                     g_sub.attrs['scale'] = g_data['scale']
+                    g_sub.attrs['torsion_max'] = g_data['torsion_max']
                     g_sub.attrs['center'] = g_data['center']
 
                 # Samples

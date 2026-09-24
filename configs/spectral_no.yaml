@@ -5,7 +5,7 @@
 #
 # Key differences from default.yaml (GNOT):
 #  - model_type: spectral_no  → uses SpectralNO instead of GNOTModel
-#  - val_dim: 12              → extended features (dist_2nd, dist_3rd, curvature, convexity)
+#  - val_dim: 13              → extended features (dist_2nd, dist_3rd, curvature, convexity, torsion)
 #  - n_basis: 16              → Galerkin reduced-basis size M
 #  - embed_dim: 128           → smaller than GNOT (matrix overhead)
 #  - Galerkin L/M assembled from the basis (physical), NOT predicted by MLP heads
@@ -48,7 +48,7 @@ data_gen:
 # ─────────────────────────────────────────────────────
 data_convert:
   h5_filepath: "rf_cavity_5000_dataset.h5"
-  output_path: "data/gnot_dataset_5k_v12.pkl"   # val_dim=12 dataset
+  output_path: "data/gnot_dataset_5k_v13.pkl"   # val_dim=13 dataset
   output_format: "pkl"
   mode_indices: [0, 1, 2]
   max_samples: null
@@ -58,7 +58,7 @@ data_convert:
 #  3. DATASET
 # ─────────────────────────────────────────────────────
 dataset:
-  data_path: "data/gnot_dataset_5k_v12.pkl"     # = data_convert.output_path (12 features)
+  data_path: "data/gnot_dataset_5k_v13.pkl"     # = data_convert.output_path (13 features)
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
@@ -70,10 +70,10 @@ dataset:
 # ─────────────────────────────────────────────────────
 model:
   # Input features: val_dim MUST match the PKL/H5 dataset (train.py checks it).
-  # val_dim=12 → current dataset_converter output (convert.py → gnot_dataset_5k_v12.pkl)
-  # val_dim=8  → legacy 8-feature files.  null → auto-detect from the data.
+  # val_dim=13 → current dataset_converter output (convert.py → gnot_dataset_5k_v13.pkl)
+  # val_dim=12/8 → legacy files.  null → auto-detect from the data.
   # SpectralNO reads dist_bnd from column 2 and node_area (quadrature) from column 5.
-  val_dim: 12
+  val_dim: 13
   grid_dim: 2
 
   # SpectralNO core
@@ -95,6 +95,7 @@ model:
   spectral:
     assembly: p1                # exact P1 mass/stiffness per mesh triangle: true Ritz upper bounds,
                                 # no autograd (much faster); needs dataset.max_nodes: null
+    torsion_feature_idx: 12     # ψ = w·N(x): torsion w (feature 12) as the Dirichlet factor (p1 only)
   #   area_feature_idx: 5
   #   mass_ridge: 1.0e-4
   #   stiff_ridge: 1.0e-4

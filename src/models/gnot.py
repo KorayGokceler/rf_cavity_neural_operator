@@ -374,6 +374,14 @@ class GNOTModel(nn.Module):
                 nn.init.trunc_normal_(m.weight, std=0.01)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+        if self.physics_freq:
+            # Start from the disk's spectrum: log √(λ_k/λ₁) = log(j_k / j₀₁)
+            # (Bessel zeros j01, j11 ×2, j21 ×2, j02, j31 ×2), so every mode —
+            # not only the fundamental — begins near its typical frequency.
+            disk_j = [2.404826, 3.831706, 3.831706, 5.135622, 5.135622, 5.520078, 6.380162, 6.380162]
+            j = torch.tensor([disk_j[min(k, len(disk_j) - 1)] for k in range(self.num_field_modes)])
+            with torch.no_grad():
+                self.freq_head_global[-1].bias.copy_(torch.log(j / disk_j[0]))
 
     def forward(self, batch):
         X = batch['X']
@@ -407,9 +415,13 @@ class GNOTModel(nn.Module):
         c = self.pooler(x_emb, condition_mask)            # [B, D] global context
         f_pred = self.freq_head_global(c)                 # [B, K]
         if self.physics_freq:
-            # log √λ ≈ 1.2 (λ ≈ 11) for a unit-size cavity: untrained head
-            # starts inside the data's GHz range.
-            f_pred = _physics_freq_z(f_pred + 1.2, batch, self.freq_stats, 'GNOTModel')
+            # Base log √λ: torsion prior √λ₁ ≈ j₀₁ / (2·√max w) (~1%, docs/16)
+            # when the converter stored max w, else ≈ 1.2 (λ ≈ 11, a unit-size
+            # cavity).  The head only learns the log-ratio to it.
+            w_max = batch.get('TorsionMax', None)
+            base = (math.log(2.404825557695773 / 2.0) - 0.5 * torch.log(w_max.clamp(min=1e-12))
+                    ).unsqueeze(-1) if w_max is not None else 1.2
+            f_pred = _physics_freq_z(f_pred + base, batch, self.freq_stats, 'GNOTModel')
         f_pred = torch.sort(f_pred, dim=-1).values        # always sorted ascending
 
         # --- Per-slot decoder: each mode owns its GNOT blocks + field head ---
