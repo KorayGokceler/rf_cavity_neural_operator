@@ -130,6 +130,45 @@ def _p1_galerkin(basis: torch.Tensor, X: torch.Tensor, elems: torch.Tensor):
     return M_mat, L_mat
 
 
+def _generalized_eigh(L_mat, M_mat, eig_broadening):
+    """Batched  L u = λ M u  via Cholesky whitening (see
+    SpectralNO._generalized_eigh_safe).  float64 in; ascending λ, M-orthonormal u."""
+    eye = torch.eye(M_mat.shape[-1], device=L_mat.device, dtype=L_mat.dtype).unsqueeze(0)
+    scale = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-30)
+    scale = scale[:, None, None].detach()
+    try:
+        C = torch.linalg.cholesky(M_mat + 1e-10 * scale * eye)
+    except RuntimeError:
+        C = torch.linalg.cholesky(M_mat + 1e-4 * scale * eye)
+    A = torch.linalg.solve_triangular(C, L_mat, upper=False)                  # C⁻¹ L
+    L_white = torch.linalg.solve_triangular(C, A.transpose(-1, -2), upper=False)
+    L_white = 0.5 * (L_white + L_white.transpose(-1, -2))
+    vals, vecs_w = _BroadenedEigh.apply(L_white, eig_broadening)
+    vecs = torch.linalg.solve_triangular(C.transpose(-1, -2), vecs_w, upper=True)
+    return vals, vecs
+
+
+def _ritz(basis64, M_mat, L_mat, K, mass_ridge=1e-4, stiff_ridge=1e-4, eig_broadening=1e-4):
+    """Rayleigh–Ritz on the span of the basis columns: ridges + generalized
+    eigh → K lowest (λ [B, K], fields [B, N, K], u [B, M, K], M, L).  float64."""
+    # Ridges relative to each matrix's own mean diagonal: invariant to
+    # rescaling the basis, and a (near-)null direction of a collinear
+    # basis gets λ ≈ (stiff/mass)·mean Rayleigh quotient of the ψ_m
+    # (each ≥ λ₁ for ψ ∈ H¹₀) instead of a spurious λ ≈ stiff/mass ≈ 1
+    # below the true fundamental — keeps λ₁ a Ritz upper bound.
+    eye = torch.eye(M_mat.shape[-1], device=M_mat.device, dtype=M_mat.dtype).unsqueeze(0)
+    ridge_M = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
+    ridge_L = torch.diagonal(L_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
+    M_mat = M_mat + mass_ridge * ridge_M.detach()[:, None, None] * eye
+    L_mat = L_mat + stiff_ridge * ridge_L.detach()[:, None, None] * eye
+    # Symmetrize (guards against tiny einsum asymmetry).
+    M_mat = 0.5 * (M_mat + M_mat.transpose(-1, -2))
+    L_mat = 0.5 * (L_mat + L_mat.transpose(-1, -2))
+    vals, vecs = _generalized_eigh(L_mat, M_mat, eig_broadening)
+    u_K = vecs[:, :, :K]
+    return vals[:, :K], torch.einsum('bnm,bmk->bnk', basis64, u_K), u_K, M_mat, L_mat
+
+
 class _MonotoneFreqHead(nn.Module):
     """Strictly increasing scalar map  log λ → z-scored frequency.
 
@@ -346,19 +385,7 @@ class SpectralNO(nn.Module):
         Returns:
             vals: [B, M] ascending; vecs: [B, M, M] M-orthonormal columns.
         """
-        eye = torch.eye(self.M, device=L_mat.device, dtype=L_mat.dtype).unsqueeze(0)
-        scale = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-30)
-        scale = scale[:, None, None].detach()
-        try:
-            C = torch.linalg.cholesky(M_mat + 1e-10 * scale * eye)
-        except RuntimeError:
-            C = torch.linalg.cholesky(M_mat + 1e-4 * scale * eye)
-        A = torch.linalg.solve_triangular(C, L_mat, upper=False)                  # C⁻¹ L
-        L_white = torch.linalg.solve_triangular(C, A.transpose(-1, -2), upper=False)
-        L_white = 0.5 * (L_white + L_white.transpose(-1, -2))
-        vals, vecs_w = _BroadenedEigh.apply(L_white, self.eig_broadening)
-        vecs = torch.linalg.solve_triangular(C.transpose(-1, -2), vecs_w, upper=True)
-        return vals, vecs
+        return _generalized_eigh(L_mat, M_mat, self.eig_broadening)
 
     def _differentiable_inputs(self, X_req: torch.Tensor, Y: torch.Tensor):
         """Make the position-derived feature columns depend on ``X_req``.
@@ -500,26 +527,9 @@ class SpectralNO(nn.Module):
             M_mat, L_mat, basis64 = self._nodal_galerkin(X, Y, mask, solve_dtype)
 
         with torch.autocast(device_type=device.type, enabled=False):
-            # Ridges relative to each matrix's own mean diagonal: invariant to
-            # rescaling the basis, and a (near-)null direction of a collinear
-            # basis gets λ ≈ (stiff/mass)·mean Rayleigh quotient of the ψ_m
-            # (each ≥ λ₁ for ψ ∈ H¹₀) instead of a spurious λ ≈ stiff/mass ≈ 1
-            # below the true fundamental — keeps λ₁ a Ritz upper bound.
-            eye = torch.eye(self.M, device=device, dtype=solve_dtype).unsqueeze(0)
-            ridge_M = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
-            ridge_L = torch.diagonal(L_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
-            M_mat = M_mat + self.mass_ridge * ridge_M.detach()[:, None, None] * eye
-            L_mat = L_mat + self.stiff_ridge * ridge_L.detach()[:, None, None] * eye
-            # Symmetrize (guards against tiny einsum asymmetry).
-            M_mat = 0.5 * (M_mat + M_mat.transpose(-1, -2))
-            L_mat = 0.5 * (L_mat + L_mat.transpose(-1, -2))
-
-            vals, vecs = self._generalized_eigh_safe(L_mat, M_mat)
-            u_K      = vecs[:, :, :self.K]              # [B, M, K]
-            lambda_K = vals[:, :self.K]                 # [B, K]
-
-            # ── Eigenfunction reconstruction ─────────────────────────────────
-            fields = torch.einsum('bnm,bmk->bnk', basis64, u_K)   # [B, N, K]
+            lambda_K, fields, u_K, M_mat, L_mat = _ritz(
+                basis64, M_mat, L_mat, self.K, self.mass_ridge, self.stiff_ridge,
+                self.eig_broadening)                                    # [B,K], [B,N,K]
         fields = fields.to(dtype)
         if mask is not None:
             fields = fields * mask.unsqueeze(-1).to(dtype)

@@ -24,6 +24,10 @@ Geometric Neural Operator Transformer (`src/models/gnot.py`).
 - Paylaşılan gövde + moda özel dallar; her dal kendi alanını ve frekansını tahmin eder
 - Çıkış sırası serbest olduğu için eğitimde **OT (optimal transport) slot↔mod eşleştirmesi**
   ve yakın-dejenere modlar için **Grassmann / subspace kaybı** kullanılır
+- **Ritz başlığı** (`model.ritz_basis: 2`, bu config'te açık): her slot 2 baz fonksiyonu verir,
+  $K\cdot 2$ alanlık alt uzayda mesh'in tam P1 matrisleriyle Rayleigh–Ritz → modlar özdeğer
+  sırasında (OT gerekmez), dejenere çiftler yapısal olarak alt uzay, $f = c\sqrt{\lambda}/(2\pi\,\text{scale})$.
+  `ritz_basis: 0` eski doğrudan çıkış (o zaman `max_nodes: 1024` kullanılabilir).
 
 ### 2. SpectralNO — `configs/spectral_no.yaml` (`model_type: spectral_no`)
 

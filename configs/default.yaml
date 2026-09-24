@@ -54,7 +54,7 @@ dataset:
   val_ratio: 0.1
   # test_ratio otomatik: 1 - train - val = 0.1
   random_seed: 42
-  max_nodes: 1024               # VRAM taşmasını önlemek için node sub-sampling (null=devre dışı)
+  max_nodes: null               # Ritz başlığı tam mesh (üçgenler) ister; ritz_basis: 0 ise VRAM için 1024 yapılabilir
   active_mode_index: null       # null=tüm modlar, 0=Monopol, 1=Dipol vs. (Single-mode training için)
 
 
@@ -79,6 +79,8 @@ model:
   num_experts: 4                # GeometricGatingFFN expert sayısı
   predict_frequency: true       # false → frekans loss + freq_mae kapanır (global freq head yine çalışır)
   physics_freq: true            # head log √λ (boyutsuz) tahmin eder, f = c·√λ/(2π·scale) boyutu ekler (PKL'de 'scale' gerekir)
+  ritz_basis: 2                 # her slot 2 baz fonksiyonu → K·2 alanlık alt uzayda P1 Rayleigh–Ritz (OT yok, docs/15);
+                                # 0 = eski doğrudan alan çıkışı
 
   # Mode conditioning
   num_field_modes: 3            # 3 mode da egitilecek
