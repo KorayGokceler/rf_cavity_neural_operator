@@ -112,3 +112,20 @@ def test_analytic_reference_values():
     # Thin annulus → k ≈ pi / (b - a) for the n = 0 mode
     f_thin = validate_data.analytical_spectrum("annulus", 1, {"r_inner": 0.100, "r_outer": 0.101})[0]
     np.testing.assert_allclose(f_thin, c / (2 * 0.001) / 1e9, rtol=1e-3)
+
+
+def test_random_holes_multiply_connected(set_args):
+    """--hole_prob 1: every random geometry has 1..max_holes holes → extra
+    boundary loops, valid mesh, ascending eigenpairs; hole_prob 0 is legacy."""
+    from src.data.dataset_converter import RFCavityToGNOT
+    set_args("--mode", "random", "--hole_prob", "1.0", "--max_holes", "2", *FAST_MESH)
+    for s_id in range(3):
+        res = gen.generate_sample_data(s_id)
+        assert "_hole" in res["shape_type"]
+        n_holes = int(res["shape_type"].split("_hole")[1])
+        loops = RFCavityToGNOT._boundary_loops(None, res["nodes"], res["elements"])
+        assert len(loops) == 1 + n_holes
+        assert np.all(np.diff(res["freqs"]) >= 0)
+    set_args("--mode", "random", *FAST_MESH)
+    legacy = gen.generate_sample_data(0)
+    assert "_hole" not in legacy["shape_type"]

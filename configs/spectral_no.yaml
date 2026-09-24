@@ -41,6 +41,8 @@ data_gen:
   smooth_base_r: 0.035
   smooth_perturb: 0.008
   smooth_harmonics: [2, 8]
+  hole_prob: 0.3               # 30% of geometries get 1-2 elliptic holes (multiply connected)
+  max_holes: 2
 
 
 # ─────────────────────────────────────────────────────

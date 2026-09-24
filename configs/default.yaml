@@ -32,6 +32,8 @@ data_gen:
   smooth_base_r: 0.035          # Smooth geometrilerde baz yarıçap
   smooth_perturb: 0.008         # Smooth geometrilerde pertürbasyon genliği
   smooth_harmonics: [2, 8]      # Smooth geometrilerde harmonik aralığı
+  hole_prob: 0.3                # Geometrilerin %30'u 1-2 eliptik delikli (çok bağlantılı topoloji)
+  max_holes: 2
 
 
 # ─────────────────────────────────────────────────────

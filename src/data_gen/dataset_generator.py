@@ -34,6 +34,8 @@ def parse_args(argv=None):
     parser.add_argument("--smooth_base_r", type=float, default=0.035, help="Base radius for smooth geometries.")
     parser.add_argument("--smooth_perturb", type=float, default=0.008, help="Perturbation amplitude for smooth geometries.")
     parser.add_argument("--smooth_harmonics", type=int, nargs=2, default=[2, 8], metavar=("MIN", "MAX"), help="Harmonic range for smooth geometries.")
+    parser.add_argument("--hole_prob", type=float, default=0.0, help="Probability that a random geometry gets 1..max_holes elliptic holes (multiply connected).")
+    parser.add_argument("--max_holes", type=int, default=2, help="Maximum number of holes per geometry.")
     # Reproducibility / robustness
     parser.add_argument("--seed", type=int, default=0, help="Base seed: sample s_id uses seed s_id*13 + seed*1000003 (seed=0 reproduces legacy datasets).")
     parser.add_argument("--n_workers", type=int, default=None, help="Worker processes (default: cpu_count()).")
@@ -175,6 +177,10 @@ def generate_sample_data(s_id):
                 angles = np.array([i * delta + np.random.uniform(-delta/3, delta/3) for i in range(n_pts)])
                 r = np.random.uniform(ARGS.sharp_r_range[0], ARGS.sharp_r_range[1], n_pts)
                 pts_c = [(cx + ri*np.cos(ai), cy + ri*np.sin(ai)) for ri, ai in zip(r, angles)]
+                # Inscribed radius around (cx, cy): an edge spanning angle θ is
+                # at least min(r)·cos(θ/2) from the centre.
+                max_gap = np.max(np.diff(np.append(angles, angles[0] + 2*np.pi)))
+                r_safe = r.min() * np.cos(max_gap / 2)
             else:
                 shape_type = 'random_smooth'
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
@@ -185,6 +191,7 @@ def generate_sample_data(s_id):
                     r_raw = ARGS.smooth_base_r + (r_raw - ARGS.smooth_base_r) * (ARGS.smooth_base_r - r_min) / (ARGS.smooth_base_r - r_raw.min())
                 r = r_raw
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
+                r_safe = 0.95 * r.min()
 
             pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
             if method == 'smooth':
@@ -194,7 +201,26 @@ def generate_sample_data(s_id):
                 curves = [gmsh.model.occ.addSpline(pts + [pts[0]])]
             else:
                 curves = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
-            gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(curves)])
+            surf = gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(curves)])
+
+            # Optional holes (multiply connected cavities): elliptic holes kept
+            # inside the inscribed circle with a wall of ≥ 0.15·r_safe.
+            # No random draw when hole_prob == 0 → legacy datasets unchanged.
+            if ARGS.hole_prob > 0 and np.random.rand() < ARGS.hole_prob:
+                margin, holes, placed = 0.15 * r_safe, [], []
+                for _ in range(np.random.randint(1, ARGS.max_holes + 1)):
+                    rh = np.random.uniform(0.15, 0.35) * r_safe
+                    rho = np.random.uniform(0.0, r_safe - rh - margin)
+                    phi = np.random.uniform(0, 2*np.pi)
+                    hx, hy = cx + rho*np.cos(phi), cy + rho*np.sin(phi)
+                    if any(np.hypot(hx - px, hy - py) < rh + pr + margin for px, py, pr in placed):
+                        continue
+                    placed.append((hx, hy, rh))
+                    h = gmsh.model.occ.addDisk(hx, hy, 0, rh, rh * np.random.uniform(0.6, 1.0))
+                    gmsh.model.occ.rotate([(2, h)], hx, hy, 0, 0, 0, 1, np.random.uniform(0, np.pi))
+                    holes.append((2, h))
+                gmsh.model.occ.cut([(2, surf)], holes)
+                shape_type += f'_hole{len(holes)}'
 
         gmsh.model.occ.synchronize()
 

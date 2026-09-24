@@ -55,6 +55,9 @@ def main():
             "--smooth_base_r",       str(dg.get('smooth_base_r', 0.035)),
             "--smooth_perturb",      str(dg.get('smooth_perturb', 0.008)),
             "--smooth_harmonics",    str(smooth_harm[0]), str(smooth_harm[1]),
+            # Topology: multiply connected cavities
+            "--hole_prob",           str(dg.get('hole_prob', 0.0)),
+            "--max_holes",           str(dg.get('max_holes', 2)),
         ]
         
         try:
