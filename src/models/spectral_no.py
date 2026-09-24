@@ -16,6 +16,12 @@ Architecture overview
    where the quadrature weights w_i are the per-node mesh areas (input feature
    column 5).  ∇ψ is obtained by autograd because the basis network is
    *pointwise*, so a single summed backward yields every node's gradient.
+   For ∇ψ to be the *total* spatial derivative, every input that is a known
+   function of x must depend on the autograd leaf: the (x, y) feature columns
+   are replaced by the differentiable coordinates, and dist_bnd (which drives
+   the Dirichlet gate) is linearised with its exact gradient ∇d = −dir_bnd.
+   The remaining per-node features (areas, principal angles, curvature, …)
+   have no available spatial derivative and act as frozen conditioning.
 
    This is the key change vs. the previous design: L and M are **no longer
    predicted by free per-geometry MLP heads** (which mapped a 128-d global
@@ -23,25 +29,98 @@ Architecture overview
    training set).  The only learned object is now the *function space* ψ(x);
    the operator is the true Laplacian projected onto it, so it generalises.
 4. **Generalized eigendecomposition** – solve L u_k = λ_k M u_k via Cholesky
-   whitening + `torch.linalg.eigh`; eigenvalues are returned sorted ascending,
-   so no OT matching is needed at training or inference time.
-5. **Eigenfunction reconstruction** – φ_k(x) = Σ_m u_{k,m} · ψ_m(x).
-6. **Frequency transform** – lightweight MLP maps Galerkin (Laplacian)
-   eigenvalues → z-scored physical frequencies.
+   whitening + `eigh`, in float64 with autocast disabled; eigenvalues are
+   returned sorted ascending, so no OT matching is needed at training or
+   inference time.  The eigh backward uses Lorentzian broadening of the
+   1/(λ_j − λ_i) terms so (near-)degenerate spectra give finite gradients.
+5. **Eigenfunction reconstruction** – φ_k(x) = Σ_m u_{k,m} · ψ_m(x), then
+   rescaled so its signed peak over valid nodes is +1 — the same max-abs
+   convention as the FEM targets (dataset_converter divides by max|Y|).
+   The raw M-normalised fields have Σ w φ² = 1, a fixed amplitude that a
+   max-normalised target cannot match (irreducible rel-L2 floor).
+6. **Frequency transform** – small *monotone* MLP on log λ maps Galerkin
+   (Laplacian) eigenvalues → z-scored physical frequencies, so the frequency
+   order always equals the eigenvalue (= field) order.
 
 Key properties
 --------------
-* Ordering is **structural** (eigh returns sorted eigenvalues).
-* M-orthogonality of eigenfunctions is **structural**.
+* Ordering is **structural** (eigh returns sorted eigenvalues; the frequency
+  head is strictly increasing).
+* M-orthogonality of eigenfunctions is **structural** (the peak rescaling is
+  per-column, so orthogonality is preserved).
 * Dirichlet BC (φ = 0 on ∂Ω) is built into the basis via the boundary gate.
 * Sign / degenerate-subspace ambiguity is handled by the sign-agnostic /
   Grassmannian field loss (see lightning_module).
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.models.gnot import RandomFourierFeatures
+from src.models.gnot import RandomFourierFeatures, _normalize_peak, _check_val_dim
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Numerical helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _BroadenedEigh(torch.autograd.Function):
+    """Symmetric ``eigh`` whose backward is finite for degenerate spectra.
+
+    The exact eigenvector gradient is  gA = V (F ∘ VᵀḡV + diag(ḡλ)) Vᵀ  with
+    F_ij = 1 / (λ_j − λ_i), which is ±inf/NaN for (near-)degenerate pairs —
+    the normal case for RF cavities (dipole/quadrupole pairs).  We use the
+    Lorentzian-broadened  F_ij = Δ / (Δ² + ε),  Δ = λ_j − λ_i, which is exact
+    for |Δ| ≫ √ε and bounded by 1/(2√ε).  Subspace-invariant losses (the
+    Grassmannian loss on degenerate clusters) have zero gradient along those
+    directions anyway, so the broadening only removes numerical garbage.
+    """
+
+    @staticmethod
+    def forward(ctx, A, eps):
+        vals, vecs = torch.linalg.eigh(A)
+        ctx.save_for_backward(vals, vecs)
+        ctx.eps = eps
+        return vals, vecs
+
+    @staticmethod
+    def backward(ctx, g_vals, g_vecs):
+        vals, vecs = ctx.saved_tensors
+        vecs_t = vecs.transpose(-1, -2)
+        inner = torch.zeros_like(vecs)
+        if g_vecs is not None:
+            diff = vals.unsqueeze(-2) - vals.unsqueeze(-1)       # [.., i, j] = λ_j − λ_i
+            inner = diff / (diff * diff + ctx.eps) * (vecs_t @ g_vecs)
+        if g_vals is not None:
+            inner = inner + torch.diag_embed(g_vals)
+        g_A = vecs @ inner @ vecs_t
+        return 0.5 * (g_A + g_A.transpose(-1, -2)), None
+
+
+class _MonotoneFreqHead(nn.Module):
+    """Strictly increasing scalar map  log λ → z-scored frequency.
+
+    Positive (softplus) weights + tanh keep f(λ) monotone, so sorted
+    eigenvalues always give sorted frequencies (the targets are sorted too).
+    log λ puts the widely-ranged Laplacian eigenvalues on an O(1) scale; the
+    hidden units are initialised with centres spread over log λ ∈ [−2, 10].
+    """
+
+    def __init__(self, hidden: int = 32):
+        super().__init__()
+        self.inp = nn.Linear(1, hidden)
+        self.out = nn.Linear(hidden, 1)
+        with torch.no_grad():
+            self.inp.weight.fill_(math.log(math.e - 1.0))        # softplus → 1
+            self.inp.bias.copy_(-torch.linspace(-2.0, 10.0, hidden))
+            self.out.weight.fill_(-3.0)                          # softplus ≈ 0.05
+            self.out.bias.zero_()
+
+    def forward(self, lam: torch.Tensor) -> torch.Tensor:
+        s = torch.log(lam.clamp(min=1e-8))
+        h = torch.tanh(F.linear(s, F.softplus(self.inp.weight), self.inp.bias))
+        return F.linear(h, F.softplus(self.out.weight), self.out.bias)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +148,17 @@ class SpectralNO(nn.Module):
         area_feature_idx: Input-feature column holding the per-node mesh area
             used as the quadrature weight (default 5 = node_area).
         mass_ridge / stiff_ridge: diagonal ridges added to M / L for SPD
-            conditioning of the generalized eigenproblem.
+            conditioning of the generalized eigenproblem, relative to the
+            mean diagonal of the mass matrix (so λ is basis-scale invariant;
+            stiff_ridge is then ≈ a shift of λ).
+        coord_feature_idx: Input-feature columns that duplicate X (x_norm,
+            y_norm); replaced by the differentiable coordinates so ∇ψ sees
+            them.  ``None`` disables (e.g. ablations without these columns).
+        dist_feature_idx / dir_feature_idx: columns of dist_bnd and the unit
+            vector to the nearest boundary node; dist_bnd is linearised with
+            ∇d = −dir so the Dirichlet gate's gradient enters L.
+        eig_broadening: ε of the Lorentzian-broadened eigh backward (units of
+            λ²; gaps |Δλ| ≲ √ε are treated as degenerate).
     """
 
     def __init__(
@@ -88,15 +177,27 @@ class SpectralNO(nn.Module):
         area_feature_idx: int = 5,
         mass_ridge: float = 1e-4,
         stiff_ridge: float = 1e-4,
+        coord_feature_idx=(0, 1),
+        dist_feature_idx: int = 2,
+        dir_feature_idx=(3, 4),
+        eig_broadening: float = 1e-4,
     ):
         super().__init__()
+        self.val_dim = val_dim
+        self.grid_dim = grid_dim
         self.K = num_field_modes
         self.M = n_basis
+        if self.K > self.M:
+            raise ValueError(f"num_field_modes ({self.K}) must be <= n_basis ({self.M}).")
         self.bc_scale = bc_scale
         self.use_checkpoint = use_checkpoint
         self.area_feature_idx = area_feature_idx
         self.mass_ridge = mass_ridge
         self.stiff_ridge = stiff_ridge
+        self.coord_feature_idx = tuple(coord_feature_idx) if coord_feature_idx is not None else None
+        self.dist_feature_idx = dist_feature_idx
+        self.dir_feature_idx = tuple(dir_feature_idx) if dir_feature_idx is not None else None
+        self.eig_broadening = eig_broadening
 
         # ── 1. Spatial encoder (fixed random Fourier features) ──────────────
         self.spatial_encoder = RandomFourierFeatures(
@@ -127,11 +228,8 @@ class SpectralNO(nn.Module):
         )
 
         # ── 4. Frequency transform (eigenvalue → z-scored physical frequency) ─
-        self.freq_transform = nn.Sequential(
-            nn.Linear(1, 32),
-            nn.GELU(),
-            nn.Linear(32, 1),
-        )
+        # Monotone so the frequency order is the eigenvalue order.
+        self.freq_transform = _MonotoneFreqHead(hidden=32)
 
         # NOTE: L_chol_head / M_chol_head / AttentionPool pooler are intentionally
         # removed — the Galerkin matrices are now assembled from the basis, not
@@ -159,25 +257,32 @@ class SpectralNO(nn.Module):
         Returns:
             grad_basis: [B, N, M, grid_dim].
         """
-        grads = []
-        for m in range(self.M):
-            gm = torch.autograd.grad(
-                basis[:, :, m].sum(), X,
-                create_graph=create_graph, retain_graph=True,
-            )[0]                                   # [B, N, grid_dim]
-            grads.append(gm)
-        return torch.stack(grads, dim=2)           # [B, N, M, grid_dim]
+        # All M vector-Jacobian products in one vmapped backward (one-hot
+        # grad_outputs) instead of M sequential backward passes: identical
+        # result, ~3-4x faster forward+backward at M=16 on CPU.
+        B, N, M = basis.shape
+        eye = torch.eye(M, device=basis.device, dtype=basis.dtype)
+        grad_outputs = eye.view(M, 1, 1, M).expand(M, B, N, M)
+        g = torch.autograd.grad(
+            basis, X, grad_outputs=grad_outputs, is_grads_batched=True,
+            create_graph=create_graph, retain_graph=True,
+        )[0]                                       # [M, B, N, grid_dim]
+        return g.permute(1, 2, 0, 3)               # [B, N, M, grid_dim]
 
     def _generalized_eigh_safe(self, L_mat: torch.Tensor, M_mat: torch.Tensor):
         """Stable batched generalized symmetric eigendecomposition.
 
         Solves  L u_k = λ_k M u_k  via Cholesky whitening:
             M = C C^T  (Cholesky)
-            L_white = C^{-1} L C^{-T}      (symmetric)
+            L_white = C^{-1} L C^{-T}      (symmetric, triangular solves)
             eigh(L_white) → (λ_k, v_k)     — sorted ascending
             u_k = C^{-T} v_k               (back-transform, M-orthonormal)
 
-        Falls back to standard ``eigh(L_mat)`` (M = I) if Cholesky fails.
+        Call with float64 inputs (see ``forward``).  The jitter is relative to
+        the mean diagonal of M.  If Cholesky still fails, it is retried with a
+        much larger (still relative) jitter — the problem stays a generalized
+        one, unlike the former silent fallback to ``eigh(L)`` (M = I), which
+        returned eigenvectors that are not M-orthonormal.
 
         Args:
             L_mat: [B, M, M] SPD stiffness.
@@ -185,19 +290,60 @@ class SpectralNO(nn.Module):
         Returns:
             vals: [B, M] ascending; vecs: [B, M, M] M-orthonormal columns.
         """
-        eps = 1e-5
-        eye = torch.eye(self.M, device=L_mat.device, dtype=L_mat.dtype)
-        M_reg = M_mat + eps * eye.unsqueeze(0)
+        eye = torch.eye(self.M, device=L_mat.device, dtype=L_mat.dtype).unsqueeze(0)
+        scale = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-30)
+        scale = scale[:, None, None].detach()
         try:
-            C = torch.linalg.cholesky(M_reg)
-            C_inv = torch.linalg.inv(C)
-            L_white = C_inv @ L_mat @ C_inv.transpose(-1, -2)
-            L_white = 0.5 * (L_white + L_white.transpose(-1, -2))
-            vals, vecs_w = torch.linalg.eigh(L_white)
-            vecs = C_inv.transpose(-1, -2) @ vecs_w
+            C = torch.linalg.cholesky(M_mat + 1e-10 * scale * eye)
         except RuntimeError:
-            vals, vecs = torch.linalg.eigh(L_mat)
+            C = torch.linalg.cholesky(M_mat + 1e-4 * scale * eye)
+        A = torch.linalg.solve_triangular(C, L_mat, upper=False)                  # C⁻¹ L
+        L_white = torch.linalg.solve_triangular(C, A.transpose(-1, -2), upper=False)
+        L_white = 0.5 * (L_white + L_white.transpose(-1, -2))
+        vals, vecs_w = _BroadenedEigh.apply(L_white, self.eig_broadening)
+        vecs = torch.linalg.solve_triangular(C.transpose(-1, -2), vecs_w, upper=True)
         return vals, vecs
+
+    def _differentiable_inputs(self, X_req: torch.Tensor, Y: torch.Tensor):
+        """Make the position-derived feature columns depend on ``X_req``.
+
+        Returns (Y_d, dist_bnd [B, N, 1] or None): Y with the coordinate
+        columns replaced by ``X_req`` and the dist_bnd column linearised
+        around each node,
+            d(x) ≈ d_i − dir_i · (x − x_i),
+        which equals d_i in value and has the exact gradient ∇d = −dir of the
+        distance function (dir points from the node to its nearest boundary
+        node).  Without this, ∂ψ/∂x only saw the RFF path and ignored the
+        Dirichlet gate, whose gradient 1/(2·bc_scale) at ∂Ω dominates L.
+        Values are unchanged, so the forward output is identical.
+        """
+        V = Y.shape[-1]
+        cols = list(Y.unbind(-1))
+        if self.coord_feature_idx is not None and max(self.coord_feature_idx) < V:
+            for d, c in enumerate(self.coord_feature_idx):
+                cols[c] = X_req[..., d]
+
+        dist = None
+        if self.dist_feature_idx is not None and self.dist_feature_idx < V:
+            dist = Y[..., self.dist_feature_idx]                                   # [B, N]
+            if self.dir_feature_idx is not None and max(self.dir_feature_idx) < V:
+                direction = Y[..., list(self.dir_feature_idx)]                     # [B, N, 2]
+                # On boundary nodes the converter's dir is the zero vector (the
+                # nearest boundary node is the node itself).  There d = 0 ⇒
+                # gate = 0 ⇒ ∇ψ = net·gate'(0)·n, and ∇ψ_m·∇ψ_n does not depend
+                # on the direction of the unit normal n: any unit vector is exact.
+                unit = torch.zeros_like(direction)
+                unit[..., 0] = 1.0
+                degenerate = (direction * direction).sum(dim=-1, keepdim=True) < 0.25
+                direction = torch.where(degenerate, unit, direction)
+                dx = X_req - X_req.detach()                                        # value 0, grad I
+                dist = dist - (direction * dx).sum(dim=-1)
+            cols[self.dist_feature_idx] = dist
+            # Value-only clamp: clamp()'s gradient is 0 at exactly d = 0, which
+            # would drop the gate slope on every boundary node.
+            dist = dist.unsqueeze(-1)
+            dist = dist + (dist.clamp(min=0.0) - dist).detach()
+        return torch.stack(cols, dim=-1), dist
 
     # ──────────────────────────────────────────────────────────────────────────
     #  Forward
@@ -219,8 +365,10 @@ class SpectralNO(nn.Module):
         X = batch['X']               # [B, N, 2]
         Y = batch['Input_funcs']     # [B, N, val_dim]
         mask = batch.get('Mask', None)
+        _check_val_dim(Y, self.val_dim, 'SpectralNO')
         B, N, _ = X.shape
         device, dtype = X.device, X.dtype
+        solve_dtype = torch.float64
 
         # ── Quadrature weights (per-node mesh area), masked + normalized ──────
         if Y.shape[-1] > self.area_feature_idx:
@@ -232,44 +380,70 @@ class SpectralNO(nn.Module):
         w = w / (w.sum(dim=1, keepdim=True) + 1e-8)             # [B, N], Σ_i w_i = 1
 
         # ── Basis + spatial gradients (autograd; needs grad even at eval) ─────
-        create_graph = self.training
-        with torch.enable_grad():
-            X_req = X.detach().requires_grad_(True)
+        # The stiffness only needs a differentiable graph when the caller
+        # wants parameter gradients (not tied to self.training: an eval-mode
+        # backward must still see the L-path).  inference_mode(False) + clone
+        # lets this run under Lightning's validation/test inference_mode,
+        # where enable_grad() alone does not record a graph.
+        create_graph = torch.is_grad_enabled()
+        with torch.inference_mode(False), torch.enable_grad():
+            X_req = X.detach().clone().requires_grad_(True)
+            Y_in = Y.clone() if Y.is_inference() else Y
+            Y_d, dist_bnd = self._differentiable_inputs(X_req, Y_in)
             x_rff = self.spatial_encoder(X_req)                 # [B, N, rff_dim]
-            h = self.local_encoder(torch.cat([x_rff, Y], dim=-1))
+            h = self.local_encoder(torch.cat([x_rff, Y_d], dim=-1))
             basis = self.basis_net(h)                           # [B, N, M]
 
             # Soft Dirichlet gate: genuinely 0 at the boundary, → 1 in interior.
-            dist_bnd = Y[:, :, 2:3].clamp(min=0.0)              # [B, N, 1]
-            bc_gate = 2.0 * torch.sigmoid(dist_bnd / self.bc_scale) - 1.0
-            basis = basis * bc_gate                             # [B, N, M]
+            if dist_bnd is not None:
+                bc_gate = 2.0 * torch.sigmoid(dist_bnd / self.bc_scale) - 1.0
+                basis = basis * bc_gate                         # [B, N, M]
 
             grad_basis = self._basis_gradient(basis, X_req, create_graph)  # [B,N,M,2]
+            if not create_graph:
+                basis, grad_basis = basis.detach(), grad_basis.detach()
 
-        # ── Physical Galerkin assembly (geometry-derived, no free params) ─────
+        # ── Physical Galerkin assembly + generalized eigensolve ──────────────
         #   M_mn = Σ_i w_i ψ_m ψ_n ;  L_mn = Σ_i w_i ∇ψ_m · ∇ψ_n
-        M_mat = torch.einsum('bnm,bnl,bn->bml', basis, basis, w)
-        L_mat = torch.einsum('bnmd,bnld,bn->bml', grad_basis, grad_basis, w)
-        eye = torch.eye(self.M, device=device, dtype=dtype).unsqueeze(0)
-        M_mat = M_mat + self.mass_ridge * eye
-        L_mat = L_mat + self.stiff_ridge * eye
-        # Symmetrize (guards against tiny einsum asymmetry).
-        M_mat = 0.5 * (M_mat + M_mat.transpose(-1, -2))
-        L_mat = 0.5 * (L_mat + L_mat.transpose(-1, -2))
+        # float64 with autocast off: fp16/bf16 (AMP) or TF32 matmuls
+        # (train.py sets matmul precision 'medium') would corrupt the small
+        # Gram matrices, and linalg kernels do not support half precision.
+        with torch.autocast(device_type=device.type, enabled=False):
+            basis64 = basis.to(solve_dtype)
+            w64 = w.to(solve_dtype)
+            M_mat = torch.einsum('bnm,bnl,bn->bml', basis64, basis64, w64)
+            L_mat = torch.einsum('bnmd,bnld,bn->bml', grad_basis.to(solve_dtype),
+                                 grad_basis.to(solve_dtype), w64)
+            # Ridges relative to the mean basis mass: Rayleigh–Ritz is invariant
+            # to rescaling the basis, absolute ridges were not (at init they
+            # were ~1% of diag(M) and λ depended on the basis amplitude).
+            eye = torch.eye(self.M, device=device, dtype=solve_dtype).unsqueeze(0)
+            ridge = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
+            ridge = ridge.detach()[:, None, None] * eye
+            M_mat = M_mat + self.mass_ridge * ridge
+            L_mat = L_mat + self.stiff_ridge * ridge
+            # Symmetrize (guards against tiny einsum asymmetry).
+            M_mat = 0.5 * (M_mat + M_mat.transpose(-1, -2))
+            L_mat = 0.5 * (L_mat + L_mat.transpose(-1, -2))
 
-        # ── Generalized eigendecomposition ───────────────────────────────────
-        vals, vecs = self._generalized_eigh_safe(L_mat, M_mat)
-        u_K      = vecs[:, :, :self.K]              # [B, M, K]
-        lambda_K = vals[:, :self.K]                 # [B, K]
+            vals, vecs = self._generalized_eigh_safe(L_mat, M_mat)
+            u_K      = vecs[:, :, :self.K]              # [B, M, K]
+            lambda_K = vals[:, :self.K]                 # [B, K]
 
-        # ── Eigenfunction reconstruction ──────────────────────────────────────
-        fields = torch.einsum('bnm,bmk->bnk', basis, u_K)       # [B, N, K]
+            # ── Eigenfunction reconstruction ─────────────────────────────────
+            fields = torch.einsum('bnm,bmk->bnk', basis64, u_K)   # [B, N, K]
+        fields = fields.to(dtype)
         if mask is not None:
             fields = fields * mask.unsqueeze(-1).to(dtype)
+        # Same amplitude convention as the targets (max|Y| = 1), sign fixed
+        # so the peak is positive.  Per-column → M-orthogonality preserved.
+        fields = _normalize_peak(fields, mask)
 
         # ── Frequency transform ───────────────────────────────────────────────
+        lambda_K = lambda_K.to(dtype)
         freq = self.freq_transform(lambda_K.unsqueeze(-1)).squeeze(-1)  # [B, K]
 
+        L_mat, M_mat, u_K = L_mat.to(dtype), M_mat.to(dtype), u_K.to(dtype)
         return {
             'field':       fields,
             'freq':        freq,

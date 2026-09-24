@@ -12,6 +12,7 @@ class LinearAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)   # was accepted but silently ignored
         self.eps = 1e-6
 
     def forward(self, query, key, value, mask=None):
@@ -41,7 +42,7 @@ class LinearAttention(nn.Module):
         output = z / (z_norm + self.eps)
         output = output.permute(0, 2, 1, 3).contiguous().reshape(b, n_q, d)
 
-        return self.out_proj(output)
+        return self.dropout(self.out_proj(output))
 
 class AttentionPool(nn.Module):
     """Learned summary token for global pooling."""
@@ -189,6 +190,37 @@ class MLPEncoder(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+def _check_val_dim(inputs: torch.Tensor, val_dim: int, model_name: str) -> None:
+    """Fail fast with an actionable message instead of an opaque matmul error.
+
+    The dataset converter currently writes 12 node features, while several
+    configs still say ``val_dim: 8`` (the legacy PKL format).
+    """
+    if inputs.shape[-1] != val_dim:
+        raise ValueError(
+            f"{model_name}: batch['Input_funcs'] has {inputs.shape[-1]} features but "
+            f"the model was built with val_dim={val_dim}. Set model.val_dim in the "
+            f"config to the dataset's feature count (dataset_converter writes 12; "
+            f"legacy PKLs have 8; ablations use len(feature_indices)).")
+
+
+def _normalize_peak(field: torch.Tensor, mask: torch.Tensor = None,
+                    eps: float = 1e-8) -> torch.Tensor:
+    """Scale each [B, N, K] column so its signed peak over valid nodes is +1.
+
+    Matches the target convention (dataset_converter divides each FEM mode by
+    max|Y|) and fixes the eigenvector sign deterministically.  Per-column
+    scaling preserves (M-)orthogonality between columns.
+    """
+    a = field.detach().abs()
+    if mask is not None:
+        a = a.masked_fill(~mask.bool().unsqueeze(-1), 0.0)
+    idx = a.argmax(dim=1, keepdim=True)                       # [B, 1, K]
+    peak = field.gather(1, idx)                               # signed peak
+    peak = torch.where(peak >= 0, peak.clamp(min=eps), peak.clamp(max=-eps))
+    return field / peak
+
+
 def _apply_gram_schmidt(field: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
     """Apply masked Gram-Schmidt orthonormalization to [B, N, K] field columns.
 
@@ -198,6 +230,8 @@ def _apply_gram_schmidt(field: torch.Tensor, mask: torch.Tensor = None) -> torch
 
     This is an optional post-processing step: it enforces column orthonormality
     structurally, removing the need for the slot_ortho_weight penalty.
+    (Columns are built out-of-place: the former in-place ``out[:, :, k] = …``
+    broke autograd — backward raised "modified by an inplace operation".)
 
     Args:
         field: [B, N, K] predicted field values.
@@ -205,31 +239,15 @@ def _apply_gram_schmidt(field: torch.Tensor, mask: torch.Tensor = None) -> torch
     Returns:
         [B, N, K] with orthonormal columns (over valid nodes).
     """
-    B, N, K = field.shape
-    out = field.clone()
-    m = mask.float().unsqueeze(-1) if mask is not None else None  # [B, N, 1]
-
-    for k in range(K):
-        v = out[:, :, k]          # [B, N]
-        for j in range(k):
-            u = out[:, :, j]      # [B, N]
-            if m is not None:
-                # masked inner products: [B]
-                dot_vu = (v * u * m.squeeze(-1)).sum(dim=1)
-                dot_uu = (u * u * m.squeeze(-1)).sum(dim=1).clamp(min=1e-8)
-            else:
-                dot_vu = (v * u).sum(dim=1)
-                dot_uu = (u * u).sum(dim=1).clamp(min=1e-8)
-            proj = dot_vu / dot_uu   # [B]
-            v = v - proj.unsqueeze(1) * u
-        # Normalize v
-        if m is not None:
-            nrm = (v * v * m.squeeze(-1)).sum(dim=1).clamp(min=1e-8).sqrt()
-        else:
-            nrm = v.norm(dim=1).clamp(min=1e-8)
-        out[:, :, k] = v / nrm.unsqueeze(1)
-
-    return out
+    m = mask.to(field.dtype) if mask is not None else torch.ones_like(field[..., 0])
+    cols = []
+    for k in range(field.shape[-1]):
+        v = field[:, :, k] * m    # [B, N]
+        for u in cols:            # u already unit-norm over valid nodes
+            v = v - (v * u).sum(dim=1, keepdim=True) * u
+        nrm = (v * v).sum(dim=1, keepdim=True).clamp(min=1e-8).sqrt()
+        cols.append(v / nrm)
+    return torch.stack(cols, dim=-1)
 
 
 class GNOTModel(nn.Module):
@@ -242,6 +260,7 @@ class GNOTModel(nn.Module):
                  n_basis=16,
                  orthonormalize_output=False):
         super().__init__()
+        self.val_dim = val_dim
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
 
@@ -336,6 +355,7 @@ class GNOTModel(nn.Module):
         X = batch['X']
         inputs = batch['Input_funcs']
         mask = batch.get('Mask', None)
+        _check_val_dim(inputs, self.val_dim, 'GNOTModel')
         B, N, _ = X.shape
 
         # Random Fourier Features for coordinates — used both for query embedding and FFN router
@@ -396,9 +416,12 @@ class GNOTModel(nn.Module):
         if mask is not None:
             field = field * mask.unsqueeze(-1)                # padding = 0
 
-        # Optional Gram-Schmidt orthonormalization on field outputs
+        # Optional Gram-Schmidt orthogonalization on field outputs.  The unit
+        # L2 columns (~1/sqrt(N) per node) are then rescaled to the targets'
+        # max|Y| = 1 convention; otherwise the scale-dependent field loss has
+        # an irreducible floor (rel-L2 ~ 1).  Orthogonality is preserved.
         if self.orthonormalize_output:
-            field = _apply_gram_schmidt(field, mask)
+            field = _normalize_peak(_apply_gram_schmidt(field, mask), mask)
 
         return {'field': field, 'freq': f_pred}              # [B,N,K], [B,K]
 

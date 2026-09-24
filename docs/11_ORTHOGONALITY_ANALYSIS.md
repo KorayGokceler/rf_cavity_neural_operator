@@ -65,6 +65,8 @@ e2 = pred_mode2 - proj(pred_mode2, e0) - proj(pred_mode2, e1)  # İkisine de dik
 
 **Risk:** Mode 0 her zaman ham çıktıyı alır, Mode 2 en çok "düzeltme" görür. Bu, modların eşit şekilde öğrenmemesine neden olabilir.
 
+> **Durum (implementasyon):** `GNOTModel(orthonormalize_output=True)` → `_apply_gram_schmidt` (maskeli, modified Gram-Schmidt). Eski sürüm sütunları in-place yazdığı için backward hata veriyordu; artık out-of-place. Birim-L2 sütunlar hedeflerin `max|Y| = 1` konvansiyonuna yeniden ölçeklenir — aksi halde ölçeğe duyarlı rel-L2 loss'ta ~1'lik indirgenemez taban oluşur. SpectralNO'da ortogonallik yapısaldır (genelleştirilmiş `eigh`, M-ortonormal); orada da alanlar sütun başına tepe = +1'e ölçeklenir (ortogonallik korunur).
+
 ---
 
 ### Opsiyon C: Regularized Inner Product (Yumuşak + Fiziksel)
