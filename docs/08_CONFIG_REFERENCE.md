@@ -119,6 +119,7 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `exp_name` | `gnot_5k_v1` | Deney ismi |
 | `viz_every_n_epochs` | 10 | Görselleştirme sıklığı |
 | `degeneracy_mode` / `near_deg_threshold` / `deg_sigma_abs` | soft / 0.05 / 0.3 | Dejenere mod kümesi (z-score eksende mutlak eşik) |
+| `near_deg_rel_threshold` | null (config'lerde 0.05) | Verilirse küme kuralı göreli aralık: $(f_{k+1}-f_k)/f_k <$ eşik → aynı alt uzay (Grassmann kaybı). Ölçekten bağımsız; halkanın %3.2'lik kümesini yakalar |
 
 > **Scheduler seçenekleri:** `custom_cosine` (varsayılan), `cosine`, `onecycle`, `reducelr`
 

@@ -217,6 +217,7 @@ def main():
         n_basis=getattr(mc, 'n_basis', 16),
         degeneracy_mode=getattr(tc, 'degeneracy_mode', 'soft'),
         near_deg_threshold=getattr(tc, 'near_deg_threshold', 0.05),
+        near_deg_rel_threshold=getattr(tc, 'near_deg_rel_threshold', None),
         deg_sigma_rel=getattr(tc, 'deg_sigma_rel', 0.5),
         deg_sigma_abs=getattr(tc, 'deg_sigma_abs', 0.3),
         slot_ortho_weight=getattr(tc, 'slot_ortho_weight', 0.1),
@@ -248,9 +249,11 @@ def main():
     # (same detect_clusters + threshold the loss/metric uses).
     if local_rank == 0:
         deg_thr = getattr(tc, 'near_deg_threshold', 0.05)
-        n_deg, n_deg_modes, n_tot = count_near_degenerate(train_dataset, deg_thr)
+        rel_thr = getattr(tc, 'near_deg_rel_threshold', None)
+        n_deg, n_deg_modes, n_tot = count_near_degenerate(train_dataset, deg_thr, rel_thr)
+        rule = f"relative gap < {rel_thr:.1%}" if rel_thr is not None else f"|Δz| < {deg_thr:.4f}"
         print(f"[degeneracy] train: {n_deg}/{n_tot} geometries near-degenerate "
-              f"({n_deg_modes} modes), thr={deg_thr:.4f}")
+              f"({n_deg_modes} modes), {rule}")
 
     # NOTE: metrik adındaki '/' otomatik isim eklemede alt klasör açıyordu
     # ("best-epoch=00-val/field_rel_l2=0.1234.ckpt"); isim elle verilir.

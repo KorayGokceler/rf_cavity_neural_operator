@@ -225,3 +225,18 @@ def test_gnot_ritz_head_eigen_ordered_upper_bounds_and_trains():
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in m.parameters())
     with pytest.raises(ValueError, match="physics_freq"):
         GNOTModel(val_dim=12, embed_dim=16, n_heads=2, num_field_modes=3, ritz_basis=2)
+
+
+def test_relative_degeneracy_threshold_catches_annulus_cluster():
+    """Annulus: f = 5.947 / 6.137 / 6.137 GHz (3.2% gap).  The absolute
+    z-score rule splits off the fundamental; the relative 5% rule keeps the
+    three modes one subspace, and it is scale-free (2× smaller cavity → same)."""
+    from src.training.lightning_module import detect_clusters
+    stats = {'mean': 5.0, 'std': 1.0}
+    f = torch.tensor([5.947, 6.137, 6.137])
+    z = (f - stats['mean']) / stats['std']
+    assert detect_clusters(z, 0.05) == [[0], [1, 2]]
+    assert detect_clusters(z, 0.05, rel_threshold=0.05, freq_stats=stats) == [[0, 1, 2]]
+    z2 = (2 * f - stats['mean']) / stats['std']
+    assert detect_clusters(z2, 0.05, rel_threshold=0.05, freq_stats=stats) == [[0, 1, 2]]
+    assert detect_clusters(z, 0.05, rel_threshold=0.01, freq_stats=stats) == [[0], [1, 2]]

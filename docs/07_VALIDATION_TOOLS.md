@@ -15,7 +15,7 @@
 | **Mode Veri Kontrolü** | `scripts/check_mode_data.py` | Her modun Y_field istatistiği |
 | **Mode Debug** | ~~`scripts/debug_modes.py`~~ (silindi) | Gradyan izolasyonu → `tests/test_model_forward.py` |
 | **Frekans Ayrışması** | `analyze_freq_separation.py` | Mod 1/2 frekans farkı histogramı (yakın-dejenere oranı) |
-| **Tam Split Metrikleri** | `scripts/infer_val_all.py` | Checkpoint ile tüm split: rel-L2, subspace hatası, frekans MAE → CSV/JSON/NPZ |
+| **Tam Split Metrikleri** | `scripts/infer_val_all.py` | Checkpoint ile tüm split: rel-L2, subspace hatası, frekans MAE → CSV/JSON/NPZ; **topoloji (simple/holed) × en küçük göreli özdeğer aralığı** (<2, 2–5, 5–10, >10 %) kırılım tablosu; CSV'de `topology`, `min_rel_gap` |
 | **Hata Analizi** | `scripts/analyze_val_errors.py` | `infer_val_all` çıktısından hata grafikleri (`error_analysis/`) |
 | **Veri Hata Tabanı** | `scripts/diagnose_data_floor.py` | Etiket gürültüsü / veri kaynaklı hata tabanı teşhisi |
 | **Birim Testleri** | `tests/` | `python -m pytest -q` (CI'da her push'ta) |
