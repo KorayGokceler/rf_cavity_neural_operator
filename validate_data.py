@@ -3,39 +3,65 @@ import numpy as np
 import argparse
 import os
 
-def calculate_analytical_freq(shape_type, mode_idx):
-    c = 299792458
+C0 = 299792458.0
+
+# Defaults = dataset_generator.py calibration geometry (used if the H5 group has no attrs)
+DEFAULT_CALIB_PARAMS = {
+    'square': {'side': 0.08},
+    'circle': {'radius': 0.04},
+    'annulus': {'r_outer': 0.045, 'r_inner': 0.02},
+}
+
+
+def _annulus_k_roots(a, b, n, n_roots):
+    """Roots k of the TM (Dirichlet-Dirichlet) annulus condition
+    J_n(k a) Y_n(k b) - J_n(k b) Y_n(k a) = 0, inner radius a, outer radius b."""
+    from scipy.special import jv, yv
+    from scipy.optimize import brentq
+    g = lambda k: jv(n, k * a) * yv(n, k * b) - jv(n, k * b) * yv(n, k * a)
+    # Roots are spaced ~pi/(b-a); a fine grid brackets every sign change.
+    k_grid = np.linspace(1e-6, (n_roots + n + 2) * np.pi / (b - a), 4000)
+    vals = g(k_grid)
+    roots = []
+    for i in np.nonzero(np.sign(vals[:-1]) * np.sign(vals[1:]) < 0)[0]:
+        roots.append(brentq(g, k_grid[i], k_grid[i + 1]))
+        if len(roots) == n_roots:
+            break
+    return roots
+
+
+def analytical_spectrum(shape_type, n_modes, params=None):
+    """Lowest n_modes TM (Dirichlet Laplacian) resonant frequencies [GHz], ascending,
+    with degenerate modes repeated (e.g. circle TM11 appears twice)."""
+    params = {**DEFAULT_CALIB_PARAMS.get(shape_type, {}), **(params or {})}
+    n_extra = n_modes + 4
     if shape_type == 'square':
-        # Side a = 0.08
-        a = 0.08
-        # TM modes: (1,1), (1,2)/(2,1), (2,2) ...
-        # Based on sorted frequencies, we expect:
-        # idx 0: (1,1)
-        # idx 1: (1,2) or (2,1)
-        # idx 2: (1,2) or (2,1)
-        if mode_idx == 0:
-            m, n = 1, 1
-        elif mode_idx == 1 or mode_idx == 2:
-            m, n = 1, 2
-        else:
-            return None
-        return (c / 2) * np.sqrt((m/a)**2 + (n/a)**2) / 1e9
-    
+        a = params['side']
+        freqs = [(C0 / 2) * np.sqrt((m / a) ** 2 + (n / a) ** 2)
+                 for m in range(1, n_extra + 1) for n in range(1, n_extra + 1)]
     elif shape_type == 'circle':
-        # Radius R = 0.04
-        R = 0.04
-        # Bessel function zeros j_mn
-        # idx 0: j_01 = 2.4048
-        # idx 1: j_11 = 3.8317
-        # idx 2: j_11 = 3.8317 (degenerate)
-        if mode_idx == 0:
-            j = 2.40482
-        elif mode_idx == 1 or mode_idx == 2:
-            j = 3.83171
-        else:
-            return None
-        return (c * j) / (2 * np.pi * R) / 1e9
-    return None
+        from scipy.special import jn_zeros
+        R = params['radius']
+        freqs = []
+        for n in range(n_extra):
+            for j in jn_zeros(n, n_extra):
+                f = C0 * j / (2 * np.pi * R)
+                freqs += [f] if n == 0 else [f, f]  # cos/sin polarisations
+    elif shape_type == 'annulus':
+        a, b = params['r_inner'], params['r_outer']
+        freqs = []
+        for n in range(n_extra):
+            for k in _annulus_k_roots(a, b, n, n_extra):
+                f = C0 * k / (2 * np.pi)
+                freqs += [f] if n == 0 else [f, f]
+    else:
+        return None
+    return np.sort(np.asarray(freqs))[:n_modes] / 1e9
+
+
+def calculate_analytical_freq(shape_type, mode_idx, params=None):
+    spec = analytical_spectrum(shape_type, mode_idx + 1, params)
+    return None if spec is None else float(spec[mode_idx])
 
 def check_mesh_quality(nodes, elements):
     # Calculate aspect ratio of triangles
@@ -59,7 +85,7 @@ def validate_dataset(h5_path):
     print(f"🔍 Validating Dataset: {h5_path}")
     if not os.path.exists(h5_path):
         print(f"❌ File not found: {h5_path}")
-        return
+        return None
 
     with h5py.File(h5_path, 'r') as f:
         keys = sorted(f.keys())
@@ -70,14 +96,21 @@ def validate_dataset(h5_path):
         
         for k in keys:
             grp = f[k]
+            if not isinstance(grp, h5py.Group) or 'nodes' not in grp:
+                continue
             nodes = grp['nodes'][:]
             elements = grp['elements'][:]
             freqs = grp['freqs'][:]
             shape_type_attr = grp.attrs.get('shape_type', 'unknown')
-            
-            # Determine if it's a calibration shape based on id if attr is generic
+            if isinstance(shape_type_attr, bytes):
+                shape_type_attr = shape_type_attr.decode()
+
+            # Generator writes the concrete calibration shape ('square'/'circle'/'annulus');
+            # very old files used a generic 'calibration' tag with square/circle alternating.
             s_id = int(k.split('_')[-1])
-            if shape_type_attr == 'calibration':
+            if shape_type_attr in DEFAULT_CALIB_PARAMS:
+                actual_shape = shape_type_attr
+            elif shape_type_attr == 'calibration':
                 actual_shape = 'square' if s_id % 2 == 0 else 'circle'
             else:
                 actual_shape = 'random'
@@ -87,18 +120,19 @@ def validate_dataset(h5_path):
             mesh_stats.append((avg_qr, max_qr))
             
             if actual_shape != 'random':
-                for i in range(min(3, len(freqs))):
-                    analytical = calculate_analytical_freq(actual_shape, i)
-                    if analytical:
-                        error = abs(freqs[i] - analytical) / analytical * 100
-                        results.append({
-                            'id': k,
-                            'shape': actual_shape,
-                            'mode': i,
-                            'calc': freqs[i],
-                            'target': analytical,
-                            'error_pct': error
-                        })
+                params = {p: float(grp.attrs[p]) for p in DEFAULT_CALIB_PARAMS[actual_shape] if p in grp.attrs}
+                spectrum = analytical_spectrum(actual_shape, len(freqs), params)
+                for i in range(len(freqs)):
+                    analytical = spectrum[i]
+                    error = abs(freqs[i] - analytical) / analytical * 100
+                    results.append({
+                        'id': k,
+                        'shape': actual_shape,
+                        'mode': i,
+                        'calc': freqs[i],
+                        'target': analytical,
+                        'error_pct': error
+                    })
 
         # Report Results
         print("\n--- Physical Validation (Analytical Comparison) ---")
@@ -110,7 +144,8 @@ def validate_dataset(h5_path):
                 print(f"{res['id']:<15} {res['shape']:<10} {res['mode']:<5} {res['calc']:<12.4f} {res['target']:<12.4f} {res['error_pct']:<8.2f}%")
             
             avg_err = np.mean([r['error_pct'] for r in results])
-            print(f"\nAverage Relative Error: {avg_err:.4f}%")
+            max_err = np.max([r['error_pct'] for r in results])
+            print(f"\nAverage Relative Error: {avg_err:.4f}%  (max {max_err:.4f}%)")
             if avg_err < 1.0:
                 print("✅ Physical accuracy is excellent (< 1%)")
             elif avg_err < 5.0:
@@ -127,6 +162,7 @@ def validate_dataset(h5_path):
             print("✅ Mesh quality is good.")
         else:
             print("⚠️ Mesh quality might be low. Consider adjusting SizeMin/SizeMax.")
+    return results
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

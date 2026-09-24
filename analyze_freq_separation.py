@@ -27,11 +27,12 @@ def freqs_from_raw_h5(path):
     with h5py.File(path, 'r') as f:
         for key in sorted(f.keys()):
             grp = f[key]
-            if 'freqs' not in grp:
+            if not isinstance(grp, h5py.Group) or 'freqs' not in grp:
                 continue
             freqs = grp['freqs'][:]
             sample_id = int(key.split('_')[-1])
-            geom_freqs[sample_id] = np.asarray(freqs, dtype=np.float64)
+            # Eski H5'lerde (skfem eigs) frekanslar her zaman artan sirada degil
+            geom_freqs[sample_id] = np.sort(np.asarray(freqs, dtype=np.float64))
     return geom_freqs
 
 
@@ -44,7 +45,8 @@ def freqs_from_converted_pkl(path):
     for s in samples:
         g_id = int(s['geom_id'])
         theta = s['Theta']
-        m_idx = int(theta[0])
+        # Theta[0] = slot within the converted mode subset; 'mode_idx' = raw FEM mode
+        m_idx = int(s.get('mode_idx', theta[0]))
         freq = float(theta[1])
         geom_freqs[g_id][m_idx] = freq
     out = {}
@@ -66,7 +68,7 @@ def freqs_from_converted_h5(path):
             samp = samples_grp[key]
             g_id = int(samp.attrs['geom_id'])
             theta = samp['Theta'][:]
-            m_idx = int(theta[0])
+            m_idx = int(samp.attrs.get('mode_idx', theta[0]))
             freq = float(theta[1])
             geom_freqs[g_id][m_idx] = freq
     out = {}
@@ -171,7 +173,7 @@ def main():
 
     f_a, f_b = [], []
     skipped = 0
-    for g_id, freqs in geom_freqs.items():
+    for freqs in geom_freqs.values():
         if len(freqs) <= max(args.mode_a, args.mode_b):
             skipped += 1
             continue

@@ -8,13 +8,13 @@
 
 ## 🎯 Ne Yapıyor?
 
-Ham mesh verilerini (node koordinatları + üçgen bağlantıları) alıp, modelin geometriyi "anlayabilmesi" için zengin bir öznitelik vektörüne dönüştürüyor. Her node için **8 boyutlu** bir feature vektörü üretilir.
+Ham mesh verilerini (node koordinatları + üçgen bağlantıları) alıp, modelin geometriyi "anlayabilmesi" için zengin bir öznitelik vektörüne dönüştürüyor. Her node için **12 boyutlu** bir feature vektörü üretilir (commit 41a830d'den beri; eski 8-feature PKL'ler için `dataset.feature_indices: [0..7]` veya yeniden dönüştürme).
 
 Bu dosya, projenin **en kritik** parçalarından biridir. Doğru feature seçimi, modelin başarısını doğrudan belirler.
 
 ---
 
-## 📐 Feature Vektörü (val_dim = 8)
+## 📐 Feature Vektörü (val_dim = 12)
 
 Her node $i$ için şu öznitelikler hesaplanır:
 
@@ -28,6 +28,10 @@ Her node $i$ için şu öznitelikler hesaplanır:
 | 5 | `node_area` | Yerel mesh yoğunluğu | Çözücünün hassasiyetini yansıtır |
 | 6 | `cos_principal` | Ana eksene göre açının cos'u | Kavite yönelimi/asimetrisi |
 | 7 | `sin_principal` | Ana eksene göre açının sin'i | Kavite yönelimi/asimetrisi |
+| 8 | `dist_2nd_boundary` | 2. en yakın sınır node'una mesafe | Çok-ölçekli sınır bilgisi (≈ dist + mesh adımı) |
+| 9 | `dist_3rd_boundary` | 3. en yakın sınır node'una mesafe | 〃 |
+| 10 | `curvature` | En yakın sınır noktasındaki işaretli eğrilik (max-abs ile normalize) | **+ konveks duvar, − konkav/girintili duvar** |
+| 11 | `convexity` | `dist_to_boundary * curvature` (clip ±1) | < 0: konkav "cep" bölgesi |
 
 ---
 
@@ -74,6 +78,13 @@ areas = areas / max(areas)  # [0, 1] normalize
 
 **Fizik:** FEM çözücüsü sınıra yakın yerlerde daha sık mesh kullandığı için, `node_area` küçük = "burada çözücü daha hassas" anlamına gelir. Model bu bilgiyi fiziksel öncelik olarak kullanabilir.
 
+### 4b. Boundary Curvature (curvature, convexity)
+Sınır, mesh topolojisinden **kapalı döngüler** olarak çıkarılır (tek üçgene ait yönlü kenarlar; üçgenler önce CCW'ye çevrilir). Her döngü **alan solda kalacak** şekilde yönlüdür: dış duvar CCW, delikler (ör. halka iç duvarı) CW. Eğrilik:
+$$\kappa_i = \frac{\hat t_{in} \times \hat t_{out}}{\tfrac12(|e_{in}| + |e_{out}|)}$$
+Bu sayede işaret **kanoniktir**: node numaralamasına, üçgen yönüne ve aynalamaya bağlı değil; daire her yerde +, halka iç duvarı −, L-şeklinin girintili köşesi −.
+
+> **Düzeltme:** Önceki greedy nearest-neighbour sıralaması yönü rastgele seçiyordu → eğrilik işareti geometriden geometriye (ve aynalamada) rastgele dönüyordu; halkada iki döngü birbirine karışıyordu. 12-feature PKL'ler yeniden dönüştürülmeli.
+
 ### 5. Principal Axis Angle (cos/sin)
 ```python
 # PCA on boundary nodes
@@ -90,23 +101,15 @@ sin_angle = cross(node_vec, principal_axis) / |node_vec|
 
 ---
 
-## 🔄 Peak-Sign Normalization
+## 🔄 Mod Normalizasyonu (işaret sabitlenmez)
 
-Eigenvalue problemlerinde mod şekilleri bir **global işaret belirsizliğine** sahiptir:
+Eigenvalue problemlerinde mod şekilleri bir **global işaret belirsizliğine** (ve dejenere çiftlerde bir 2D döndürme belirsizliğine) sahiptir:
 
 $$\text{Eğer } E(x) \text{ çözümse, } -E(x) \text{ de çözümdür.}$$
 
-Bu, aynı geometriden farklı çalıştırmalarda ters işaretli alanlar alınabileceği anlamına gelir. Eğer model bazen `+` bazen `-` hedef görürse öğrenemez.
+Converter **sadece genliği** normalize eder: `Y = Y / max(|Y|)` → [-1, 1]. İşaret/altuzay belirsizliği bilinçli olarak sabitlenmez (commit 88d2219), gauge-invariant (sign-agnostic / Grassmannian) loss tarafından ele alınır. (Eski "peak-sign" normalizasyonu kaldırıldı.)
 
-**Çözüm:**
-```python
-max_idx = argmax(|Y|)       # En yüksek genlikli node
-if Y[max_idx] < 0:
-    Y = Y * -1.0             # Tüm alanı ters çevir
-Y = Y / max(|Y|)            # [-1, 1] normalizasyonu
-```
-
-Bu sayede her zaman "en büyük tepe yukarı bakar" — tutarlı bir hedef.
+H5'teki ham `vecs` M-ortonormaldir; max-abs normalizasyonu bu ölçeği değiştirir (ortogonallik korunur, normlar değil).
 
 ---
 
@@ -117,7 +120,7 @@ Her sample için model şu bilgiyi alır:
 theta = [mode_index, frequency, sample_id]  # float32
 ```
 
-- `mode_index` (0, 1, 2): Hangi mod tahmin ediliyor? → FiLM katmanlarına gider
+- `mode_index`: **`--modes` listesi içindeki slot** (0..len-1), ham FEM mod indeksi değil (ör. `--modes 1 2` → 0, 1). Ham indeks ayrıca `sample['mode_idx']`'te (H5 çıktısında `attrs['mode_idx']`). Converter modları önce frekansa göre sıralar.
 - `frequency`: Rezonans frekansı (GHz) → Frekans branch'ine hedef olarak verilir
 - `sample_id`: Geometri kimliği → Kullanılmıyor, debug amaçlı
 
@@ -130,15 +133,19 @@ theta = [mode_index, frequency, sample_id]  # float32
     'geometry_pool': {
         geom_id: {
             'X':           np.array([N, 2]),   # Normalize koordinatlar
-            'Input_funcs': np.array([N, 8]),   # 8 feature
+            'Input_funcs': np.array([N, 12]),  # 12 feature
             'elements':    np.array([M, 3]),   # Üçgen bağlantıları
+            'scale':       float,              # 1 normalize birim = scale [m]
+            'center':      np.array([2]),      # çıkarılan merkez [m]
+            'shape_type':  str,
         }
     },
     'samples': [
         {
             'geom_id': int,
             'Y':       np.array([N, 1]),       # Peak-sign normalized alan
-            'Theta':   np.array([3]),           # [mode, freq, id]
+            'Theta':   np.array([3]),           # [slot, freq_GHz, id]
+            'mode_idx': int,                    # ham FEM mod indeksi
         },
         ...
     ],
@@ -149,6 +156,8 @@ theta = [mode_index, frequency, sample_id]  # float32
 }
 ```
 
+**Fiziksel ölçek:** Tüm feature'lar ölçekten bağımsızdır (koordinatlar `scale`'e bölünür, `node_area` max'a normalize). Frekans ise boyutla ters orantılıdır: normalize domain'de hesaplanan Laplacian eigenvalue'su $\lambda_{norm}$ için $f = c\sqrt{\lambda_{norm}}/(2\pi\,\text{scale})$. Mutlak boyut bilgisi sadece `scale` anahtarındadır (modele şu an verilmiyor).
+
 **Önemli:** Geometri bilgisi (`geometry_pool`) ve fiziksel çözümler (`samples`) ayrıdır. Bir geometrinin 3 modu = 3 ayrı sample, ama aynı geometri ID'sini paylaşır. Bu, bellek tasarrufu sağlar.
 
 ---
@@ -156,13 +165,13 @@ theta = [mode_index, frequency, sample_id]  # float32
 ## ⚠️ Bilinen Kısıtlamalar ve Geliştirme Önerileri
 
 ### Kısıtlamalar
-1. **Sabit Feature Sayısı:** 8 feature, tüm mesh topolojilerinde aynı. Bazı bilgiler (komşuluk yapısı, lokal eğrilik detayı) kaybolabilir.
+1. **Sabit Feature Sayısı:** 12 feature, tüm mesh topolojilerinde aynı. Bazı bilgiler (komşuluk yapısı, lokal eğrilik detayı) kaybolabilir.
 2. **Global PCA:** Tüm sınır noktalarına tek bir PCA uygulanıyor. Asimetrik kavitelerde bu eksen yanıltıcı olabilir.
 
 ### Geliştirme Önerileri
 1. **Graph-Based Features:** Her node'un komşu sayısı ve bağlantı kalitesi (aspect ratio) feature olarak eklenebilir.
 2. **Spectral Features:** Mesh Laplacian'ının eigendecomposition'ı → kavite şeklinin "frekans domain" temsili.
-3. **Curvature Features:** Sınır noktalarında lokal eğrilik hesaplanıp tüm node'lara interpolasyonla yayılabilir.
+3. ~~**Curvature Features**~~ → eklendi (feature 10-11).
 4. **Multi-Scale Distance:** Sınıra mesafe yerine, birden fazla mesafe ölçeğinde temsil (ör. Gaussian RBF kernel ile ağırlıklandırma).
 5. **Signed Distance Function (SDF):** `dist_to_boundary` şu an unsigned. İç/dış ayrımı için signed distance kullanılabilir — meshing farklı olduğunda yararlı.
 

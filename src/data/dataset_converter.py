@@ -1,7 +1,6 @@
 import h5py
 import numpy as np
 import pickle
-from pathlib import Path
 from tqdm import tqdm
 from scipy.spatial import cKDTree
 from collections import defaultdict
@@ -19,89 +18,93 @@ class RFCavityToGNOT:
             'freq_by_mode': defaultdict(list),
         }
 
-    def _find_boundary_nodes(self, elements):
-        edge_count = {}
-        for tri in elements:
-            edges = [
-                tuple(sorted((tri[0], tri[1]))),
-                tuple(sorted((tri[1], tri[2]))),
-                tuple(sorted((tri[2], tri[0])))
-            ]
-            for e in edges:
-                edge_count[e] = edge_count.get(e, 0) + 1
+    @staticmethod
+    def _boundary_edges(elements):
+        """Undirected edges used by exactly one triangle, [E_bnd, 2] (sorted pairs)."""
+        el = np.asarray(elements)
+        edges = np.sort(np.concatenate([el[:, [0, 1]], el[:, [1, 2]], el[:, [2, 0]]]), axis=1)
+        uniq, counts = np.unique(edges, axis=0, return_counts=True)
+        return uniq[counts == 1]
 
-        boundary_nodes = {node for edge, count in edge_count.items()
-                         if count == 1 for node in edge}
-        return np.array(list(boundary_nodes))
+    def _find_boundary_nodes(self, elements):
+        # Bir kenar sadece tek bir üçgene aitse sınır kenarıdır. Sıralı (deterministik) çıktı.
+        return np.unique(self._boundary_edges(elements))
 
     def _compute_node_areas(self, nodes, elements):
         """Her noktanın Voronoi benzeri alanı: komşu üçgen alanlarının 1/3'ü toplamı.
         Mesh yoğunluğu bilgisi verir — fizik çözücü sınıra yakın daha sık mesh kullanır."""
-        n_nodes = len(nodes)
-        areas = np.zeros(n_nodes)
-        for tri in elements:
-            v0, v1, v2 = nodes[tri[0]], nodes[tri[1]], nodes[tri[2]]
-            # 2D cross product: |a_x * b_y - a_y * b_x| (NumPy 2.0 np.cross için 3D zorunlu)
-            a, b = v1 - v0, v2 - v0
-            tri_area = 0.5 * abs(a[0] * b[1] - a[1] * b[0])
-            for k in range(3):
-                areas[tri[k]] += tri_area / 3.0
+        el = np.asarray(elements)
+        v0, v1, v2 = nodes[el[:, 0]], nodes[el[:, 1]], nodes[el[:, 2]]
+        # 2D cross product: |a_x * b_y - a_y * b_x| (NumPy 2.0 np.cross için 3D zorunlu)
+        a, b = v1 - v0, v2 - v0
+        tri_area = 0.5 * np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+        areas = np.zeros(len(nodes))
+        for k in range(3):
+            np.add.at(areas, el[:, k], tri_area / 3.0)
         # Normalize to [0, 1]
         if areas.max() > 0:
             areas = areas / (areas.max() + 1e-10)
         return areas.reshape(-1, 1).astype(np.float32)
 
-    def _compute_boundary_curvature(self, boundary_nodes):
-        """Approximate signed curvature at each boundary node.
+    def _boundary_loops(self, nodes, elements):
+        """Boundary as closed node loops, each oriented with the domain on its LEFT
+        (outer wall counter-clockwise, holes clockwise).
 
-        Orders boundary nodes by arclength (greedy nearest-neighbour from
-        the node with smallest x+y), then estimates curvature via the
-        central-difference cross-product of the unit tangent vectors.
+        Uses mesh topology (directed boundary edges of CCW-oriented triangles), so the
+        orientation is canonical: it does not depend on node numbering or on the
+        triangle winding gmsh happened to produce, and multiply-connected domains
+        (e.g. annulus) give one loop per wall.
+        """
+        el = np.asarray(elements).copy()
+        p0, p1, p2 = nodes[el[:, 0]], nodes[el[:, 1]], nodes[el[:, 2]]
+        signed = (p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1]) - (p1[:, 1] - p0[:, 1]) * (p2[:, 0] - p0[:, 0])
+        cw = signed < 0
+        el[cw] = el[cw][:, [0, 2, 1]]  # make every triangle CCW
+        directed = np.concatenate([el[:, [0, 1]], el[:, [1, 2]], el[:, [2, 0]]])
+        und = np.sort(directed, axis=1)
+        _, inv, counts = np.unique(und, axis=0, return_inverse=True, return_counts=True)
+        bnd_directed = directed[counts[inv.reshape(-1)] == 1]  # interior of a CCW tri is left of a->b
+
+        succ = defaultdict(list)
+        for a, b in bnd_directed:
+            succ[int(a)].append(int(b))
+        loops = []
+        for start in sorted(succ):
+            while succ[start]:
+                loop, cur = [start], succ[start].pop()
+                while cur != start and succ.get(cur):
+                    loop.append(cur)
+                    cur = succ[cur].pop()
+                loops.append(np.asarray(loop, dtype=np.int64))
+        return loops
+
+    def _compute_boundary_curvature(self, nodes, elements, boundary_indices):
+        """Signed discrete curvature at each boundary node, aligned with boundary_indices.
+
+        Sign convention (canonical, domain on the left of the traversal):
+            > 0 : convex wall (e.g. every point of a circle),
+            < 0 : concave / re-entrant wall (inner wall of an annulus, re-entrant corner).
+        kappa_i = cross(t_in, t_out) / (0.5 * (|e_in| + |e_out|)) with unit tangents t.
 
         Returns:
-            curvature: [N_bnd] float32 — signed curvature at each boundary
-                node (positive = concave/convex depending on orientation).
+            curvature: [N_bnd] float32
         """
-        n_bnd = len(boundary_nodes)
-        if n_bnd < 3:
-            return np.zeros(n_bnd, dtype=np.float32)
-
-        # Greedy arclength ordering starting from a canonical node
-        start = np.argmin(boundary_nodes[:, 0] + boundary_nodes[:, 1])
-        visited = np.zeros(n_bnd, dtype=bool)
-        order = [start]
-        visited[start] = True
-        tree_bnd = cKDTree(boundary_nodes)
-        for _ in range(n_bnd - 1):
-            dists, idxs = tree_bnd.query(boundary_nodes[order[-1]], k=n_bnd)
-            for idx in idxs:
-                if not visited[idx]:
-                    order.append(idx)
-                    visited[idx] = True
-                    break
-
-        pts = boundary_nodes[order]           # [N_bnd, 2] ordered
-        N = len(pts)
-        curvature_ordered = np.zeros(N, dtype=np.float32)
-        for i in range(N):
-            p_prev = pts[(i - 1) % N]
-            p_curr = pts[i]
-            p_next = pts[(i + 1) % N]
-            t1 = p_curr - p_prev
-            t2 = p_next - p_curr
-            l1 = np.linalg.norm(t1) + 1e-10
-            l2 = np.linalg.norm(t2) + 1e-10
-            t1_u = t1 / l1
-            t2_u = t2 / l2
+        curv_by_node = {}
+        for loop in self._boundary_loops(nodes, elements):
+            N = len(loop)
+            if N < 3:
+                continue
+            pts = nodes[loop]
+            t1 = pts - np.roll(pts, 1, axis=0)    # p_i - p_{i-1}
+            t2 = np.roll(pts, -1, axis=0) - pts   # p_{i+1} - p_i
+            l1 = np.linalg.norm(t1, axis=1) + 1e-10
+            l2 = np.linalg.norm(t2, axis=1) + 1e-10
+            t1_u, t2_u = t1 / l1[:, None], t2 / l2[:, None]
             # Signed curvature: cross product of unit tangents / avg arc length
-            cross = t1_u[0] * t2_u[1] - t1_u[1] * t2_u[0]
-            curvature_ordered[i] = cross / (0.5 * (l1 + l2) + 1e-10)
-
-        # Map back to original boundary node indices
-        curvature = np.zeros(n_bnd, dtype=np.float32)
-        for new_idx, orig_idx in enumerate(order):
-            curvature[orig_idx] = curvature_ordered[new_idx]
-        return curvature
+            cross = t1_u[:, 0] * t2_u[:, 1] - t1_u[:, 1] * t2_u[:, 0]
+            kappa = cross / (0.5 * (l1 + l2) + 1e-10)
+            curv_by_node.update(zip(loop.tolist(), kappa.tolist()))
+        return np.array([curv_by_node.get(int(i), 0.0) for i in boundary_indices], dtype=np.float32)
 
     def extract_geometry_features(self, nodes, elements):
         # Isotropic Normalization: En-boy oranını (aspect ratio) koruyarak merkezi 0'a çek.
@@ -167,14 +170,16 @@ class RFCavityToGNOT:
 
         # [10] local boundary curvature at nearest boundary node, assigned to
         #      every interior node as the curvature of its closest boundary pt.
-        bnd_curvature = self._compute_boundary_curvature(boundary_nodes)
+        #      Sign is canonical (topological loop orientation): + convex wall,
+        #      − concave/re-entrant wall. (Eski greedy-NN sıralaması işareti
+        #      geometriden geometriye rastgele çeviriyordu.)
+        bnd_curvature = self._compute_boundary_curvature(nodes_norm, elements, boundary_indices)
         # Clamp to avoid outliers; normalize by max abs curvature
         bnd_curvature = bnd_curvature / (np.abs(bnd_curvature).max() + 1e-8)
         node_curvature = bnd_curvature[nearest_idx].reshape(-1, 1).astype(np.float32)
 
-        # [11] convexity sign: positive if node is in a "pocket" (concave region),
-        #      approximated as sign of curvature weighted by dist to boundary.
-        # dist_bnd * curvature: large positive → interior of concave bay
+        # [11] convexity: curvature of the nearest wall weighted by dist to boundary.
+        #      < 0 → node faces a concave/re-entrant wall ("pocket"), > 0 → convex wall.
         convexity = (dist_to_boundary * bnd_curvature[nearest_idx]).reshape(-1, 1).astype(np.float32)
         convexity = np.clip(convexity, -1.0, 1.0)
 
@@ -199,6 +204,12 @@ class RFCavityToGNOT:
             'X': nodes_norm.astype(np.float32),
             'Input_funcs': geom_features,
             'elements': elements,
+            # Physical length of one normalized unit [m] and the removed center [m].
+            # Features are scale-invariant, but eigenfrequencies scale as 1/size:
+            #   x_phys = X * scale + center,  k^2_phys = k^2_norm / scale^2,
+            #   f_phys = c * sqrt(k^2_norm) / (2*pi*scale).
+            'scale': float(global_scale),
+            'center': center_raw.astype(np.float64),
         }
 
     def convert_dataset(self, output_filepath, mode_indices=[0, 1, 2], max_samples=None, format='pkl',
@@ -206,7 +217,12 @@ class RFCavityToGNOT:
         print(f"Converting: {self.h5_filepath} to {format.upper()}")
 
         with h5py.File(self.h5_filepath, 'r') as f:
-            sample_keys = sorted(f.keys())
+            # Only raw-FEM sample groups (sample_XXXX with a 'nodes' dataset)
+            sample_keys = sorted(k for k in f.keys()
+                                 if isinstance(f[k], h5py.Group) and 'nodes' in f[k])
+            if not sample_keys:
+                raise ValueError(f"No raw FEM sample groups (sample_XXXX/nodes) found in {self.h5_filepath}; "
+                                 f"top-level keys: {list(f.keys())[:10]}")
             if max_samples:
                 sample_keys = sample_keys[:max_samples]
 
@@ -216,8 +232,17 @@ class RFCavityToGNOT:
 
                 nodes = grp['nodes'][:]
                 elements = grp['elements'][:]
-                freqs = grp['freqs'][:]
+                freqs = np.asarray(grp['freqs'][:], dtype=np.float64)
+                # vecs is the full P2 DOF vector; rows 0..n_nodes-1 are the mesh vertices
+                # (skfem ElementTriP2 numbers vertex DOFs first) → P1 field on X.
+                if grp['vecs'].shape[0] < len(nodes) or grp['vecs'].shape[1] != len(freqs):
+                    raise ValueError(f"{key}: vecs shape {grp['vecs'].shape} inconsistent with "
+                                     f"{len(nodes)} nodes / {len(freqs)} freqs")
                 vecs = grp['vecs'][:len(nodes), :]
+                # Mode index = rank by frequency. Older H5 files (skfem non-symmetric
+                # `eigs`) are not guaranteed ascending, e.g. inside degenerate pairs.
+                order = np.argsort(freqs, kind='stable')
+                freqs, vecs = freqs[order], vecs[:, order]
 
                 if sample_id not in self.geometry_pool:
                     geom = self.extract_geometry_features(nodes, elements)
@@ -238,18 +263,25 @@ class RFCavityToGNOT:
                         Y = Y / Y_max
 
                     freq = float(freqs[m_idx])
+                    # Theta[0] = slot position i within mode_indices (0..len-1), NOT the
+                    # raw FEM mode index; the raw index is kept separately in 'mode_idx'.
                     theta = np.array([float(i), freq, float(sample_id)], dtype=np.float32)
 
                     self.samples.append({
                         'geom_id': sample_id,
                         'Y': Y,
-                        'Theta': theta
+                        'Theta': theta,
+                        'mode_idx': int(m_idx),
                     })
 
                     self.stats['n_samples'] += 1
                     self.stats['freq_range'][0] = min(self.stats['freq_range'][0], freq)
                     self.stats['freq_range'][1] = max(self.stats['freq_range'][1], freq)
                     self.stats['freq_by_mode'][m_idx].append(freq)
+
+        if self.stats['n_samples'] == 0:
+            raise ValueError(f"No samples produced: requested modes {mode_indices} not present "
+                             f"in {self.h5_filepath} (it stores {len(freqs)} modes per geometry).")
 
         # Use manual stats if provided, otherwise compute from dataset
         final_mean = float(freq_mean) if freq_mean is not None else float(np.mean([f for l in self.stats['freq_by_mode'].values() for f in l]))
@@ -293,12 +325,15 @@ class RFCavityToGNOT:
                     g_sub.create_dataset('Input_funcs', data=g_data['Input_funcs'], compression="gzip")
                     if 'shape_type' in g_data:
                         g_sub.attrs['shape_type'] = g_data['shape_type']
-                
+                    g_sub.attrs['scale'] = g_data['scale']
+                    g_sub.attrs['center'] = g_data['center']
+
                 # Samples
                 samp_grp = f_out.create_group('samples')
                 for i, s in enumerate(self.samples):
                     s_sub = samp_grp.create_group(str(i))
                     s_sub.attrs['geom_id'] = s['geom_id']
+                    s_sub.attrs['mode_idx'] = s['mode_idx']
                     s_sub.create_dataset('Y', data=s['Y'], compression="gzip")
                     s_sub.create_dataset('Theta', data=s['Theta'])
 

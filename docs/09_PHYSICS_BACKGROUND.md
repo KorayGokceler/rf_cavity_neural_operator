@@ -41,6 +41,11 @@ Mükemmel elektrik iletken (PEC) duvarlarda:
 
 $$E_z\big|_{\partial\Omega} = 0 \qquad \text{(Dirichlet BC)}$$
 
+Bu, z-yönünde uniform bir kavitenin $TM_{mn0}$ modlarıdır. **TE modları** ($H_z$ skaleri, PEC'de $\partial_n H_z = 0$ → **Neumann** BC, ilk eigenvalue 0 = sabit mod atlanmalı) bu projede **hesaplanmıyor**; Neumann problemi aynı geometride farklı (daha düşük) frekanslar verir.
+
+### Birimler
+Koordinatlar metre → $\lambda = k^2$ [1/m²] → $f = c\sqrt{\lambda}/(2\pi)$ [Hz], dataset'te GHz. Converter koordinatları `scale` ile normalize ettiği için normalize domain'deki eigenvalue $\lambda_{norm} = \lambda\,\text{scale}^2$ olur.
+
 ---
 
 ## 🔺 Finite Element Method (FEM)
@@ -63,7 +68,8 @@ burada:
 Bu projede `ElementTriP2` kullanılıyor — her üçgenin 6 düğümü var:
 - 3 köşe + 3 kenar orta noktası
 - Quadratic (2. derece) interpolasyon
-- Doğruluk: $O(h^3)$ (h = mesh boyutu)
+- Doğruluk (düzgün mod, düzgün sınır): eigenfunction $L^2$ hatası $O(h^3)$, $H^1$ hatası $O(h^2)$, **eigenvalue hatası $O(h^4)$**. Köşeli (girintili) geometrilerde tekillik yüzünden yakınsama daha yavaştır; poligonal sınır yaklaşımı eğri duvarlarda ayrıca $O(h^2)$ geometri hatası getirir (daire için ~%0.01).
+- Bu projede doğrulandı: kare/daire/halka için ilk 8 mod analitik değerlere < %0.02 (`validate_data.py`).
 
 P1'e göre (lineer, 3 düğüm) çok daha hassas — özellikle kavite modlarının tepe bölgelerinde.
 
@@ -73,6 +79,8 @@ P1'e göre (lineer, 3 düğüm) çok daha hassas — özellikle kavite modların
 $$(K - \sigma M)^{-1} M \vec{u} = \frac{1}{k^2 - \sigma} \vec{u}$$
 
 Bu, düşük frekanslı modları hızlı ve güvenilir şekilde bulmayı sağlar. Yoksa solver en yüksek frekansları bulma eğiliminde olur.
+
+**Dikkat:** Shift-invert *σ'ya en yakın* eigenvalue'ları verir, en küçükleri değil. σ spektrumun içindeyse temel mod atlanabilir; generator bu durumu tespit edip σ=0 ile tekrar çözer. Simetrik `eigsh` kullanılır (gerçek, sıralı, M-ortonormal çıktı).
 
 ---
 
@@ -99,19 +107,22 @@ Mode 1 ve Mode 2 degenerate olabilir ($f_1 = f_2$) — bu, kavite simetrik oldu�
 ## 🔢 Frekans Hesaplama Formülleri
 
 ### Dikdörtgen Kavite ($a \times b$)
-$$f_{mn} = \frac{c}{2} \sqrt{\left(\frac{m}{a}\right)^2 + \left(\frac{n}{b}\right)^2}$$
+$$f_{mn} = \frac{c}{2} \sqrt{\left(\frac{m}{a}\right)^2 + \left(\frac{n}{b}\right)^2}, \qquad m, n \geq 1 \text{ (TM)}$$
 
 ### Dairesel Kavite (yarıçap $R$)
 $$f_{mn} = \frac{c \cdot j_{mn}}{2\pi R}$$
 
-Bessel sıfırları $j_{mn}$:
-| | n=0 | n=1 | n=2 |
+Bessel sıfırları $j_{mn}$ ($J_m$'nin $n$. sıfırı; $m \geq 1$ modları cos/sin olarak **iki kat dejenere**):
+| | n=1 | n=2 | n=3 |
 |---|---|---|---|
 | m=0 | 2.4048 | 5.5201 | 8.6537 |
 | m=1 | 3.8317 | 7.0156 | 10.1735 |
+| m=2 | 5.1356 | 8.4172 | 11.6198 |
 
 ### Coaxial (Halka) Kavite
-Analitik çözüm daha karmaşık — Bessel fonksiyonlarının kombinasyonu gerekir.
+İç yarıçap $a$, dış yarıçap $b$, her iki duvarda $E_z = 0$: $k$ değerleri
+$$J_m(ka)\,Y_m(kb) - J_m(kb)\,Y_m(ka) = 0$$
+denkleminin kökleridir, $f = ck/(2\pi)$ ($m \geq 1$ iki kat dejenere). İnce halkada $k \approx \pi/(b-a)$. `validate_data.analytical_spectrum('annulus', ...)` bunu sayısal olarak çözer.
 
 ---
 
