@@ -45,7 +45,7 @@ jobs:
         run: |
           for f in train.py infer.py convert.py run_pipeline.py validate_data.py \
                    visualize_features.py plot_splits.py analyze_freq_separation.py \
-                   src/data_gen/dataset_generator.py \
+                   src/data_gen/dataset_generator.py run_ablation.py scripts/check_mode_data.py \
                    scripts/infer_val_all.py scripts/analyze_val_errors.py scripts/diagnose_data_floor.py; do
             echo "::group::$f --help"
             python "$f" --help
