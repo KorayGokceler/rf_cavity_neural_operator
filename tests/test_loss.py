@@ -166,3 +166,101 @@ def test_soft_procrustes_aligns_rotated_degenerate_pair():
     E_hat = E_tgt @ R.t()
     f = torch.tensor([3.0, 3.0001])
     assert soft_procrustes_loss(E_hat, E_tgt, f, sigma=10.0).item() < 1e-3
+
+
+# ── Regression tests (train-infra review) ────────────────────────────────────
+
+class _StubModel(torch.nn.Module):
+    """Returns fixed outputs (with a dummy parameter so backward works)."""
+
+    def __init__(self, outputs):
+        super().__init__()
+        self.outputs = outputs
+        self.p = torch.nn.Parameter(torch.zeros(()))
+
+    def forward(self, batch):
+        return {k: v + 0.0 * self.p for k, v in self.outputs.items()}
+
+
+def _spectral_module(**kw):
+    m = GNOTLightning(val_dim=8, grid_dim=2, hidden_dim=16, n_heads=2,
+                      num_field_modes=3, n_basis=4, rff_dim=8,
+                      model_type='spectral_no', degeneracy_mode='hard', **kw)
+    m.eval()
+    return m
+
+
+def test_spectral_field_loss_is_scale_invariant():
+    """SpectralNO output amplitude is fixed by M-orthonormality → only the
+    shape of the field may be penalised (targets are max-normalised)."""
+    torch.manual_seed(0)
+    batch = _make_batch()
+    m = _spectral_module()
+    assert m.scale_invariant_field and m.hparams.scale_invariant_field is True
+    out = {'field': 0.3 * batch['Y_field'], 'freq': batch['Y_freq'].clone()}
+    m.model = _StubModel(out)
+    loss, preds, targets = m._compute_loss(batch, 'train')
+    assert loss.item() < 1e-5
+    # R2/MAE inputs are brought back to target amplitude
+    assert torch.allclose(preds, targets, atol=1e-5)
+
+    # Old behaviour (scale-sensitive) keeps an amplitude floor (1 - 0.3)^2 per mode
+    m2 = _spectral_module(scale_invariant_field=False)
+    m2.model = _StubModel(out)
+    loss2, _, _ = m2._compute_loss(batch, 'train')
+    assert loss2.item() > 0.4
+
+
+def test_gnot_scale_invariant_option_with_orthonormalized_output():
+    batch = _make_batch()
+    m = GNOTLightning(val_dim=8, grid_dim=2, hidden_dim=16, n_shared_layers=1,
+                      n_mode_layers=1, n_heads=2, num_experts=2, num_field_modes=3,
+                      rff_dim=8, orthonormalize_output=True,
+                      slot_ortho_weight=0.0)   # random targets aren't orthogonal
+    assert m.scale_invariant_field
+    assert not _make_module().scale_invariant_field   # plain GNOT unchanged
+    m.model = _StubModel({'field': 5.0 * batch['Y_field'], 'freq': batch['Y_freq'].clone()})
+    m.eval()
+    loss, _, _ = m._compute_loss(batch, 'val')
+    assert loss.item() < 1e-4
+
+
+def test_boundary_loss_without_dist_column_does_not_crash():
+    """feature_indices=[0, 1] ablation: Input_funcs has no column 2."""
+    m = GNOTLightning(val_dim=2, grid_dim=2, hidden_dim=16, n_shared_layers=1,
+                      n_mode_layers=1, n_heads=2, num_experts=2, num_field_modes=3,
+                      rff_dim=8, smoothness_weight=0.1)
+    batch = _make_batch(val_dim=2, with_boundary=False)
+    loss, _, _ = m._compute_loss(batch, 'train')
+    assert torch.isfinite(loss)
+    # Dedicated Dist_bnd key (from the dataset) is used when present
+    batch['Dist_bnd'] = torch.zeros(batch['Mask'].shape)
+    loss_b, _, _ = m._compute_loss(batch, 'train')
+    assert torch.isfinite(loss_b)
+
+
+class _FakeTrainer:
+    estimated_stepping_batches = 20
+    max_epochs = 4
+    check_val_every_n_epoch = 5
+
+
+def test_onecycle_keeps_per_group_lr():
+    """A scalar max_lr used to overwrite lr_freq_heads / lr_mode_specific."""
+    m = _make_module()
+    m.hparams.scheduler = 'onecycle'
+    m.lr_freq_heads = 1e-2
+    m._trainer = _FakeTrainer()
+    cfg = m.configure_optimizers()
+    sched = cfg['lr_scheduler']['scheduler']
+    max_lrs = sorted(g['max_lr'] for g in sched.optimizer.param_groups)
+    assert max_lrs == [pytest.approx(1e-3), pytest.approx(1e-2)]
+
+
+def test_reducelr_steps_only_on_validation_epochs():
+    m = _make_module()
+    m.hparams.scheduler = 'reducelr'
+    m._trainer = _FakeTrainer()
+    cfg = m.configure_optimizers()
+    assert cfg['lr_scheduler']['monitor'] == 'val/field_rel_l2'
+    assert cfg['lr_scheduler']['frequency'] == 5
