@@ -63,11 +63,11 @@ dataset:
 # ─────────────────────────────────────────────────────
 model:
   # Input dimensions (veri formatına bağlı) — train.py veriyle doğrular.
-  # val_dim=12 → güncel dataset_converter çıktısı:
+  # val_dim=13 → güncel dataset_converter çıktısı:
   #   [x, y, dist_bnd, dir_bnd_x, dir_bnd_y, node_area, cos_principal, sin_principal,
-  #    dist_2nd_bnd, dist_3rd_bnd, curvature, convexity]
-  # val_dim=8  → eski (8-feature) pkl dosyaları. null → veriden otomatik algıla.
-  val_dim: 12
+  #    dist_2nd_bnd, dist_3rd_bnd, curvature, convexity, torsion]
+  # val_dim=12/8 → eski pkl dosyaları. null → veriden otomatik algıla.
+  val_dim: 13
   grid_dim: 2                   # Koordinat boyutu (2D)
 
   # Core architecture

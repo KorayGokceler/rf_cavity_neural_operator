@@ -69,6 +69,8 @@ def _spectral_kwargs(mc, feature_indices):
         kw.setdefault('dist_feature_idx', pos.get(2))
         kw.setdefault('dir_feature_idx', cols(3, 4))
         kw.setdefault('area_feature_idx', pos.get(5))
+        if kw.get('torsion_feature_idx') is not None:
+            kw['torsion_feature_idx'] = pos.get(kw['torsion_feature_idx'])
     return kw or None
 
 

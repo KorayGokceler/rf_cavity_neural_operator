@@ -32,6 +32,7 @@ Her node $i$ için şu öznitelikler hesaplanır:
 | 9 | `dist_3rd_boundary` | 3. en yakın sınır node'una mesafe | 〃 |
 | 10 | `curvature` | En yakın sınır noktasındaki işaretli eğrilik (max-abs ile normalize) | **+ konveks duvar, − konkav/girintili duvar** |
 | 11 | `convexity` | `dist_to_boundary * curvature` (clip ±1) | < 0: konkav "cep" bölgesi |
+| 12 | `torsion` | $w/\max w$, $-\Delta w = 1$ (Ω), $w = 0$ (∂Ω); tek P1 çözüm | Düzgün "landscape"; $\lambda_1 \approx j_{01}^2/(4\max w)$ (~%1, docs/16). `torsion_max` geometri başına saklanır |
 
 ---
 

@@ -202,6 +202,10 @@ class SpectralNO(nn.Module):
             (needs batch['Elements']).  The gate makes ψ = 0 on boundary
             nodes ⇒ ψ ∈ H¹₀ ⇒ true Rayleigh–Ritz upper bounds; no autograd,
             so it is also much faster.  Incompatible with node sub-sampling.
+        torsion_feature_idx: (assembly='p1') column of the torsion feature
+            w/max w; used as the Dirichlet factor ψ = w·N(x) instead of the
+            sigmoid gate — smooth and exactly 0 on ∂Ω, not a thin
+            bc_scale-wide boundary layer.  None → sigmoid gate.
     """
 
     def __init__(
@@ -226,6 +230,7 @@ class SpectralNO(nn.Module):
         eig_broadening: float = 1e-4,
         physics_freq: bool = False,
         assembly: str = 'nodal',
+        torsion_feature_idx=None,
     ):
         super().__init__()
         self.val_dim = val_dim
@@ -247,6 +252,7 @@ class SpectralNO(nn.Module):
         if assembly not in ('nodal', 'p1'):
             raise ValueError(f"assembly must be 'nodal' or 'p1', got {assembly!r}")
         self.assembly = assembly
+        self.torsion_feature_idx = torsion_feature_idx
         self.freq_stats = None   # {'mean','std'} [GHz]; set by GNOTLightning
 
         # ── 1. Spatial encoder (fixed random Fourier features) ──────────────
@@ -481,7 +487,9 @@ class SpectralNO(nn.Module):
                 dist_bnd = Y[..., self.dist_feature_idx].clamp(min=0.0).unsqueeze(-1)
             h = self.local_encoder(torch.cat([self.spatial_encoder(X), Y], dim=-1))
             basis = self.basis_net(h)                               # [B, N, M]
-            if dist_bnd is not None:
+            if self.torsion_feature_idx is not None and self.torsion_feature_idx < Y.shape[-1]:
+                basis = basis * Y[..., self.torsion_feature_idx:self.torsion_feature_idx + 1].clamp(min=0.0)
+            elif dist_bnd is not None:
                 basis = basis * (2.0 * torch.sigmoid(dist_bnd / self.bc_scale) - 1.0)
             if mask is not None:
                 basis = basis * mask.unsqueeze(-1).to(dtype)

@@ -180,3 +180,31 @@ def test_spectral_feature_columns_follow_feature_indices():
     kw = _spectral_kwargs(SimpleNamespace(), [2, 0, 1])
     assert kw['coord_feature_idx'] == [1, 2] and kw['dist_feature_idx'] == 0
     assert kw['area_feature_idx'] is None
+
+
+def test_gnot_torsion_prior_starts_at_disk_spectrum():
+    """Unit disk (max w = 1/4): the untrained head predicts the disk's own
+    frequencies f_k = c·j_k / (2π·scale) from the torsion prior."""
+    from src.models.gnot import GNOTModel
+    torch.manual_seed(0)
+    m = GNOTModel(val_dim=13, embed_dim=16, n_heads=2, n_mode_layers=1, num_experts=2,
+                  num_field_modes=3, rff_dim=8, physics_freq=True).eval()
+    m.freq_stats = {'mean': 0.0, 'std': 1.0}
+    b = _disk_batch(2, val_dim=13)
+    b['Scale'] = torch.tensor([0.04])
+    b['TorsionMax'] = torch.tensor([0.25])
+    with torch.no_grad():
+        f = m(b)['freq'][0]
+    j = torch.tensor([2.404826, 3.831706, 3.831706])
+    torch.testing.assert_close(f, 299792458.0 * j / (2 * math.pi * 0.04) / 1e9, rtol=2e-2, atol=0.0)
+
+
+def test_torsion_gate_keeps_upper_bound():
+    torch.manual_seed(0)
+    b = _disk_batch(3, val_dim=13)
+    b['Input_funcs'][0, :, 12] = (1 - b['X'][0].pow(2).sum(-1)).clamp(min=0)
+    m = SpectralNO(val_dim=13, embed_dim=16, n_basis=8, num_field_modes=3, rff_dim=8,
+                   rff_length_scale=0.5, assembly='p1', torsion_feature_idx=12).eval()
+    with torch.no_grad():
+        lam = m(b)['eigenvalues'][0]
+    assert lam[0].item() >= J01_SQ * (1 - 1e-6)
