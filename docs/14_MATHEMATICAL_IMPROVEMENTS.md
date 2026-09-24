@@ -142,6 +142,7 @@ Yorum:
 ### 2.4 Dönme/yansıma
 
 - Mevcut augmentasyon (`dataset.py`) yalnız **train**'de principal-axis feature'larını (kolon 6–7) sıfırlıyor; val/test'te gerçek değerler geliyor → **train/val dağılım kayması**. Ya augmentasyonda bu feature'ları yeniden hesaplayın (dönme sonrası PCA değişmez: açılar dönme-invaryant, bu yüzden zaten sıfırlamaya gerek yok), ya da hiç kullanmayın.
+  > ✅ **Güncelleme:** Bu kayma eğitim altyapısı düzeltmelerinde giderildi: `dataset.zero_gauge_features` augmentasyonlu koşularda tüm split'lere (ve checkpoint üzerinden `infer.py`'ye) uygulanıyor.
 - Daha ilkeli seçenek **kanonikleştirme**: şekli ikinci moment tensörünün eksenlerine döndür. PCA işaret/eksen belirsizliği (neredeyse izotrop şekillerde kararsız) için 4 elemanlı çerçeve üzerinden **frame averaging** (Puny et al. 2022) veya öğrenilmiş kanonikleştirme (Kaba et al. 2023).
 - Alan hedefleri skaler olduğundan dönmeyle birlikte taşınır; flag kaybı zaten $O(2)$-uyumludur.
 
