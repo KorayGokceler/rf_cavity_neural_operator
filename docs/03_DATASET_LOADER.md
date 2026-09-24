@@ -131,6 +131,28 @@ Her worker kendi H5 handle'ını tutar — thread-safety sağlar.
 
 ---
 
+## 🧰 Güncel Davranış Notları
+
+- **Split**: `np.random.RandomState(random_seed).permutation(...)` — eski
+  `np.random.seed()` ile birebir aynı split, ama global numpy RNG'yi (augment)
+  sıfırlamıyor.
+- **Eksik modlu geometriler** (converter `m_idx >= len(freqs)` atladıysa) uyarıyla
+  düşürülür; aksi halde collate'teki `torch.stack(Y_freq)` çöküyordu.
+- **Augment → feature seçimi sırası**: rotasyon/yansıma tam 12-kolon layout'ta
+  yapılır, `feature_indices` sonra uygulanır. Diziler kopyalanır (geometry_pool
+  artık yerinde değişmiyor).
+- **`zero_gauge_features`**: augment açıkken cos/sin_principal (6-7) train'de
+  sıfırlanıyordu ama val/test'te sıfırlanmıyordu (train/eval dağılım farkı).
+  Artık augment'li bir koşuda tüm split'lerde (ve infer'da) sıfırlanır.
+- **`Dist_bnd`** anahtarı (item + collate): tam layout'tan dist_to_boundary;
+  boundary PINN terimi bunu kullanır.
+- **Deterministik eval sub-sampling**: `max_nodes` val/test'te geometri başına
+  sabit seed'li generator ile → izlenen val metriği epoch'tan epoch'a node
+  seçimi yüzünden oynamıyor.
+- **`data_dims()`** → `(val_dim, K)`; train.py config doğrulaması için.
+
+---
+
 ## ⚠️ Geliştirme Önerileri
 
 1. **Dynamic Batching:** Benzer mesh boyutlarını aynı batch'e koyarak padding israfını minimize etme. → `BucketBatchSampler` kullanılabilir.

@@ -217,6 +217,38 @@ Expert'ler arasında dengeli dağılım istenir. Bir expert %80+ kullanılıyors
 
 ---
 
+## 🧰 Eğitim Altyapısı Notları (güncel)
+
+- **Ölçek-invaryant field loss (`scale_invariant_field`)**: SpectralNO çıktısı
+  M-ortonormal (Σᵢ wᵢ φ² = 1) → genlik sabit; hedefler ise max-normalize.
+  Ölçeğe duyarlı rel-L2'de mükemmel şekilli bir tahmin bile ≈1.1–1.4 hata
+  tabanı veriyordu. Artık loss/metrik birim-norm kolonlarla hesaplanır
+  (spectral_no ve `orthonormalize_output` için otomatik açık; düz GNOT'ta kapalı).
+  R2/MAE için tahmin hedef normuna geri ölçeklenir.
+- **fp32 matmul hassasiyeti**: eski global `medium` ayarı fp32 matmul'u bf16'ya
+  düşürüyordu (CPU'da 512×512 çarpımda ~0.25 mutlak hata; SpectralNO'nun M/L
+  montajı + Cholesky/eigh bozuluyordu, val metriği offline değerlendirmeyle
+  uyuşmuyordu). Varsayılan: GNOT `high`, SpectralNO `highest`
+  (`training.matmul_precision` ile override).
+- **SpectralNO + Lightning eval**: ∇ψ autograd ile hesaplandığı için
+  `Trainer(inference_mode=False)` (spectral_no) — aksi halde `trainer.test()`
+  "does not require grad" hatası veriyordu.
+- **Scheduler**: OneCycle `max_lr` param-group başına verilir (`lr_freq_heads`,
+  `lr_mode_specific` artık ezilmiyor). ReduceLROnPlateau `frequency =
+  check_val_every_n_epoch` (val koşmayan epoch'ta monitor yok hatası giderildi).
+- **Checkpoint**: `best-epoch=XX-val_rel_l2=Y.ckpt` + `last.ckpt`
+  (metrik adındaki `/` artık alt klasör açmıyor).
+- **Seed**: `pl.seed_everything(dataset.random_seed, workers=True)`.
+- **Veri doğrulama**: `val_dim` / `num_field_modes` veriden kontrol edilir
+  (`val_dim: null` = otomatik); boş split erken ve açık hata verir.
+- **CPU**: `pin_memory` sadece CUDA varken; tensorboard yoksa CSVLogger'a
+  düşülür (histogram/figure logları atlanır).
+- **Boundary PINN**: `batch['Dist_bnd']` (tam feature layout'undan) kullanılır →
+  `feature_indices` ablation'ları yanlış kolonu okumaz / çökmez.
+- `mode_loss_weights` set-prediction loss'ta KULLANILMIYOR (uyarı verilir).
+
+---
+
 ## ⚠️ Geliştirme Önerileri
 
 ### Loss Fonksiyonu

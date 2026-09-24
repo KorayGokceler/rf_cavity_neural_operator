@@ -64,16 +64,17 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `val_ratio` | 0.1 | Doğrulama oranı (test = 0.1) |
 | `random_seed` | 42 | Geometri split seed'i |
 | `max_nodes` | 1024 | Sub-sampling limiti (null = devre dışı) |
-| `active_mode_index` | null | null = tüm modlar; 0/1/2 = tek mod eğitimi |
+| `active_mode_index` | null | KULLANILMIYOR (tek mod için convert.py --modes kullanın) |
+| `feature_indices` | null | Ablation feature alt kümesi (augment tam layout’ta, seçim sonra yapılır) |
 
 ### 4. Model (`model:`)
 
 | Parametre | Varsayılan | Açıklama | Etki |
 |-----------|-----------|----------|------|
-| `val_dim` | 8 | Feature boyutu | Feature sayısı değişirse güncelle |
+| `val_dim` | 12 | Feature boyutu (güncel converter = 12; `null` = veriden otomatik) | train.py veriyle doğrular, uyuşmazsa açık hata verir |
 | `grid_dim` | 2 | Koordinat boyutu (2D) | 3D için 3 yapılır |
 | `embed_dim` | 256 | Hidden dimension | ↑ = daha güçlü ama yavaş |
-| `n_shared_layers` | 6 | Shared trunk derinliği | ↑ = daha iyi geometri temsili |
+| `n_shared_layers` | 0 | KULLANILMIYOR (GNOTModel ortak blok kurmuyor) | — |
 | `n_mode_layers` | 1 | Mode-specific derinlik | ↑ = daha iyi mod ayrımı |
 | `n_field_head_layers` | 3 | Tahmin kafası derinliği | ↑ = daha güçlü decoder |
 | `n_heads` | 8 | Attention head sayısı | embed_dim / n_heads tamsayı olmalı |
@@ -84,6 +85,10 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `rff_length_scale` | 0.1 | Gaussian kernel uzunluk ölçeği | Normalize koordinatlar için 0.05–0.2 |
 | `dropout` | 0.0 | Regularization | 0.1-0.3 denenebilir |
 | `use_checkpoint` | false | Gradient checkpointing | true = VRAM↓, hız↓ |
+| `n_basis` | 16 | SpectralNO Galerkin baz boyutu M (GNOT’ta kullanılmıyor) | — |
+| `spectral` | (yok) | SpectralNO ek kwargs (ör. `area_feature_idx`, `mass_ridge`), `spectral_kwargs` olarak aynen iletilir | — |
+
+> Üst seviye `model_type: gnot | spectral_no` modeli seçer (varsayılan `gnot`).
 
 ### 5. Training (`training:`)
 
@@ -96,7 +101,11 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `gradient_clip_val` | 1.0 | Gradyan kırpma |
 | `freq_weight` | 0.5 | Frekans loss ağırlığı (α) |
 | `smoothness_weight` | 0.0 | Boundary loss ağırlığı (λ); 0 = kapalı |
-| `mode_loss_weights` | [1.0, 2.0, 2.0] | Mode-specific ağırlıklar |
+| `mode_loss_weights` | null | KULLANILMIYOR (OT / Grassmannian set loss); set edilirse train.py uyarır |
+| `scale_invariant_field` | null | Field loss + rel-L2 birim-norm kolonlarla (genlik gauge). null = spectral_no veya orthonormalize_output için true |
+| `matmul_precision` | (yok) | fp32 matmul hassasiyeti; varsayılan GNOT=`high`, SpectralNO=`highest` (`medium` = bf16, CPU’da büyük hata) |
+| `check_val_every_n_epoch` | 5 (train.py), 1 (config) | ReduceLROnPlateau bu sıklıkla adım atar |
+| `augment` | false | Rotasyon+yansıma (train); cos/sin_principal (6-7) TÜM split’lerde sıfırlanır |
 | `lr_mode_specific` | null | Modlara özel öğrenme oranları (null = base_lr kullan) |
 | `lr_freq_heads` | null | Frekans başlıklarına özel LR (null = base_lr) |
 | `scheduler` | `custom_cosine` | LR scheduler tipi |
@@ -106,7 +115,7 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `strategy` | `auto` | `auto` veya `ddp` |
 | `exp_name` | `gnot_5k_v1` | Deney ismi |
 | `viz_every_n_epochs` | 10 | Görselleştirme sıklığı |
-| `permutation_invariant_dipole` | true | Mode 1/2 permütasyonu denenirse loss düşüyor mu? |
+| `degeneracy_mode` / `near_deg_threshold` / `deg_sigma_abs` | soft / 0.05 / 0.3 | Dejenere mod kümesi (z-score eksende mutlak eşik) |
 
 > **Scheduler seçenekleri:** `custom_cosine` (varsayılan), `cosine`, `onecycle`, `reducelr`
 
@@ -114,9 +123,9 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 
 | Parametre | Varsayılan | Açıklama |
 |-----------|-----------|----------|
-| `checkpoint_path` | null | Checkpoint yolu |
-| `output_dir` | `inference_results` | Çıktı dizini |
-| `num_visualize` | 5 | Görselleştirilecek örnek |
+| `checkpoint_path` | null | `infer.py --config` ile okunur; null = `training.log_dir/exp_name` dizini (best → last.ckpt) |
+| `output_dir` | `inference_results` | Çıktı dizini (`infer.py --config`) |
+| `num_visualize` | 5 | Görselleştirilecek örnek (`infer.py --config`) |
 
 ---
 
