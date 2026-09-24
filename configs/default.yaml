@@ -78,6 +78,7 @@ model:
   n_heads: 8                    # Attention head sayısı (256 / 8 = 32 dim per head)
   num_experts: 4                # GeometricGatingFFN expert sayısı
   predict_frequency: true       # false → frekans loss + freq_mae kapanır (global freq head yine çalışır)
+  physics_freq: true            # head log √λ (boyutsuz) tahmin eder, f = c·√λ/(2π·scale) boyutu ekler (PKL'de 'scale' gerekir)
 
   # Mode conditioning
   num_field_modes: 3            # 3 mode da egitilecek

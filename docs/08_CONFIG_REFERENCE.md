@@ -88,7 +88,7 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `n_basis` | 16 | SpectralNO Galerkin baz boyutu M (GNOT’ta kullanılmıyor) | — |
 | `spectral` | (yok) | SpectralNO ek kwargs (ör. `area_feature_idx`, `mass_ridge`), `spectral_kwargs` olarak aynen iletilir | — |
 | `spectral.assembly` | `nodal` (`spectral_no.yaml`: `p1`) | `p1`: P1 interpolant + üçgen başına tam kütle/rijitlik → gerçek Ritz üst sınırı, autograd yok | — |
-| `spectral.physics_freq` | false (`spectral_no.yaml`: true) | $f = c\sqrt{\lambda}/(2\pi\,\text{scale})$; PKL'de `scale` gerekir (güncel `convert.py`) | — |
+| `physics_freq` | false (config'lerde true) | $f = c\sqrt{\lambda}/(2\pi\,\text{scale})$: SpectralNO √λ'yı özdeğerden alır, GNOT log √λ tahmin eder. PKL'de `scale` gerekir (güncel `convert.py`) | — |
 
 > Üst seviye `model_type: gnot | spectral_no` modeli seçer (varsayılan `gnot`).
 

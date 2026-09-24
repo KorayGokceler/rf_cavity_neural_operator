@@ -151,3 +151,32 @@ def test_area_weighted_field_loss_downweights_small_nodes():
         return ((lp - lt) ** 2).sum().item()
 
     assert field_err(True) < 0.05 * field_err(False)
+
+
+def test_gnot_physics_freq_scales_with_size():
+    from src.models.gnot import GNOTModel
+    torch.manual_seed(0)
+    m = GNOTModel(val_dim=12, embed_dim=16, n_heads=2, n_mode_layers=1, num_experts=2,
+                  num_field_modes=3, rff_dim=8, physics_freq=True).eval()
+    m.freq_stats = {'mean': 5.0, 'std': 1.0}
+    b = _disk_batch(1)
+    b['Scale'] = torch.tensor([0.04])
+    with torch.no_grad():
+        f1 = m(b)['freq'] + 5.0
+        b['Scale'] = torch.tensor([0.02])
+        f2 = m(b)['freq'] + 5.0
+    torch.testing.assert_close(f2, 2.0 * f1, rtol=1e-5, atol=1e-5)
+    assert (f1 > 1.0).all() and (f1 < 20.0).all()   # untrained head starts in a GHz-sane range
+
+
+def test_spectral_feature_columns_follow_feature_indices():
+    from types import SimpleNamespace
+    from train import _spectral_kwargs
+    mc = SimpleNamespace(spectral={'assembly': 'p1'})
+    assert _spectral_kwargs(mc, None) == {'assembly': 'p1'}
+    kw = _spectral_kwargs(mc, [0, 1, 2, 5, 8])
+    assert kw == {'assembly': 'p1', 'coord_feature_idx': [0, 1], 'dist_feature_idx': 2,
+                  'dir_feature_idx': None, 'area_feature_idx': 3}
+    kw = _spectral_kwargs(SimpleNamespace(), [2, 0, 1])
+    assert kw['coord_feature_idx'] == [1, 2] and kw['dist_feature_idx'] == 0
+    assert kw['area_feature_idx'] is None

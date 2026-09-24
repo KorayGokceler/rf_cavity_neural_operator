@@ -38,8 +38,9 @@ Fiziksel Galerkin indirgemesiyle özdeğer çözen spektral neural operator (`sr
    Rayleigh–Ritz üst sınırı, autograd yok (hızlı). `assembly: nodal`: eski düğüm kuadratürü + autograd.
 4. $L u = \lambda M u$ → Cholesky + `torch.linalg.eigh`; özdeğerler **yapısal olarak sıralı**
    (OT eşleştirmesi gerekmez), M-ortogonallik yapısal
-5. $\phi_k = \sum_m u_{k,m}\psi_m$; frekans fizikten: `physics_freq: true` ⇒
-   $f = c\sqrt{\lambda}/(2\pi\,\text{scale})$ (öğrenilen kafa yok; `scale` PKL'de saklanır)
+5. $\phi_k = \sum_m u_{k,m}\psi_m$; frekans fizikten: `model.physics_freq: true` ⇒
+   $f = c\sqrt{\lambda}/(2\pi\,\text{scale})$ (öğrenilen kafa yok; `scale` PKL'de saklanır).
+   GNOT'ta aynı ayar: kafa boyutsuz log √λ tahmin eder, boyut `scale`'den gelir.
 
 Eğitim kaybı `training.area_weighted_field: true` ile düğüm alanıyla ağırlıklıdır (≈ $\int_\Omega$).
 Bu seçimlerin gerekçesi: [docs/14](docs/14_MATHEMATICAL_IMPROVEMENTS.md)–[17](docs/17_NUMERICAL_ANALYSIS_REVIEW.md).

@@ -108,7 +108,13 @@ class RFCavityToGNOT:
 
     def extract_geometry_features(self, nodes, elements):
         # Isotropic Normalization: En-boy oranını (aspect ratio) koruyarak merkezi 0'a çek.
-        center_raw = nodes.mean(axis=0)
+        # Merkez = alan-ağırlıklı ağırlık merkezi (düğüm ortalaması sınıra sık mesh
+        # yüzünden kayıyordu: diskte ~0.005 kayma).
+        el = np.asarray(elements)
+        v0, v1, v2 = nodes[el[:, 0]], nodes[el[:, 1]], nodes[el[:, 2]]
+        a, b = v1 - v0, v2 - v0
+        tri_area = 0.5 * np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+        center_raw = (tri_area[:, None] * (v0 + v1 + v2) / 3.0).sum(axis=0) / tri_area.sum()
         nodes_centered = nodes - center_raw
         global_scale = np.max(np.abs(nodes_centered)) + 1e-12
         nodes_norm = nodes_centered / global_scale

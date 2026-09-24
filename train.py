@@ -57,6 +57,21 @@ def parse_overrides(override_list):
         overrides[key] = val
     return overrides
 
+def _spectral_kwargs(mc, feature_indices):
+    """config `model.spectral` + SpectralNO feature columns remapped into the
+    `feature_indices` subset (SpectralNO reads coords 0-1, dist 2, dir 3-4 and
+    area 5 of the full layout; a dropped column → None = not used)."""
+    kw = dict(getattr(mc, 'spectral', None) or {})
+    if feature_indices is not None:
+        pos = {f: i for i, f in enumerate(feature_indices)}
+        cols = lambda *fs: [pos[f] for f in fs] if all(f in pos for f in fs) else None
+        kw.setdefault('coord_feature_idx', cols(0, 1))
+        kw.setdefault('dist_feature_idx', pos.get(2))
+        kw.setdefault('dir_feature_idx', cols(3, 4))
+        kw.setdefault('area_feature_idx', pos.get(5))
+    return kw or None
+
+
 def main():
     args = parse_args()
     
@@ -211,8 +226,9 @@ def main():
         orthonormalize_output=getattr(mc, 'orthonormalize_output', False),
         scale_invariant_field=getattr(tc, 'scale_invariant_field', None),
         area_weighted_field=getattr(tc, 'area_weighted_field', False),
+        physics_freq=getattr(mc, 'physics_freq', False),
         # Extra SpectralNO kwargs (mass_ridge, area_feature_idx, ...) from model.spectral
-        spectral_kwargs=(dict(getattr(mc, 'spectral', None) or {}) or None),
+        spectral_kwargs=_spectral_kwargs(mc, feature_indices),
         # Stored in the checkpoint hparams so infer.py rebuilds the same split
         # and the same input features (feature_indices, gauge zeroing).
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,

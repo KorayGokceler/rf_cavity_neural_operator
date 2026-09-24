@@ -179,12 +179,22 @@ def generate_sample_data(s_id):
                 shape_type = 'random_smooth'
                 t = np.linspace(0, 2*np.pi, 100, endpoint=False)
                 r_raw = ARGS.smooth_base_r + sum(np.random.uniform(-ARGS.smooth_perturb, ARGS.smooth_perturb) * np.cos(k*t + np.random.uniform(0, 2*np.pi)) for k in range(ARGS.smooth_harmonics[0], ARGS.smooth_harmonics[1]))
-                r = np.clip(r_raw, 0.015, None)
+                # Keep r ≥ 0.015 by shrinking the perturbation (a clip made kinks).
+                r_min = 0.015
+                if r_raw.min() < r_min:
+                    r_raw = ARGS.smooth_base_r + (r_raw - ARGS.smooth_base_r) * (ARGS.smooth_base_r - r_min) / (ARGS.smooth_base_r - r_raw.min())
+                r = r_raw
                 pts_c = [(cx + ri*np.cos(ti), cy + ri*np.sin(ti)) for ri, ti in zip(r, t)]
 
             pts = [gmsh.model.occ.addPoint(p[0], p[1], 0) for p in pts_c]
-            lines = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
-            gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(lines)])
+            if method == 'smooth':
+                # Periodic C2 spline through the samples: a 100-segment polyline
+                # had re-entrant vertices (>200° in ~98% of "smooth" shapes →
+                # corner singularities, less accurate labels).
+                curves = [gmsh.model.occ.addSpline(pts + [pts[0]])]
+            else:
+                curves = [gmsh.model.occ.addLine(pts[i], pts[(i+1)%len(pts)]) for i in range(len(pts))]
+            gmsh.model.occ.addPlaneSurface([gmsh.model.occ.addCurveLoop(curves)])
 
         gmsh.model.occ.synchronize()
 

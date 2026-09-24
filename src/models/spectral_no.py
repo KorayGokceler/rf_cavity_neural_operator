@@ -58,9 +58,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.models.gnot import RandomFourierFeatures, _normalize_peak, _check_val_dim
-
-_C0 = 299792458.0  # speed of light [m/s] (same constant as the data generator)
+from src.models.gnot import (RandomFourierFeatures, _normalize_peak, _check_val_dim,
+                             _physics_freq_z)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -401,7 +400,7 @@ class SpectralNO(nn.Module):
         B, N, _ = X.shape
         device, dtype = X.device, X.dtype
         # ── Quadrature weights (per-node mesh area), masked + normalized ──────
-        if Y.shape[-1] > self.area_feature_idx:
+        if self.area_feature_idx is not None and Y.shape[-1] > self.area_feature_idx:
             w = Y[:, :, self.area_feature_idx].clamp(min=0.0)   # [B, N]
         else:
             w = torch.ones(B, N, device=device, dtype=dtype)
@@ -523,15 +522,8 @@ class SpectralNO(nn.Module):
         # ── Frequency transform ───────────────────────────────────────────────
         lambda_K = lambda_K.to(dtype)
         if self.physics_freq:
-            scale = batch.get('Scale', None)
-            if scale is None or not self.freq_stats:
-                raise ValueError(
-                    "SpectralNO(physics_freq=True) needs batch['Scale'] and freq_stats: "
-                    "re-run convert.py (stores per-geometry 'scale') or set "
-                    "model.spectral.physics_freq: false.")
-            f_ghz = (_C0 * torch.sqrt(lambda_K.clamp(min=0.0))
-                     / (2.0 * math.pi * scale.to(dtype).unsqueeze(-1)) / 1e9)
-            freq = (f_ghz - self.freq_stats['mean']) / self.freq_stats['std']
+            log_k = 0.5 * torch.log(lambda_K.clamp(min=1e-12))
+            freq = _physics_freq_z(log_k, batch, self.freq_stats, 'SpectralNO')
         else:
             freq = self.freq_transform(lambda_K.unsqueeze(-1)).squeeze(-1)  # [B, K]
 

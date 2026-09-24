@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -250,6 +252,22 @@ def _apply_gram_schmidt(field: torch.Tensor, mask: torch.Tensor = None) -> torch
     return torch.stack(cols, dim=-1)
 
 
+_C0 = 299792458.0  # speed of light [m/s] (same constant as the data generator)
+
+
+def _physics_freq_z(log_k, batch, freq_stats, who):
+    """z-scored GHz of  f = c·k / (2π·scale),  k = exp(log_k) = √λ in the
+    converter's normalised (scale-free) coordinates.  λ(sΩ) = λ(Ω)/s² is
+    exact, so the cavity size enters only through batch['Scale']."""
+    scale = batch.get('Scale', None)
+    if scale is None or not freq_stats:
+        raise ValueError(
+            f"{who}(physics_freq=True) needs batch['Scale'] and freq_stats: re-run "
+            "convert.py (stores per-geometry 'scale') or set model.physics_freq: false.")
+    f_ghz = _C0 * torch.exp(log_k) / (2.0 * math.pi * scale.to(log_k.dtype).unsqueeze(-1)) / 1e9
+    return (f_ghz - freq_stats['mean']) / freq_stats['std']
+
+
 class GNOTModel(nn.Module):
     def __init__(self, val_dim=8, grid_dim=2, embed_dim=256,
                  n_shared_layers=6, n_mode_layers=1, n_field_head_layers=3,
@@ -258,8 +276,14 @@ class GNOTModel(nn.Module):
                  dropout=0.0,
                  rff_dim=64, rff_length_scale=0.1,
                  n_basis=16,
-                 orthonormalize_output=False):
+                 orthonormalize_output=False,
+                 physics_freq=False):
         super().__init__()
+        # physics_freq: the global head predicts log √λ (dimensionless) and
+        # f = c·√λ/(2π·scale) supplies the cavity size, which the scale-free
+        # input features cannot.  freq_stats is set by GNOTLightning.
+        self.physics_freq = physics_freq
+        self.freq_stats = None
         self.val_dim = val_dim
         self.use_checkpoint = use_checkpoint
         self.num_field_modes = num_field_modes
@@ -382,6 +406,10 @@ class GNOTModel(nn.Module):
         # then always sort them ascending so the slot order is canonical.
         c = self.pooler(x_emb, condition_mask)            # [B, D] global context
         f_pred = self.freq_head_global(c)                 # [B, K]
+        if self.physics_freq:
+            # log √λ ≈ 1.2 (λ ≈ 11) for a unit-size cavity: untrained head
+            # starts inside the data's GHz range.
+            f_pred = _physics_freq_z(f_pred + 1.2, batch, self.freq_stats, 'GNOTModel')
         f_pred = torch.sort(f_pred, dim=-1).values        # always sorted ascending
 
         # --- Per-slot decoder: each mode owns its GNOT blocks + field head ---

@@ -125,7 +125,7 @@ Dosya attr'ı `metadata` (JSON): generator argümanları, `bc`, birimler (`m`, `
 
 ### Robustluk / Tekrarlanabilirlik
 - **Atomik yazım:** Çıktı önce `<h5_filename>.partial`'a yazılır, her chunk'ta flush edilir, sonunda `os.replace` ile adlandırılır → yarıda kalan çalışma son dosyayı bozmaz. Hiç geçerli örnek yoksa hata ile çıkar.
-- **Seed:** Örnek `s_id` için `np.random.seed(s_id*13 + seed*1000003)`; `--seed 0` (varsayılan) eski datasetleri birebir üretir (mesh aynı, frekans farkı ~1e-15).
+- **Seed:** Örnek `s_id` için `np.random.seed(s_id*13 + seed*1000003)`; `--seed 0` (varsayılan) eski datasetlerin **sharp** geometrilerini birebir üretir (mesh aynı, frekans farkı ~1e-15). **Smooth** geometriler artık 100 noktalı çokgen yerine periyodik C2 spline ile çiziliyor ve `clip` yerine pertürbasyon ölçekleniyor (çokgen köşeleri >200° iç açılı köşe tekillikleri üretiyordu, bkz. docs/16–17); bu yüzden eski smooth geometriler birebir üretilmez.
 - **Worker'lar:** `--n_workers` (varsayılan `cpu_count()`); `ARGS` pool initializer ile aktarılır → `spawn` start method'u (macOS/Windows varsayılanı) da çalışır (önceden her örnek `ARGS=None` ile sessizce başarısız oluyordu).
 - **Takılma koruması:** `--sample_timeout` (s, varsayılan 300) — takılan örnek atlanır, pool yenilenir.
 - **Mesh çıkarımı:** gmsh node tag'leri açıkça satır indekslerine map edilir; sadece 3-node üçgen kabul edilir; kullanılmayan node'lar atılır.

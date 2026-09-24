@@ -346,7 +346,8 @@ class GNOTLightning(pl.LightningModule):
                  scale_invariant_field=None,
                  data_cfg=None,
                  spectral_kwargs=None,
-                 area_weighted_field=False):
+                 area_weighted_field=False,
+                 physics_freq=False):
         """
         scale_invariant_field: compare unit-norm pred/target mode columns in
             the field loss + rel-L2 metric.  None → auto: True for
@@ -359,6 +360,9 @@ class GNOTLightning(pl.LightningModule):
             forwarded verbatim; ignored for GNOT.
         area_weighted_field: weight the field loss / rel-L2 metric by node
             area (lumped mass ≈ ∫_Ω) instead of counting nodes.
+        physics_freq: frequency via f = c·√λ/(2π·scale) (both models; needs
+            batch['Scale']).  SpectralNO takes √λ from its eigenvalues, GNOT
+            predicts log √λ.
         """
         super().__init__()
         if scale_invariant_field is None:
@@ -390,7 +394,8 @@ class GNOTLightning(pl.LightningModule):
                 dropout=dropout,
                 use_checkpoint=use_checkpoint,
                 bc_scale=bc_scale,
-                **(spectral_kwargs or {}),   # e.g. mass_ridge, area_feature_idx ...
+                **{'physics_freq': physics_freq,
+                   **(spectral_kwargs or {})},   # e.g. mass_ridge, area_feature_idx ...
             )
         else:
             self.model = GNOTModel(
@@ -410,6 +415,7 @@ class GNOTLightning(pl.LightningModule):
                 rff_length_scale=rff_length_scale,
                 n_basis=n_basis,
                 orthonormalize_output=orthonormalize_output,
+                physics_freq=physics_freq,
             )
 
         self.freq_weight = freq_weight
@@ -702,6 +708,7 @@ class GNOTLightning(pl.LightningModule):
         rel_l2_count = torch.zeros(K, device=device)
         # Detach for metric bookkeeping — no gradient needed past this point.
         aligned_pred_field = metric_pred.detach().clone()    # [B, N, K] — for R2/MAE
+        f_matched = f_pred.detach().clone()                  # [B, K] — OT order, for freq MAE
 
         for b in range(B):
             fp_b = f_pred[b]                          # [K]
@@ -717,6 +724,7 @@ class GNOTLightning(pl.LightningModule):
             E_hat = E_hat[:, perm]                    # align predicted columns
             fp_b = fp_b[perm]
             aligned_pred_field[b] = aligned_pred_field[b][:, perm]  # R2/MAE consistent
+            f_matched[b] = f_matched[b][perm]
 
             # Frequency regression loss (OT-matched MSE)
             loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
@@ -827,7 +835,8 @@ class GNOTLightning(pl.LightningModule):
 
         if self.predict_frequency and outputs.get('freq') is not None and self.freq_stats:
             with torch.no_grad():
-                fp_ghz = f_pred * self.freq_stats['std'] + self.freq_stats['mean']
+                # Same slot↔mode pairing as the loss (OT), not a plain sort.
+                fp_ghz = f_matched * self.freq_stats['std'] + self.freq_stats['mean']
                 ft_ghz = f_true * self.freq_stats['std'] + self.freq_stats['mean']
                 mae_ghz = F.l1_loss(fp_ghz, ft_ghz)
                 self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)

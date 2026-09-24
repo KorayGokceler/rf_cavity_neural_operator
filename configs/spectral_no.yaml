@@ -88,10 +88,11 @@ model:
   # BC gate smoothness: gate = 2*sigmoid(dist_bnd/bc_scale) - 1  (= 0 at boundary)
   bc_scale: 0.02
 
+  physics_freq: true            # f = c·√λ/(2π·scale) — exact, no learned head (needs 'scale' in the PKL)
+
   # Extra SpectralNO kwargs, forwarded verbatim (train.py → spectral_kwargs),
   # e.g. area_feature_idx when feature_indices moves node_area to another column.
   spectral:
-    physics_freq: true          # f = c·√λ/(2π·scale) — exact, no learned head (needs 'scale' in the PKL)
     assembly: p1                # exact P1 mass/stiffness per mesh triangle: true Ritz upper bounds,
                                 # no autograd (much faster); needs dataset.max_nodes: null
   #   area_feature_idx: 5
