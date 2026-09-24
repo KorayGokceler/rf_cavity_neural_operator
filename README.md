@@ -1,237 +1,200 @@
 # RF Cavity Neural Operator
 
-A physics-informed neural operator for predicting resonant mode shapes and frequencies of 2D RF cavities. The model learns the mapping from cavity geometry to electromagnetic field distributions by solving the Helmholtz eigenvalue problem — without re-running FEM at inference time.
+2D RF kavitelerin rezonans mod şekillerini (alan dağılımı $E(x,y)$) ve rezonans frekanslarını,
+geometriden doğrudan tahmin eden neural operator'ler. Model, PEC sınır koşullu Helmholtz
+özdeğer problemini öğrenir; inference sırasında FEM çözümüne gerek kalmaz.
+
+$$\nabla^2 E + k^2 E = 0, \qquad E|_{\partial\Omega} = 0$$
+
+Bir geometri için ilk $K$ mod (varsayılan $K=3$) ve her modun frekansı (GHz) tahmin edilir.
 
 ---
 
-## What It Does
+## Modeller
 
-Given an arbitrary 2D RF cavity shape, the model predicts:
-- **Field distribution** $E(x, y)$ for the first 3 resonant modes
-- **Resonant frequency** $f$ (GHz) for each mode
+Model seçimi config'teki üst seviye `model_type` anahtarıyla yapılır (`gnot` varsayılan, `spectral_no`).
 
-Inference is ~1000× faster than FEM while maintaining competitive accuracy.
+### 1. GNOT — `configs/default.yaml` (`model_type` yok ⇒ `gnot`)
 
----
+Geometric Neural Operator Transformer (`src/models/gnot.py`).
 
-## Architecture
+- **Random Fourier Features** ile koordinat kodlama (Gauss kernel yaklaşımı)
+- **LinearAttention** (ELU+1 kernel, $O(Nd^2)$) + **CrossAttention** ile geometri sorgusu
+- **GeometricGatingFFN**: 4 uzmanlı dense MoE
+- Paylaşılan gövde + moda özel dallar; her dal kendi alanını ve frekansını tahmin eder
+- Çıkış sırası serbest olduğu için eğitimde **OT (optimal transport) slot↔mod eşleştirmesi**
+  ve yakın-dejenere modlar için **Grassmann / subspace kaybı** kullanılır
 
-The model is a **Geometric Neural Operator Transformer (GNOT)** with three key design choices motivated by the physics:
+### 2. SpectralNO — `configs/spectral_no.yaml` (`model_type: spectral_no`)
 
-```
-Cavity Geometry (mesh nodes + 8 geometric features)
-         │
-         ├── Random Fourier Features  →  coordinate encoding φ(x,y)
-         │   [Frozen Gaussian kernel, Bochner's theorem]
-         │
-         └── Input function encoder  →  geometry embedding
-                    │
-             Mode embedding injection  (monopole / dipole / quadrupole)
-                    │
-         ┌──────────▼──────────┐
-         │   Shared Trunk       │  6 × GNOTBlock
-         │   [geometry learning] │     ├─ CrossAttention  (query geometry)
-         └──────────┬──────────┘     ├─ Global context injection
-                    │                 ├─ LinearAttention   (O(Nd²) not O(N²))
-         ┌──────────▼──────────┐     └─ GeometricGatingFFN (dense MoE, 4 experts)
-         │  Mode-Specific Heads │
-         │  Mode 0 → field + freq
-         │  Mode 1 → field + freq
-         │  Mode 2 → field + freq
-         └─────────────────────┘
-```
+Fiziksel Galerkin indirgemesiyle özdeğer çözen spektral neural operator (`src/models/spectral_no.py`).
 
-**~22M parameters.** Key components:
-
-| Component | Description |
-|---|---|
-| **RFF** | Random Fourier Features encode (x,y) as Gaussian kernel approximation |
-| **LinearAttention** | ELU+1 kernel trick — O(Nd²) instead of O(N²) for variable mesh sizes |
-| **GeometricGatingFFN** | Dense MoE with 4 experts; position-gated via temperature-0.5 softmax |
-| **AttentionPool** | Learned global pooling into a single context vector per geometry |
-| **Mode branches** | 3 independent physics branches after shared trunk; each predicts its own frequency |
+1. RFF + düğüm özellikleri → düğüm başına gömme
+2. Noktasal MLP → $M$ adet baz fonksiyonu $\psi_m(x)$ (`n_basis`, varsayılan 16);
+   yumuşak Dirichlet kapısı ile sınırda $\psi_m = 0$
+3. Rijitlik ve kütle matrisleri bazdan **kuadratürle kurulur** (ağırlık = `node_area`, $\nabla\psi$ autograd ile):
+   $L_{mn} = \int \nabla\psi_m\cdot\nabla\psi_n$, $M_{mn} = \int \psi_m\psi_n$
+4. $L u = \lambda M u$ → Cholesky + `torch.linalg.eigh`; özdeğerler **yapısal olarak sıralı**
+   (OT eşleştirmesi gerekmez), M-ortogonallik yapısal
+5. $\phi_k = \sum_m u_{k,m}\psi_m$; küçük bir MLP özdeğerleri frekansa çevirir
 
 ---
 
-## Data Pipeline
+## Veri Hattı
 
 ```
-FEM Solver  ──►  H5 file  ──►  Feature extraction  ──►  PKL dataset  ──►  Training
-(gmsh + skfem)              (geometry features)       (normalized)
+dataset_generator.py ──► H5 ──► convert.py ──► PKL/H5 (özellikli) ──► train.py
+   (gmsh + scikit-fem, P2 FEM)     (geometrik özellik çıkarımı, normalizasyon)
 ```
 
-**Physics:** Helmholtz eigenvalue problem on 2D PEC cavities:
-
-$$\nabla^2 E + k^2 E = 0, \quad E|_{\partial\Omega} = 0$$
-
-Solved with P2 finite elements (6 nodes/triangle). Three geometry types:
-- **Sharp**: random polygons (7–12 vertices)
-- **Smooth**: random Fourier series perturbations of a disk
-- **Calibration**: square, circle, annulus (analytically verifiable)
+Geometri tipleri: **sharp** (7–12 köşeli rastgele poligon), **smooth** (Fourier pertürbasyonlu disk),
+**calibration** (kare / daire / halka — analitik olarak doğrulanabilir, `--mode calibration`).
+Düğüm özellikleri: `x_norm, y_norm, dist_boundary, dir_bnd_x, dir_bnd_y, node_area,
+cos_principal, sin_principal` (8 adet; `val_dim: 12` ile 4 ek özellik).
 
 ---
 
-## Quick Start
-
-### Installation
+## Kurulum
 
 ```bash
-git clone https://github.com/koraygokceler/rf_cavity_neural_operator
+git clone https://github.com/KorayGokceler/rf_cavity_neural_operator
 cd rf_cavity_neural_operator
-pip install -r requirements.txt
+
+# gmsh için sistem kütüphaneleri (Debian/Ubuntu/Colab)
+sudo apt-get install -y libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
+
+pip install -r requirements.txt        # çalışma bağımlılıkları
+pip install -r requirements-dev.txt    # + pytest, ruff
 ```
 
-### Full Pipeline (Data → Train)
+Sadece CPU için `pip install torch` (PyPI) yeterlidir; GPU için pytorch.org'daki CUDA wheel'ini kullanın.
+
+---
+
+## Kullanım
+
+### Uçtan uca pipeline (üretim → dönüştürme → eğitim)
 
 ```bash
-python run_pipeline.py --config configs/default.yaml
+python run_pipeline.py --config configs/default.yaml       # GNOT
+python run_pipeline.py --config configs/spectral_no.yaml   # SpectralNO
+
+# Adım atlama: --skip-gen, --skip-convert, --skip-train
+# Bilinmeyen argümanlar train.py'ye aktarılır:
+python run_pipeline.py --config configs/default.yaml --skip-gen --skip-convert \
+    --override training.num_workers=2
 ```
 
-Or step by step:
+Parametreler config'in `data_gen` ve `data_convert` bölümlerinden okunur.
+
+### Adım adım
 
 ```bash
-# Step 1 — Generate FEM dataset (5000 geometries → H5)
-python src/data_gen/dataset_generator.py --n_total 5000
+# 1) FEM veri seti (H5)
+python src/data_gen/dataset_generator.py --h5_filename rf_cavity_5000_dataset.h5 --n_total 5000
 
-# Step 2 — Convert to training format (H5 → PKL with geometric features)
-python convert.py --h5_filepath rf_cavity_5000_dataset.h5 --output_path data/gnot_dataset_5k.pkl
+# 2) Özellik çıkarımı (H5 → PKL)
+python convert.py --h5_filepath rf_cavity_5000_dataset.h5 \
+    --output_path data/gnot_dataset_5k.pkl --modes 0 1 2
 
-# Step 3 — Train
+# 3) Eğitim
 python train.py --config configs/default.yaml
+python train.py --config configs/spectral_no.yaml
+
+# Config değerlerini CLI'dan ezmek (key=value, listeler JSON)
+python train.py --config configs/default.yaml \
+    --override model.embed_dim=128 training.batch_size=32 "training.mode_loss_weights=[1,2,2]"
+
+# Checkpoint'ten devam
+python train.py --config configs/default.yaml --resume path/to.ckpt
 ```
 
-### Fast Verification (1 iteration)
-
-```bash
-python train.py --config configs/default.yaml --override training.fast_dev_run=true
-```
+Loglar ve checkpoint'ler `training_logs/<exp_name>/` altına yazılır (TensorBoard: `tensorboard --logdir training_logs`).
+Checkpoint dosya adı metrik adındaki `/` yüzünden bir alt klasör içerir:
+`training_logs/<exp_name>/best-epoch=XX-val/field_rel_l2=0.XXXX.ckpt`.
 
 ### Inference
 
 ```bash
-python infer.py \
-  --checkpoint training_logs/gnot_5k_v1/best-epoch=XX-val_field_rel_l2=0.XXXX.ckpt \
-  --data_path data/gnot_dataset_5k.pkl \
-  --split val \
-  --num_samples 5 \
-  --output_dir inference_plots
+# Birkaç geometri için GT | Tahmin | Hata görselleri (PNG)
+python infer.py --checkpoint "training_logs/gnot_5k_v1/best-epoch=XX-val/field_rel_l2=0.XXXX.ckpt" \
+    --data_path data/gnot_dataset_5k.pkl --split val --num_samples 5 --output_dir inference_plots
+
+# Tüm split üzerinde metrikler (CSV/JSON, isteğe bağlı her geometri için grafik)
+python scripts/infer_val_all.py --checkpoint path/to.ckpt --split val \
+    --csv val_metrics.csv --json val_metrics.json
 ```
 
-The checkpoint path is under `training_logs/<exp_name>/best-*.ckpt`. Use `--split test` to evaluate on held-out geometries. Output is one PNG per geometry showing ground truth, prediction, and error for all 3 modes.
+`--deg_threshold` (varsayılan 0.05) yakın-dejenere mod eşiğini belirler; bu modlar subspace hatasıyla raporlanır.
+Hem GNOT hem SpectralNO checkpoint'leri aynı komutlarla yüklenir (`model_type` checkpoint hiperparametrelerinde saklıdır).
 
----
+### Smoke test (birkaç dakika, CPU)
 
-## Google Colab
-
-```python
-!git clone https://github.com/koraygokceler/rf_cavity_neural_operator
-%cd rf_cavity_neural_operator
-!pip install -r requirements.txt
-
-# Skip data generation if you already have an H5 file
-!python convert.py --h5_filepath rf_cavity_5000_dataset.h5 --output_path data/gnot_dataset_5k.pkl
-!python train.py --config configs/default.yaml
-```
-
-Set `num_workers: 0` in `configs/default.yaml` if you hit DataLoader errors on Colab.
-
----
-
-## Configuration
-
-All parameters live in `configs/default.yaml`. Any value can be overridden from CLI:
+Tüm hattın çalıştığını küçük bir veri setiyle doğrulamak için:
 
 ```bash
-python train.py --config configs/default.yaml \
-  --override model.embed_dim=128 training.batch_size=64 training.max_epochs=100
+python src/data_gen/dataset_generator.py --h5_filename smoke.h5 --n_total 12 --n_plot 0
+python convert.py --h5_filepath smoke.h5 --output_path data/smoke.pkl --modes 0 1 2
+python train.py --config configs/spectral_no.yaml --fast_dev_run \
+    --override dataset.data_path=data/smoke.pkl training.num_workers=0
 ```
 
-Key parameters:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `model.embed_dim` | 256 | Hidden dimension |
-| `model.n_shared_layers` | 6 | Shared trunk depth |
-| `model.n_mode_layers` | 1 | Per-mode branch depth |
-| `model.rff_dim` | 64 | Random Fourier Features output dim |
-| `model.rff_length_scale` | 0.1 | Gaussian kernel bandwidth |
-| `training.learning_rate` | 1e-4 | Adam base LR |
-| `training.scheduler` | custom_cosine | 10-epoch warmup + cosine decay |
-| `training.freq_weight` | 0.5 | Weight of frequency loss term |
-| `training.mode_loss_weights` | [1, 2, 2] | Per-mode loss scaling |
-| `training.permutation_invariant_dipole` | true | Swap mode 1/2 if lower loss |
-| `dataset.max_nodes` | 1024 | Node sub-sampling cap (VRAM limit) |
-
-Full reference: [`docs/08_CONFIG_REFERENCE.md`](docs/08_CONFIG_REFERENCE.md)
+`--fast_dev_run` tek bir train/val batch'i çalıştırır ve checkpoint yazmaz.
 
 ---
 
-## Loss
+## Testler ve CI
 
-$$\mathcal{L} = \underbrace{\text{RelL2}(\hat{E}, E) + 0.1\,\|{\hat{E} - E}\|_1}_{\text{field}} + \alpha \underbrace{\|\hat{f} - f\|^2}_{\text{frequency}} + \lambda \underbrace{\|\hat{E}_{\text{bnd}}\|^2}_{\text{boundary}}$$
+```bash
+python -m pytest -q              # tüm testler (tests/, ayarlar pyproject.toml'da)
+python -m pytest -q -m "not slow"
+ruff check .                     # sözdizimi hatası / tanımsız isim kontrolü
+```
 
-- **Permutation-invariant dipole:** for near-degenerate mode pairs (modes 1 & 2), both assignment orders are tried per batch; the lower-loss assignment is kept.
-- **Sign realignment:** ground-truth sign is flipped if −E is closer to the prediction (eigenfunction sign is arbitrary).
-- Default: α=0.5, λ=0.0 (boundary term disabled).
+Testler: RFF kernel özellikleri, geometri bazlı split (sızıntı yok), kayıp fonksiyonları
+(işaret hizalama, OT / Grassmann), model forward şekilleri ve gradyan akışı, config sistemi,
+entegrasyon. `@pytest.mark.gmsh` ile işaretli testler gmsh yüklenemezse otomatik atlanır.
+
+GitHub Actions (`.github/workflows/ci.yml`): CPU torch + gmsh sistem kütüphaneleri kurulur,
+`ruff check`, tüm giriş script'lerinin `--help` smoke testi ve `pytest` çalıştırılır.
 
 ---
 
-## Project Structure
+## Proje Yapısı
 
 ```
-rf_cavity_neural_operator/
 ├── configs/
-│   ├── default.yaml           # Main config (all parameters)
-│   └── kaggle_2gpu.yaml       # Multi-GPU config
+│   ├── default.yaml          # GNOT (ana config)
+│   ├── spectral_no.yaml      # SpectralNO
+│   ├── kaggle_2gpu.yaml      # çoklu GPU (DDP)
+│   ├── mode1_isolated.yaml   # tek mod deneyi
+│   └── ablation/             # özellik ablation config'leri
 ├── src/
-│   ├── models/gnot.py         # GNOTModel, RFF, LinearAttention, GeometricGatingFFN
-│   ├── data/
-│   │   ├── dataset.py         # GNOTDataset, gnot_collate_fn
-│   │   └── dataset_converter.py # H5 → PKL feature extraction
-│   ├── data_gen/
-│   │   └── dataset_generator.py # FEM solver (gmsh + skfem)
-│   ├── training/
-│   │   ├── lightning_module.py  # Loss, optimizer, scheduler
-│   │   └── callbacks.py         # Field visualization callback
-│   └── config.py              # Config loader with CLI override support
-├── tests/                     # 74 unit tests (pytest)
-├── docs/                      # Architecture & physics documentation
-├── train.py                   # Training entry point
-├── infer.py                   # Inference entry point
-├── convert.py                 # H5 → PKL conversion
-└── run_pipeline.py            # Full pipeline orchestrator
+│   ├── models/gnot.py, spectral_no.py
+│   ├── data/dataset.py, dataset_converter.py
+│   ├── data_gen/dataset_generator.py
+│   ├── training/lightning_module.py, callbacks.py
+│   └── config.py             # YAML + dotted-key override
+├── scripts/                  # infer_val_all, analyze_val_errors, diagnose_data_floor, ...
+├── tests/                    # pytest
+├── docs/                     # ayrıntılı dokümantasyon (Türkçe)
+├── run_pipeline.py  train.py  infer.py  convert.py
+└── validate_data.py  visualize_features.py  plot_splits.py  analyze_freq_separation.py  run_ablation.py
 ```
 
 ---
 
-## Tests
+## Dokümantasyon
 
-```bash
-pip install pytest
-python -m pytest tests/ --tb=short
-```
-
-74 tests covering: RFF kernel properties, dataset splits (no geometry leakage), loss correctness (sign realignment, permutation invariance), model forward shapes, config system, and end-to-end integration.
-
----
-
-## Documentation
-
-Detailed docs in [`docs/`](docs/):
-
-| Doc | Contents |
-|---|---|
-| [`01_DATA_GENERATION.md`](docs/01_DATA_GENERATION.md) | FEM solver, geometry types, mesh strategy |
-| [`02_FEATURE_ENGINEERING.md`](docs/02_FEATURE_ENGINEERING.md) | 8 geometric input features |
-| [`03_DATASET_LOADER.md`](docs/03_DATASET_LOADER.md) | Dataset class, geometry-based splitting |
-| [`04_MODEL_ARCHITECTURE.md`](docs/04_MODEL_ARCHITECTURE.md) | Full architecture with math |
-| [`05_TRAINING_SYSTEM.md`](docs/05_TRAINING_SYSTEM.md) | Loss, scheduler, mode handling |
-| [`08_CONFIG_REFERENCE.md`](docs/08_CONFIG_REFERENCE.md) | All config parameters |
-| [`09_PHYSICS_BACKGROUND.md`](docs/09_PHYSICS_BACKGROUND.md) | Helmholtz equation, FEM details |
+[`docs/00_DASHBOARD.md`](docs/00_DASHBOARD.md) ile başlayın. Öne çıkanlar:
+[veri üretimi](docs/01_DATA_GENERATION.md), [özellikler](docs/02_FEATURE_ENGINEERING.md),
+[model mimarisi](docs/04_MODEL_ARCHITECTURE.md), [eğitim](docs/05_TRAINING_SYSTEM.md),
+[inference](docs/06_INFERENCE.md), [doğrulama araçları](docs/07_VALIDATION_TOOLS.md),
+[config referansı](docs/08_CONFIG_REFERENCE.md), [fizik](docs/09_PHYSICS_BACKGROUND.md).
 
 ---
 
-## References
+## Referanslar
 
-- [GNOT: A General Neural Operator Transformer for Operator Learning](https://arxiv.org/abs/2302.14376) — Hao et al., 2023
+- [GNOT: A General Neural Operator Transformer for Operator Learning](https://arxiv.org/abs/2302.14376) — Hao vd., 2023
 - [Random Features for Large-Scale Kernel Machines](https://papers.nips.cc/paper/2007/hash/013a006f03dbc5392effeb8f18fda755-Abstract.html) — Rahimi & Recht, 2007

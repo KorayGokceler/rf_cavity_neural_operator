@@ -6,18 +6,18 @@
 
 ## 🟢 Düşük Zorluk — Hemen Uygulanabilir
 
-### 1. `visualize_features.py` Güncellemesi
-- **Durum:** Script eski 6-feature sistemine göre yazılmış. Mevcut 8-feature ile uyumsuz.
+### 1. `visualize_features.py` Güncellemesi ✅
+- **Durum:** Tamamlandı — feature haritası güncel 8-feature çıkarıcıya göre yazıldı.
 - **Çözüm:** Feature isimleri ve indeksleri güncellenmeli.
 - **Etki:** Debug kalitesi artar.
 
-### 2. Sayısal Inference Raporu
-- **Durum:** `infer.py` sadece görseller üretiyor, sayısal sonuçlar kaybolup gidiyor.
+### 2. Sayısal Inference Raporu ✅
+- **Durum:** Tamamlandı — `scripts/infer_val_all.py` tüm split için CSV/JSON/NPZ üretir; `scripts/analyze_val_errors.py` grafikleri çizer.
 - **Çözüm:** CSV/JSON ile Rel L2, frekans hatası, mode-bazlı istatistikler kaydet.
 - **Etki:** Deneyler arası karşılaştırma kolaylaşır.
 
-### 3. Hata Haritası (Error Map) Paneli
-- **Durum:** Inference'ta GT vs Pred var ama `|pred - target|` gösterilmiyor.
+### 3. Hata Haritası (Error Map) Paneli ✅
+- **Durum:** Tamamlandı — `infer.py` her mod için GT | Pred | Error sütunları çizer.
 - **Çözüm:** `infer.py`'a 3. sütun olarak hata haritası ekle.
 - **Etki:** Modelin nerede hata yaptığı hemen görülür.
 
@@ -29,7 +29,8 @@
 
 ## 🟡 Orta Zorluk — Önemli İyileştirmeler
 
-### 5. Data Augmentation (Geometri Dönüşümleri)
+### 5. Data Augmentation (Geometri Dönüşümleri) 🟨 kısmen
+- **Durum:** `training.augment: true` ile rotasyon + yansıma augmentasyonu mevcut (`configs/spectral_no.yaml`).
 - **Fikir:** Mevcut geometrilere rotasyon, aynalama, küçük pertürbasyon uygulayarak dataset'i büyüt.
 - **Dikkat:** PCA-based features (cos/sin_principal) rotasyonla bozulur → feature'lar yeniden hesaplanmalı.
 - **Etki:** Generalizasyon ↑, özellikle az veri durumunda.
@@ -67,7 +68,8 @@
 - **Zorluk:** $\nabla^2$ hesaplamak için mesh üzerinde ikinci türev gerekli.
 - **Etki:** Model fizik denklemlerini daha iyi öğrenir.
 
-### 12. Orthogonality Constraint
+### 12. Orthogonality Constraint 🟨 kısmen
+- **Durum:** SpectralNO'da M-ortogonallik yapısal (`eigh`); GNOT için `slot_ortho_weight` ve Grassmann/subspace kaybı mevcut.
 - **Fikir:** Modlar birbirine dik olmalı: $\int E_m \cdot E_n \, dA = 0$ (m ≠ n).
 - **Uygulama:** Aynı geometrinin 3 modu için ortogonalite loss'u.
 - **Zorluk:** Batch içinde aynı geometrinin tüm modlarını eşlemek gerekir.
@@ -92,13 +94,26 @@
 
 ---
 
+## 🧹 Repo Sağlığı (2026-09-24 denetimi)
+
+- ✅ `requirements.txt` alt sürüm sınırları; eksik `tensorboard` (TensorBoardLogger) ve `pandas` eklendi; `requirements-dev.txt` (pytest, ruff).
+- ✅ `pyproject.toml` (pytest `testpaths`/marker'lar, ruff kuralları) ve `.github/workflows/ci.yml`.
+- ⬜ `infer.py`: iki `main` ve iki `if __name__ == "__main__"` bloğu var → script inference'ı iki kez çalıştırıyor; `--deg_threshold` verilirse ikinci parser hata veriyor.
+- ⬜ `scripts/debug_modes.py` eski API'ye göre yazılmış (çalışmıyor); `run_ablation.py` ve `scripts/check_mode_data.py` argparse'sız (`--help` bile iş başlatıyor).
+- ⬜ `run_pipeline.py` alt süreçleri `"python"` ile başlatıyor → `sys.executable` kullanılmalı (venv/Colab uyumsuzluğu).
+- ⬜ `configs/spectral_no.yaml`: `data_convert.output_path` (`..._v12.pkl`) ile `dataset.data_path` (`gnot_dataset_5k.pkl`) farklı; olmayan `scripts/convert_dataset.py`'ye atıf var.
+- ⬜ Checkpoint adı `best-{epoch:02d}-{val/field_rel_l2:.4f}` → `/` yüzünden alt klasör oluşuyor.
+- ⬜ Büyük/tekrarlı dosyalar: `examples/2302.14376v3 (2).pdf` (4.3 MB, arXiv'de mevcut), `examples/rf_cavity.ipynb` (2 MB, çıktılar dahil) ve kopyası; `GNOT_Colab_Runner.ipynb` `.gitignore`'da olduğu halde takipte.
+
+---
+
 ## 📊 Öncelik Matrisi
 
 | ID | İyileştirme | Zorluk | Etki | Öncelik |
 |----|-------------|--------|------|---------|
-| 1 | visualize_features güncelle | 🟢 | Düşük | Hemen |
-| 2 | Sayısal inference raporu | 🟢 | Orta | Hemen |
-| 3 | Hata haritası | 🟢 | Orta | Hemen |
+| 1 | visualize_features güncelle | 🟢 | Düşük | ✅ Tamam |
+| 2 | Sayısal inference raporu | 🟢 | Orta | ✅ Tamam |
+| 3 | Hata haritası | 🟢 | Orta | ✅ Tamam |
 | 9 | Mixed Precision | 🟡 | Yüksek | Kısa vadeli |
 | 7 | Dynamic Batching | 🟡 | Orta | Kısa vadeli |
 | 5 | Data Augmentation | 🟡 | Yüksek | Orta vadeli |

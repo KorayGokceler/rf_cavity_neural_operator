@@ -1,6 +1,6 @@
 # 07 — Doğrulama & Debug Araçları
 
-> **Dosyalar:** `validate_data.py`, `visualize_features.py`, `plot_splits.py`, `run_ablation.py`, `scripts/check_mode_data.py`, `scripts/debug_modes.py`
+> **Dosyalar:** `validate_data.py`, `visualize_features.py`, `plot_splits.py`, `run_ablation.py`, `analyze_freq_separation.py`, `scripts/*.py`, `tests/`
 
 ---
 
@@ -13,7 +13,22 @@
 | **Split Önizleme** | `plot_splits.py` | Train/Val ayrımını görsel olarak kontrol |
 | **Ablation Study** | `run_ablation.py` | Feature encoding deney çerçevesi |
 | **Mode Veri Kontrolü** | `scripts/check_mode_data.py` | Her modun Y_field istatistiği |
-| **Mode Debug** | `scripts/debug_modes.py` | Gradyan izolasyonu ve sort-unsort testi |
+| **Mode Debug** | `scripts/debug_modes.py` | Gradyan izolasyonu ve sort-unsort testi (⚠️ eski API) |
+| **Frekans Ayrışması** | `analyze_freq_separation.py` | Mod 1/2 frekans farkı histogramı (yakın-dejenere oranı) |
+| **Tam Split Metrikleri** | `scripts/infer_val_all.py` | Checkpoint ile tüm split: rel-L2, subspace hatası, frekans MAE → CSV/JSON/NPZ |
+| **Hata Analizi** | `scripts/analyze_val_errors.py` | `infer_val_all` çıktısından hata grafikleri (`error_analysis/`) |
+| **Veri Hata Tabanı** | `scripts/diagnose_data_floor.py` | Etiket gürültüsü / veri kaynaklı hata tabanı teşhisi |
+| **Birim Testleri** | `tests/` | `python -m pytest -q` (CI'da her push'ta) |
+
+### Durum (2026-09-24 statik analiz)
+
+| Script | `--help` | Not |
+|--------|----------|-----|
+| `validate_data.py`, `visualize_features.py`, `plot_splits.py`, `analyze_freq_separation.py` | ✅ | |
+| `scripts/infer_val_all.py`, `analyze_val_errors.py`, `diagnose_data_floor.py` | ✅ | `--checkpoint` zorunlu (analyze hariç) |
+| `run_ablation.py` | ❌ argparse yok | `--help` dahil her çağrı doğrudan eğitimleri başlatır |
+| `scripts/check_mode_data.py` | ❌ argparse yok | Yol sabit: `data/gnot_dataset.pkl` |
+| `scripts/debug_modes.py` | ❌ | Eski API: `GNOTModel(theta_dim=, n_layers=)`, `batch['Theta_in']`, `model.shared_blocks`, `model.branch_net` artık yok → `TypeError` |
 
 ---
 
@@ -59,13 +74,14 @@ Her üçgenin `max_edge / min_edge` oranı hesaplanır:
 3. **Feature Dağılımları:** Her feature'un histogram + istatistikleri (μ, σ, medyan)
 4. **Dataset-Wide İstatistikler:** Frekans dağılımları, mesh boyutları, feature korelasyonları
 
-> **Not:** Bu script'te feature isimleri eski (6 feature) olarak kodlanmış. Mevcut 8-feature sistemiyle tam uyumlu olmayabilir. Güncellenmesi gerekebilir.
+> **Not:** Feature haritası güncel 8-feature çıkarıcıya göre güncellendi.
 
 ---
 
 ## 3. Ablation Study (`run_ablation.py`)
 
-4 deney yapılarak hangi feature'ların önemli olduğu test edilir:
+Şu an `run_ablation.py` yalnızca **A** ve **B** deneylerini çalıştırır (`configs/ablation/`); C ve D config'leri repoda yok.
+Planlanan deney seti:
 
 | Deney | Features | RFF | Amaç |
 |-------|----------|-----|------|
@@ -79,6 +95,8 @@ Her üçgenin `max_edge / min_edge` oranı hesaplanır:
 ---
 
 ## 4. Mode Debug (`scripts/debug_modes.py`)
+
+> ⚠️ **Güncel değil:** Script, kaldırılmış `Theta_in` girdisine ve eski `GNOTModel` imzasına dayanıyor; mevcut kodla çalışmaz. Aşağıdaki açıklama tasarım amacını belgeler.
 
 3 kritik test yapar:
 
@@ -117,7 +135,7 @@ Eğer tüm modların istatistikleri neredeyse aynıysa → veri üretiminde hata
 
 ## ⚠️ Geliştirme Önerileri
 
-1. **Otomatik CI Pipeline:** Bu test scriptlerini GitHub Actions ile her push'ta çalıştırma.
+1. ~~**Otomatik CI Pipeline**~~ ✅ `.github/workflows/ci.yml`: ruff + tüm giriş script'lerinin `--help` smoke testi + pytest.
 2. **Regression Test:** En iyi modelin Rel L2 değerini kaydet, yeni modeller daha kötüyse alarm ver.
 3. **Feature Importance (SHAP/Gradient):** Her feature'un modele katkısını SHAP veya integrated gradients ile ölç.
 

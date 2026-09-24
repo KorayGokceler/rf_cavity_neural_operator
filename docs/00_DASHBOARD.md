@@ -1,7 +1,7 @@
 # 🏠 RF Cavity Neural Operator — Dashboard
 
-> **Son Güncelleme:** 2026-05-06  
-> **Amaç:** 2D RF kavitelerin rezonans frekanslarını ve alan dağılımlarını GNOT ile tahmin etmek.
+> **Son Güncelleme:** 2026-09-24  
+> **Amaç:** 2D RF kavitelerin rezonans frekanslarını ve alan dağılımlarını neural operator'lerle (GNOT, SpectralNO) tahmin etmek.
 
 ---
 
@@ -17,7 +17,8 @@ rf_cavity_neural_operator/
 │   │   ├── dataset_converter.py      → [[02_FEATURE_ENGINEERING]]
 │   │   └── dataset.py                → [[03_DATASET_LOADER]]
 │   ├── 📂 models/
-│   │   └── gnot.py                   → [[04_MODEL_ARCHITECTURE]]
+│   │   ├── gnot.py                   → [[04_MODEL_ARCHITECTURE]]
+│   │   └── spectral_no.py            → SpectralNO (fiziksel Galerkin + eigh)
 │   └── 📂 training/
 │       ├── lightning_module.py        → [[05_TRAINING_SYSTEM]]
 │       └── callbacks.py              → [[05_TRAINING_SYSTEM]]
@@ -30,21 +31,32 @@ rf_cavity_neural_operator/
 ├── visualize_features.py             → [[07_VALIDATION_TOOLS]]
 ├── run_ablation.py                   → [[07_VALIDATION_TOOLS]]
 ├── plot_splits.py                    → [[07_VALIDATION_TOOLS]]
+├── analyze_freq_separation.py        → [[07_VALIDATION_TOOLS]]
 │
 ├── 📂 configs/
-│   ├── default.yaml                  → [[08_CONFIG_REFERENCE]]
+│   ├── default.yaml                  → [[08_CONFIG_REFERENCE]] (GNOT)
+│   ├── spectral_no.yaml              → SpectralNO (`model_type: spectral_no`)
 │   ├── kaggle_2gpu.yaml
 │   ├── mode1_isolated.yaml
 │   └── 📂 ablation/
 │
 ├── 📂 scripts/                       → [[07_VALIDATION_TOOLS]]
+│   ├── infer_val_all.py              → tüm split üzerinde metrik (CSV/JSON)
+│   ├── analyze_val_errors.py
+│   ├── diagnose_data_floor.py
 │   ├── check_mode_data.py
-│   └── debug_modes.py
+│   └── debug_modes.py                → ⚠️ eski API, şu an çalışmıyor
+│
+├── 📂 tests/                         → pytest (`python -m pytest -q`)
+├── 📂 .github/workflows/ci.yml       → CI: ruff + --help smoke + pytest
+├── requirements.txt / requirements-dev.txt
+├── pyproject.toml                    → yalnızca pytest / ruff ayarları
 │
 ├── 📂 examples/
 │   ├── GNOT_RF_Cavity_Colab.ipynb
 │   ├── rf_cavity.ipynb
-│   └── 2302.14376v3.pdf              → GNOT Orijinal Paper
+│   ├── rf_cavity_ipynb_adlı_not_defterinin_kopyası.ipynb  → rf_cavity.ipynb kopyası
+│   └── 2302.14376v3 (2).pdf          → GNOT Orijinal Paper (4.3 MB)
 │
 └── 📂 docs/                          → (Bu klasör)
 ```
@@ -59,10 +71,12 @@ rf_cavity_neural_operator/
 | **Feature Mühendisliği** | `dataset_converter.py`         | [[02_FEATURE_ENGINEERING]] |
 | **Dataset & DataLoader** | `dataset.py`                   | [[03_DATASET_LOADER]]      |
 | **GNOT Model**           | `gnot.py`                      | [[04_MODEL_ARCHITECTURE]]  |
+| **SpectralNO Model**     | `spectral_no.py`               | `configs/spectral_no.yaml` |
 | **Eğitim Sistemi**       | `lightning_module.py`          | [[05_TRAINING_SYSTEM]]     |
 | **Tahmin (Inference)**   | `infer.py`                     | [[06_INFERENCE]]           |
 | **Debug & Araçlar**      | `scripts/`, `validate_data.py` | [[07_VALIDATION_TOOLS]]    |
-| **Konfigürasyon**        | `default.yaml`                 | [[08_CONFIG_REFERENCE]]    |
+| **Konfigürasyon**        | `default.yaml`, `spectral_no.yaml` | [[08_CONFIG_REFERENCE]] |
+| **Test & CI**            | `tests/`, `.github/workflows/` | `python -m pytest -q`      |
 | **Fizik Arka Planı**     | —                              | [[09_PHYSICS_BACKGROUND]]  |
 | **Geliştirme Fikirleri** | —                              | [[10_IMPROVEMENT_IDEAS]]   |
 
@@ -109,6 +123,11 @@ rf_cavity_neural_operator/
 - [x] Config parametreleri tamamen wired (dead param yok)
 - [x] Permütasyon-invaryant dipol kaybı eklendi (mode 1/2 robustness)
 - [x] 5000 geometri dataseti hedefleniyor
+- [x] OT slot↔mod eşleştirmesi + Grassmann (subspace) kaybı (GNOT)
+- [x] SpectralNO: bazdan kurulan fiziksel Galerkin L/M + `eigh` (yapısal sıralama)
+- [x] pytest altyapısı (`pyproject.toml`) + GitHub Actions CI
+- [ ] `infer.py` çift `main`/`__main__` bloğu temizlenmeli (script iki kez çalışıyor)
+- [ ] `scripts/debug_modes.py` güncel GNOTModel API'sine taşınmalı
 
 ---
 
