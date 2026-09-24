@@ -79,6 +79,7 @@ rf_cavity_neural_operator/
 | **Test & CI**            | `tests/`, `.github/workflows/` | `python -m pytest -q`      |
 | **Fizik Arka Planı**     | —                              | [[09_PHYSICS_BACKGROUND]]  |
 | **Geliştirme Fikirleri** | —                              | [[10_IMPROVEMENT_IDEAS]]   |
+| **Matematiksel İyileştirmeler** | —                       | [[14_MATHEMATICAL_IMPROVEMENTS]] |
 
 ---
 
