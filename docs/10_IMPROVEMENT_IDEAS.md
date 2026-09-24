@@ -98,11 +98,11 @@
 
 - ✅ `requirements.txt` alt sürüm sınırları; eksik `tensorboard` (TensorBoardLogger) ve `pandas` eklendi; `requirements-dev.txt` (pytest, ruff).
 - ✅ `pyproject.toml` (pytest `testpaths`/marker'lar, ruff kuralları) ve `.github/workflows/ci.yml`.
-- ⬜ `infer.py`: iki `main` ve iki `if __name__ == "__main__"` bloğu var → script inference'ı iki kez çalıştırıyor; `--deg_threshold` verilirse ikinci parser hata veriyor.
-- ⬜ `scripts/debug_modes.py` eski API'ye göre yazılmış (çalışmıyor); `run_ablation.py` ve `scripts/check_mode_data.py` argparse'sız (`--help` bile iş başlatıyor).
-- ⬜ `run_pipeline.py` alt süreçleri `"python"` ile başlatıyor → `sys.executable` kullanılmalı (venv/Colab uyumsuzluğu).
-- ⬜ `configs/spectral_no.yaml`: `data_convert.output_path` (`..._v12.pkl`) ile `dataset.data_path` (`gnot_dataset_5k.pkl`) farklı; olmayan `scripts/convert_dataset.py`'ye atıf var.
-- ⬜ Checkpoint adı `best-{epoch:02d}-{val/field_rel_l2:.4f}` → `/` yüzünden alt klasör oluşuyor.
+- ✅ `infer.py`: çift `main`/`__main__` bloğu kaldırıldı (inference artık bir kez çalışıyor).
+- ✅ `scripts/debug_modes.py` silindi; `run_ablation.py` (`--only`, `--dry-run`) ve `scripts/check_mode_data.py` (`--data_path`) argparse'a kavuştu.
+- ✅ `run_pipeline.py` alt süreçleri `sys.executable` ile başlatıyor.
+- ✅ `configs/spectral_no.yaml`: `data_path` = `data_convert.output_path`; `val_dim: 12`; yanlış yorumlar düzeltildi.
+- ✅ Checkpoint adı `best-epoch=XX-val_rel_l2=Y.ckpt` (alt klasör sorunu giderildi) + `last.ckpt`.
 - ⬜ Büyük/tekrarlı dosyalar: `examples/2302.14376v3 (2).pdf` (4.3 MB, arXiv'de mevcut), `examples/rf_cavity.ipynb` (2 MB, çıktılar dahil) ve kopyası; `GNOT_Colab_Runner.ipynb` `.gitignore`'da olduğu halde takipte.
 
 ---

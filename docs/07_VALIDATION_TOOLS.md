@@ -13,7 +13,7 @@
 | **Split Önizleme** | `plot_splits.py` | Train/Val ayrımını görsel olarak kontrol |
 | **Ablation Study** | `run_ablation.py` | Feature encoding deney çerçevesi |
 | **Mode Veri Kontrolü** | `scripts/check_mode_data.py` | Her modun Y_field istatistiği |
-| **Mode Debug** | `scripts/debug_modes.py` | Gradyan izolasyonu ve sort-unsort testi (⚠️ eski API) |
+| **Mode Debug** | ~~`scripts/debug_modes.py`~~ (silindi) | Gradyan izolasyonu → `tests/test_model_forward.py` |
 | **Frekans Ayrışması** | `analyze_freq_separation.py` | Mod 1/2 frekans farkı histogramı (yakın-dejenere oranı) |
 | **Tam Split Metrikleri** | `scripts/infer_val_all.py` | Checkpoint ile tüm split: rel-L2, subspace hatası, frekans MAE → CSV/JSON/NPZ |
 | **Hata Analizi** | `scripts/analyze_val_errors.py` | `infer_val_all` çıktısından hata grafikleri (`error_analysis/`) |
@@ -26,9 +26,8 @@
 |--------|----------|-----|
 | `validate_data.py`, `visualize_features.py`, `plot_splits.py`, `analyze_freq_separation.py` | ✅ | |
 | `scripts/infer_val_all.py`, `analyze_val_errors.py`, `diagnose_data_floor.py` | ✅ | `--checkpoint` zorunlu (analyze hariç) |
-| `run_ablation.py` | ❌ argparse yok | `--help` dahil her çağrı doğrudan eğitimleri başlatır |
-| `scripts/check_mode_data.py` | ❌ argparse yok | Yol sabit: `data/gnot_dataset.pkl` |
-| `scripts/debug_modes.py` | ❌ | Eski API: `GNOTModel(theta_dim=, n_layers=)`, `batch['Theta_in']`, `model.shared_blocks`, `model.branch_net` artık yok → `TypeError` |
+| `run_ablation.py` | ✅ | `--only A B`, `--dry-run` |
+| `scripts/check_mode_data.py` | ✅ | `--data_path` |
 
 ---
 
@@ -96,7 +95,7 @@ Planlanan deney seti:
 
 ## 4. Mode Debug (`scripts/debug_modes.py`)
 
-> ⚠️ **Güncel değil:** Script, kaldırılmış `Theta_in` girdisine ve eski `GNOTModel` imzasına dayanıyor; mevcut kodla çalışmaz. Aşağıdaki açıklama tasarım amacını belgeler.
+> 🗑️ **Silindi:** Script eski API'ye (`Theta_in`, `theta_dim`, `shared_blocks`) dayandığı için kaldırıldı. Gradyan izolasyonu artık `tests/test_model_forward.py::test_gradient_flow_to_mode_field_blocks` ile test ediliyor. Aşağıdaki açıklama tarihsel tasarım amacını belgeler.
 
 3 kritik test yapar:
 

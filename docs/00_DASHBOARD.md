@@ -44,8 +44,7 @@ rf_cavity_neural_operator/
 │   ├── infer_val_all.py              → tüm split üzerinde metrik (CSV/JSON)
 │   ├── analyze_val_errors.py
 │   ├── diagnose_data_floor.py
-│   ├── check_mode_data.py
-│   └── debug_modes.py                → ⚠️ eski API, şu an çalışmıyor
+│   └── check_mode_data.py
 │
 ├── 📂 tests/                         → pytest (`python -m pytest -q`)
 ├── 📂 .github/workflows/ci.yml       → CI: ruff + --help smoke + pytest
@@ -126,8 +125,8 @@ rf_cavity_neural_operator/
 - [x] OT slot↔mod eşleştirmesi + Grassmann (subspace) kaybı (GNOT)
 - [x] SpectralNO: bazdan kurulan fiziksel Galerkin L/M + `eigh` (yapısal sıralama)
 - [x] pytest altyapısı (`pyproject.toml`) + GitHub Actions CI
-- [ ] `infer.py` çift `main`/`__main__` bloğu temizlenmeli (script iki kez çalışıyor)
-- [ ] `scripts/debug_modes.py` güncel GNOTModel API'sine taşınmalı
+- [x] `infer.py` çift `main`/`__main__` bloğu temizlendi
+- [x] `scripts/debug_modes.py` (eski API) silindi; gradyan izolasyonu testlerde
 
 ---
 
