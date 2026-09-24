@@ -35,7 +35,7 @@ def main():
         sharp_r     = dg.get('sharp_r_range', [0.02, 0.046])
         smooth_harm = dg.get('smooth_harmonics', [2, 8])
         gen_args = [
-            "python", "src/data_gen/dataset_generator.py",
+            sys.executable, "src/data_gen/dataset_generator.py",
             "--h5_filename",         dg.get('h5_filename', 'rf_cavity_1000_dataset.h5'),
             "--plot_dir",            dg.get('plot_dir', 'dataset_plots'),
             "--n_total",             str(dg.get('n_total', 1000)),
@@ -76,7 +76,7 @@ def main():
         dc = cfg.get('data_convert', {})
         max_samples = dc.get('max_samples', None)
         convert_args = [
-            "python", "convert.py",
+            sys.executable, "convert.py",
             "--h5_filepath",   dc.get('h5_filepath', 'rf_cavity_1000_dataset.h5'),
             "--output_path",   dc.get('output_path', 'data/gnot_dataset.pkl'),
             "--output_format", dc.get('output_format', 'pkl'),
@@ -101,7 +101,7 @@ def main():
     if not args.skip_train:
         print("\n" + "─"*60)
         print("[3/3] MODEL EĞİTİMİ (TRAINING) BAŞLIYOR...")
-        train_args = ["python", "train.py", "--config", args.config] + unknown_args
+        train_args = [sys.executable, "train.py", "--config", args.config] + unknown_args
         
         try:
             subprocess.run(train_args, check=True)

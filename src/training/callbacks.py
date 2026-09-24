@@ -2,8 +2,6 @@ import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 import numpy as np
-from io import BytesIO
-from PIL import Image
 from matplotlib.tri import Triangulation
 
 class FieldVisualizationCallback(pl.Callback):
@@ -17,6 +15,9 @@ class FieldVisualizationCallback(pl.Callback):
         if trainer.global_rank != 0:
             return
         if (trainer.current_epoch + 1) % self.log_every_n_epochs != 0:
+            return
+        # add_figure is TensorBoard-only (CSVLogger fallback has none) → skip.
+        if not (trainer.logger and hasattr(getattr(trainer.logger, 'experiment', None), 'add_figure')):
             return
 
         # Get a batch from validation dataloader
@@ -64,9 +65,23 @@ class FieldVisualizationCallback(pl.Callback):
             m = mask[i] if mask is not None else slice(None)
             valid_coords = coords[i, m].cpu().numpy()
 
+            # GNOT slots are unordered → align slot↔mode with the same OT
+            # matching the loss uses (SpectralNO: eigh order, identity).
+            perm = list(range(K))
+            if getattr(pl_module, 'model_type', 'gnot') != 'spectral_no':
+                from src.training.lightning_module import ot_match
+                perm = ot_match(outputs['freq'][i], batch['Y_freq'][i], preds[i], targets[i],
+                                mask[i] if mask is not None else None,
+                                getattr(pl_module, 'freq_match_weight', 0.5)).tolist()
+
             for k in range(K):  # one figure per mode (ascending freq order)
                 valid_targets = targets[i, m, k].cpu().numpy()
-                valid_preds = preds[i, m, k].cpu().numpy()
+                valid_preds = preds[i, m, perm[k]].cpu().numpy()
+                # Scale-invariant loss (e.g. SpectralNO, M-normalized output):
+                # bring the prediction to the target's norm for a fair plot.
+                if getattr(pl_module, 'scale_invariant_field', False):
+                    valid_preds = valid_preds * (np.linalg.norm(valid_targets)
+                                                 / max(np.linalg.norm(valid_preds), 1e-8))
 
                 # Sign-agnostic alignment for visualization (eigenmode sign)
                 err_pos = np.linalg.norm(valid_preds - valid_targets)
@@ -81,7 +96,7 @@ class FieldVisualizationCallback(pl.Callback):
                     title=f"Epoch {trainer.current_epoch} - Mode {k} (asc. freq) - Sample {i}"
                 )
 
-                if trainer.logger and hasattr(trainer.logger, 'experiment'):
+                if trainer.logger and hasattr(getattr(trainer.logger, 'experiment', None), 'add_figure'):
                     trainer.logger.experiment.add_figure(
                         f"Validation/Field_Comparison_s{i}_m{k}", fig,
                         global_step=trainer.global_step

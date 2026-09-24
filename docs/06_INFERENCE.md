@@ -85,6 +85,27 @@ python infer.py \
 python infer.py --checkpoint ... --freq_mean 5.2 --freq_std 3.1
 ```
 
+**Checkpoint dizini / config ile:**
+```bash
+# Dizin verilirse en düşük val_rel_l2'li best-*.ckpt (yoksa last.ckpt) seçilir
+python infer.py --checkpoint training_logs/spectral_no_v1 --data_path data/gnot_dataset_5k_v12.pkl
+# Config: dataset.data_path + inference.{checkpoint_path,output_dir,num_visualize}
+python infer.py --config configs/spectral_no.yaml
+```
+
+**Tutarlılık notları (train ↔ infer):**
+- Split oranları, seed, `feature_indices` ve gauge-feature sıfırlama checkpoint
+  `hparams['data_cfg']` içinden okunur (`build_dataset`) → eğitimdeki val/test
+  split'i ve input feature'ları birebir aynı. `max_nodes` bilinçli olarak
+  kullanılmaz (plot için tam mesh gerekir).
+- `--deg_threshold` verilmezse dejenere küme kuralı eğitimdekiyle aynıdır
+  (z-score frekans ekseninde mutlak eşik = `model.near_deg_threshold`).
+  Verilirse eski davranış: fiziksel frekansta göreli eşik.
+- `scale_invariant_field` ile eğitilmiş modellerde (SpectralNO) tahmin kolonları
+  hedef normuna ölçeklenir; raporlanan rel-L2 eğitim metriğiyle aynıdır.
+- `scripts/infer_val_all.py` ve `scripts/diagnose_data_floor.py` aynı
+  `load_model` / `build_dataset` yardımcılarını kullanır.
+
 ---
 
 ## ⚠️ Geliştirme Önerileri

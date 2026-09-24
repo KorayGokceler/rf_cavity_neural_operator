@@ -1,6 +1,5 @@
 import os
 import torch
-torch.set_float32_matmul_precision('medium')
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping, TQDMProgressBar
@@ -86,8 +85,16 @@ def main():
         print(f"GPUs: {n_gpus}, Strategy: {strategy}")
 
     model_type = getattr(cfg, 'model_type', 'gnot')  # 'gnot' | 'spectral_no'
+    # fp32 matmul precision.  'medium' (previous global default) lets PyTorch
+    # run fp32 matmuls in bf16 — on CPU (oneDNN) that is ~0.25 abs error on a
+    # 512x512 product, and it corrupts SpectralNO's Galerkin M/L assembly +
+    # Cholesky/eigh.  'high' = TF32 on Ampere GPUs, exact fp32 on CPU;
+    # SpectralNO uses 'highest'.  Override: training.matmul_precision.
+    matmul_precision = getattr(tc, 'matmul_precision', None) or (
+        'highest' if model_type == 'spectral_no' else 'high')
+    torch.set_float32_matmul_precision(matmul_precision)
     if local_rank == 0:
-        print(f"Model type: {model_type}")
+        print(f"Model type: {model_type} (float32 matmul precision: {matmul_precision})")
         print("\nLoading datasets...")
     feature_indices = getattr(dc, 'feature_indices', None)
     max_nodes = getattr(dc, 'max_nodes', None)
@@ -101,6 +108,9 @@ def main():
     if augment and local_rank == 0:
         print("Augmentation: rotation + reflection enabled for train split")
     random_seed = getattr(dc, 'random_seed', 42)
+    # Model init / DataLoader shuffle / augmentation için global seed
+    # (dataset split'i ayrıca aynı seed ile deterministik).
+    pl.seed_everything(random_seed, workers=True)
     train_dataset = GNOTDataset(dc.data_path, split='train',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
@@ -108,24 +118,53 @@ def main():
     val_dataset   = GNOTDataset(dc.data_path, split='val',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed, augment=False)
+                                random_seed=random_seed, augment=False,
+                                zero_gauge_features=augment)
     test_dataset  = GNOTDataset(dc.data_path, split='test',
                                 train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                                 feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed, augment=False)
+                                random_seed=random_seed, augment=False,
+                                zero_gauge_features=augment)
 
-    train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
-                              collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory, persistent_workers=tc.num_workers > 0,
-                              prefetch_factor=2 if tc.num_workers > 0 else None)
-    val_loader   = DataLoader(val_dataset,   batch_size=tc.batch_size,
-                              collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory, persistent_workers=tc.num_workers > 0,
-                              prefetch_factor=2 if tc.num_workers > 0 else None)
-    test_loader  = DataLoader(test_dataset,  batch_size=tc.batch_size,
-                              collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
-                              pin_memory=tc.pin_memory, persistent_workers=tc.num_workers > 0,
-                              prefetch_factor=2 if tc.num_workers > 0 else None)
+    # Boş split → ModelCheckpoint/EarlyStopping monitor'ü hiç loglanmaz ve
+    # eğitim sonunda anlaşılmaz bir hata verir; erken ve açık hata ver.
+    for _name, _ds in (('train', train_dataset), ('val', val_dataset), ('test', test_dataset)):
+        if len(_ds) == 0:
+            raise ValueError(
+                f"'{_name}' split is empty ({len(train_dataset.geom_to_samples)} geometries, "
+                f"train_ratio={dc.train_ratio}, val_ratio={dc.val_ratio}). "
+                f"Use more data or adjust dataset.train_ratio / dataset.val_ratio.")
+
+    # val_dim / num_field_modes veriden doğrulanır (val_dim: null → otomatik).
+    data_val_dim, data_n_modes = train_dataset.data_dims()
+    if getattr(mc, 'val_dim', None) in (None, 'auto'):
+        mc.val_dim = data_val_dim
+        if local_rank == 0:
+            print(f"val_dim auto-detected from data: {data_val_dim}")
+    elif int(mc.val_dim) != data_val_dim:
+        fi_note = (f" (after feature_indices={feature_indices})"
+                   if feature_indices is not None else "")
+        raise ValueError(
+            f"model.val_dim={mc.val_dim} but dataset '{dc.data_path}' provides "
+            f"{data_val_dim} input features per node{fi_note}. Set "
+            f"model.val_dim={data_val_dim} (or null to auto-detect), or re-convert the dataset.")
+    if int(mc.num_field_modes) != data_n_modes:
+        raise ValueError(
+            f"model.num_field_modes={mc.num_field_modes} but the dataset provides "
+            f"{data_n_modes} modes per geometry (data_convert.mode_indices). "
+            f"Set model.num_field_modes={data_n_modes}.")
+    if getattr(tc, 'mode_loss_weights', None) is not None and local_rank == 0:
+        print("WARNING: training.mode_loss_weights is set but is NOT used by the "
+              "set-prediction (OT / Grassmannian) loss - it has no effect.")
+
+    # pin_memory sadece CUDA varken anlamlı (CPU'da uyarı + gereksiz kopya).
+    pin_memory = bool(tc.pin_memory) and torch.cuda.is_available()
+    loader_kw = dict(collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
+                     pin_memory=pin_memory, persistent_workers=tc.num_workers > 0,
+                     prefetch_factor=2 if tc.num_workers > 0 else None)
+    train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True, **loader_kw)
+    val_loader   = DataLoader(val_dataset,   batch_size=tc.batch_size, **loader_kw)
+    test_loader  = DataLoader(test_dataset,  batch_size=tc.batch_size, **loader_kw)
 
     model = GNOTLightning(
         val_dim=mc.val_dim,
@@ -170,6 +209,15 @@ def main():
         bc_scale=getattr(mc, 'bc_scale', 0.02),
         rayleigh_weight=getattr(tc, 'rayleigh_weight', 0.1),
         orthonormalize_output=getattr(mc, 'orthonormalize_output', False),
+        scale_invariant_field=getattr(tc, 'scale_invariant_field', None),
+        # Extra SpectralNO kwargs (mass_ridge, area_feature_idx, ...) from model.spectral
+        spectral_kwargs=(dict(getattr(mc, 'spectral', None) or {}) or None),
+        # Stored in the checkpoint hparams so infer.py rebuilds the same split
+        # and the same input features (feature_indices, gauge zeroing).
+        data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
+                      random_seed=random_seed, feature_indices=feature_indices,
+                      max_nodes=max_nodes, augment=augment,
+                      zero_gauge_features=bool(augment)),
     )
 
     # Pass frequency statistics to the model for physical units logging
@@ -184,10 +232,14 @@ def main():
         print(f"[degeneracy] train: {n_deg}/{n_tot} geometries near-degenerate "
               f"({n_deg_modes} modes), thr={deg_thr:.4f}")
 
+    # NOTE: metrik adındaki '/' otomatik isim eklemede alt klasör açıyordu
+    # ("best-epoch=00-val/field_rel_l2=0.1234.ckpt"); isim elle verilir.
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"{tc.log_dir}/{tc.exp_name}",
-        filename="best-{epoch:02d}-{val/field_rel_l2:.4f}",
+        filename="best-epoch={epoch:02d}-val_rel_l2={val/field_rel_l2:.4f}",
+        auto_insert_metric_name=False,
         save_top_k=1,
+        save_last=True,               # last.ckpt → --resume / infer fallback
         monitor="val/field_rel_l2",
         mode="min",
         verbose=False
@@ -198,7 +250,15 @@ def main():
     viz_callback = FieldVisualizationCallback(log_every_n_epochs=tc.viz_every_n_epochs)
     progress_bar = TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate)
     
-    tb_logger = TensorBoardLogger(save_dir=tc.log_dir, name=tc.exp_name)
+    try:
+        tb_logger = TensorBoardLogger(save_dir=tc.log_dir, name=tc.exp_name)
+    except ModuleNotFoundError:
+        # tensorboard kurulu değilse eğitimi durdurma — CSV'ye logla
+        from pytorch_lightning.loggers import CSVLogger
+        if local_rank == 0:
+            print("WARNING: tensorboard not installed -> falling back to CSVLogger "
+                  "(pip install tensorboard for TB logging/figures).")
+        tb_logger = CSVLogger(save_dir=tc.log_dir, name=tc.exp_name)
     
     # Config'i TensorBoard'a logla (reproduceability)
     tb_logger.log_hyperparams(config_to_flat_dict(cfg))
@@ -227,7 +287,11 @@ def main():
         log_every_n_steps=tc.log_every_n_steps,
         enable_progress_bar=True,
         enable_model_summary=True,
-        fast_dev_run=tc.fast_dev_run
+        fast_dev_run=tc.fast_dev_run,
+        # SpectralNO computes ∇ψ with autograd, so val/test need grad mode too:
+        # the default inference_mode=True crashes trainer.test() with
+        # "element 0 of tensors does not require grad".
+        inference_mode=(model_type != 'spectral_no'),
     )
 
     if tc.fast_dev_run and local_rank == 0:

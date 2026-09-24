@@ -57,7 +57,7 @@ dataset:
 #  4. MODEL ARCHITECTURE
 # ─────────────────────────────────────────────────────
 model:
-  val_dim: 6
+  val_dim: 12                    # current converter output (train.py validates)
   grid_dim: 2
   theta_dim: 1
 

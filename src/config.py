@@ -24,7 +24,7 @@ class ConfigDict(dict):
                 self[key] = val
             return val
         except KeyError:
-            raise AttributeError(f"Config has no key '{key}'")
+            raise AttributeError(f"Config has no key '{key}'") from None
 
     def __setattr__(self, key, val):
         self[key] = val

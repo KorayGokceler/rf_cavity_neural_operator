@@ -3,7 +3,6 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 import torchmetrics
 import math
-import itertools
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from src.models.gnot import GNOTModel
@@ -235,6 +234,39 @@ def soft_procrustes_loss(E_hat, E_tgt, f_matched, sigma, mask=None):
     den = (E_eff ** 2).sum() + 1e-8
     return num / den
 
+def _boundary_distance(batch):
+    """[B, N] distance-to-boundary used by the boundary PINN term.
+
+    Prefers the dedicated 'Dist_bnd' key (always taken from the full feature
+    layout by the dataset), so feature-ablation runs whose Input_funcs lack
+    column 2 (e.g. feature_indices=[0, 1]) no longer crash / read a wrong
+    column.  Falls back to Input_funcs[..., 2]; +inf (= no boundary nodes)
+    when neither is available.
+    """
+    if batch.get('Dist_bnd') is not None:
+        return batch['Dist_bnd']
+    Y = batch['Input_funcs']
+    if Y.shape[-1] > 2:
+        return Y[:, :, 2]
+    return torch.full(Y.shape[:2], float('inf'), device=Y.device, dtype=Y.dtype)
+
+
+def _unit_columns(E, mask=None, eps=1e-6):
+    """Normalize every mode column of E [B, N, K] to unit L2 norm over the
+    valid (masked) nodes.  Padded nodes are zeroed.
+
+    Used for scale-invariant field losses: an eigenfunction is defined only up
+    to a scalar factor, and SpectralNO's output amplitude is *structurally
+    fixed* by M-orthonormality (Σ_i w_i φ_k(x_i)^2 = 1) while the targets are
+    max-normalized (max|Y| = 1).  Without this, even a perfectly shaped
+    prediction has a sign-agnostic rel-L2 floor of |1/‖t‖_w − 1| ≈ 1.1–1.4.
+    """
+    if mask is not None:
+        E = E * mask.to(E.dtype).unsqueeze(-1)
+    nrm = torch.sqrt((E ** 2).sum(dim=1, keepdim=True)).clamp(min=eps)  # [B, 1, K]
+    return E / nrm
+
+
 def _basis_conditioning_loss(M_mat: torch.Tensor) -> torch.Tensor:
     """Basis-conditioning regularizer for the physical-Galerkin SpectralNO.
 
@@ -293,8 +325,25 @@ class GNOTLightning(pl.LightningModule):
                  model_type='gnot',
                  bc_scale=0.02,
                  rayleigh_weight=0.1,
-                 orthonormalize_output=False):
+                 orthonormalize_output=False,
+                 scale_invariant_field=None,
+                 data_cfg=None,
+                 spectral_kwargs=None):
+        """
+        scale_invariant_field: compare unit-norm pred/target mode columns in
+            the field loss + rel-L2 metric.  None → auto: True for
+            'spectral_no' (M-normalized output) or when orthonormalize_output
+            is on (Gram-Schmidt unit-norm output); False for plain GNOT.
+        data_cfg: dataset settings used at train time (split ratios, seed,
+            feature_indices, zero_gauge_features ...).  Only stored in hparams
+            so infer.py can rebuild the exact same split / input features.
+        spectral_kwargs: extra SpectralNO kwargs (config `model.spectral`),
+            forwarded verbatim; ignored for GNOT.
+        """
         super().__init__()
+        if scale_invariant_field is None:
+            scale_invariant_field = (model_type == 'spectral_no') or bool(orthonormalize_output)
+        self.scale_invariant_field = bool(scale_invariant_field)
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
         self.lr_mode_specific = lr_mode_specific
@@ -303,6 +352,8 @@ class GNOTLightning(pl.LightningModule):
         self.model_type = model_type
 
         self.save_hyperparameters()
+        # Persist the resolved value (not None) so checkpoints are explicit.
+        self.hparams.scale_invariant_field = self.scale_invariant_field
 
         if model_type == 'spectral_no':
             from src.models.spectral_no import SpectralNO
@@ -318,6 +369,7 @@ class GNOTLightning(pl.LightningModule):
                 dropout=dropout,
                 use_checkpoint=use_checkpoint,
                 bc_scale=bc_scale,
+                **(spectral_kwargs or {}),   # e.g. mass_ridge, area_feature_idx ...
             )
         else:
             self.model = GNOTModel(
@@ -402,7 +454,7 @@ class GNOTLightning(pl.LightningModule):
         )
 
         # ── 1. Boundary PINN constraint ───────────────────────────────────────
-        dist_bnd = batch['Input_funcs'][:, :, 2]     # [B, N]
+        dist_bnd = _boundary_distance(batch)     # [B, N]
         bnd_mask   = (dist_bnd < 1e-4) & valid_mask  # [B, N]
         bnd_mask_f = bnd_mask.unsqueeze(-1).float()  # [B, N, 1]
         if bnd_mask.any():
@@ -412,18 +464,26 @@ class GNOTLightning(pl.LightningModule):
             loss_bnd = torch.zeros((), device=device)
         self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=False, batch_size=B, sync_dist=True)
 
+        # Scale gauge: eigenfunction amplitude is arbitrary (and fixed by
+        # M-orthonormality here) → compare unit-norm columns.
+        if self.scale_invariant_field:
+            loss_pred = _unit_columns(pred_field, valid_mask)
+            loss_true = _unit_columns(true_field, valid_mask)
+        else:
+            loss_pred, loss_true = pred_field, true_field
+
         # ── 2. Field + frequency loss (per-sample) ────────────────────────────
         loss_freq  = torch.zeros((), device=device)
         loss_field = torch.zeros((), device=device)
         rel_l2_per_mode = torch.zeros(K, device=device)
         rel_l2_count    = torch.zeros(K, device=device)
-        aligned_pred_field = pred_field.detach().clone()
+        aligned_pred_field = loss_pred.detach().clone()
 
         for b in range(B):
             fp_b   = f_pred[b]         # [K]  sorted by eigenvalue order
             ft_b   = f_true[b]         # [K]  sorted ascending
-            E_hat  = pred_field[b]     # [N, K]
-            E_tgt  = true_field[b]     # [N, K]
+            E_hat  = loss_pred[b]      # [N, K]
+            E_tgt  = loss_true[b]      # [N, K]
             m_b    = valid_mask[b]     # [N]
             m_f    = m_b.float().unsqueeze(-1)   # [N, 1]
 
@@ -483,6 +543,8 @@ class GNOTLightning(pl.LightningModule):
 
         loss_freq  = loss_freq  / max(B, 1)
         loss_field = loss_field / max(B, 1)
+        if not self.predict_frequency:   # same contract as the GNOT path
+            loss_freq = torch.zeros((), device=device)
 
         # ── 3. Basis-conditioning regularizer (replaces useless Rayleigh) ─────
         if (self.rayleigh_weight > 0.0
@@ -527,7 +589,7 @@ class GNOTLightning(pl.LightningModule):
 
         # Sign-aligned for R2/MAE metrics
         with torch.no_grad():
-            sign_aligned = aligned_pred_field.clone()
+            sign_aligned = self._rescale_to_target(aligned_pred_field, true_field, valid_mask)
             m_exp = valid_mask.float().unsqueeze(-1)
             pos_err = ((sign_aligned - true_field) ** 2 * m_exp).sum(dim=1)
             neg_err = ((sign_aligned + true_field) ** 2 * m_exp).sum(dim=1)
@@ -538,6 +600,15 @@ class GNOTLightning(pl.LightningModule):
             targets_valid = true_field[mask_km].contiguous()
 
         return total_loss, preds_valid, targets_valid
+
+    def _rescale_to_target(self, aligned_pred, true_field, valid_mask):
+        """For R2/MAE only: with a scale-invariant loss the (unit-norm) aligned
+        prediction is brought back to each target column's norm."""
+        if not self.scale_invariant_field:
+            return aligned_pred.clone()
+        m = valid_mask.to(true_field.dtype).unsqueeze(-1)
+        t_norm = torch.sqrt(((true_field * m) ** 2).sum(dim=1, keepdim=True))  # [B,1,K]
+        return aligned_pred * t_norm
 
     def _compute_loss_gnot(self, batch, prefix):
         outputs = self.model(batch)
@@ -551,7 +622,7 @@ class GNOTLightning(pl.LightningModule):
         eps = 1e-8
 
         # --- PINN BOUNDARY CONSTRAINT (applied to every mode column) -------
-        dist_bnd = batch['Input_funcs'][:, :, 2]     # [B, N]
+        dist_bnd = _boundary_distance(batch)     # [B, N]
         valid_mask = mask if mask is not None else torch.ones(B, N, dtype=torch.bool, device=pred_field.device)
         bnd_mask = (dist_bnd < 1e-4) & valid_mask    # [B, N]
         bnd_mask_f = bnd_mask.unsqueeze(-1).float()  # [B, N, 1]
@@ -576,19 +647,26 @@ class GNOTLightning(pl.LightningModule):
         # field) pairs and the loss discovers the correspondence — no ascending-
         # sort assumption, no cluster threshold, scales to any K.
         device = pred_field.device
+        # Scale-invariant variant (e.g. orthonormalize_output=True → unit-norm
+        # Gram-Schmidt columns can never match max-normalized targets).
+        if self.scale_invariant_field:
+            loss_pred = _unit_columns(pred_field, valid_mask)
+            loss_true = _unit_columns(true_field, valid_mask)
+        else:
+            loss_pred, loss_true = pred_field, true_field
         loss_freq = torch.zeros((), device=device)
         loss_field = torch.zeros((), device=device)
         loss_ortho = torch.zeros((), device=device)
         rel_l2_per_mode = torch.zeros(K, device=device)
         rel_l2_count = torch.zeros(K, device=device)
         # Detach for metric bookkeeping — no gradient needed past this point.
-        aligned_pred_field = pred_field.detach().clone()     # [B, N, K] — for R2/MAE
+        aligned_pred_field = loss_pred.detach().clone()      # [B, N, K] — for R2/MAE
 
         for b in range(B):
             fp_b = f_pred[b]                          # [K]
             ft_b = f_true[b]                          # [K]
-            E_hat = pred_field[b]                     # [N, K]
-            E_tgt = true_field[b]                     # [N, K]
+            E_hat = loss_pred[b]                      # [N, K]
+            E_tgt = loss_true[b]                      # [N, K]
             m_b   = valid_mask[b]                     # [N]
 
             # OT (Hungarian) assignment: predicted slot -> target mode j.
@@ -718,7 +796,7 @@ class GNOTLightning(pl.LightningModule):
         # so flip each mode column to the sign that minimises squared error before
         # handing off to R2/MAE — otherwise a valid -sign prediction gives R2≈-3.
         with torch.no_grad():
-            sign_aligned = aligned_pred_field.clone()
+            sign_aligned = self._rescale_to_target(aligned_pred_field, true_field, valid_mask)
             m_exp = valid_mask.float().unsqueeze(-1)          # [B, N, 1]
             pos_err = ((sign_aligned - true_field) ** 2 * m_exp).sum(dim=1)   # [B, K]
             neg_err = ((sign_aligned + true_field) ** 2 * m_exp).sum(dim=1)   # [B, K]
@@ -761,6 +839,11 @@ class GNOTLightning(pl.LightningModule):
         if self.global_rank != 0:
             return
 
+        # TensorBoard-only calls (add_scalar/add_histogram) are skipped when the
+        # logger is CSV / absent (e.g. tensorboard not installed).
+        exp = getattr(self.logger, 'experiment', None) if self.logger is not None else None
+        tb = exp if hasattr(exp, 'add_histogram') else None
+
         # Log Expert Load Balancing per block
         if hasattr(self.model, 'get_expert_calls_per_block'):
             calls_dict = self.model.get_expert_calls_per_block()
@@ -770,7 +853,8 @@ class GNOTLightning(pl.LightningModule):
                 if total_calls > 0:
                     percentages = (calls / total_calls) * 100
                     for i, p in enumerate(percentages):
-                        self.logger.experiment.add_scalar(f"Experts_{block_name}/E{i}", p, self.current_epoch)
+                        if tb is not None:
+                            tb.add_scalar(f"Experts_{block_name}/E{i}", p, self.current_epoch)
         
         metrics = self.trainer.logged_metrics
         epoch = self.trainer.current_epoch
@@ -794,7 +878,7 @@ class GNOTLightning(pl.LightningModule):
         print(f"\n{'━'*64}")
         print(f"  Epoch {epoch:>3d} │ Mode-Specific Relative L2 Field Error")
         print(f"{'─'*64}")
-        print(f"  Mode      │   Train Rel   │    Val Rel    │ Progress")
+        print("  Mode      │   Train Rel   │    Val Rel    │ Progress")
         print(f"{'─'*64}")
 
         for m_idx in mode_indices:
@@ -831,10 +915,10 @@ class GNOTLightning(pl.LightningModule):
         # Each entry in _val_rl2_buffer is a [K] tensor (one geometry), so
         # stacking gives [N_val, K]; one histogram per mode.
         _HIST_EVERY = 5
-        if self._val_rl2_buffer and self.current_epoch % _HIST_EVERY == 0:
+        if tb is not None and self._val_rl2_buffer and self.current_epoch % _HIST_EVERY == 0:
             rl_all = torch.stack(self._val_rl2_buffer)  # [N_val, K]
             for k in range(rl_all.shape[1]):
-                self.logger.experiment.add_histogram(
+                tb.add_histogram(
                     f'val/mode_{k}_rel_l2_dist',
                     rl_all[:, k],
                     global_step=self.current_epoch)
@@ -899,9 +983,11 @@ class GNOTLightning(pl.LightningModule):
         optimizer = torch.optim.AdamW(param_groups, weight_decay=self.hparams.weight_decay)
         
         if self.hparams.scheduler == 'onecycle':
+            # max_lr per param group: a scalar would overwrite lr_mode_specific
+            # / lr_freq_heads group LRs with the base lr.
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer, 
-                max_lr=self.hparams.lr, 
+                optimizer,
+                max_lr=[g['lr'] for g in optimizer.param_groups],
                 total_steps=self.trainer.estimated_stepping_batches,
                 pct_start=self.hparams.onecycle_pct_start,
                 div_factor=self.hparams.onecycle_div_factor,
@@ -941,7 +1027,10 @@ class GNOTLightning(pl.LightningModule):
                     "scheduler": scheduler,
                     "monitor": "val/field_rel_l2",
                     "interval": "epoch",
-                    "frequency": 1
+                    # Step only on epochs that actually ran validation, else
+                    # Lightning raises "monitor val/field_rel_l2 not available"
+                    # when check_val_every_n_epoch > 1.
+                    "frequency": max(1, int(getattr(self.trainer, 'check_val_every_n_epoch', 1) or 1)),
                 }
             }
         elif self.hparams.scheduler == 'custom_cosine':

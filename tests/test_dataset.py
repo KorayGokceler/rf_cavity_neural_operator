@@ -9,8 +9,6 @@ Invariants:
 - 'elements' / 'Theta_in' NOT in batch
 """
 import pickle
-import tempfile
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -259,3 +257,83 @@ def test_train_val_test_ratios_sum(synthetic_pkl):
     test = GNOTDataset(pkl_path, split='test', train_ratio=0.7, val_ratio=0.2)
     total = len(train) + len(val) + len(test)
     assert total == n_geoms
+
+
+# ── Regression tests (train-infra review) ────────────────────────────────────
+
+def _raw_input_funcs(ds, idx):
+    g_id = ds.active_geoms[idx]
+    s0 = ds.samples_metadata[ds.geom_to_samples[g_id][0]]
+    return ds.geometry_pool[s0['geom_id']]['Input_funcs']
+
+
+def test_split_identical_to_legacy_global_seed(synthetic_pkl):
+    """Local RandomState must reproduce the old np.random.seed() split."""
+    pkl_path, n_geoms, _ = synthetic_pkl
+    ds = GNOTDataset(pkl_path, split='train', random_seed=7)
+    np.random.seed(7)
+    legacy = np.random.permutation(list(range(n_geoms)))[:int(n_geoms * 0.8)]
+    assert ds.active_geoms == [int(g) for g in legacy]
+
+
+def test_augment_does_not_mutate_pool_and_zeros_gauge(synthetic_pkl):
+    pkl_path, _, _ = synthetic_pkl
+    ds = GNOTDataset(pkl_path, split='train', augment=True)
+    before = np.array(_raw_input_funcs(ds, 0), copy=True)
+    item = ds[0]
+    assert np.array_equal(_raw_input_funcs(ds, 0), before)
+    assert torch.all(item['Input_funcs'][:, 6:8] == 0)
+    # x_norm / y_norm follow the rotated coordinates
+    assert torch.allclose(item['Input_funcs'][:, :2], item['X'])
+
+
+def test_zero_gauge_features_for_eval_split_of_augmented_run(synthetic_pkl):
+    """val/test of an augmented run must see the same zeroed channels as train."""
+    pkl_path, _, _ = synthetic_pkl
+    val = GNOTDataset(pkl_path, split='val', zero_gauge_features=True)
+    assert torch.all(val[0]['Input_funcs'][:, 6:8] == 0)
+    plain = GNOTDataset(pkl_path, split='val')
+    assert not torch.all(plain[0]['Input_funcs'][:, 6:8] == 0)
+
+
+def test_feature_subset_keeps_dist_bnd(synthetic_pkl):
+    """Ablation subsets without column 2 still expose dist_to_boundary."""
+    pkl_path, _, n_modes = synthetic_pkl
+    ds = GNOTDataset(pkl_path, split='train', feature_indices=[0, 1], augment=True)
+    item = ds[0]
+    assert item['Input_funcs'].shape[1] == 2
+    assert torch.allclose(item['Dist_bnd'], torch.from_numpy(_raw_input_funcs(ds, 0)[:, 2]))
+    assert ds.data_dims() == (2, n_modes)
+    batch = gnot_collate_fn([ds[0], ds[1]])
+    assert batch['Dist_bnd'].shape == batch['Mask'].shape
+
+
+def test_data_dims_full_layout(synthetic_pkl):
+    pkl_path, _, n_modes = synthetic_pkl
+    ds = GNOTDataset(pkl_path, split='train')
+    assert ds.data_dims() == (8, n_modes)
+
+
+def test_incomplete_geometries_are_dropped(tmp_path):
+    pkl_path, n_geoms, n_modes = _build_synthetic_pkl(tmp_path, n_geoms=10, n_modes=3)
+    with open(pkl_path, 'rb') as f:
+        data = pickle.load(f)
+    # geometry 0 loses its last mode (converter skips m_idx >= len(freqs))
+    data['samples'] = [s for s in data['samples']
+                       if not (s['geom_id'] == 0 and int(s['Theta'][0]) == n_modes - 1)]
+    with open(pkl_path, 'wb') as f:
+        pickle.dump(data, f)
+    all_geoms = set()
+    for split in ('train', 'val', 'test'):
+        ds = GNOTDataset(pkl_path, split=split)
+        all_geoms |= set(ds.active_geoms)
+        if len(ds) >= 2:
+            gnot_collate_fn([ds[0], ds[1]])   # must not fail on torch.stack
+    assert 0 not in all_geoms and len(all_geoms) == n_geoms - 1
+
+
+def test_eval_subsampling_is_deterministic(synthetic_pkl):
+    """val/test node sub-sampling must not change between epochs."""
+    pkl_path, _, _ = synthetic_pkl
+    ds = GNOTDataset(pkl_path, split='val', max_nodes=10)
+    assert torch.equal(ds[0]['X'], ds[0]['X'])

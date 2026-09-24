@@ -41,9 +41,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from src.data.dataset import GNOTDataset, gnot_collate_fn
-from src.training.lightning_module import GNOTLightning
-from infer import _orthonormalize_np, _subspace_rel_l2, _near_degenerate_clusters
+from src.data.dataset import gnot_collate_fn
+from infer import (_orthonormalize_np, _subspace_rel_l2, _near_degenerate_clusters,
+                   _ot_match_np, build_dataset, load_model, rescale_to_target)
 
 # First Dirichlet eigenvalue roots (Bessel zeros) for the unit disk.
 _J0_1 = 2.404825557695773   # 1st zero of J0  -> monopole
@@ -199,7 +199,7 @@ def section_a(model, dataset, device, batch_size, deg_threshold):
             P = out['field']                       # [B,N,K]
             T = batch['Y_field']                   # [B,N,K]
             M = batch['Mask']                      # [B,N]
-            IF = batch['Input_funcs']              # [B,N,8]  (idx5 = node_area)
+            IF = batch['Input_funcs']              # [B,N,val_dim] (12 = current converter; idx5 = node_area)
             gids = batch['geom_id'].squeeze(-1).cpu().numpy()
             ft = batch['Y_freq']                   # [B,K] normalised, ascending
             if fs:
@@ -220,6 +220,13 @@ def section_a(model, dataset, device, batch_size, deg_threshold):
                 m = M[i].cpu().numpy().astype(bool)
                 Eh = P[i][m].cpu().numpy()                 # [Nv,K]
                 Et = T[i][m].cpu().numpy()                 # [Nv,K]
+                # Same slot↔mode alignment / amplitude gauge as training.
+                if getattr(model, 'model_type', 'gnot') != 'spectral_no':
+                    perm = _ot_match_np(out['freq'][i].cpu().numpy(), ft[i].cpu().numpy(),
+                                        Eh, Et, freq_w=getattr(model, 'freq_match_weight', 0.5))
+                    Eh = Eh[:, perm]
+                if getattr(model, 'scale_invariant_field', False):
+                    Eh = rescale_to_target(Eh, Et)
                 w = IF[i][m, 5].cpu().numpy().astype(np.float64)
                 w = np.clip(w, 1e-8, None)
 
@@ -395,10 +402,7 @@ def main():
     ap.add_argument('--json', default=None, help='optional path to dump report')
     args = ap.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Loading checkpoint: {args.checkpoint}")
-    model = GNOTLightning.load_from_checkpoint(args.checkpoint)
-    model.eval().to(device)
+    model, device = load_model(args.checkpoint)
 
     shape_map = {}
     if args.raw_h5 and os.path.exists(args.raw_h5):
@@ -409,7 +413,7 @@ def main():
     splits = ['train', 'val', 'test'] if args.split == 'all' else [args.split]
     full_report = {}
     for sp in splits:
-        ds = GNOTDataset(args.data_path, split=sp)
+        ds = build_dataset(model, args.data_path, sp)   # same split/features as training
         if getattr(ds, 'stats', None):
             model.freq_stats = ds.stats
         a = section_a(model, ds, device, args.batch_size, args.deg_threshold)

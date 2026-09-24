@@ -1,6 +1,5 @@
 """Tests for src/config.py — YAML loading, override parsing, flatten."""
 import pytest
-import yaml
 
 from src.config import ConfigDict, _deep_update, load_config, config_to_flat_dict
 
