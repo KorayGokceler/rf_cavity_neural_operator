@@ -85,9 +85,11 @@ class GNOTDataset(Dataset):
             self.samples_metadata = all_samples
             for i, s in enumerate(all_samples):
                 geom_to_samples[int(s['geom_id'])].append(i)
-            # GNN removed — free triangle connectivity from RAM, it's no longer needed at training time
-            for geom in self.geometry_pool.values():
-                geom.pop('elements', None)
+            # Triangles are only kept for the full mesh (SpectralNO assembly='p1');
+            # a random node subset breaks the connectivity → free them then.
+            if max_nodes is not None:
+                for geom in self.geometry_pool.values():
+                    geom.pop('elements', None)
 
         # 2. Order each geometry's per-mode samples by their mode index so the
         #    K field columns are in a consistent (mode 0, 1, 2 ...) order before
@@ -206,6 +208,8 @@ class GNOTDataset(Dataset):
             geom = f['geometry_pool'][str(first.attrs['geom_id'])]
             x = np.asarray(geom['X'][:])
             input_features = np.asarray(geom['Input_funcs'][:])
+            scale = geom.attrs.get('scale', None)
+            elements = np.asarray(geom['elements'][:]) if 'elements' in geom else None
             mode_fields = []
             raw_freqs = []
             for s_idx in sample_indices:
@@ -217,6 +221,8 @@ class GNOTDataset(Dataset):
             geom = self.geometry_pool[first['geom_id']]
             x = np.asarray(geom['X'])
             input_features = np.asarray(geom['Input_funcs'])
+            scale = geom.get('scale', None)
+            elements = geom.get('elements', None)
             mode_fields = []
             raw_freqs = []
             for s_idx in sample_indices:
@@ -301,19 +307,34 @@ class GNOTDataset(Dataset):
             dist_bnd = input_features[:, 2].copy()
         else:
             dist_bnd = np.full(input_features.shape[0], np.inf, dtype=np.float32)
+        # node_area (col 5, full layout): lumped-mass quadrature weight for the
+        # area-weighted field loss (training.area_weighted_field).
+        if input_features.shape[1] > 5:
+            area = input_features[:, 5].copy()
+        else:
+            area = np.ones(input_features.shape[0], dtype=np.float32)
 
         # Ablation: select feature subset if feature_indices is set
         if self.feature_indices is not None:
             input_features = input_features[:, self.feature_indices]
 
-        return {
+        item = {
             'X': torch.from_numpy(np.ascontiguousarray(x)).float(),
             'Input_funcs': torch.from_numpy(np.ascontiguousarray(input_features)).float(),
             'Y_field': torch.from_numpy(np.ascontiguousarray(y_field)).float(),  # [N, K]
             'Y_freq': torch.from_numpy(np.ascontiguousarray(norm_freqs)).float(),  # [K]
             'Dist_bnd': torch.from_numpy(np.ascontiguousarray(dist_bnd)).float(),  # [N]
+            'Area': torch.from_numpy(np.ascontiguousarray(area)).float(),          # [N]
             'geom_id': torch.tensor([int(g_id)], dtype=torch.long),
         }
+        # Physical length of one normalised unit [m] (newer converter output
+        # only): SpectralNO turns its eigenvalue into GHz with it.
+        if scale is not None:
+            item['Scale'] = torch.tensor(float(scale), dtype=torch.float32)
+        # Mesh triangles (full mesh only — sub-sampling reindexes the nodes).
+        if elements is not None and self.max_nodes is None:
+            item['Elements'] = torch.from_numpy(np.asarray(elements, dtype=np.int64))  # [T, 3]
+        return item
 
 
 # Backwards/forwards-compatible alias used by some scripts/tests.
@@ -350,4 +371,13 @@ def gnot_collate_fn(batch):
     if all('Dist_bnd' in item for item in batch):
         out['Dist_bnd'] = pad_sequence([item['Dist_bnd'] for item in batch],
                                        batch_first=True, padding_value=0.0)  # [B, N]
+    if all('Area' in item for item in batch):
+        out['Area'] = pad_sequence([item['Area'] for item in batch],
+                                   batch_first=True, padding_value=0.0)      # [B, N]
+    if all('Scale' in item for item in batch):
+        out['Scale'] = torch.stack([item['Scale'] for item in batch])       # [B]
+    if all('Elements' in item for item in batch):
+        # Padded triangles (0, 0, 0) have zero area → contribute nothing.
+        out['Elements'] = pad_sequence([item['Elements'] for item in batch],
+                                       batch_first=True, padding_value=0)     # [B, T, 3]
     return out

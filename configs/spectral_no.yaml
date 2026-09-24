@@ -30,7 +30,7 @@ data_gen:
   n_total: 5000
   n_plot: 100
   generation_mode: "random"
-  n_eigen_modes: 3
+  n_eigen_modes: 6              # store 6 modes (λ3–λ4 gap < 10% in ~5% of shapes); training still uses mode_indices
   eigen_sigma: 500.0
   mesh_size_min: 0.0012
   mesh_size_max: 0.005
@@ -62,7 +62,7 @@ dataset:
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
-  max_nodes: 1024
+  max_nodes: null               # no random node sub-sampling: 1024-node subsets add ~4-5% Ritz-eigenvalue noise
 
 
 # ─────────────────────────────────────────────────────
@@ -88,9 +88,12 @@ model:
   # BC gate smoothness: gate = 2*sigmoid(dist_bnd/bc_scale) - 1  (= 0 at boundary)
   bc_scale: 0.02
 
-  # Optional extra SpectralNO kwargs, forwarded verbatim (train.py → spectral_kwargs),
-  # e.g. when feature_indices moves node_area / dist_bnd to other columns:
-  # spectral:
+  # Extra SpectralNO kwargs, forwarded verbatim (train.py → spectral_kwargs),
+  # e.g. area_feature_idx when feature_indices moves node_area to another column.
+  spectral:
+    physics_freq: true          # f = c·√λ/(2π·scale) — exact, no learned head (needs 'scale' in the PKL)
+    assembly: p1                # exact P1 mass/stiffness per mesh triangle: true Ritz upper bounds,
+                                # no autograd (much faster); needs dataset.max_nodes: null
   #   area_feature_idx: 5
   #   mass_ridge: 1.0e-4
   #   stiff_ridge: 1.0e-4
@@ -129,6 +132,7 @@ training:
   # M-orthonormal (fixed amplitude) while targets are max-normalized, so a
   # scale-sensitive rel-L2 has a ~1.1-1.4 floor.  null → auto (true here).
   scale_invariant_field: null
+  area_weighted_field: true     # field loss/metric weighted by node area (≈ ∫_Ω), not by node count
   rayleigh_weight: 0.1          # Now drives the basis-conditioning regularizer
                                 # (old Rayleigh term was structurally ~0)
 

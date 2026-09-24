@@ -79,6 +79,10 @@ rf_cavity_neural_operator/
 | **Fizik Arka Planı**     | —                              | [[09_PHYSICS_BACKGROUND]]  |
 | **Geliştirme Fikirleri** | —                              | [[10_IMPROVEMENT_IDEAS]]   |
 | **Matematiksel İyileştirmeler** | —                       | [[14_MATHEMATICAL_IMPROVEMENTS]] |
+| **SciML Literatür Taraması** | —                          | [[15_SCIML_LITERATURE_REVIEW]] |
+| **Spektral Geometri Analizi** | —                         | [[16_SPECTRAL_GEOMETRY_ANALYSIS]] |
+| **Sayısal Analiz İncelemesi** | —                         | [[17_NUMERICAL_ANALYSIS_REVIEW]] |
+| **Colab Notebook**       | `RF_Cavity_Colab.ipynb`        | README → Kullanım          |
 
 ---
 

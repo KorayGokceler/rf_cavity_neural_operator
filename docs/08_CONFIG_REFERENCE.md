@@ -63,7 +63,7 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `train_ratio` | 0.8 | Eğitim oranı |
 | `val_ratio` | 0.1 | Doğrulama oranı (test = 0.1) |
 | `random_seed` | 42 | Geometri split seed'i |
-| `max_nodes` | 1024 | Sub-sampling limiti (null = devre dışı) |
+| `max_nodes` | 1024 | Sub-sampling limiti (null = devre dışı). SpectralNO `assembly: p1` için **null** olmalı (üçgenler yalnız tam mesh'te taşınır) |
 | `active_mode_index` | null | KULLANILMIYOR (tek mod için convert.py --modes kullanın) |
 | `feature_indices` | null | Ablation feature alt kümesi (augment tam layout’ta, seçim sonra yapılır) |
 
@@ -87,6 +87,8 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `use_checkpoint` | false | Gradient checkpointing | true = VRAM↓, hız↓ |
 | `n_basis` | 16 | SpectralNO Galerkin baz boyutu M (GNOT’ta kullanılmıyor) | — |
 | `spectral` | (yok) | SpectralNO ek kwargs (ör. `area_feature_idx`, `mass_ridge`), `spectral_kwargs` olarak aynen iletilir | — |
+| `spectral.assembly` | `nodal` (`spectral_no.yaml`: `p1`) | `p1`: P1 interpolant + üçgen başına tam kütle/rijitlik → gerçek Ritz üst sınırı, autograd yok | — |
+| `spectral.physics_freq` | false (`spectral_no.yaml`: true) | $f = c\sqrt{\lambda}/(2\pi\,\text{scale})$; PKL'de `scale` gerekir (güncel `convert.py`) | — |
 
 > Üst seviye `model_type: gnot | spectral_no` modeli seçer (varsayılan `gnot`).
 
@@ -103,6 +105,7 @@ python train.py --config configs/default.yaml --override model.embed_dim=128 tra
 | `smoothness_weight` | 0.0 | Boundary loss ağırlığı (λ); 0 = kapalı |
 | `mode_loss_weights` | null | KULLANILMIYOR (OT / Grassmannian set loss); set edilirse train.py uyarır |
 | `scale_invariant_field` | null | Field loss + rel-L2 birim-norm kolonlarla (genlik gauge). null = spectral_no veya orthonormalize_output için true |
+| `area_weighted_field` | false (config'lerde true) | Field loss + rel-L2 düğüm alanıyla ağırlıklı (lumped mass ≈ $\int_\Omega$) |
 | `matmul_precision` | (yok) | fp32 matmul hassasiyeti; varsayılan GNOT=`high`, SpectralNO=`highest` (`medium` = bf16, CPU’da büyük hata) |
 | `check_val_every_n_epoch` | 5 (train.py), 1 (config) | ReduceLROnPlateau bu sıklıkla adım atar |
 | `augment` | false | Rotasyon+yansıma (train); cos/sin_principal (6-7) TÜM split’lerde sıfırlanır |

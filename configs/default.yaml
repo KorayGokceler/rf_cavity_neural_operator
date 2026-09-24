@@ -17,7 +17,7 @@ data_gen:
   generation_mode: "random"     # "random" veya "calibration"
   
   # FEM Solver (fem_order P2 sabit — değiştirmek veri formatını kırar)
-  n_eigen_modes: 3              # Çözülecek eigenmode sayısı (k)
+  n_eigen_modes: 6              # Çözülecek eigenmode sayısı (k); eğitim mode_indices kullanır
   eigen_sigma: 500.0            # Shift-invert sigma
   
   # Mesh control
@@ -121,6 +121,7 @@ training:
   # Field loss on unit-norm columns (eigenmode scale gauge).
   # null → auto: true for spectral_no / orthonormalize_output, false otherwise.
   scale_invariant_field: null
+  area_weighted_field: true     # Field loss/metrik düğüm alanıyla ağırlıklı (≈ ∫_Ω), düğüm sayısıyla değil
 
   # LR Scheduler
   scheduler: "custom_cosine"

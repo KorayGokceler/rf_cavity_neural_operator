@@ -323,6 +323,7 @@ class RFCavityToGNOT:
                     g_sub = geom_grp.create_group(str(g_id))
                     g_sub.create_dataset('X', data=g_data['X'], compression="gzip")
                     g_sub.create_dataset('Input_funcs', data=g_data['Input_funcs'], compression="gzip")
+                    g_sub.create_dataset('elements', data=g_data['elements'], compression="gzip")
                     if 'shape_type' in g_data:
                         g_sub.attrs['shape_type'] = g_data['shape_type']
                     g_sub.attrs['scale'] = g_data['scale']

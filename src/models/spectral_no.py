@@ -60,6 +60,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.models.gnot import RandomFourierFeatures, _normalize_peak, _check_val_dim
 
+_C0 = 299792458.0  # speed of light [m/s] (same constant as the data generator)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Numerical helpers
@@ -96,6 +98,37 @@ class _BroadenedEigh(torch.autograd.Function):
             inner = inner + torch.diag_embed(g_vals)
         g_A = vecs @ inner @ vecs_t
         return 0.5 * (g_A + g_A.transpose(-1, -2)), None
+
+
+def _p1_galerkin(basis: torch.Tensor, X: torch.Tensor, elems: torch.Tensor):
+    """Exact P1 mass / stiffness Gram matrices of nodal basis values.
+
+    ψ_m is read as the piecewise-linear interpolant of basis[:, :, m] on the
+    mesh triangles, so per triangle T with vertices (0, 1, 2):
+        ∇ψ = g / (2A_s),  g = Σ_i ψ_i · R(p_{i+2} − p_{i+1})   (R = rot −90°)
+        L_T = g gᵀ / (4|A|),    M_T = |A|/12 · (Σ_i ψ_i ψ_iᵀ + s sᵀ),  s = Σ_i ψ_i
+    (consistent mass).  Padded triangles (0, 0, 0) have zero area and add 0.
+
+    Args:
+        basis [B, N, M], X [B, N, 2], elems [B, T, 3] (node indices).
+    Returns:
+        M_mat, L_mat [B, M, M].
+    """
+    b = torch.arange(basis.shape[0], device=basis.device)[:, None, None]
+    idx = elems.long()
+    P = X[b, idx]                                     # [B, T, 3, 2]
+    Psi = basis[b, idx]                               # [B, T, 3, M]
+    Pj, Pk = P.roll(-1, dims=2), P.roll(-2, dims=2)
+    G = torch.stack([Pj[..., 1] - Pk[..., 1], Pk[..., 0] - Pj[..., 0]], dim=-1)  # [B,T,3,2]
+    e1, e2 = P[:, :, 1] - P[:, :, 0], P[:, :, 2] - P[:, :, 0]
+    area = 0.5 * (e1[..., 0] * e2[..., 1] - e1[..., 1] * e2[..., 0]).abs()      # [B, T]
+    g = torch.einsum('btim,btid->btmd', Psi, G)       # [B, T, M, 2]
+    inv4a = torch.where(area > 0, 0.25 / area.clamp(min=1e-30), torch.zeros_like(area))
+    L_mat = torch.einsum('btmd,btld,bt->bml', g, g, inv4a)
+    S = Psi.sum(dim=2)                                # [B, T, M]
+    M_mat = (torch.einsum('btim,btil,bt->bml', Psi, Psi, area)
+             + torch.einsum('btm,btl,bt->bml', S, S, area)) / 12.0
+    return M_mat, L_mat
 
 
 class _MonotoneFreqHead(nn.Module):
@@ -148,9 +181,9 @@ class SpectralNO(nn.Module):
         area_feature_idx: Input-feature column holding the per-node mesh area
             used as the quadrature weight (default 5 = node_area).
         mass_ridge / stiff_ridge: diagonal ridges added to M / L for SPD
-            conditioning of the generalized eigenproblem, relative to the
-            mean diagonal of the mass matrix (so λ is basis-scale invariant;
-            stiff_ridge is then ≈ a shift of λ).
+            conditioning of the generalized eigenproblem, each relative to
+            the mean diagonal of its own matrix (basis-scale invariant, and
+            no spurious λ below the fundamental from a collinear basis).
         coord_feature_idx: Input-feature columns that duplicate X (x_norm,
             y_norm); replaced by the differentiable coordinates so ∇ψ sees
             them.  ``None`` disables (e.g. ablations without these columns).
@@ -159,6 +192,17 @@ class SpectralNO(nn.Module):
             ∇d = −dir so the Dirichlet gate's gradient enters L.
         eig_broadening: ε of the Lorentzian-broadened eigh backward (units of
             λ²; gaps |Δλ| ≲ √ε are treated as degenerate).
+        physics_freq: frequency straight from the eigenvalue,
+            f = c·√λ / (2π·scale) [GHz], z-scored with ``freq_stats`` — no
+            learned head (λ(sΩ) = λ(Ω)/s² is exact; a head that only sees the
+            scale-free λ cannot know the cavity size).  Needs batch['Scale']
+            (newer converter output) and ``freq_stats`` (set by GNOTLightning).
+        assembly: 'nodal' — M/L from nodal quadrature of autograd ∇ψ;
+            'p1' — ψ is read as the P1 interpolant of its nodal values and
+            M (consistent mass) / L are assembled exactly per mesh triangle
+            (needs batch['Elements']).  The gate makes ψ = 0 on boundary
+            nodes ⇒ ψ ∈ H¹₀ ⇒ true Rayleigh–Ritz upper bounds; no autograd,
+            so it is also much faster.  Incompatible with node sub-sampling.
     """
 
     def __init__(
@@ -181,6 +225,8 @@ class SpectralNO(nn.Module):
         dist_feature_idx: int = 2,
         dir_feature_idx=(3, 4),
         eig_broadening: float = 1e-4,
+        physics_freq: bool = False,
+        assembly: str = 'nodal',
     ):
         super().__init__()
         self.val_dim = val_dim
@@ -198,6 +244,11 @@ class SpectralNO(nn.Module):
         self.dist_feature_idx = dist_feature_idx
         self.dir_feature_idx = tuple(dir_feature_idx) if dir_feature_idx is not None else None
         self.eig_broadening = eig_broadening
+        self.physics_freq = physics_freq
+        if assembly not in ('nodal', 'p1'):
+            raise ValueError(f"assembly must be 'nodal' or 'p1', got {assembly!r}")
+        self.assembly = assembly
+        self.freq_stats = None   # {'mean','std'} [GHz]; set by GNOTLightning
 
         # ── 1. Spatial encoder (fixed random Fourier features) ──────────────
         self.spatial_encoder = RandomFourierFeatures(
@@ -229,7 +280,7 @@ class SpectralNO(nn.Module):
 
         # ── 4. Frequency transform (eigenvalue → z-scored physical frequency) ─
         # Monotone so the frequency order is the eigenvalue order.
-        self.freq_transform = _MonotoneFreqHead(hidden=32)
+        self.freq_transform = None if physics_freq else _MonotoneFreqHead(hidden=32)
 
         # NOTE: L_chol_head / M_chol_head / AttentionPool pooler are intentionally
         # removed — the Galerkin matrices are now assembled from the basis, not
@@ -345,31 +396,10 @@ class SpectralNO(nn.Module):
             dist = dist + (dist.clamp(min=0.0) - dist).detach()
         return torch.stack(cols, dim=-1), dist
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Forward
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def forward(self, batch: dict) -> dict:
-        """Predict K eigenpairs from a geometry batch.
-
-        Args:
-            batch: dict with keys
-                'X'           [B, N, 2]         grid coordinates
-                'Input_funcs' [B, N, val_dim]    node features
-                'Mask'        [B, N]  bool       valid-node mask (optional)
-
-        Returns:
-            dict with 'field' [B, N, K], 'freq' [B, K], 'eigenvalues' [B, K],
-            'L_mat' [B, M, M], 'M_mat' [B, M, M], 'u_K' [B, M, K].
-        """
-        X = batch['X']               # [B, N, 2]
-        Y = batch['Input_funcs']     # [B, N, val_dim]
-        mask = batch.get('Mask', None)
-        _check_val_dim(Y, self.val_dim, 'SpectralNO')
+    def _nodal_galerkin(self, X, Y, mask, solve_dtype):
+        """M/L by nodal quadrature of the autograd basis gradient (assembly='nodal')."""
         B, N, _ = X.shape
         device, dtype = X.device, X.dtype
-        solve_dtype = torch.float64
-
         # ── Quadrature weights (per-node mesh area), masked + normalized ──────
         if Y.shape[-1] > self.area_feature_idx:
             w = Y[:, :, self.area_feature_idx].clamp(min=0.0)   # [B, N]
@@ -414,14 +444,65 @@ class SpectralNO(nn.Module):
             M_mat = torch.einsum('bnm,bnl,bn->bml', basis64, basis64, w64)
             L_mat = torch.einsum('bnmd,bnld,bn->bml', grad_basis.to(solve_dtype),
                                  grad_basis.to(solve_dtype), w64)
-            # Ridges relative to the mean basis mass: Rayleigh–Ritz is invariant
-            # to rescaling the basis, absolute ridges were not (at init they
-            # were ~1% of diag(M) and λ depended on the basis amplitude).
+        return M_mat, L_mat, basis64
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  Forward
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def forward(self, batch: dict) -> dict:
+        """Predict K eigenpairs from a geometry batch.
+
+        Args:
+            batch: dict with keys
+                'X'           [B, N, 2]         grid coordinates
+                'Input_funcs' [B, N, val_dim]    node features
+                'Mask'        [B, N]  bool       valid-node mask (optional)
+
+        Returns:
+            dict with 'field' [B, N, K], 'freq' [B, K], 'eigenvalues' [B, K],
+            'L_mat' [B, M, M], 'M_mat' [B, M, M], 'u_K' [B, M, K].
+        """
+        X = batch['X']               # [B, N, 2]
+        Y = batch['Input_funcs']     # [B, N, val_dim]
+        mask = batch.get('Mask', None)
+        _check_val_dim(Y, self.val_dim, 'SpectralNO')
+        B, N, _ = X.shape
+        device, dtype = X.device, X.dtype
+        solve_dtype = torch.float64
+
+        if self.assembly == 'p1':
+            elems = batch.get('Elements', None)
+            if elems is None:
+                raise ValueError(
+                    "SpectralNO(assembly='p1') needs batch['Elements'] (mesh triangles): "
+                    "use a PKL/H5 from the current converter and dataset.max_nodes: null.")
+            dist_bnd = None
+            if self.dist_feature_idx is not None and self.dist_feature_idx < Y.shape[-1]:
+                dist_bnd = Y[..., self.dist_feature_idx].clamp(min=0.0).unsqueeze(-1)
+            h = self.local_encoder(torch.cat([self.spatial_encoder(X), Y], dim=-1))
+            basis = self.basis_net(h)                               # [B, N, M]
+            if dist_bnd is not None:
+                basis = basis * (2.0 * torch.sigmoid(dist_bnd / self.bc_scale) - 1.0)
+            if mask is not None:
+                basis = basis * mask.unsqueeze(-1).to(dtype)
+            with torch.autocast(device_type=device.type, enabled=False):
+                basis64 = basis.to(solve_dtype)
+                M_mat, L_mat = _p1_galerkin(basis64, X.to(solve_dtype), elems)
+        else:
+            M_mat, L_mat, basis64 = self._nodal_galerkin(X, Y, mask, solve_dtype)
+
+        with torch.autocast(device_type=device.type, enabled=False):
+            # Ridges relative to each matrix's own mean diagonal: invariant to
+            # rescaling the basis, and a (near-)null direction of a collinear
+            # basis gets λ ≈ (stiff/mass)·mean Rayleigh quotient of the ψ_m
+            # (each ≥ λ₁ for ψ ∈ H¹₀) instead of a spurious λ ≈ stiff/mass ≈ 1
+            # below the true fundamental — keeps λ₁ a Ritz upper bound.
             eye = torch.eye(self.M, device=device, dtype=solve_dtype).unsqueeze(0)
-            ridge = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
-            ridge = ridge.detach()[:, None, None] * eye
-            M_mat = M_mat + self.mass_ridge * ridge
-            L_mat = L_mat + self.stiff_ridge * ridge
+            ridge_M = torch.diagonal(M_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
+            ridge_L = torch.diagonal(L_mat, dim1=-2, dim2=-1).mean(-1).clamp(min=1e-12)
+            M_mat = M_mat + self.mass_ridge * ridge_M.detach()[:, None, None] * eye
+            L_mat = L_mat + self.stiff_ridge * ridge_L.detach()[:, None, None] * eye
             # Symmetrize (guards against tiny einsum asymmetry).
             M_mat = 0.5 * (M_mat + M_mat.transpose(-1, -2))
             L_mat = 0.5 * (L_mat + L_mat.transpose(-1, -2))
@@ -441,7 +522,18 @@ class SpectralNO(nn.Module):
 
         # ── Frequency transform ───────────────────────────────────────────────
         lambda_K = lambda_K.to(dtype)
-        freq = self.freq_transform(lambda_K.unsqueeze(-1)).squeeze(-1)  # [B, K]
+        if self.physics_freq:
+            scale = batch.get('Scale', None)
+            if scale is None or not self.freq_stats:
+                raise ValueError(
+                    "SpectralNO(physics_freq=True) needs batch['Scale'] and freq_stats: "
+                    "re-run convert.py (stores per-geometry 'scale') or set "
+                    "model.spectral.physics_freq: false.")
+            f_ghz = (_C0 * torch.sqrt(lambda_K.clamp(min=0.0))
+                     / (2.0 * math.pi * scale.to(dtype).unsqueeze(-1)) / 1e9)
+            freq = (f_ghz - self.freq_stats['mean']) / self.freq_stats['std']
+        else:
+            freq = self.freq_transform(lambda_K.unsqueeze(-1)).squeeze(-1)  # [B, K]
 
         L_mat, M_mat, u_K = L_mat.to(dtype), M_mat.to(dtype), u_K.to(dtype)
         return {

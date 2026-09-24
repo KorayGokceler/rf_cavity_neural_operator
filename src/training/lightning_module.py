@@ -267,6 +267,23 @@ def _unit_columns(E, mask=None, eps=1e-6):
     return E / nrm
 
 
+def _sqrt_area_weights(batch, valid_mask):
+    """[B, N, 1] √w with w = node area / mean area over the valid nodes.
+
+    Multiplying pred/target by √w turns every L2 inner product of the field
+    loss into the lumped-mass (area-weighted) one ≈ ∫_Ω.  Without it the
+    boundary-graded meshes over-weight the wall band (~50 % of the nodes
+    cover ~22 % of the area).  None when the batch has no 'Area'.
+    """
+    area = batch.get('Area', None)
+    if area is None:
+        return None
+    m = valid_mask.to(area.dtype)
+    w = area.clamp(min=0.0) * m
+    w = w / (w.sum(dim=1, keepdim=True) / m.sum(dim=1, keepdim=True).clamp(min=1.0)).clamp(min=1e-12)
+    return torch.sqrt(w).unsqueeze(-1)
+
+
 def _basis_conditioning_loss(M_mat: torch.Tensor) -> torch.Tensor:
     """Basis-conditioning regularizer for the physical-Galerkin SpectralNO.
 
@@ -328,7 +345,8 @@ class GNOTLightning(pl.LightningModule):
                  orthonormalize_output=False,
                  scale_invariant_field=None,
                  data_cfg=None,
-                 spectral_kwargs=None):
+                 spectral_kwargs=None,
+                 area_weighted_field=False):
         """
         scale_invariant_field: compare unit-norm pred/target mode columns in
             the field loss + rel-L2 metric.  None → auto: True for
@@ -339,11 +357,14 @@ class GNOTLightning(pl.LightningModule):
             so infer.py can rebuild the exact same split / input features.
         spectral_kwargs: extra SpectralNO kwargs (config `model.spectral`),
             forwarded verbatim; ignored for GNOT.
+        area_weighted_field: weight the field loss / rel-L2 metric by node
+            area (lumped mass ≈ ∫_Ω) instead of counting nodes.
         """
         super().__init__()
         if scale_invariant_field is None:
             scale_invariant_field = (model_type == 'spectral_no') or bool(orthonormalize_output)
         self.scale_invariant_field = bool(scale_invariant_field)
+        self.area_weighted_field = bool(area_weighted_field)
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
         torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
         self.lr_mode_specific = lr_mode_specific
@@ -418,8 +439,34 @@ class GNOTLightning(pl.LightningModule):
         self.test_mae = torchmetrics.MeanAbsoluteError()
         self._val_rl2_buffer: list = []   # per-geometry per-mode rel L2, for histograms
 
+    # freq_stats is also handed to the wrapped model (SpectralNO physics_freq
+    # converts λ → z-scored GHz with it).
+    @property
+    def freq_stats(self):
+        return self.__dict__.get('_freq_stats')
+
+    @freq_stats.setter
+    def freq_stats(self, value):
+        self.__dict__['_freq_stats'] = value
+        if 'model' in self._modules:
+            self.model.freq_stats = value
+
     def forward(self, batch):
         return self.model(batch)
+
+    def _field_loss_inputs(self, batch, pred_field, true_field, valid_mask):
+        """(loss_pred, loss_true, metric_pred): tensors the field loss compares
+        (optionally area-weighted, unit-norm when scale-invariant) and the
+        unweighted prediction used for R2/MAE bookkeeping."""
+        metric_pred = (_unit_columns(pred_field, valid_mask)
+                       if self.scale_invariant_field else pred_field)
+        sw = _sqrt_area_weights(batch, valid_mask) if self.area_weighted_field else None
+        if sw is not None:
+            pred_field, true_field = pred_field * sw, true_field * sw
+        if self.scale_invariant_field:
+            return (_unit_columns(pred_field, valid_mask),
+                    _unit_columns(true_field, valid_mask), metric_pred)
+        return pred_field, true_field, metric_pred
 
     def _compute_loss(self, batch, prefix):
         """Dispatch to model-specific loss computation."""
@@ -466,18 +513,15 @@ class GNOTLightning(pl.LightningModule):
 
         # Scale gauge: eigenfunction amplitude is arbitrary (and fixed by
         # M-orthonormality here) → compare unit-norm columns.
-        if self.scale_invariant_field:
-            loss_pred = _unit_columns(pred_field, valid_mask)
-            loss_true = _unit_columns(true_field, valid_mask)
-        else:
-            loss_pred, loss_true = pred_field, true_field
+        loss_pred, loss_true, metric_pred = self._field_loss_inputs(
+            batch, pred_field, true_field, valid_mask)
 
         # ── 2. Field + frequency loss (per-sample) ────────────────────────────
         loss_freq  = torch.zeros((), device=device)
         loss_field = torch.zeros((), device=device)
         rel_l2_per_mode = torch.zeros(K, device=device)
         rel_l2_count    = torch.zeros(K, device=device)
-        aligned_pred_field = loss_pred.detach().clone()
+        aligned_pred_field = metric_pred.detach().clone()
 
         for b in range(B):
             fp_b   = f_pred[b]         # [K]  sorted by eigenvalue order
@@ -649,18 +693,15 @@ class GNOTLightning(pl.LightningModule):
         device = pred_field.device
         # Scale-invariant variant (e.g. orthonormalize_output=True → unit-norm
         # Gram-Schmidt columns can never match max-normalized targets).
-        if self.scale_invariant_field:
-            loss_pred = _unit_columns(pred_field, valid_mask)
-            loss_true = _unit_columns(true_field, valid_mask)
-        else:
-            loss_pred, loss_true = pred_field, true_field
+        loss_pred, loss_true, metric_pred = self._field_loss_inputs(
+            batch, pred_field, true_field, valid_mask)
         loss_freq = torch.zeros((), device=device)
         loss_field = torch.zeros((), device=device)
         loss_ortho = torch.zeros((), device=device)
         rel_l2_per_mode = torch.zeros(K, device=device)
         rel_l2_count = torch.zeros(K, device=device)
         # Detach for metric bookkeeping — no gradient needed past this point.
-        aligned_pred_field = loss_pred.detach().clone()      # [B, N, K] — for R2/MAE
+        aligned_pred_field = metric_pred.detach().clone()    # [B, N, K] — for R2/MAE
 
         for b in range(B):
             fp_b = f_pred[b]                          # [K]

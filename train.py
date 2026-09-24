@@ -210,6 +210,7 @@ def main():
         rayleigh_weight=getattr(tc, 'rayleigh_weight', 0.1),
         orthonormalize_output=getattr(mc, 'orthonormalize_output', False),
         scale_invariant_field=getattr(tc, 'scale_invariant_field', None),
+        area_weighted_field=getattr(tc, 'area_weighted_field', False),
         # Extra SpectralNO kwargs (mass_ridge, area_feature_idx, ...) from model.spectral
         spectral_kwargs=(dict(getattr(mc, 'spectral', None) or {}) or None),
         # Stored in the checkpoint hparams so infer.py rebuilds the same split

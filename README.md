@@ -32,11 +32,17 @@ Fiziksel Galerkin indirgemesiyle özdeğer çözen spektral neural operator (`sr
 1. RFF + düğüm özellikleri → düğüm başına gömme
 2. Noktasal MLP → $M$ adet baz fonksiyonu $\psi_m(x)$ (`n_basis`, varsayılan 16);
    yumuşak Dirichlet kapısı ile sınırda $\psi_m = 0$
-3. Rijitlik ve kütle matrisleri bazdan **kuadratürle kurulur** (ağırlık = `node_area`, $\nabla\psi$ autograd ile):
-   $L_{mn} = \int \nabla\psi_m\cdot\nabla\psi_n$, $M_{mn} = \int \psi_m\psi_n$
+3. Rijitlik ve kütle matrisleri bazdan kurulur: $L_{mn} = \int \nabla\psi_m\cdot\nabla\psi_n$, $M_{mn} = \int \psi_m\psi_n$.
+   `model.spectral.assembly: p1` (varsayılan config): $\psi$ düğüm değerlerinin P1 interpolantı,
+   integraller mesh üçgenleri üzerinde **tam** (consistent mass) → $\psi\in H^1_0$, gerçek
+   Rayleigh–Ritz üst sınırı, autograd yok (hızlı). `assembly: nodal`: eski düğüm kuadratürü + autograd.
 4. $L u = \lambda M u$ → Cholesky + `torch.linalg.eigh`; özdeğerler **yapısal olarak sıralı**
    (OT eşleştirmesi gerekmez), M-ortogonallik yapısal
-5. $\phi_k = \sum_m u_{k,m}\psi_m$; küçük bir MLP özdeğerleri frekansa çevirir
+5. $\phi_k = \sum_m u_{k,m}\psi_m$; frekans fizikten: `physics_freq: true` ⇒
+   $f = c\sqrt{\lambda}/(2\pi\,\text{scale})$ (öğrenilen kafa yok; `scale` PKL'de saklanır)
+
+Eğitim kaybı `training.area_weighted_field: true` ile düğüm alanıyla ağırlıklıdır (≈ $\int_\Omega$).
+Bu seçimlerin gerekçesi: [docs/14](docs/14_MATHEMATICAL_IMPROVEMENTS.md)–[17](docs/17_NUMERICAL_ANALYSIS_REVIEW.md).
 
 ---
 
@@ -72,6 +78,12 @@ Sadece CPU için `pip install torch` (PyPI) yeterlidir; GPU için pytorch.org'da
 ---
 
 ## Kullanım
+
+### Colab notebook (en kolay yol)
+
+[`RF_Cavity_Colab.ipynb`](RF_Cavity_Colab.ipynb): tek ayar hücresi (`MODE="smoke"` / `"full"`,
+model config'i, isteğe bağlı Google Drive) → *Runtime → Run all*. Üretim → dönüştürme →
+eğitim → inference → görseller sırayla çalışır; `smoke` modu CPU'da bile ~1 dakikadır.
 
 ### Uçtan uca pipeline (üretim → dönüştürme → eğitim)
 
@@ -191,6 +203,10 @@ GitHub Actions (`.github/workflows/ci.yml`): CPU torch + gmsh sistem kütüphane
 [model mimarisi](docs/04_MODEL_ARCHITECTURE.md), [eğitim](docs/05_TRAINING_SYSTEM.md),
 [inference](docs/06_INFERENCE.md), [doğrulama araçları](docs/07_VALIDATION_TOOLS.md),
 [config referansı](docs/08_CONFIG_REFERENCE.md), [fizik](docs/09_PHYSICS_BACKGROUND.md).
+Matematiksel incelemeler: [14 özet](docs/14_MATHEMATICAL_IMPROVEMENTS.md),
+[15 SciML literatürü](docs/15_SCIML_LITERATURE_REVIEW.md),
+[16 spektral geometri](docs/16_SPECTRAL_GEOMETRY_ANALYSIS.md),
+[17 sayısal analiz](docs/17_NUMERICAL_ANALYSIS_REVIEW.md).
 
 ---
 

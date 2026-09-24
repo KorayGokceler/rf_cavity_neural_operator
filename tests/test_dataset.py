@@ -110,11 +110,29 @@ def test_random_seed_changes_split(synthetic_pkl):
 
 
 def test_elements_removed_from_geometry_pool(synthetic_pkl):
-    """elements RAM optimizasyonu için pop edilmeli."""
+    """Node sub-sampling breaks connectivity → elements popped (RAM)."""
     pkl_path, _, _ = synthetic_pkl
-    ds = GNOTDataset(pkl_path, split='train')
+    ds = GNOTDataset(pkl_path, split='train', max_nodes=16)
     for g_id, geom in ds.geometry_pool.items():
         assert 'elements' not in geom, f"elements found in geom {g_id}"
+    assert 'Elements' not in ds[0]
+
+
+def test_full_mesh_items_carry_elements(synthetic_pkl):
+    """Full mesh (max_nodes=None): triangles go to the batch for P1 assembly;
+    padded triangles are (0, 0, 0)."""
+    pkl_path, _, _ = synthetic_pkl
+    ds = GNOTDataset(pkl_path, split='train')
+    items = [ds[i] for i in range(3)]
+    for it in items:
+        assert it['Elements'].dtype == torch.long and it['Elements'].shape[-1] == 3
+        assert int(it['Elements'].max()) < it['X'].shape[0]
+    batch = gnot_collate_fn(items)
+    T = max(it['Elements'].shape[0] for it in items)
+    assert batch['Elements'].shape == (3, T, 3)
+    short = min(range(3), key=lambda i: items[i]['Elements'].shape[0])
+    n_t = items[short]['Elements'].shape[0]
+    assert (batch['Elements'][short, n_t:] == 0).all()
 
 
 def test_getitem_no_elements_no_theta(synthetic_pkl):
