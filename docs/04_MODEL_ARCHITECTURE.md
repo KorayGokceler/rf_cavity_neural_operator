@@ -261,6 +261,34 @@ for mode_val in range(num_field_modes):
 
 ---
 
+## 🧪 Maskeleme, Normalizasyon ve Config Notları (GNOT)
+
+- **Padding:** Linear attention key/value'ları, `AttentionPool` (`key_padding_mask`) ve Gram-Schmidt maskeyi kullanır; padded node eklemek geçerli node çıktısını değiştirmez (`test_padding_invariance`).
+- **`orthonormalize_output`:** Gram-Schmidt artık out-of-place (eski in-place yazım backward'da *"modified by an inplace operation"* hatası veriyordu). Birim-L2 sütunlar node başına ~1/√N olduğundan, hedeflerin `max|Y| = 1` konvansiyonuna ölçeklenir (ortogonallik korunur).
+- **`dropout`:** Artık `LinearAttention` çıktısına da uygulanır (önceden sessizce yok sayılıyordu).
+- **`val_dim`:** `Input_funcs` son boyutu `val_dim` ile uyuşmazsa açıklayıcı `ValueError` (dataset_converter 12 feature yazar; eski PKL'ler 8).
+- Sessizce kullanılmayan parametreler: `n_shared_layers`, `n_basis`, `predict_frequency` (model her zaman `freq` döndürür; loss tarafı kapatır).
+
+---
+
+## 🌀 SpectralNO (Galerkin Özdeğer Operatörü)
+
+> **Dosya:** `src/models/spectral_no.py` · **Config:** `configs/spectral_no.yaml` (`model_type: spectral_no`)
+
+1. Pointwise encoder + `basis_net` → M baz fonksiyonu ψ_m(x), soft Dirichlet gate `2σ(d/bc_scale) − 1` ile çarpılır.
+2. Galerkin matrisleri node alanları (`w_i`, col 5, toplamı 1) ile quadratür: `M = Σ w ψψᵀ`, `L = Σ w ∇ψ·∇ψᵀ`.
+   - ∇ψ **toplam** uzamsal türevdir: `Input_funcs`'taki (x, y) kolonları diferansiyellenebilir koordinatlarla değiştirilir; `dist_bnd`, `∇d = −dir_bnd` ile lineerleştirilir (sınır node'larında dir = 0 → herhangi bir birim vektör kesin sonucu verir, çünkü orada gate = 0). Önceden yalnız RFF yolu türevleniyordu: gate türevi (∂Ω'da 1/(2·bc_scale) = 25) L'ye girmiyordu ve gerçek veride λ₁ ≈ 1 çıkıyordu — [-1,1]² içindeki her domain için λ₁ ≥ π²/2 ≈ 4.93 (Dirichlet monotonluğu), yani Rayleigh–Ritz üst sınırı değil. Düzeltmeden sonra aynı ağırlıklarla λ₁ ≈ 35–69 (init).
+   - Diğer feature'ların (alan, principal açı, eğrilik, …) türevi bilinmez; "donuk" koşullama olarak kalır.
+   - Ridge'ler `mean(diag M)`'ye görecelidir → λ baz ölçeğinden bağımsız.
+3. Genelleştirilmiş özdeğer problemi `L u = λ M u`: float64, autocast kapalı (AMP / TF32 küçük Gram matrislerini bozar), Cholesky + triangular solve. `eigh` backward'ı Lorentzian broadening kullanır: `F_ij = Δ/(Δ² + ε)`, dejenere (dipol çifti) spektrumda gradyan sonlu kalır.
+4. Alan `φ_k = Σ_m u_{mk} ψ_m`, sonra işaretli tepe değeri +1 olacak şekilde ölçeklenir (hedefler `max|Y|`'ye bölünür; M-normalize alanın genliği Σ w φ² = 1'e kilitli olduğu için rel-L2'de indirgenemez bir taban oluşuyordu).
+5. Frekans: `log λ` üzerinde **monoton** MLP (pozitif ağırlık + tanh) → frekans sırası = özdeğer sırası = hedef sırası.
+6. Lightning `trainer.validate/test` `torch.inference_mode` altında çalışır; model autograd kısmını `inference_mode(False)` içinde yapar. Eval modunda da grad açıksa L yolu türevlenir.
+
+**Bilinen sınırlama:** Tüm girdiler ölçekten bağımsız (koordinatlar geometri başına ölçeklenir), yani λ ≈ λ_fiz·s² ve mutlak frekans (∝ 1/s) girdiden tanımlanamaz. Converter artık `scale` saklıyor; önerilen tasarım: frekans başlığına `log λ − 2·log s` vermek (fiziksel olarak f = c·√λ_fiz / 2π).
+
+---
+
 ## 🔗 Bağlantılar
 
 - Bu modeli besleyen veri: [[03_DATASET_LOADER]]

@@ -155,6 +155,14 @@ Tüm bu analiz ışığında, senin sistemine en uygun yaklaşım:
 
 ---
 
+## 6. SpectralNO'daki Durum (Rayleigh–Ritz)
+
+SpectralNO (`src/models/spectral_no.py`) Rayleigh quotient'ı *yapısal* olarak kullanır: öğrenilen baz ψ_m üzerinde `L = Σ w ∇ψ·∇ψᵀ`, `M = Σ w ψψᵀ` kurulur ve `L u = λ M u` çözülür (Rayleigh–Ritz). Bu yüzden `uᵀLu / uᵀMu = λ` tam olarak sağlanır ve ayrı bir "Rayleigh consistency" loss'u sıfır gradyan verir (lightning_module'de basis-conditioning ile değiştirildi).
+
+Rayleigh–Ritz'in anlamlı olması için ∇ψ, ψ'nin **toplam** uzamsal türevi olmalıdır. İlk sürüm yalnız RFF yolunu türevliyordu; (x, y) feature kolonları ve Dirichlet gate'in (`dist_bnd`) türevi eksikti. Sonuç: gerçek veride λ₁ ≈ 1; oysa normalize koordinatlar [-1,1]² içinde olduğundan Dirichlet monotonluğu ile λ₁ ≥ π²/2 ≈ 4.93 olmalı — üst sınır özelliği bozuk. Düzeltmeden sonra (koordinat kolonları + `∇d = −dir_bnd` lineerizasyonu) λ yine üst sınırdır; kalan feature'lar (alan, eğrilik, …) türevsiz koşullama olarak kalır.
+
+---
+
 ## 🔗 Bağlantılar
 
 - Orthogonality opsiyonları: [[11_ORTHOGONALITY_ANALYSIS]]
