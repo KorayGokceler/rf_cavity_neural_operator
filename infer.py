@@ -350,7 +350,7 @@ def main(args):
                 if args.deg_threshold is None:
                     # Same rule as the training loss/metric: absolute gap on
                     # the z-scored frequency axis (model.near_deg_threshold).
-                    clusters = detect_clusters(f_true[i], model.near_deg_threshold)
+                    clusters = model._clusters(f_true[i])
                 else:
                     clusters = _near_degenerate_clusters(ft_i, rel_threshold=args.deg_threshold)
 

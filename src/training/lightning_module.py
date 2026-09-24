@@ -58,7 +58,7 @@ def ot_match(f_pred, f_true, E_hat, E_tgt, mask, freq_w):
     return torch.as_tensor(perm, device=E_hat.device)
 
 
-def detect_clusters(f_true_matched, threshold):
+def detect_clusters(f_true_matched, threshold, rel_threshold=None, freq_stats=None):
     """Group mode indices by absolute frequency proximity (for 'hard' mode).
 
     Two consecutive (sorted) modes belong to the same cluster when their
@@ -75,21 +75,30 @@ def detect_clusters(f_true_matched, threshold):
     Args:
         f_true_matched: [K] target frequencies aligned to prediction order.
         threshold: absolute gap threshold on the normalized frequency scale.
+        rel_threshold: if set (and freq_stats given), use the scale-free
+            relative gap in GHz instead, (f_i − f_{i−1}) / f_{i−1} < rel_threshold
+            — the same cluster for a small and a large cavity (Davis–Kahan:
+            eigenvector error ∝ error / relative gap).
     Returns:
         list[list[int]] e.g. [[0], [1, 2]] or [[0], [1], [2]].
     """
     f = f_true_matched.detach().float().tolist()
     K = len(f)
+    if rel_threshold is not None and freq_stats:
+        g = [v * freq_stats['std'] + freq_stats['mean'] for v in f]
+        close = [abs(g[i] - g[i - 1]) < rel_threshold * abs(g[i - 1]) for i in range(1, K)]
+    else:
+        close = [abs(f[i] - f[i - 1]) < threshold for i in range(1, K)]
     clusters = [[0]]
     for i in range(1, K):
-        if abs(f[i] - f[i - 1]) < threshold:
+        if close[i - 1]:
             clusters[-1].append(i)
         else:
             clusters.append([i])
     return clusters
 
 
-def count_near_degenerate(dataset, threshold):
+def count_near_degenerate(dataset, threshold, rel_threshold=None):
     """How many train geometries contain a near-degenerate mode cluster.
 
     Mirrors exactly what training sees: same per-geometry normalized,
@@ -117,7 +126,8 @@ def count_near_degenerate(dataset, threshold):
         else:
             fn = list(raw)
         fn.sort()  # __getitem__ orders modes by ascending normalized freq
-        cl = detect_clusters(torch.tensor(fn, dtype=torch.float32), threshold)
+        cl = detect_clusters(torch.tensor(fn, dtype=torch.float32), threshold,
+                             rel_threshold, stats)
         deg = [c for c in cl if len(c) > 1]
         if deg:
             n_deg_geo += 1
@@ -334,6 +344,7 @@ class GNOTLightning(pl.LightningModule):
                  n_basis=16,
                  degeneracy_mode='soft',
                  near_deg_threshold=0.05,
+                 near_deg_rel_threshold=None,
                  deg_sigma_rel=0.5,
                  deg_sigma_abs=0.3,
                  slot_ortho_weight=0.1,
@@ -434,6 +445,7 @@ class GNOTLightning(pl.LightningModule):
             f"degeneracy_mode must be 'soft' or 'hard', got {degeneracy_mode}"
         self.degeneracy_mode = degeneracy_mode
         self.near_deg_threshold = near_deg_threshold
+        self.near_deg_rel_threshold = near_deg_rel_threshold
         # deg_sigma_rel kept only for checkpoint/back-compat; the soft loss now
         # uses the absolute deg_sigma_abs (see _compute_loss for the rationale).
         self.deg_sigma_rel = deg_sigma_rel
@@ -464,6 +476,11 @@ class GNOTLightning(pl.LightningModule):
 
     def forward(self, batch):
         return self.model(batch)
+
+    def _clusters(self, f_true):
+        """Near-degenerate mode groups of one sample (loss, metric, infer)."""
+        return detect_clusters(f_true, self.near_deg_threshold,
+                               self.near_deg_rel_threshold, self.freq_stats)
 
     def _field_loss_inputs(self, batch, pred_field, true_field, valid_mask):
         """(loss_pred, loss_true, metric_pred): tensors the field loss compares
@@ -546,7 +563,7 @@ class GNOTLightning(pl.LightningModule):
             loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
 
             # Field loss: cluster-based Grassmannian / sign-agnostic
-            clusters = detect_clusters(ft_b, self.near_deg_threshold)
+            clusters = self._clusters(ft_b)
             fl_b = torch.zeros((), device=device)
             for cl in clusters:
                 cl_t = torch.tensor(cl, device=device, dtype=torch.long)
@@ -735,7 +752,7 @@ class GNOTLightning(pl.LightningModule):
             loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
 
             if self.degeneracy_mode == 'hard':
-                clusters = detect_clusters(ft_b, self.near_deg_threshold)
+                clusters = self._clusters(ft_b)
                 fl_b = torch.zeros((), device=device)
                 for cl in clusters:
                     cl_t = torch.tensor(cl, device=device, dtype=torch.long)
@@ -783,7 +800,7 @@ class GNOTLightning(pl.LightningModule):
             with torch.no_grad():
                 m_f = m_b.float().unsqueeze(-1)       # [N, 1]
                 sample_rl = torch.zeros(K, device=device)
-                clusters = detect_clusters(ft_b, self.near_deg_threshold)
+                clusters = self._clusters(ft_b)
                 for cl in clusters:
                     if len(cl) == 1:
                         k = cl[0]

@@ -119,8 +119,8 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                 # GNOT: Hungarian OT matching (slot ordering not guaranteed).
                 # SpectralNO: eigh returns sorted eigenvalues → identity perm.
                 _model_type = getattr(model, 'model_type', 'gnot')
-                if _model_type == 'spectral_no':
-                    perm = np.arange(K, dtype=np.int64)  # identity
+                if _model_type == 'spectral_no' or getattr(model.model, 'ritz_basis', 0):
+                    perm = np.arange(K, dtype=np.int64)  # identity (eigh order)
                     fp_ph_i = fp_ph[i] if fp_ph is not None else None
                 else:
                     fp_norm_i = (fpn[i].cpu().numpy()
@@ -136,7 +136,10 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                 shape_type = 'unknown'
                 if geom_pool and gid in geom_pool:
                     shape_type = geom_pool[gid].get('shape_type', 'unknown')
-                row = {'geom_id': gid, 'n_nodes': nv, 'shape_type': shape_type}
+                row = {'geom_id': gid, 'n_nodes': nv, 'shape_type': shape_type,
+                       'topology': 'holed' if '_hole' in shape_type or shape_type == 'annulus' else 'simple',
+                       # smallest relative gap (f_{k+1}-f_k)/f_k among the K true modes
+                       'min_rel_gap': float(np.min(np.diff(ft_ph[i]) / ft_ph[i][:-1])) if K > 1 else float('nan')}
                 rl_uni, rl_w = [], []
                 signs = np.ones(K)
                 for kk in range(K):
@@ -236,6 +239,12 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
         'near_degenerate_subspace_relL2': ms('near_deg_subspace_relL2', deg),
         'freq_mae_ghz': ms('freq_mae_ghz', per_geom),
         'field_R2': float(1.0 - sse / sst) if sst > 0 else float('nan'),
+        # topology × smallest relative eigen-gap → (mean rel-L2, freq MAE)
+        'breakdown': {f'{topo} gap {lo:g}-{hi:g}%': (ms('mean_relL2', b), ms('freq_mae_ghz', b))
+                      for topo in ('simple', 'holed')
+                      for lo, hi in ((0, 2), (2, 5), (5, 10), (10, 1000))
+                      for b in [[r for r in per_geom if r['topology'] == topo
+                                 and lo <= 100 * r['min_rel_gap'] < hi]] if b},
     }
     return agg, per_geom
 
@@ -262,6 +271,9 @@ def print_agg(split, a):
           f"{_fmt(a['near_degenerate_subspace_relL2'])}")
     print(f"  frequency MAE (GHz)                 : "
           f"{_fmt(a['freq_mae_ghz'])}")
+    print("  --- by topology × smallest relative eigen-gap (rel-L2 | freq MAE GHz) ---")
+    for key, (rl, fm) in a.get('breakdown', {}).items():
+        print(f"  {key:22s} rel-L2 {rl[0]:.4f} | freq {fm[0]:.4f}  (n={rl[2]})")
     print("=" * 68 + "\n")
 
 

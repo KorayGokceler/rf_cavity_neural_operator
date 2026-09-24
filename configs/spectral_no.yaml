@@ -143,6 +143,7 @@ training:
   # Degeneracy handling (no OT — eigenvalue ordering is structural)
   degeneracy_mode: hard         # Grassmannian for degenerate clusters
   near_deg_threshold: 0.05
+  near_deg_rel_threshold: 0.05  # relative gap (f_{k+1}-f_k)/f_k < 5% → one subspace (scale-free; annulus: 3.2%)
   # Soft Procrustes params (not used for SpectralNO, kept for compat)
   deg_sigma_abs: 0.3
   deg_sigma_rel: 0.5
