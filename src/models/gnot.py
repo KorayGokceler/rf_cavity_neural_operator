@@ -277,8 +277,18 @@ class GNOTModel(nn.Module):
                  rff_dim=64, rff_length_scale=0.1,
                  n_basis=16,
                  orthonormalize_output=False,
-                 physics_freq=False):
+                 physics_freq=False,
+                 ritz_basis=0):
         super().__init__()
+        # ritz_basis = r > 0: every slot's field head emits r basis functions;
+        # the K·r fields span a trial subspace and the K modes come from
+        # Rayleigh–Ritz with the mesh's exact P1 matrices (as in SpectralNO):
+        # eigenvalue order is structural (no OT), degenerate pairs are a
+        # subspace by construction, f = c·√λ/(2π·scale).  Needs
+        # batch['Elements'] (dataset.max_nodes: null) and physics_freq.
+        self.ritz_basis = ritz_basis
+        if ritz_basis and not physics_freq:
+            raise ValueError("GNOTModel(ritz_basis>0) needs physics_freq=True (f from the Ritz λ).")
         # physics_freq: the global head predicts log √λ (dimensionless) and
         # f = c·√λ/(2π·scale) supplies the cavity size, which the scale-free
         # input features cannot.  freq_stats is set by GNOTLightning.
@@ -341,7 +351,7 @@ class GNOTModel(nn.Module):
             if n_layers >= 2:
                 layers += [nn.Linear(curr, dim), nn.LayerNorm(dim), nn.GELU()]
                 curr = dim
-            layers.append(nn.Linear(curr, 1))
+            layers.append(nn.Linear(curr, max(ritz_basis, 1)))
             return nn.Sequential(*layers)
 
         self.field_heads = nn.ModuleList([
@@ -440,9 +450,25 @@ class GNOTModel(nn.Module):
             field_k = self.field_heads[k](x_m)                # [B, N, 1]
             fields.append(field_k)
 
-        field = torch.cat(fields, dim=-1).float()             # [B, N, K]
+        field = torch.cat(fields, dim=-1).float()             # [B, N, K] (K·r with Ritz)
         if mask is not None:
             field = field * mask.unsqueeze(-1)                # padding = 0
+
+        if self.ritz_basis:
+            from src.models.spectral_no import _p1_galerkin, _ritz
+            elems, dist = batch.get('Elements'), batch.get('Dist_bnd')
+            if elems is None or dist is None:
+                raise ValueError("GNOTModel(ritz_basis>0) needs batch['Elements'] and "
+                                 "batch['Dist_bnd']: current converter output and dataset.max_nodes: null.")
+            with torch.autocast(device_type=X.device.type, enabled=False):
+                # ψ = 0 on boundary nodes ⇒ P1 interpolant ∈ H¹₀ ⇒ Ritz upper bounds.
+                basis = (field * (dist > 1e-9).unsqueeze(-1)).double()
+                M_mat, L_mat = _p1_galerkin(basis, X.double(), elems)
+                lam, modes, _, _, _ = _ritz(basis, M_mat, L_mat, self.num_field_modes)
+            field = _normalize_peak(modes.float() * (mask.unsqueeze(-1) if mask is not None else 1.0), mask)
+            f_pred = _physics_freq_z(0.5 * torch.log(lam.float().clamp(min=1e-12)), batch,
+                                     self.freq_stats, 'GNOTModel')
+            return {'field': field, 'freq': f_pred, 'eigenvalues': lam.float()}
 
         # Optional Gram-Schmidt orthogonalization on field outputs.  The unit
         # L2 columns (~1/sqrt(N) per node) are then rescaled to the targets'

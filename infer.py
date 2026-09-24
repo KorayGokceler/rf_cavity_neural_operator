@@ -311,8 +311,8 @@ def main(args):
                 # GNOT: Hungarian OT matching (ordering not guaranteed).
                 # SpectralNO: ordering guaranteed by eigh; no OT needed.
                 _model_type = getattr(model, 'model_type', 'gnot')
-                if _model_type == 'spectral_no':
-                    perm = np.arange(K, dtype=np.int64)  # identity
+                if _model_type == 'spectral_no' or getattr(model.model, 'ritz_basis', 0):
+                    perm = np.arange(K, dtype=np.int64)  # identity (eigh order)
                 else:
                     fp_norm_i = f_pred[i].cpu().numpy()  # z-scored (for cost)
                     ft_norm_i = f_true[i].cpu().numpy()

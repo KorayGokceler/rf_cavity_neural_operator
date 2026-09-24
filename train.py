@@ -227,6 +227,7 @@ def main():
         scale_invariant_field=getattr(tc, 'scale_invariant_field', None),
         area_weighted_field=getattr(tc, 'area_weighted_field', False),
         physics_freq=getattr(mc, 'physics_freq', False),
+        ritz_basis=getattr(mc, 'ritz_basis', 0),
         # Extra SpectralNO kwargs (mass_ridge, area_feature_idx, ...) from model.spectral
         spectral_kwargs=_spectral_kwargs(mc, feature_indices),
         # Stored in the checkpoint hparams so infer.py rebuilds the same split

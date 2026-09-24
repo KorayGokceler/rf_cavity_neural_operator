@@ -347,7 +347,8 @@ class GNOTLightning(pl.LightningModule):
                  data_cfg=None,
                  spectral_kwargs=None,
                  area_weighted_field=False,
-                 physics_freq=False):
+                 physics_freq=False,
+                 ritz_basis=0):
         """
         scale_invariant_field: compare unit-norm pred/target mode columns in
             the field loss + rel-L2 metric.  None → auto: True for
@@ -363,10 +364,13 @@ class GNOTLightning(pl.LightningModule):
         physics_freq: frequency via f = c·√λ/(2π·scale) (both models; needs
             batch['Scale']).  SpectralNO takes √λ from its eigenvalues, GNOT
             predicts log √λ.
+        ritz_basis: GNOT only — r basis functions per slot + P1 Rayleigh–Ritz
+            (eigen-ordered output → SpectralNO loss path, no OT).
         """
         super().__init__()
         if scale_invariant_field is None:
-            scale_invariant_field = (model_type == 'spectral_no') or bool(orthonormalize_output)
+            scale_invariant_field = ((model_type == 'spectral_no') or bool(orthonormalize_output)
+                                     or bool(ritz_basis))
         self.scale_invariant_field = bool(scale_invariant_field)
         self.area_weighted_field = bool(area_weighted_field)
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
@@ -416,6 +420,7 @@ class GNOTLightning(pl.LightningModule):
                 n_basis=n_basis,
                 orthonormalize_output=orthonormalize_output,
                 physics_freq=physics_freq,
+                ritz_basis=ritz_basis,
             )
 
         self.freq_weight = freq_weight
@@ -476,8 +481,8 @@ class GNOTLightning(pl.LightningModule):
 
     def _compute_loss(self, batch, prefix):
         """Dispatch to model-specific loss computation."""
-        if self.model_type == 'spectral_no':
-            return self._compute_loss_spectral(batch, prefix)
+        if self.model_type == 'spectral_no' or getattr(self.model, 'ritz_basis', 0):
+            return self._compute_loss_spectral(batch, prefix)   # eigen-ordered output
         return self._compute_loss_gnot(batch, prefix)
 
     def _compute_loss_spectral(self, batch, prefix):

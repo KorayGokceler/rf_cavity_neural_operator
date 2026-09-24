@@ -180,3 +180,22 @@ def test_spectral_feature_columns_follow_feature_indices():
     kw = _spectral_kwargs(SimpleNamespace(), [2, 0, 1])
     assert kw['coord_feature_idx'] == [1, 2] and kw['dist_feature_idx'] == 0
     assert kw['area_feature_idx'] is None
+
+
+def test_gnot_ritz_head_eigen_ordered_upper_bounds_and_trains():
+    from src.models.gnot import GNOTModel
+    torch.manual_seed(0)
+    m = GNOTModel(val_dim=12, embed_dim=16, n_heads=2, n_mode_layers=1, num_experts=2,
+                  num_field_modes=3, rff_dim=8, physics_freq=True, ritz_basis=2)
+    m.freq_stats = {'mean': 0.0, 'std': 1.0}
+    b = _disk_batch(3)
+    b['Scale'] = torch.tensor([1.0])
+    b['Dist_bnd'] = b['Input_funcs'][..., 2]
+    out = m(b)
+    lam = out['eigenvalues'][0]
+    assert (lam[1:] >= lam[:-1]).all() and lam[0].item() >= J01_SQ * (1 - 1e-6)
+    assert out['field'].shape == (1, b['X'].shape[1], 3)
+    out['freq'].sum().backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in m.parameters())
+    with pytest.raises(ValueError, match="physics_freq"):
+        GNOTModel(val_dim=12, embed_dim=16, n_heads=2, num_field_modes=3, ritz_basis=2)
