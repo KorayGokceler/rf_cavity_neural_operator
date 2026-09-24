@@ -1,14 +1,23 @@
 # Jupyter Notebooks (Local Only)
+# NOTE: GNOT_Colab_Runner.ipynb is already tracked, so this rule has no effect
+# until it is removed from the index (git rm --cached GNOT_Colab_Runner.ipynb).
 GNOT_Colab_Runner.ipynb
+.ipynb_checkpoints/
 
 # Data files
 *.h5
 *.pkl
+*.npz
 data/
 
-# Python caching
+# Python caching / tooling
 __pycache__/
 *.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
 
 # IDE settings
 .vscode/
@@ -17,9 +26,18 @@ __pycache__/
 # Obsidian settings (user-specific)
 .obsidian/
 
+# Claude Code local state (agent worktrees, per-user settings)
+.claude/worktrees/
+.claude/settings.local.json
+
 # Training / inference run artifacts (generated, not source)
 training_logs/
-inference_results/
-dataset_plots/
 lightning_logs/
 *.ckpt
+inference_results/
+inference_plots/
+dataset_plots/
+feature_plots/
+error_analysis/
+freq_separation_hist.png
+val_metrics.csv

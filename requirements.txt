@@ -1,12 +1,24 @@
-torch
-pytorch-lightning
-h5py
-scipy
-numpy
-matplotlib
-scikit-fem[all]
-gmsh
-seaborn
-tqdm
-torchmetrics
-pyyaml
+# Runtime dependencies. Lower bounds only (tested with the versions in brackets).
+# CPU-only torch: `pip install torch` from PyPI is enough; for CUDA see pytorch.org.
+
+# --- Deep learning ---
+torch>=2.1                  # torch.linalg.{eigh,cholesky,qr,svd}   [2.14]
+pytorch-lightning>=2.1      # 2.x hooks (on_validation_epoch_end)  [2.6.6]
+torchmetrics>=1.0           # R2Score, MeanAbsoluteError            [1.9.0]
+tensorboard>=2.12           # required by TensorBoardLogger in train.py [2.21]
+
+# --- FEM data generation ---
+gmsh>=4.11                  # needs system libs: libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1 [4.15.2]
+scikit-fem[all]>=8.0        # Basis, utils.condense(expand=), utils.solve_eigen (7.x and older break) [12.0.2]
+
+# --- Numerics / IO ---
+numpy>=1.24                 # [2.4.6]
+scipy>=1.10                 # linear_sum_assignment, cKDTree, ConvexHull, special.jv [1.17.1]
+h5py>=3.7                   # [3.16]
+pyyaml>=6.0                 # [6.0.1]
+
+# --- Plotting / analysis scripts ---
+matplotlib>=3.6             # [3.11.2]
+seaborn>=0.12               # visualize_features.py                 [0.13.2]
+pandas>=1.5                 # scripts/analyze_val_errors.py         [3.0.6]
+tqdm>=4.64                  # [4.70.1]
