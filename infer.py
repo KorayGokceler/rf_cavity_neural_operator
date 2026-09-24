@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 
 from src.data.dataset import GNOTDataset, gnot_collate_fn
 from src.training.lightning_module import GNOTLightning, detect_clusters
+from src.fem_refine import refine_modes
 
 
 # ── Subspace postprocessing ──────────────────────────────────────────────────
@@ -271,6 +272,7 @@ def main(args):
 
     print(f"Running inference for up to {args.num_samples} geometries...")
     geometries_results = {}
+    refine_err = []   # (model, refined) mean |Δf| [GHz] per geometry
 
     with torch.no_grad():
         for batch in dataloader:
@@ -307,12 +309,22 @@ def main(args):
                 E_tgt = targets[i][m_idx].cpu().numpy()   # [N_valid, K]
                 xy    = coords[i][m_idx].cpu().numpy()    # [N_valid, 2]
 
+                # ── Optional FEM refinement (--refine N) ────────────────────
+                # Prediction → trial subspace → N steps of inverse iteration +
+                # Rayleigh–Ritz with the mesh's P2 matrices (src/fem_refine.py).
+                refined = bool(args.refine) and g_id in elements_pool and 'Scale' in batch
+                if refined:
+                    s_i = float(batch['Scale'][i])
+                    _, E_hat, fp_ref = refine_modes(xy * s_i, elements_pool[g_id], E_hat, args.refine)
+                    refine_err.append((np.abs(np.sort(fp_i) - ft_i).mean(), np.abs(fp_ref - ft_i).mean()))
+                    fp_i = fp_ref
+
                 # ── Slot-to-mode alignment ──────────────────────────────────
                 # GNOT: Hungarian OT matching (ordering not guaranteed).
                 # SpectralNO: ordering guaranteed by eigh; no OT needed.
                 _model_type = getattr(model, 'model_type', 'gnot')
-                if _model_type == 'spectral_no':
-                    perm = np.arange(K, dtype=np.int64)  # identity
+                if _model_type == 'spectral_no' or refined:
+                    perm = np.arange(K, dtype=np.int64)  # identity (eigh / Ritz order)
                 else:
                     fp_norm_i = f_pred[i].cpu().numpy()  # z-scored (for cost)
                     ft_norm_i = f_true[i].cpu().numpy()
@@ -399,6 +411,11 @@ def main(args):
             if len(geometries_results) >= args.num_samples:
                 break
 
+    if refine_err:
+        e = np.asarray(refine_err)
+        print(f"FEM refinement ({args.refine} step(s), {len(e)} geometries): mean |Δf| "
+              f"model {e[:, 0].mean():.4f} GHz → refined {e[:, 1].mean():.6f} GHz")
+
     print(f"Plotting {len(geometries_results)} geometries...")
     for idx, (g_id, data) in enumerate(geometries_results.items()):
         save_path = os.path.join(args.output_dir, f"sample_geom_{g_id:04d}_all_modes.png")
@@ -427,6 +444,9 @@ def parse_args(argv=None):
                         help="Relative freq gap (physical units) below which modes are treated "
                              "as a subspace. Default: training rule (absolute gap on z-scored "
                              "freq, model.near_deg_threshold)")
+    parser.add_argument("--refine",       type=int, default=0,
+                        help="FEM refinement steps (inverse iteration + Rayleigh–Ritz "
+                             "on the P2 mesh) applied to the prediction; 0 = off, 2 ≈ label accuracy")
     parser.add_argument("--freq_mean",    type=float, default=None)
     parser.add_argument("--freq_std",     type=float, default=None)
     args = parser.parse_args(argv)

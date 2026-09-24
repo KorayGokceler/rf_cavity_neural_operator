@@ -129,9 +129,13 @@ Checkpoint dosya adı metrik adındaki `/` yüzünden bir alt klasör içerir:
 ### Inference
 
 ```bash
-# Birkaç geometri için GT | Tahmin | Hata görselleri (PNG)
-python infer.py --checkpoint "training_logs/gnot_5k_v1/best-epoch=XX-val/field_rel_l2=0.XXXX.ckpt" \
+# Birkaç geometri için GT | Tahmin | Hata görselleri (PNG); eğitim klasörü verilirse best/last ckpt seçilir
+python infer.py --checkpoint training_logs/gnot_5k_v1 \
     --data_path data/gnot_dataset_5k.pkl --split val --num_samples 5 --output_dir inference_plots
+
+# + FEM iyileştirme: tahmin → P2 mesh üzerinde 2 adım ters iterasyon + Rayleigh–Ritz
+#   (src/fem_refine.py; frekans hatası etiket doğruluğuna iner, geometri başına ~25–70 ms)
+python infer.py --checkpoint training_logs/gnot_5k_v1 --data_path data/gnot_dataset_5k.pkl --refine 2
 
 # Tüm split üzerinde metrikler (CSV/JSON, isteğe bağlı her geometri için grafik)
 python scripts/infer_val_all.py --checkpoint path/to.ckpt --split val \

@@ -108,6 +108,22 @@ python infer.py --config configs/spectral_no.yaml
 
 ---
 
+## 🔧 FEM İyileştirme (`--refine N`)
+
+`src/fem_refine.py`: modelin düğüm alanları bir deneme alt uzayı olarak alınır, P2'ye
+(kenar orta noktaları = uç ortalaması) taşınır ve mesh'in kendi P2 matrisleriyle
+(etiketlerin çözüldüğü ayrıklaştırma) `N` adım blok ters iterasyon + Rayleigh–Ritz uygulanır:
+$S = \mathrm{span}\{V, A^{-1}MV\}$, $S^\top A S\,c = \lambda\,S^\top M S\,c$.
+
+| Başlangıç hatası (alan, %5) | 1 adım | 2 adım |
+|---|---|---|
+| düzgün (ağ tipi) | ~4e-4 | ~3e-5 |
+| gürültü | ~3e-5 | ~2e-6 |
+
+(disk, 545 düğüm, ~25 ms; docs/17 ile tutarlı.) Sonrasında modlar özdeğer sırasındadır (OT gerekmez)
+ve konsol `mean |Δf| model → refined` özetini yazar. Gereken: güncel `convert.py` çıktısı
+(`scale` + `elements`).
+
 ## ⚠️ Geliştirme Önerileri
 
 1. **Nicel Rapor:** Sadece görsel değil, CSV/JSON formatında sayısal sonuçlar (tüm geometrilerin Rel L2, frekans hatası).
