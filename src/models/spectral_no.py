@@ -553,4 +553,5 @@ class SpectralNO(nn.Module):
             'L_mat':       L_mat,
             'M_mat':       M_mat,
             'u_K':         u_K,
+            'basis':       basis64.to(dtype),   # pre-Ritz trial space (span-loss ablation)
         }

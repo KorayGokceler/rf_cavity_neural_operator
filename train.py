@@ -183,7 +183,8 @@ def main():
             f"model.val_dim={data_val_dim} (or null to auto-detect), or re-convert the dataset.")
     # eigenspace: the span loss uses every stored mode (e.g. 6), the model
     # outputs K ≤ that many Ritz modes (compared with the K lowest targets).
-    if model_type == 'eigenspace':
+    span_loss = getattr(tc, 'span_loss', None)
+    if model_type == 'eigenspace' or span_loss:
         if data_n_modes < int(mc.num_field_modes):
             raise ValueError(
                 f"model.num_field_modes={mc.num_field_modes} but the dataset provides only "
@@ -264,6 +265,7 @@ def main():
         selfsup_weight=getattr(tc, 'selfsup_weight', 0.01),
         ortho_weight=getattr(tc, 'ortho_weight', 0.01),
         ritz_field_weight=getattr(tc, 'ritz_field_weight', 0.0),
+        span_loss=span_loss,
         span_norm=getattr(tc, 'span_norm', 'both'),
         span_root=getattr(tc, 'span_root', True),
         span_ridge=getattr(tc, 'span_ridge', 1e-9),

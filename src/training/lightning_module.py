@@ -465,6 +465,7 @@ class GNOTLightning(pl.LightningModule):
                  selfsup_weight=0.01,
                  ortho_weight=0.01,
                  ritz_field_weight=0.0,
+                 span_loss=None,
                  span_norm='both',
                  span_root=True,
                  span_ridge=1e-9,
@@ -488,6 +489,9 @@ class GNOTLightning(pl.LightningModule):
             (eigen-ordered output → SpectralNO loss path, no OT).
         eigenspace_kwargs: extra EigenspaceOperator kwargs (config
             `model.eigenspace`: n_layers, torsion_feature_idx, ridges ...).
+        span_loss: use the NEO span/self-sup/ortho terms on outputs['basis']
+            instead of the post-Ritz field loss.  None → only for 'eigenspace';
+            True also works for 'spectral_no' (ablation).
         span_weight / selfsup_weight / ortho_weight / ritz_field_weight
             (eigenspace only): NEO span loss on the raw basis vs ALL stored
             target modes, label-free Ritz compliance, basis orthogonality, and
@@ -597,6 +601,7 @@ class GNOTLightning(pl.LightningModule):
         self.selfsup_weight = selfsup_weight
         self.ortho_weight = ortho_weight
         self.ritz_field_weight = ritz_field_weight
+        self.span_loss = (model_type == 'eigenspace') if span_loss is None else bool(span_loss)
         self.span_norm = span_norm
         self.span_root = bool(span_root)
         self.span_ridge = span_ridge
@@ -773,7 +778,7 @@ class GNOTLightning(pl.LightningModule):
 
         # ── 3. Basis-conditioning regularizer (replaces useless Rayleigh) ─────
         # (eigenspace: replaced by ortho_weight on the exact P1 Gram.)
-        if (self.rayleigh_weight > 0.0 and self.model_type != 'eigenspace'
+        if (self.rayleigh_weight > 0.0 and not self.span_loss
                 and outputs.get('M_mat') is not None):
             loss_basis = _basis_conditioning_loss(outputs['M_mat'])
         else:
@@ -782,7 +787,7 @@ class GNOTLightning(pl.LightningModule):
                  batch_size=B, sync_dist=True)
 
         # ── 4. Total loss ─────────────────────────────────────────────────────
-        if self.model_type == 'eigenspace':
+        if self.span_loss:
             # Post-Ritz field / freq terms enter only with a positive weight
             # (0·NaN = NaN, and skipping them skips the eigh backward).
             total_loss = self._eigenspace_terms(batch, outputs, prefix)
