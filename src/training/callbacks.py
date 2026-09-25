@@ -56,21 +56,22 @@ class FieldVisualizationCallback(pl.Callback):
         with torch.no_grad():
             outputs = pl_module(batch)
             preds = outputs['field']            # [B, N, K]
-            targets = batch['Y_field']          # [B, N, K]
+            K = preds.shape[-1]
+            targets = batch['Y_field'][..., :K]  # [B, N, K] (data may store > K modes)
+            f_true = batch['Y_freq'][:, :K]
             coords = batch['X']
             mask = batch.get('Mask', None)
 
-        K = preds.shape[-1]
         for i in range(min(self.num_samples, len(preds))):
             m = mask[i] if mask is not None else slice(None)
             valid_coords = coords[i, m].cpu().numpy()
 
             # GNOT slots are unordered → align slot↔mode with the same OT
-            # matching the loss uses (SpectralNO: eigh order, identity).
+            # matching the loss uses (SpectralNO / eigenspace: eigh order, identity).
             perm = list(range(K))
-            if getattr(pl_module, 'model_type', 'gnot') != 'spectral_no':
+            if getattr(pl_module, 'model_type', 'gnot') not in ('spectral_no', 'eigenspace'):
                 from src.training.lightning_module import ot_match
-                perm = ot_match(outputs['freq'][i], batch['Y_freq'][i], preds[i], targets[i],
+                perm = ot_match(outputs['freq'][i], f_true[i], preds[i], targets[i],
                                 mask[i] if mask is not None else None,
                                 getattr(pl_module, 'freq_match_weight', 0.5)).tolist()
 

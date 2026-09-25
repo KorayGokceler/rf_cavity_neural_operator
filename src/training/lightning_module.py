@@ -326,6 +326,105 @@ def _basis_conditioning_loss(M_mat: torch.Tensor) -> torch.Tensor:
     return (off ** 2).sum(dim=(-1, -2)).mean() / denom
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  NEO-style eigenspace losses (model_type='eigenspace')
+#  All on the RAW basis V (before Rayleigh–Ritz): no eigh in the gradient path.
+# ════════════════════════════════════════════════════════════════════════════
+
+def eigenspace_grams(basis, targets, X, elems, mask=None):
+    """Exact P1 mass / stiffness Grams of [V | T] in one assembly, float64.
+
+    basis [B, N, m] (Dirichlet-gated raw basis), targets [B, N, n] (all stored
+    modes).  Returns G_M, G_A [B, m+n, m+n]; the blocks are VᵀMV, VᵀMT, TᵀMT
+    (resp. with the P1 stiffness A).  Padded nodes are zeroed, padded
+    triangles have zero area.
+    """
+    from src.models.spectral_no import _p1_galerkin
+    with torch.autocast(device_type=basis.device.type, enabled=False):
+        W = torch.cat([basis.to(torch.float64), targets.to(torch.float64)], dim=-1)
+        if mask is not None:
+            W = W * mask.unsqueeze(-1).to(W.dtype)
+        return _p1_galerkin(W, X.to(torch.float64), elems)
+
+
+def _jacobi_cholesky(G, ridge):
+    """(C, d): Cholesky C of D G D + ridge·I with D = diag(G)^{-1/2} (dead
+    columns → 0), i.e. a ridge relative to each column's own norm."""
+    diag = torch.diagonal(G, dim1=-2, dim2=-1)
+    d = torch.where(diag > 0, diag.clamp(min=1e-300).rsqrt(), torch.zeros_like(diag))
+    eye = torch.eye(G.shape[-1], device=G.device, dtype=G.dtype)
+    Gs = G * d.unsqueeze(-1) * d.unsqueeze(-2)
+    Gs = 0.5 * (Gs + Gs.transpose(-1, -2))
+    C, info = torch.linalg.cholesky_ex(Gs + ridge * eye)
+    if bool((info > 0).any()):                     # numerically indefinite → bigger ridge
+        C = torch.linalg.cholesky(Gs + max(ridge, 1e-9) * 1e3 * eye)
+    return C, d
+
+
+def span_residual(G, m, ridge=1e-9):
+    """Fraction of each target NOT captured by span(V) in the norm of G.
+
+        r_k = 1 − ‖P_V t_k‖²_G / ‖t_k‖²_G,    ‖P_V t‖²_G = g_kᵀ G_VV⁻¹ g_k,  g_k = VᵀG t_k
+
+    with P_V the G-orthogonal projector onto span(V) (G = mass → L²(Ω),
+    G = stiffness → energy/H¹₀ norm).  Invariant to each target's sign and
+    to any invertible mixing of the basis columns; 0 for every target inside
+    span(V) however a degenerate cluster is rotated (the mean over
+    G-orthonormal targets is rotation invariant).  Needs no eigensolve and no
+    near-degenerate cluster threshold.
+    G_VV⁻¹ is applied by a Cholesky solve of the Jacobi-scaled Gram plus a
+    relative ridge (the ridge only lowers the captured energy → r ≥ 0).
+
+    Args:
+        G: [B, m+n, m+n] Gram of [V | T] (eigenspace_grams).
+        m: number of basis columns.
+    Returns:
+        r [B, n] in [0, 1];  sqrt(r_k) is the best-approximation rel-L2 error
+        of t_k from span(V) in that norm.
+    """
+    C, d = _jacobi_cholesky(G[:, :m, :m], ridge)
+    Gvt = G[:, :m, m:] * d.unsqueeze(-1)                          # D VᵀG T
+    W = torch.linalg.solve_triangular(C, Gvt, upper=False)       # C⁻¹ D VᵀG T
+    energy = (W * W).sum(dim=-2)                                 # [B, n]
+    tt = torch.diagonal(G[:, m:, m:], dim1=-2, dim2=-1)
+    r = 1.0 - energy / tt.clamp(min=1e-300)
+    return torch.where(tt > 0, r.clamp(min=0.0, max=1.0), torch.zeros_like(r))
+
+
+def ritz_compliance(G_M, G_A, ridge=1e-9):
+    """Expected compliance of the Galerkin solution for random loads,
+    E_b[(Mb)ᵀ V (VᵀAV)⁻¹ VᵀMb],  b ~ N(0, M⁻¹)  (Cov(Mb) = M), in closed form:
+
+        tr(G_A⁻¹ G_M) = Σ_i 1/θ_i      (θ_i: Ritz values of span(V)),
+
+    evaluated by a Cholesky solve — no eigensolve.  Invariant to any
+    invertible change of basis V → VS (so computed on the Jacobi-scaled
+    pencil); by Ky Fan / Cauchy interlacing it is maximised exactly by the
+    lowest-m eigenspace of the pencil (A, M).  Returns [B].
+    """
+    C, d = _jacobi_cholesky(G_A, ridge)
+    Gm = G_M * d.unsqueeze(-1) * d.unsqueeze(-2)
+    Z = torch.cholesky_solve(Gm, C)                               # (D G_A D)⁻¹ D G_M D
+    return torch.diagonal(Z, dim1=-2, dim2=-1).sum(-1)
+
+
+def ritz_logdet(G_M, G_A, ridge=1e-9):
+    """(1/m) Σ_i log θ_i = (log det G_A − log det G_M) / m  (Cholesky, no
+    eigensolve).  Minimised by the lowest-m eigenspace (θ_i ≥ λ_i for every i)
+    with equal relative weight 1/m on every Ritz value; −log tr(G_A⁻¹G_M)
+    puts weight (1/θ_i)/Σ_j(1/θ_j) on θ_i (mostly θ_1).  Both weights sum to
+    1, so the two forms have the same gradient scale.  [B]"""
+    Ca, d = _jacobi_cholesky(G_A, ridge)
+    Gm = G_M * d.unsqueeze(-1) * d.unsqueeze(-2)
+    eye = torch.eye(Gm.shape[-1], device=Gm.device, dtype=Gm.dtype)
+    Cm = torch.linalg.cholesky(0.5 * (Gm + Gm.transpose(-1, -2)) + ridge * eye)
+    return (_chol_logdet(Ca) - _chol_logdet(Cm)) / Gm.shape[-1]
+
+
+def _chol_logdet(C):
+    return 2.0 * torch.log(torch.diagonal(C, dim1=-2, dim2=-1)).sum(-1)
+
+
 class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, hidden_dim=256,
                  n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
@@ -359,7 +458,17 @@ class GNOTLightning(pl.LightningModule):
                  spectral_kwargs=None,
                  area_weighted_field=False,
                  physics_freq=False,
-                 ritz_basis=0):
+                 ritz_basis=0,
+                 # EigenspaceOperator (model_type='eigenspace')
+                 eigenspace_kwargs=None,
+                 span_weight=1.0,
+                 selfsup_weight=0.01,
+                 ortho_weight=0.01,
+                 ritz_field_weight=0.0,
+                 span_norm='both',
+                 span_root=True,
+                 span_ridge=1e-9,
+                 selfsup_form='compliance'):
         """
         scale_invariant_field: compare unit-norm pred/target mode columns in
             the field loss + rel-L2 metric.  None → auto: True for
@@ -377,11 +486,24 @@ class GNOTLightning(pl.LightningModule):
             predicts log √λ.
         ritz_basis: GNOT only — r basis functions per slot + P1 Rayleigh–Ritz
             (eigen-ordered output → SpectralNO loss path, no OT).
+        eigenspace_kwargs: extra EigenspaceOperator kwargs (config
+            `model.eigenspace`: n_layers, torsion_feature_idx, ridges ...).
+        span_weight / selfsup_weight / ortho_weight / ritz_field_weight
+            (eigenspace only): NEO span loss on the raw basis vs ALL stored
+            target modes, label-free Ritz compliance, basis orthogonality, and
+            the post-Ritz field loss of the spectral path (freq_weight scales
+            the frequency MSE as usual).  See _eigenspace_terms.
+        span_norm: 'mass' (L²), 'energy' (stiffness / H¹₀, controls the Ritz
+            eigenvalue error) or 'both' (mean of the two).
+        span_root: use sqrt(residual) = best-approximation rel-L2 (the
+            metric) instead of its square.
+        span_ridge: relative ridge of the Jacobi-scaled Gram solves.
+        selfsup_form: 'compliance' (−log Σ 1/θ_i, NEO) or 'logdet' (mean log θ_i).
         """
         super().__init__()
         if scale_invariant_field is None:
-            scale_invariant_field = ((model_type == 'spectral_no') or bool(orthonormalize_output)
-                                     or bool(ritz_basis))
+            scale_invariant_field = ((model_type in ('spectral_no', 'eigenspace'))
+                                     or bool(orthonormalize_output) or bool(ritz_basis))
         self.scale_invariant_field = bool(scale_invariant_field)
         self.area_weighted_field = bool(area_weighted_field)
         # Suppress harmless DDP + gradient checkpointing stream mismatch warning
@@ -411,6 +533,22 @@ class GNOTLightning(pl.LightningModule):
                 bc_scale=bc_scale,
                 **{'physics_freq': physics_freq,
                    **(spectral_kwargs or {})},   # e.g. mass_ridge, area_feature_idx ...
+            )
+        elif model_type == 'eigenspace':
+            from src.models.eigenspace_operator import EigenspaceOperator
+            self.model = EigenspaceOperator(
+                val_dim=val_dim,
+                grid_dim=grid_dim,
+                embed_dim=hidden_dim,
+                n_heads=n_heads,
+                n_basis=n_basis,
+                num_field_modes=num_field_modes,
+                rff_dim=rff_dim,
+                rff_length_scale=rff_length_scale,
+                dropout=dropout,
+                bc_scale=bc_scale,
+                **{'physics_freq': physics_freq,
+                   **(eigenspace_kwargs or {})},  # n_layers, torsion_feature_idx, ridges ...
             )
         else:
             self.model = GNOTModel(
@@ -452,6 +590,17 @@ class GNOTLightning(pl.LightningModule):
         self.deg_sigma_abs = deg_sigma_abs
         self.slot_ortho_weight = slot_ortho_weight
         self.freq_match_weight = freq_match_weight
+        # NEO-style eigenspace losses (model_type='eigenspace')
+        assert span_norm in ('mass', 'energy', 'both'), f"span_norm: {span_norm!r}"
+        assert selfsup_form in ('compliance', 'logdet'), f"selfsup_form: {selfsup_form!r}"
+        self.span_weight = span_weight
+        self.selfsup_weight = selfsup_weight
+        self.ortho_weight = ortho_weight
+        self.ritz_field_weight = ritz_field_weight
+        self.span_norm = span_norm
+        self.span_root = bool(span_root)
+        self.span_ridge = span_ridge
+        self.selfsup_form = selfsup_form
 
         # Optional: Metrics to evaluate and measure model's success
         self.train_r2 = torchmetrics.R2Score()
@@ -498,7 +647,8 @@ class GNOTLightning(pl.LightningModule):
 
     def _compute_loss(self, batch, prefix):
         """Dispatch to model-specific loss computation."""
-        if self.model_type == 'spectral_no' or getattr(self.model, 'ritz_basis', 0):
+        if (self.model_type in ('spectral_no', 'eigenspace')
+                or getattr(self.model, 'ritz_basis', 0)):
             return self._compute_loss_spectral(batch, prefix)   # eigen-ordered output
         return self._compute_loss_gnot(batch, prefix)
 
@@ -516,10 +666,13 @@ class GNOTLightning(pl.LightningModule):
         mask = batch.get('Mask', None)
 
         pred_field  = outputs['field']       # [B, N, K]
-        true_field  = batch['Y_field']       # [B, N, K]
-        f_pred      = outputs['freq']        # [B, K] sorted ascending
-        f_true      = batch['Y_freq']        # [B, K] sorted ascending
         B, N, K     = pred_field.shape
+        # The data may store more modes than the model outputs (eigenspace:
+        # the span loss uses all of them); the K Ritz modes are compared
+        # with the K lowest targets only.  No-op when data modes == K.
+        true_field  = batch['Y_field'][..., :K]   # [B, N, K]
+        f_pred      = outputs['freq']        # [B, K] sorted ascending
+        f_true      = batch['Y_freq'][:, :K]  # [B, K] sorted ascending
         eps = 1e-8
         device = pred_field.device
 
@@ -619,7 +772,8 @@ class GNOTLightning(pl.LightningModule):
             loss_freq = torch.zeros((), device=device)
 
         # ── 3. Basis-conditioning regularizer (replaces useless Rayleigh) ─────
-        if (self.rayleigh_weight > 0.0
+        # (eigenspace: replaced by ortho_weight on the exact P1 Gram.)
+        if (self.rayleigh_weight > 0.0 and self.model_type != 'eigenspace'
                 and outputs.get('M_mat') is not None):
             loss_basis = _basis_conditioning_loss(outputs['M_mat'])
         else:
@@ -628,12 +782,22 @@ class GNOTLightning(pl.LightningModule):
                  batch_size=B, sync_dist=True)
 
         # ── 4. Total loss ─────────────────────────────────────────────────────
-        total_loss = (
-            loss_field
-            + self.freq_weight      * loss_freq
-            + self.smoothness_weight * loss_bnd
-            + self.rayleigh_weight  * loss_basis
-        )
+        if self.model_type == 'eigenspace':
+            # Post-Ritz field / freq terms enter only with a positive weight
+            # (0·NaN = NaN, and skipping them skips the eigh backward).
+            total_loss = self._eigenspace_terms(batch, outputs, prefix)
+            for w, term in ((self.ritz_field_weight, loss_field),
+                            (self.freq_weight, loss_freq),
+                            (self.smoothness_weight, loss_bnd)):
+                if w > 0.0:
+                    total_loss = total_loss + w * term
+        else:
+            total_loss = (
+                loss_field
+                + self.freq_weight      * loss_freq
+                + self.smoothness_weight * loss_bnd
+                + self.rayleigh_weight  * loss_basis
+            )
 
         # ── Logging ───────────────────────────────────────────────────────────
         self.log(f'{prefix}/loss',       total_loss, on_step=True, on_epoch=True,
@@ -672,6 +836,65 @@ class GNOTLightning(pl.LightningModule):
             targets_valid = true_field[mask_km].contiguous()
 
         return total_loss, preds_valid, targets_valid
+
+    def _eigenspace_terms(self, batch, outputs, prefix):
+        """NEO-style losses on the raw basis V = outputs['basis'] (before
+        Rayleigh–Ritz; no eigh in their gradient path).  One exact P1 assembly
+        of [V | T] (T = ALL stored target modes, may be > K) gives every Gram:
+
+          span    mean_k r_k,  r_k = 1 − ‖P_V t_k‖²/‖t_k‖²  in the mass and/or
+                  stiffness norm (span_residual; sqrt(r_k) if span_root)
+          selfsup −log tr(G_A⁻¹ G_M) = −log Σ_i 1/θ_i  (label-free expected
+                  compliance, ritz_compliance), or (1/m) Σ_i log θ_i
+                  (selfsup_form='logdet', ritz_logdet).  The log makes it scale-free:
+                  λ(sΩ) = λ(Ω)/s² only shifts it by a constant, and its
+                  gradient is relative (dθ_i/θ_i), O(1) like the span loss.
+          ortho   off-diagonal mass correlations of V (_basis_conditioning_loss)
+        Returns span_weight·span + selfsup_weight·selfsup + ortho_weight·ortho.
+        """
+        basis = outputs['basis']                               # [B, N, m]
+        B, _, m = basis.shape
+        elems = batch.get('Elements', None)
+        if elems is None:
+            raise ValueError(
+                "model_type='eigenspace' needs batch['Elements'] (mesh triangles) for the "
+                "exact P1 Grams: use a PKL/H5 from the current converter and "
+                "dataset.max_nodes: null.")
+        G_M, G_A = eigenspace_grams(basis, batch['Y_field'], batch['X'], elems,
+                                    batch.get('Mask', None))
+        r_M = span_residual(G_M, m, self.span_ridge)            # [B, n]
+        r_A = span_residual(G_A, m, self.span_ridge)
+        r = {'mass': r_M, 'energy': r_A, 'both': 0.5 * (r_M + r_A)}[self.span_norm]
+        loss_span = (torch.sqrt(r + 1e-8) if self.span_root else r).mean()
+
+        Gm_vv, Ga_vv = G_M[:, :m, :m], G_A[:, :m, :m]
+        if self.selfsup_form == 'logdet':
+            loss_ss = ritz_logdet(Gm_vv, Ga_vv, self.span_ridge).mean()
+        else:
+            loss_ss = -torch.log(ritz_compliance(Gm_vv, Ga_vv, self.span_ridge)
+                                 .clamp(min=1e-300)).mean()
+        loss_ortho = _basis_conditioning_loss(Gm_vv)
+
+        total = self.span_weight * loss_span
+        if self.selfsup_weight > 0.0:
+            total = total + self.selfsup_weight * loss_ss
+        if self.ortho_weight > 0.0:
+            total = total + self.ortho_weight * loss_ortho
+
+        kw = dict(on_step=False, on_epoch=True, batch_size=B, sync_dist=True)
+        with torch.no_grad():
+            self.log(f'{prefix}/span_loss', loss_span.float(), prog_bar=True, **kw)
+            self.log(f'{prefix}/selfsup_loss', loss_ss.float(), **kw)
+            self.log(f'{prefix}/ortho_loss', loss_ortho.float(), **kw)
+            # Best-approximation rel-L2 of each stored target mode from span(V)
+            # (mass norm ≈ lower bound of the post-Ritz mode_k_rel_l2, since the
+            # Ritz modes lie in span(V); energy norm ~ the Ritz eigenvalue error).
+            rl_M, rl_A = r_M.clamp(min=0).sqrt(), r_A.clamp(min=0).sqrt()
+            self.log(f'{prefix}/span_rel_l2', rl_M.mean().float(), **kw)
+            self.log(f'{prefix}/span_rel_l2_energy', rl_A.mean().float(), **kw)
+            for k in range(rl_M.shape[-1]):
+                self.log(f'{prefix}/span_mode_{k}_rel_l2', rl_M[:, k].mean().float(), **kw)
+        return total.to(outputs['field'].dtype)
 
     def _rescale_to_target(self, aligned_pred, true_field, valid_mask):
         """For R2/MAE only: with a scale-invariant loss the (unit-norm) aligned

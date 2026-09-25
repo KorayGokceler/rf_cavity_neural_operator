@@ -1,0 +1,219 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity — EigenspaceOperator (NEO-style) Configuration
+#  Learned m-dim trial space + exact P1 Rayleigh–Ritz, trained with a
+#  span / projection loss on the raw basis (no eigh in its gradient path)
+# ═══════════════════════════════════════════════════════════════
+#
+# Key differences from spectral_no.yaml:
+#  - model_type: eigenspace  → EigenspaceOperator (mass-aware linear-attention
+#                               trunk + one shared head → m = n_basis basis fns)
+#  - data_convert.mode_indices: 6 modes stored, the model outputs K = 3.  The
+#    span loss uses ALL 6 targets (a trial space that also captures modes 3-5
+#    gives better Ritz pairs for the first 3: block size > K), the post-Ritz
+#    metrics compare the K Ritz modes with the 3 lowest targets only.
+#  - Loss (training.*_weight, see the TRAINING section):
+#      span     mean_k [1 − ‖P_V t_k‖²/‖t_k‖²], exact P1 mass and stiffness
+#               norms; sign/rotation invariant, no near-degenerate cluster
+#               threshold, no eigh backward (Lorentzian broadening irrelevant)
+#      selfsup  label-free NEO expected compliance, −log Σ_i 1/θ_i
+#      ortho    off-diagonal mass correlations of the basis (conditioning)
+#      freq     z-score MSE of the Ritz frequencies (eigenvalue-only backward)
+#      post-Ritz field loss (the spectral path) — off by default
+#  - The logged val/field_rel_l2, val/mode_k_rel_l2, val/freq_mae_ghz are the
+#    same post-Ritz metrics as spectral_no (comparable runs); in addition
+#    */span_rel_l2(_energy) and */span_mode_k_rel_l2 = best-approximation
+#    rel-L2 of each stored target from span(V).
+#
+# Usage:
+#   python convert.py --h5_filepath rf_cavity_5000_dataset.h5 \
+#       --output_path data/gnot_dataset_5k_v13_m6.pkl --modes 0 1 2 3 4 5
+#   python train.py --config configs/eigenspace.yaml
+#   python train.py --config configs/eigenspace.yaml --fast_dev_run
+# ═══════════════════════════════════════════════════════════════
+
+model_type: eigenspace
+
+# ─────────────────────────────────────────────────────
+#  1. DATA GENERATION (same as spectral_no)
+# ─────────────────────────────────────────────────────
+data_gen:
+  h5_filename: "rf_cavity_5000_dataset.h5"
+  plot_dir: "dataset_plots"
+  n_total: 5000
+  n_plot: 100
+  generation_mode: "random"
+  n_eigen_modes: 6              # all 6 are used as span targets
+  eigen_sigma: 500.0
+  mesh_size_min: 0.0012
+  mesh_size_max: 0.005
+  mesh_dist_min: 0.002
+  mesh_dist_max: 0.03
+  sharp_n_pts_range: [7, 13]
+  sharp_r_range: [0.02, 0.046]
+  smooth_base_r: 0.035
+  smooth_perturb: 0.008
+  smooth_harmonics: [2, 8]
+  hole_prob: 0.3               # 30% of geometries get 1-2 elliptic holes (multiply connected)
+  max_holes: 2
+
+
+# ─────────────────────────────────────────────────────
+#  2. DATA CONVERSION
+# ─────────────────────────────────────────────────────
+data_convert:
+  h5_filepath: "rf_cavity_5000_dataset.h5"
+  output_path: "data/gnot_dataset_5k_v13_m6.pkl"   # val_dim=13, 6 modes
+  output_format: "pkl"
+  mode_indices: [0, 1, 2, 3, 4, 5]   # ≥ num_field_modes; extra modes feed the span loss only
+  max_samples: null
+
+
+# ─────────────────────────────────────────────────────
+#  3. DATASET
+# ─────────────────────────────────────────────────────
+dataset:
+  data_path: "data/gnot_dataset_5k_v13_m6.pkl"  # = data_convert.output_path
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  max_nodes: null               # REQUIRED: exact P1 Grams need the full mesh (Elements)
+
+
+# ─────────────────────────────────────────────────────
+#  4. MODEL — EigenspaceOperator
+# ─────────────────────────────────────────────────────
+model:
+  val_dim: 13                   # current converter output; null → auto-detect
+  grid_dim: 2
+
+  embed_dim: 128
+  n_heads: 4
+  n_basis: 16                   # m: trial-space size (≥ 6 targets, ≈ 2.7× the stored modes)
+  num_field_modes: 3            # K Ritz pairs output / compared with the 3 lowest targets
+  rff_dim: 64
+  rff_length_scale: 0.1
+  bc_scale: 0.02                # only used by the sigmoid gate (torsion_feature_idx: null)
+  physics_freq: true            # required: f = c·√λ/(2π·scale) from the Ritz λ
+
+  # EigenspaceOperator-specific kwargs (train.py → eigenspace_kwargs; the same
+  # keys are also accepted at the top level of `model`).
+  eigenspace:
+    n_layers: 4                 # mass-aware attention blocks
+    torsion_feature_idx: 12     # Dirichlet factor ψ = w·N(x), w = torsion / max (feature 12)
+  #   mass_ridge: 1.0e-4
+  #   stiff_ridge: 1.0e-4
+  #   eig_broadening: 1.0e-4
+
+  # No dropout: dropout noise on per-node features becomes node-to-node noise
+  # in the basis, which the stiffness (energy-norm) span term penalises
+  # heavily; rotation/reflection augmentation is the regulariser here.
+  dropout: 0.0
+  use_checkpoint: false         # (unused)
+
+  # GNOT-specific params (read by train.py, ignored by EigenspaceOperator)
+  n_shared_layers: 0
+  n_mode_layers: 3
+  n_field_head_layers: 3
+  num_experts: 4
+  predict_frequency: true
+  orthonormalize_output: false
+
+
+# ─────────────────────────────────────────────────────
+#  5. TRAINING
+# ─────────────────────────────────────────────────────
+training:
+  learning_rate: 2.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 16
+  max_epochs: 300
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  strategy: "auto"
+
+  # ── Loss weights (NEO-style; all eigenspace terms act on the raw basis) ──
+  # span: the main supervised term, O(1).  span_norm: 'both' = mean of the
+  # L²(mass) residual (what the field rel-L2 measures) and the energy
+  # (stiffness) residual (what the Ritz eigenvalue error follows:
+  # θ₁ − λ₁ ≲ λ₁·r_A,1, similar for k > 1 up to gap factors; and
+  # r_M,k ≤ (λ_k/λ₁)·r_A,k, so it also bounds the L² residual).
+  # span_root: sqrt(r) = best-approximation rel-L2 → optimises the metric
+  # itself and keeps an O(1) gradient as the residual shrinks (r² would fade
+  # to ~1e-4 and be overtaken by the label-free term).
+  span_weight: 1.0
+  span_norm: both
+  span_root: true
+  span_ridge: 1.0e-9            # relative ridge of the Jacobi-scaled (unit-diagonal) Cholesky
+                                # solves, float64; bias on r ≈ ridge/σ_min(corr Gram) ≪ 1e-6
+  # selfsup: −log Σ_i 1/θ_i (NEO expected compliance, closed form).  Maximised
+  # by the lowest-m eigenspace, so it agrees with the span optimum and gives
+  # the 10 basis columns beyond the 6 targets a purpose.  The log makes it
+  # scale-free with an O(1) relative gradient (Σ weights on dθ_i/θ_i = 1);
+  # small weight = a tie-breaker, not a competitor of the labels.
+  selfsup_weight: 0.01
+  selfsup_form: compliance      # or 'logdet': mean_i log θ_i (equal weight per Ritz value)
+  # ortho: only picks a well-conditioned basis INSIDE the span (the span is
+  # unchanged), so it cannot conflict with the other terms; 0.01 is enough to
+  # keep cond(VᵀMV) bounded (at init the basis correlation loss is ~0.5).
+  ortho_weight: 0.01
+  # post-Ritz field loss of the spectral path (through the broadened eigh
+  # backward) — off: the span term already fixes the fields; metrics are
+  # logged regardless.
+  ritz_field_weight: 0.0
+  # freq: z-MSE of the Ritz frequencies; backward through eigh eigenvalues
+  # only (finite at degeneracies).  Frequencies are the 2nd priority and the
+  # energy span term already controls θ; 0.1 keeps the large initial error
+  # (z-MSE ~10) from dominating.  P1 Ritz values sit ~0.2–0.6% above the P2
+  # labels (floor z-MSE ~2e-4), so this term cannot pull θ below λ_h.
+  freq_weight: 0.1
+  smoothness_weight: 0.0        # (ψ = 0 on ∂Ω is structural)
+  rayleigh_weight: 0.0          # replaced by ortho_weight for eigenspace
+  mode_loss_weights: null
+  scale_invariant_field: null   # → true (metrics on unit-norm columns, like spectral_no)
+  area_weighted_field: true     # post-Ritz metrics weighted by node area (≈ ∫_Ω)
+
+  # Near-degenerate clusters: used ONLY by the post-Ritz metric (subspace
+  # rel-L2 inside a cluster, comparable with spectral_no); the span loss needs none.
+  degeneracy_mode: hard
+  near_deg_threshold: 0.05
+  near_deg_rel_threshold: 0.05
+  deg_sigma_abs: 0.3
+  deg_sigma_rel: 0.5
+  slot_ortho_weight: 0.0
+  freq_match_weight: 0.0        # no OT matching (eigh order)
+
+  augment: true                 # rotation + reflection
+
+  # LR scheduler
+  scheduler: "custom_cosine"
+  cosine_eta_min: 1.0e-6
+  lr_mode_specific: null
+  lr_freq_heads: null
+  onecycle_pct_start: 0.3
+  onecycle_div_factor: 25
+  onecycle_final_div_factor: 1.0e+4
+
+  # Early stopping (on the post-Ritz val/field_rel_l2)
+  patience: 50
+
+  # DataLoader
+  num_workers: 4
+  pin_memory: true
+
+  # Logging
+  log_dir: "training_logs"
+  exp_name: "eigenspace_v1"
+  log_every_n_steps: 10
+  viz_every_n_epochs: 10
+  progress_bar_refresh_rate: 1
+
+  fast_dev_run: false
+
+
+# ─────────────────────────────────────────────────────
+#  6. INFERENCE
+# ─────────────────────────────────────────────────────
+inference:
+  checkpoint_path: null
+  output_dir: "inference_results_eigenspace"
+  num_visualize: 5

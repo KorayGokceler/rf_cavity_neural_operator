@@ -281,13 +281,15 @@ def main(args):
 
             outputs = model(batch)
             preds   = outputs['field']       # [B, N, K]
-            targets = batch['Y_field']       # [B, N, K]
+            K = preds.shape[-1]
+            # eigenspace data may store more modes than K → the K lowest.
+            targets = batch['Y_field'][..., :K]   # [B, N, K]
             coords  = batch['X']             # [B, N, 2]
             mask    = batch.get('Mask', None)
             geom_ids = batch['geom_id'].squeeze(-1).cpu().numpy()
 
             f_pred = outputs['freq']         # [B, K] ascending
-            f_true = batch['Y_freq']         # [B, K] ascending
+            f_true = batch['Y_freq'][:, :K]  # [B, K] ascending
             if model.freq_stats:
                 f_pred_ph = f_pred * model.freq_stats['std'] + model.freq_stats['mean']
                 f_true_ph = f_true * model.freq_stats['std'] + model.freq_stats['mean']
@@ -321,9 +323,10 @@ def main(args):
 
                 # ── Slot-to-mode alignment ──────────────────────────────────
                 # GNOT: Hungarian OT matching (ordering not guaranteed).
-                # SpectralNO: ordering guaranteed by eigh; no OT needed.
+                # SpectralNO / eigenspace: ordering guaranteed by eigh; no OT needed.
                 _model_type = getattr(model, 'model_type', 'gnot')
-                if _model_type == 'spectral_no' or refined or getattr(model.model, 'ritz_basis', 0):
+                if (_model_type in ('spectral_no', 'eigenspace') or refined
+                        or getattr(model.model, 'ritz_basis', 0)):
                     perm = np.arange(K, dtype=np.int64)  # identity (eigh / Ritz order)
                 else:
                     fp_norm_i = f_pred[i].cpu().numpy()  # z-scored (for cost)

@@ -74,6 +74,22 @@ def _spectral_kwargs(mc, feature_indices):
     return kw or None
 
 
+_EIGENSPACE_KEYS = ('n_layers', 'torsion_feature_idx', 'mass_ridge', 'stiff_ridge',
+                    'eig_broadening')
+
+
+def _eigenspace_kwargs(mc, feature_indices):
+    """EigenspaceOperator kwargs: top-level model keys (n_layers, ...) overridden
+    by a `model.eigenspace` block; torsion_feature_idx (full-layout column)
+    remapped into the `feature_indices` subset."""
+    kw = {k: mc[k] for k in _EIGENSPACE_KEYS if k in mc}
+    kw.update(dict(getattr(mc, 'eigenspace', None) or {}))
+    if feature_indices is not None and kw.get('torsion_feature_idx') is not None:
+        kw['torsion_feature_idx'] = {f: i for i, f in enumerate(feature_indices)}.get(
+            kw['torsion_feature_idx'])
+    return kw or None
+
+
 def main():
     args = parse_args()
     
@@ -101,7 +117,7 @@ def main():
         strategy = getattr(tc, 'strategy', 'auto')
         print(f"GPUs: {n_gpus}, Strategy: {strategy}")
 
-    model_type = getattr(cfg, 'model_type', 'gnot')  # 'gnot' | 'spectral_no'
+    model_type = getattr(cfg, 'model_type', 'gnot')  # 'gnot' | 'spectral_no' | 'eigenspace'
     # fp32 matmul precision.  'medium' (previous global default) lets PyTorch
     # run fp32 matmuls in bf16 — on CPU (oneDNN) that is ~0.25 abs error on a
     # 512x512 product, and it corrupts SpectralNO's Galerkin M/L assembly +
@@ -165,7 +181,15 @@ def main():
             f"model.val_dim={mc.val_dim} but dataset '{dc.data_path}' provides "
             f"{data_val_dim} input features per node{fi_note}. Set "
             f"model.val_dim={data_val_dim} (or null to auto-detect), or re-convert the dataset.")
-    if int(mc.num_field_modes) != data_n_modes:
+    # eigenspace: the span loss uses every stored mode (e.g. 6), the model
+    # outputs K ≤ that many Ritz modes (compared with the K lowest targets).
+    if model_type == 'eigenspace':
+        if data_n_modes < int(mc.num_field_modes):
+            raise ValueError(
+                f"model.num_field_modes={mc.num_field_modes} but the dataset provides only "
+                f"{data_n_modes} modes per geometry (data_convert.mode_indices); "
+                f"eigenspace needs data modes >= K.")
+    elif int(mc.num_field_modes) != data_n_modes:
         raise ValueError(
             f"model.num_field_modes={mc.num_field_modes} but the dataset provides "
             f"{data_n_modes} modes per geometry (data_convert.mode_indices). "
@@ -233,6 +257,17 @@ def main():
         ritz_basis=getattr(mc, 'ritz_basis', 0),
         # Extra SpectralNO kwargs (mass_ridge, area_feature_idx, ...) from model.spectral
         spectral_kwargs=_spectral_kwargs(mc, feature_indices),
+        # EigenspaceOperator kwargs (model.eigenspace) + NEO loss weights
+        eigenspace_kwargs=(_eigenspace_kwargs(mc, feature_indices)
+                           if model_type == 'eigenspace' else None),
+        span_weight=getattr(tc, 'span_weight', 1.0),
+        selfsup_weight=getattr(tc, 'selfsup_weight', 0.01),
+        ortho_weight=getattr(tc, 'ortho_weight', 0.01),
+        ritz_field_weight=getattr(tc, 'ritz_field_weight', 0.0),
+        span_norm=getattr(tc, 'span_norm', 'both'),
+        span_root=getattr(tc, 'span_root', True),
+        span_ridge=getattr(tc, 'span_ridge', 1e-9),
+        selfsup_form=getattr(tc, 'selfsup_form', 'compliance'),
         # Stored in the checkpoint hparams so infer.py rebuilds the same split
         # and the same input features (feature_indices, gauge zeroing).
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,

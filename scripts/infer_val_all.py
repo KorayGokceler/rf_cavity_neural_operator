@@ -86,11 +86,12 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
                      for k, v in batch.items()}
             out = model(batch)
             P = out['field']                       # [B,N,K]
-            T = batch['Y_field']                   # [B,N,K]
+            k_out = P.shape[-1]
+            T = batch['Y_field'][..., :k_out]      # [B,N,K] (eigenspace data may store > K)
             Mk = batch['Mask']                     # [B,N]
             IF = batch['Input_funcs']              # [B,N,val_dim] (12 = current converter; idx5 = node_area)
             gids = batch['geom_id'].squeeze(-1).cpu().numpy()
-            ftn = batch['Y_freq']                  # [B,K] normalised asc
+            ftn = batch['Y_freq'][:, :k_out]       # [B,K] normalised asc
             fpn = out.get('freq')                  # [B,K] normalised asc or None
             if fs:
                 ft_ph = (ftn * fs['std'] + fs['mean']).cpu().numpy()
@@ -117,9 +118,10 @@ def evaluate_split(model, dataset, device, batch_size, deg_threshold,
 
                 # ── Slot-to-mode alignment ──────────────────────────────────
                 # GNOT: Hungarian OT matching (slot ordering not guaranteed).
-                # SpectralNO: eigh returns sorted eigenvalues → identity perm.
+                # SpectralNO / eigenspace: eigh returns sorted eigenvalues → identity perm.
                 _model_type = getattr(model, 'model_type', 'gnot')
-                if _model_type == 'spectral_no' or getattr(model.model, 'ritz_basis', 0):
+                if (_model_type in ('spectral_no', 'eigenspace')
+                        or getattr(model.model, 'ritz_basis', 0)):
                     perm = np.arange(K, dtype=np.int64)  # identity (eigh order)
                     fp_ph_i = fp_ph[i] if fp_ph is not None else None
                 else:
