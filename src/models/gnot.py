@@ -17,7 +17,11 @@ class LinearAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)   # was accepted but silently ignored
         self.eps = 1e-6
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None, weights=None):
+        """weights [B, N_k] (optional): quadrature weights of the key nodes
+        (mass-aware / NEO attention): kv = Σ w φ(k) vᵀ, z = Σ w φ(k), i.e. a
+        quadrature of the integral operator.  Normalised to Σ w = 1 over the
+        valid nodes it is invariant to how the domain is discretised."""
         b, n_q, d = query.shape
         b, n_k, _ = key.shape
 
@@ -34,8 +38,10 @@ class LinearAttention(nn.Module):
             k_mask = mask.view(b, 1, -1, 1).to(k.dtype)
             k = k * k_mask
             v = v * k_mask
+        if weights is not None:
+            k = k * weights.view(b, 1, -1, 1).to(k.dtype)   # enters kv and Σ k alike
 
-        kv = torch.einsum('bhnd,bhne->bhde', k, v)
+        kv =torch.einsum('bhnd,bhne->bhde', k, v)
         z = torch.einsum('bhnd,bhde->bhne', q, kv)
 
         k_sum = k.sum(dim=2, keepdim=True)
