@@ -88,6 +88,8 @@ Sadece CPU için `pip install torch` (PyPI) yeterlidir; GPU için pytorch.org'da
 
 ### Colab notebook (en kolay yol)
 
+**EigenspaceOperator (NEO) eğitimi için:** [`Colab_EigenspaceOperator.ipynb`](Colab_EigenspaceOperator.ipynb) — ilk hücre repoyu klonlar; `MODE="smoke"` ile deneyin, `MODE="full"` (6000 geometri, 150 epoch) ile eğitin. Checkpoint'ler Drive'da, kesilirse eğitim hücresini tekrar çalıştırmak kaldığı yerden devam ettirir.
+
 [`RF_Cavity_Colab.ipynb`](RF_Cavity_Colab.ipynb): tek ayar hücresi (`MODE="smoke"` / `"full"`,
 model config'i, isteğe bağlı Google Drive) → *Runtime → Run all*. Üretim → dönüştürme →
 eğitim → inference → görseller sırayla çalışır; `smoke` modu CPU'da bile ~1 dakikadır.
