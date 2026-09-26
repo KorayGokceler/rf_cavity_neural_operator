@@ -105,7 +105,10 @@ def _eigenspace3d_kwargs(mc):
 def _datasets_3d(dc, random_seed, augment, feature_indices):
     """train / val / test Maxwell3DDataset (model_type='eigenspace3d')."""
     kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
-              feature_indices=feature_indices)
+              feature_indices=feature_indices,
+              # false for large PKLs written with --no_operators: rebuild M/K/G/Kp
+              # per item instead of keeping every geometry's operators in RAM.
+              cache_operators=getattr(dc, 'cache_operators', True))
     return tuple(Maxwell3DDataset(dc.data_path, split=s, augment=augment and s == 'train', **kw)
                  for s in ('train', 'val', 'test'))
 

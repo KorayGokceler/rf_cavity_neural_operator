@@ -28,6 +28,7 @@ if _ROOT not in sys.path:
 from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate   # noqa: E402
 from src.models.hcurl import hcurl_grams, mode_rel_l2                  # noqa: E402
 from src.training.lightning_module import GNOTLightning, span_residual  # noqa: E402
+from infer import resolve_checkpoint                                      # noqa: E402
 
 
 def _to(batch, device):
@@ -89,7 +90,7 @@ def summarize(rows):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--checkpoint', required=True)
+    ap.add_argument('--checkpoint', required=True, help='.ckpt file or a training dir')
     ap.add_argument('--data_path', required=True)
     ap.add_argument('--split', default='test', choices=['train', 'val', 'test', 'all'])
     ap.add_argument('--batch_size', type=int, default=2)
@@ -97,7 +98,9 @@ def main():
     ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = ap.parse_args()
 
-    lm = GNOTLightning.load_from_checkpoint(args.checkpoint, map_location=args.device)
+    ckpt = resolve_checkpoint(args.checkpoint)   # .ckpt or a training dir (best / last)
+    print(f"Checkpoint: {ckpt}")
+    lm = GNOTLightning.load_from_checkpoint(ckpt, map_location=args.device)
     dc = dict(lm.hparams.get('data_cfg') or {})
     kw = dict(random_seed=dc.get('random_seed', 42), feature_indices=dc.get('feature_indices'))
     if args.split == 'all':

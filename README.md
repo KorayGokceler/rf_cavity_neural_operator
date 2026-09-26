@@ -88,6 +88,8 @@ Sadece CPU için `pip install torch` (PyPI) yeterlidir; GPU için pytorch.org'da
 
 ### Colab notebook (en kolay yol)
 
+**3D Maxwell (H alanı, Nédélec N0):** [`Colab_Maxwell3D.ipynb`](Colab_Maxwell3D.ipynb) — `configs/eigenspace_3d.yaml`, ayrıntılar [docs/18](docs/18_3D_EXTENSION.md)–[20](docs/20_3D_MODEL.md).
+
 **EigenspaceOperator (NEO) eğitimi için:** [`Colab_EigenspaceOperator.ipynb`](Colab_EigenspaceOperator.ipynb) — ilk hücre repoyu klonlar; `MODE="smoke"` ile deneyin, `MODE="full"` (6000 geometri, 150 epoch) ile eğitin. Checkpoint'ler Drive'da, kesilirse eğitim hücresini tekrar çalıştırmak kaldığı yerden devam ettirir.
 
 [`RF_Cavity_Colab.ipynb`](RF_Cavity_Colab.ipynb): tek ayar hücresi (`MODE="smoke"` / `"full"`,

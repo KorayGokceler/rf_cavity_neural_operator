@@ -27,6 +27,7 @@ model_type: eigenspace3d
 
 dataset:
   data_path: "data/maxwell3d.pkl"
+  cache_operators: true         # false for large --no_operators PKLs (rebuild per item, no RAM growth)
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
