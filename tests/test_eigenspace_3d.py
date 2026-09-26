@@ -312,3 +312,25 @@ def test_split_clusters_do_not_poison_logged_metrics(ds):
     logs = _logged(lm, only)
     assert logs["val/field_rel_l2"] == (0.0, 0)
     assert all(logs[f"val/mode_{k}_rel_l2"] == (0.0, 0) for k in range(K))
+
+
+def test_all_gradient_sample_gets_theta_above_spectrum(box):
+    """docs/21 B1: a sample whose span is pure gradient keeps no direction;
+    its 'θ = ∞' must stay far above the physical spectrum (was 1.0)."""
+    _, batch, Gphi, lam = box
+    theta, fields, _ = hcurl_ritz(Gphi[..., :3], batch, 2, tol=1e-12)
+    assert (theta > 100 * lam[-1]).all()
+    assert torch.isfinite(theta).all()
+
+
+def test_projection_forces_float64_and_warns_at_maxiter(box):
+    """docs/21 B3/B4: float32 input gives the float64 result; CG stopping at
+    maxiter warns instead of returning silently."""
+    item, batch, _, _ = box
+    V = item["Y_field"][None]
+    p32 = project_basis(V.float(), batch, 1e-10)
+    p64 = project_basis(V.double(), batch, 1e-10)
+    assert p32["M_div"].dtype == torch.float64
+    torch.testing.assert_close(p32["M_div"], p64["M_div"], rtol=1e-6, atol=1e-8)
+    with pytest.warns(UserWarning, match="maxiter"):
+        project_basis(V.double() + 0.1 * torch.randn_like(V.double()), batch, 1e-14, maxiter=2)

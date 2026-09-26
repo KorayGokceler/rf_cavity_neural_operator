@@ -180,17 +180,19 @@ class Maxwell3DDataset(Dataset):
 
 
 def _block_diag(mats, rows, cols):
-    """Block-diagonal torch COO (float64) of scipy matrices on a padded
-    (rows × cols per block) layout."""
-    r, c, v = [], [], []
-    for b, A in enumerate(mats):
-        A = A.tocoo()
-        r.append(A.row.astype(np.int64) + b * rows)
-        c.append(A.col.astype(np.int64) + b * cols)
-        v.append(A.data.astype(np.float64))
-    idx = torch.from_numpy(np.stack([np.concatenate(r), np.concatenate(c)]))
-    return torch.sparse_coo_tensor(idx, torch.from_numpy(np.concatenate(v)),
-                                   (len(mats) * rows, len(mats) * cols), check_invariants=False).coalesce()
+    """Block-diagonal torch CSR (float64) of scipy matrices on a padded
+    (rows × cols per block) layout.  CSR: ~3–8× faster sparse products than
+    COO (review docs/22, m5) and no coalesce step."""
+    blocks = []
+    for A in mats:
+        A = sp.csr_matrix(A, dtype=np.float64)
+        A.resize((rows, cols))
+        blocks.append(A)
+    S = sp.block_diag(blocks, format='csr')
+    return torch.sparse_csr_tensor(torch.from_numpy(S.indptr.astype(np.int64)),
+                                   torch.from_numpy(S.indices.astype(np.int64)),
+                                   torch.from_numpy(S.data), size=S.shape,
+                                   check_invariants=False)
 
 
 def _mask(lengths, n):

@@ -32,6 +32,8 @@ components would need one mean per component.)  The singular Neumann system is
 also better conditioned than a pinned one (λ_min = the Fiedler value instead
 of a point-constraint value O(h·λ₂)).
 """
+import warnings
+
 import torch
 
 from src.models.spectral_no import _BroadenedEigh
@@ -72,7 +74,7 @@ def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10):
     p = z.clone()
     rz = (r * z).sum(1, keepdim=True)
     thr = tol * rhs.norm(dim=1, keepdim=True)
-    it = 0
+    it, converged = 0, False
     for it in range(1, maxiter + 1):
         Ap = spmm(Kp, p)
         pAp = (p * Ap).sum(1, keepdim=True)
@@ -80,12 +82,16 @@ def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10):
         x.add_(alpha * p)
         r.sub_(alpha * Ap)
         if it % check_every == 0 and bool((r.norm(dim=1, keepdim=True) <= thr).all()):
+            converged = True
             break
         z = dinv * r
         rz_new = (r * z).sum(1, keepdim=True)
         beta = torch.where(rz > 0, rz_new / rz.clamp(min=tiny), torch.zeros_like(rz))
         p = z + beta * p
         rz = rz_new
+    if not converged:
+        warnings.warn(f"KpSolve: CG stopped at maxiter={maxiter} before reaching tol={tol:g}; "
+                      "the kernel projection (M_div) may be inaccurate.")
     return _mean_free(x, valid), it
 
 
@@ -122,6 +128,7 @@ def project_basis(V, batch, tol=1e-8, maxiter=2000):
         M_div [B, m, m]  VᵀMV − BᵀKp⁻¹B = (PV)ᵀM(PV)
         Z     [B, Nv, m] Kp⁻¹GᵀMV  (PV = V − G Z)
     """
+    V = V.double()          # float32 CG does not converge (M_div off by ~79%, docs/21 B3)
     dt = V.dtype
     M, K, Gt, Kp = (_sparse(batch, k, dt) for k in ('M', 'K', 'Gt', 'Kp'))
     diag = batch['Kp_diag'].to(dt)
@@ -172,7 +179,11 @@ def projected_eigh(M_V, M_div, A_V, K, mass_ridge=1e-8, drop_tol=1e-6, eig_broad
                                               ).unsqueeze(-2)
     Aw = W.transpose(-1, -2) @ Dm(A_V) @ W
     Aw = 0.5 * (Aw + Aw.transpose(-1, -2))
-    big = 1e3 * torch.diagonal(Aw, dim1=-2, dim2=-1).abs().amax(-1, keepdim=True).detach() + 1.0
+    # 'θ = ∞' for dropped directions: far above every kept θ, and a fixed floor
+    # (1e12 ≫ any normalised-mesh eigenvalue, ~1/h²) for samples that keep no
+    # direction — there Aw = 0 and A_V = 0 too, so no V-based scale exists
+    # (was 1.0, below the physical spectrum; docs/21 B1).  No gradient flows.
+    big = (1e3 * torch.diagonal(Aw, dim1=-2, dim2=-1).abs().amax(-1, keepdim=True) + 1e12).detach()
     Aw = Aw + torch.diag_embed(torch.where(keep, torch.zeros_like(mu), big))
     theta, y = _BroadenedEigh.apply(Aw, eig_broadening)
     return theta[:, :K], d.unsqueeze(-1) * (W @ y[:, :, :K])

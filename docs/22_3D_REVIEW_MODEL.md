@@ -224,3 +224,17 @@ Parametre sayısı 854k (3.4 MB).
 - **Veri yükleyici hızı:** `--no_operators` ile geometri başına ≈ 83 ms CPU. 2400 train geometrisi / 8 işçi ≈ 25 s/epoch; 150 epoch ≈ 1 saat yükleyici CPU'su. Bu, GPU adım süresiyle aynı mertebede olabilir. B büyütülürse yükleyici darboğaz olabilir; `NUM_WORKERS`'ı çekirdek sayısına çekmek veya önbelleği fork'tan önce kurmak (m8) yardımcı olur.
 - **K=6, m=24:** `n_basis ≥ K` sağlanıyor; bütün yönler tutuluyor (μ ≫ drop_tol). K ≤ 2 seçilirse M1 düzeltmesi gerekli (artık mevcut).
 - **Süre (tahmini, GPU):** Adım başına ~200 CG SpMM + eigh + gövde. B=8 için ~0.1 s/adım, 300 adım/epoch ile ≈ 30 s/epoch; 150 epoch ≈ 1.5 saat. CSR'ye geçiş (m5) CG kısmını belirgin kısaltır.
+
+---
+
+## ✅ İnceleme sonrası uygulanan düzeltmeler
+
+| Bulgu | Durum |
+|---|---|
+| **M1** (split-cluster NaN → EarlyStopping epoch 0'da durdu) | Düzeltildi (`cdbc457`), regresyon testi var |
+| **docs/21 B1** (tüm yönler düşerse θ = 1.0) | Düzeltildi: düşürülen yönler için sabit taban 1e12 (`hcurl.projected_eigh`), test: `test_all_gradient_sample_gets_theta_above_spectrum` |
+| **docs/21 B3** (float32 girdide CG yakınsamıyor) | Düzeltildi: `project_basis` girdiyi float64'e çevirir |
+| **docs/21 B4** (CG maxiter'da sessiz dönüş) | Düzeltildi: `UserWarning` |
+| **m5** (COO seyrek çarpım yavaş) | Düzeltildi: blok-diyagonal operatörler CSR; aynı kayıp (52.322559), adım ~1.7× hızlı (CPU, B=8), `num_workers=2` ile doğrulandı |
+| **m7** (notebook `STORE_OPERATORS` mesh boyutunu yok sayıyor) | Düzeltildi: tahmin ∝ (0.10 / MESH_SIZE)³ |
+| Diğer minor/nit (m1–m4, m6, m8, m9; docs/21 B2, B5–B15) | Açık — raporlandı |
