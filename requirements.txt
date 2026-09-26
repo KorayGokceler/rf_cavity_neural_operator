@@ -16,6 +16,7 @@ numpy>=1.24                 # [2.4.6]
 scipy>=1.10                 # linear_sum_assignment, cKDTree, ConvexHull, special.jv [1.17.1]
 h5py>=3.7                   # [3.16]
 pyyaml>=6.0                 # [6.0.1]
+meshio>=5.3                 # .vtu export for 3D field viz (src/viz/vtk_export.py) [5.3.5]
 
 # --- Plotting / analysis scripts ---
 matplotlib>=3.6             # [3.11.2]
