@@ -272,3 +272,43 @@ def test_split_cluster_is_excluded():
     batch = {"Y_freq": torch.tensor([[1.0, 2.0, 2.001, 3.0, 4.0, 4.002]]), "FreqNext": torch.tensor([4.003])}
     assert lm._clusters_3d(batch, 0, 6) == ([[0], [1, 2], [3]], [4, 5])
     assert lm._clusters_3d(batch, 0, 2) == ([[0]], [1])
+
+
+def _all_split(batch, b):
+    """Put every stored mode of sample b (and FreqNext) into one near-degenerate cluster."""
+    f0 = batch["Y_freq"][b, 0].clone()
+    batch["Y_freq"][b] = f0 + 1e-4 * torch.arange(batch["Y_freq"].shape[1])
+    batch["FreqNext"][b] = f0 + 1e-4 * batch["Y_freq"].shape[1]
+
+
+def _logged(lm, batch, prefix="val"):
+    logs = {}
+    lm.log = lambda name, value, **kw: logs.__setitem__(name, (float(value), kw.get("batch_size")))
+    with torch.no_grad():
+        lm._compute_loss(batch, prefix)
+    return logs
+
+
+def test_split_clusters_do_not_poison_logged_metrics(ds):
+    """Regression: a split-cluster (NaN) rel-L2 entry is excluded by weight.  Before,
+    a batch whose entries were all NaN logged val/field_rel_l2 = NaN, which made
+    the epoch mean NaN: EarlyStopping stopped training after one epoch and
+    ModelCheckpoint never improved (K=1, batch_size=1 on the smoke data)."""
+    lm = _module(ds[0]["Input_funcs"].shape[-1])
+    K = lm.model.num_field_modes
+    batch = maxwell3d_collate([ds[0], ds[1]])
+    _all_split(batch, 0)
+    assert lm._clusters_3d(batch, 0, K)[1] == list(range(K))
+    split1 = lm._clusters_3d(batch, 1, K)[1]
+    logs = _logged(lm, batch)
+    v, n = logs["val/field_rel_l2"]
+    assert math.isfinite(v) and n == K - len(split1)
+    for k in range(K):                       # every key on every step (DDP), weight = #valid
+        v, n = logs[f"val/mode_{k}_rel_l2"]
+        assert math.isfinite(v) and n == int(k not in split1)
+    # a batch with no valid entry: finite value with zero weight (no epoch-mean contribution)
+    only = maxwell3d_collate([ds[0]])
+    _all_split(only, 0)
+    logs = _logged(lm, only)
+    assert logs["val/field_rel_l2"] == (0.0, 0)
+    assert all(logs[f"val/mode_{k}_rel_l2"] == (0.0, 0) for k in range(K))
