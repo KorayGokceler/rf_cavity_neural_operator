@@ -972,9 +972,21 @@ class GNOTLightning(pl.LightningModule):
             self.log(f'{prefix}/freq_loss', loss_freq.float(), **kw)
             self.log(f'{prefix}/grad_frac', grad_frac.mean().float(), **kw)
             self.log(f'{prefix}/kp_cg_iters', float(KpSolve.last_iters), **kw)
+            # NaN (split cluster) entries are excluded by weight, not by value:
+            # each key is logged on every step with batch_size = its number of
+            # valid entries (0 → contributes nothing), so the epoch value is the
+            # mean over all valid (geometry, mode) entries.  A NaN value would
+            # poison the epoch mean (→ EarlyStopping stops, ModelCheckpoint
+            # never improves); skipping keys per step would differ across DDP
+            # ranks (sync_dist).
+            valid = torch.isfinite(rl)
+            rl0 = torch.where(valid, rl, torch.zeros_like(rl))
             for k in range(K):
-                if not torch.isnan(rl[:, k]).all():
-                    self.log(f'{prefix}/mode_{k}_rel_l2', rl[:, k].nanmean(), **kw)
+                n_k = int(valid[:, k].sum())
+                self.log(f'{prefix}/mode_{k}_rel_l2', rl0[:, k].sum() / max(n_k, 1),
+                         **dict(kw, batch_size=n_k))
+            n_valid = int(valid.sum())
+            field_rl = rl0.sum() / max(n_valid, 1)
             if self.freq_stats:
                 fp = f_pred * self.freq_stats['std'] + self.freq_stats['mean']
                 ft = f_true * self.freq_stats['std'] + self.freq_stats['mean']
@@ -987,8 +999,8 @@ class GNOTLightning(pl.LightningModule):
             preds, targets = (Fd * sgn)[emask].float(), t_unit[emask].float()
         self.log(f'{prefix}/loss', total, on_step=True, on_epoch=True, prog_bar=True,
                  batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/field_rel_l2', rl.nanmean(), on_step=True, on_epoch=True,
-                 prog_bar=True, batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/field_rel_l2', field_rl, on_step=True, on_epoch=True,
+                 prog_bar=True, batch_size=n_valid, sync_dist=True)
         return total, preds, targets
 
     def _clusters_3d(self, batch, b, K):
