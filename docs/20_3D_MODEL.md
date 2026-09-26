@@ -94,3 +94,21 @@ Veri: 30 geometri (9 pillbox, 9 axisym_cell, 12 blob), $N_v$ 1.2–1.7k, $N_e$ 6
 - `Y` gradyanlara $M$-ortogonal olmalı (ölçek serbest; kayıp ve metrikler normalize eder).
 - `freq_next` saklanmalı: bölünmüş son çiftin metrik dışı bırakılması buna dayanıyor.
 - `feature_names`, `x,y,z`, üç `dir_*` ve `*volume*` sütunlarını içermeli (augmentasyon ve attention ağırlığı bunlarla çalışır).
+
+## Alan görselleştirme (`scripts/plot_3d.py`, `src/viz/`)
+
+```bash
+python scripts/plot_3d.py --checkpoint <eğitim dizini | .ckpt> --data_path data/maxwell3d.pkl \
+    --split test --n 3 --axes y z --out_dir viz3d        # [--modes 0 1] [--indices 4 7] [--no_vtu]
+```
+
+- `src/viz/predict.py`: tek geometri için saf model tahmini; hedefe hizalanır (izole mod → işaret,
+  yakın-dejenere küme → tahmin edilen alt uzaya M-izdüşüm). `rel_l2`, `eval_3d` ile birebir aynıdır.
+- `src/viz/nedelec.py`: kenar DOF'larından H = Σ u_e (λ_a∇λ_b − λ_b∇λ_a); tet başına lineer,
+  normal bileşeni tetler arasında süreksiz (kesitlerdeki üçgen desenler bundan).
+- `src/viz/slices.py`: mod başına satır, gerçek |H| | tahmin |H| | |hata| (aynı renk ölçeği);
+  oklar düzlem içi H, uzunluk ∝ düzlem içi genlik (düzleme dik alan → ok yok, ör. TM010'da y-kesiti).
+- `src/viz/vtk_export.py`: `<ad>.vtu` (ParaView: `H_true_k`, `H_pred_k`, `H_err_k`, `absH_*`;
+  `_pt` = düğüm ortalaması, glyph/streamline için) + `<ad>.json` (frekanslar, rel_l2). Koordinatlar mm.
+
+Kaviteler z ekseni boyunca kurulur: y-kesiti eksenel (x–z), z-kesiti enine düzlemdir.

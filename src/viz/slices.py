@@ -127,7 +127,9 @@ def _outline(ax, Ug, Vg, inside):
         pass  # e.g. degenerate/constant mask on a tiny synthetic grid
 
 
-def _quiver(ax, Ug, Vg, H, inside, in_plane, n_per_side=15, color="white"):
+def _quiver(ax, Ug, Vg, H, inside, in_plane, vmax, n_per_side=15, color="white", min_frac=0.1):
+    """In-plane arrows, length ∝ in-plane |H| / vmax (the row's colour scale), so a
+    field pointing out of the cut shows no arrows; below min_frac·vmax dropped."""
     if H is None or in_plane is None:
         return
     inside = np.asarray(inside, dtype=bool)
@@ -141,13 +143,13 @@ def _quiver(ax, Ug, Vg, H, inside, in_plane, n_per_side=15, color="white"):
     Hu = np.asarray(H)[::sv, ::su, iu]
     Hv = np.asarray(H)[::sv, ::su, iv]
     mag = np.sqrt(Hu ** 2 + Hv ** 2)
-    valid = insq & np.isfinite(mag) & (mag > 1e-12)
+    valid = insq & np.isfinite(mag) & (mag > min_frac * vmax)
     if not np.any(valid):
         return
-    un = Hu[valid] / mag[valid]
-    vn = Hv[valid] / mag[valid]
+    un = Hu[valid] / vmax
+    vn = Hv[valid] / vmax
     q = ax.quiver(Uq[valid], Vq[valid], un, vn, color=color, alpha=0.85,
-                  pivot="mid", width=0.0045, scale=22, scale_units="width")
+                  pivot="mid", width=0.0045, scale=12, scale_units="width", minlength=0)
     try:
         q.set_path_effects([_pe.withStroke(linewidth=1.4, foreground="black",
                                             alpha=0.6)])
@@ -211,10 +213,11 @@ def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
         ims[i] = im
         _outline(ax, Ug, Vg, inside)
         if arrows and Hfield is not None:
-            _quiver(ax, Ug, Vg, Hfield, inside, in_plane)
+            _quiver(ax, Ug, Vg, Hfield, inside, in_plane, vmax_row)
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel(_axis_label(u_label, to_mm))
-        ax.set_ylabel(_axis_label(v_label, to_mm))
+        if i == 0:   # shared by the row; the colorbar labels sit where later ones would
+            ax.set_ylabel(_axis_label(v_label, to_mm))
         ax.set_title(col_title, fontsize=9)
 
     return tuple(ims)
@@ -234,6 +237,16 @@ def _add_row_colorbars(fig, axes_row, ims):
         cb2.set_label(r"|$\Delta H$|  [a.u.]")
 
 
+def _row_height(sample, width=13.5):
+    """Row height [in] matching the cut's aspect ratio (flat cuts → short rows)."""
+    try:
+        U, V = np.asarray(sample["U"]), np.asarray(sample["V"])
+        r = np.ptp(V) / max(np.ptp(U), 1e-12)
+    except (KeyError, TypeError, ValueError):
+        r = 1.0
+    return float(np.clip(width / 3.6 * r + 1.0, 2.2, 4.8))
+
+
 def figure_modes(samples_true, samples_pred, info, modes=None, suptitle="",
                   to_mm=None, arrows=True):
     """One row per mode: True |H| | Predicted |H| | |H_pred - H_true|.
@@ -251,7 +264,7 @@ def figure_modes(samples_true, samples_pred, info, modes=None, suptitle="",
         modes = list(modes)
     n = max(1, len(modes))
 
-    fig, axes = plt.subplots(n, 3, figsize=(13.5, 4.3 * n), squeeze=False,
+    fig, axes = plt.subplots(n, 3, figsize=(13.5, _row_height(samples_true) * n), squeeze=False,
                               constrained_layout=True)
     for i, k in enumerate(modes):
         row_title = _mode_row_text(k, info)
@@ -273,8 +286,9 @@ def figure_planes(samples, info, k, to_mm=None, arrows=True, suptitle=""):
     """
     axis_keys = list(samples.keys())
     n = max(1, len(axis_keys))
-    fig, axes = plt.subplots(n, 3, figsize=(13.5, 4.3 * n), squeeze=False,
-                              constrained_layout=True)
+    hs = [_row_height(samples[a][0]) for a in axis_keys]
+    fig, axes = plt.subplots(n, 3, figsize=(13.5, sum(hs)), squeeze=False,
+                              constrained_layout=True, gridspec_kw={"height_ratios": hs})
     row_title = _mode_row_text(k, info)
 
     for i, axis_key in enumerate(axis_keys):
