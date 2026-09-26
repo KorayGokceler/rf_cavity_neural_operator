@@ -7,6 +7,7 @@ from src.training.callbacks import FieldVisualizationCallback
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.data.dataset import GNOTDataset, gnot_collate_fn
+from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate
 from src.training.lightning_module import GNOTLightning, count_near_degenerate
 from src.config import load_config, config_to_flat_dict
 
@@ -90,6 +91,25 @@ def _eigenspace_kwargs(mc, feature_indices):
     return kw or None
 
 
+_EIGENSPACE3D_KEYS = ('n_layers', 'edge_rff', 'mass_ridge', 'drop_tol', 'eig_broadening',
+                      'kp_tol', 'kp_maxiter')
+
+
+def _eigenspace3d_kwargs(mc):
+    """EigenspaceOperator3D kwargs: top-level model keys overridden by `model.eigenspace`."""
+    kw = {k: mc[k] for k in _EIGENSPACE3D_KEYS if k in mc}
+    kw.update(dict(getattr(mc, 'eigenspace', None) or {}))
+    return kw or None
+
+
+def _datasets_3d(dc, random_seed, augment, feature_indices):
+    """train / val / test Maxwell3DDataset (model_type='eigenspace3d')."""
+    kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
+              feature_indices=feature_indices)
+    return tuple(Maxwell3DDataset(dc.data_path, split=s, augment=augment and s == 'train', **kw)
+                 for s in ('train', 'val', 'test'))
+
+
 def main():
     args = parse_args()
     
@@ -117,7 +137,8 @@ def main():
         strategy = getattr(tc, 'strategy', 'auto')
         print(f"GPUs: {n_gpus}, Strategy: {strategy}")
 
-    model_type = getattr(cfg, 'model_type', 'gnot')  # 'gnot' | 'spectral_no' | 'eigenspace'
+    model_type = getattr(cfg, 'model_type', 'gnot')  # 'gnot' | 'spectral_no' | 'eigenspace' | 'eigenspace3d'
+    is_3d = model_type == 'eigenspace3d'
     # fp32 matmul precision.  'medium' (previous global default) lets PyTorch
     # run fp32 matmuls in bf16 — on CPU (oneDNN) that is ~0.25 abs error on a
     # 512x512 product, and it corrupts SpectralNO's Galerkin M/L assembly +
@@ -144,20 +165,16 @@ def main():
     # Model init / DataLoader shuffle / augmentation için global seed
     # (dataset split'i ayrıca aynı seed ile deterministik).
     pl.seed_everything(random_seed, workers=True)
-    train_dataset = GNOTDataset(dc.data_path, split='train',
-                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed, augment=augment)
-    val_dataset   = GNOTDataset(dc.data_path, split='val',
-                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed, augment=False,
-                                zero_gauge_features=augment)
-    test_dataset  = GNOTDataset(dc.data_path, split='test',
-                                train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
-                                feature_indices=feature_indices, max_nodes=max_nodes,
-                                random_seed=random_seed, augment=False,
-                                zero_gauge_features=augment)
+    if is_3d:
+        train_dataset, val_dataset, test_dataset = _datasets_3d(dc, random_seed, augment, feature_indices)
+    else:
+        common = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
+                      feature_indices=feature_indices, max_nodes=max_nodes, random_seed=random_seed)
+        train_dataset = GNOTDataset(dc.data_path, split='train', augment=augment, **common)
+        val_dataset = GNOTDataset(dc.data_path, split='val', augment=False,
+                                  zero_gauge_features=augment, **common)
+        test_dataset = GNOTDataset(dc.data_path, split='test', augment=False,
+                                   zero_gauge_features=augment, **common)
 
     # Boş split → ModelCheckpoint/EarlyStopping monitor'ü hiç loglanmaz ve
     # eğitim sonunda anlaşılmaz bir hata verir; erken ve açık hata ver.
@@ -184,7 +201,7 @@ def main():
     # eigenspace: the span loss uses every stored mode (e.g. 6), the model
     # outputs K ≤ that many Ritz modes (compared with the K lowest targets).
     span_loss = getattr(tc, 'span_loss', None)
-    if model_type == 'eigenspace' or span_loss:
+    if model_type in ('eigenspace', 'eigenspace3d') or span_loss:
         if data_n_modes < int(mc.num_field_modes):
             raise ValueError(
                 f"model.num_field_modes={mc.num_field_modes} but the dataset provides only "
@@ -200,8 +217,10 @@ def main():
               "set-prediction (OT / Grassmannian) loss - it has no effect.")
 
     # pin_memory sadece CUDA varken anlamlı (CPU'da uyarı + gereksiz kopya).
-    pin_memory = bool(tc.pin_memory) and torch.cuda.is_available()
-    loader_kw = dict(collate_fn=gnot_collate_fn, num_workers=tc.num_workers,
+    # (3D: batches carry sparse COO operators, which cannot be pinned.)
+    pin_memory = bool(tc.pin_memory) and torch.cuda.is_available() and not is_3d
+    loader_kw = dict(collate_fn=maxwell3d_collate if is_3d else gnot_collate_fn,
+                     num_workers=tc.num_workers,
                      pin_memory=pin_memory, persistent_workers=tc.num_workers > 0,
                      prefetch_factor=2 if tc.num_workers > 0 else None)
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True, **loader_kw)
@@ -259,8 +278,8 @@ def main():
         # Extra SpectralNO kwargs (mass_ridge, area_feature_idx, ...) from model.spectral
         spectral_kwargs=_spectral_kwargs(mc, feature_indices),
         # EigenspaceOperator kwargs (model.eigenspace) + NEO loss weights
-        eigenspace_kwargs=(_eigenspace_kwargs(mc, feature_indices)
-                           if model_type == 'eigenspace' else None),
+        eigenspace_kwargs=(_eigenspace_kwargs(mc, feature_indices) if model_type == 'eigenspace'
+                           else _eigenspace3d_kwargs(mc) if is_3d else None),
         span_weight=getattr(tc, 'span_weight', 1.0),
         selfsup_weight=getattr(tc, 'selfsup_weight', 0.01),
         ortho_weight=getattr(tc, 'ortho_weight', 0.01),
@@ -307,7 +326,7 @@ def main():
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
     early_stop = EarlyStopping(monitor="val/field_rel_l2", patience=tc.patience, mode="min")
-    viz_callback = FieldVisualizationCallback(log_every_n_epochs=tc.viz_every_n_epochs)
+    viz_callback = FieldVisualizationCallback(log_every_n_epochs=tc.viz_every_n_epochs)   # 2D plots only
     progress_bar = TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate)
     
     try:
@@ -342,7 +361,7 @@ def main():
         devices=devices,
         strategy=strategy,
         gradient_clip_val=tc.gradient_clip_val,
-        callbacks=[checkpoint_callback, lr_monitor, early_stop, viz_callback, progress_bar],
+        callbacks=[checkpoint_callback, lr_monitor, early_stop, progress_bar] + ([] if is_3d else [viz_callback]),
         logger=tb_logger,
         log_every_n_steps=tc.log_every_n_steps,
         enable_progress_bar=True,

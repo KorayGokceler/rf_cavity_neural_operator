@@ -1,0 +1,103 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity 3D — EigenspaceOperator3D (H-field, Whitney N0 edge DOFs)
+#  docs/18 §3 (design), docs/20_3D_MODEL.md (implementation)
+# ═══════════════════════════════════════════════════════════════
+#
+#  - model_type: eigenspace3d → EigenspaceOperator3D: mass-aware linear
+#    attention on vertices (node-volume weights), edge head ψ(x_mid)·t_e,
+#    Rayleigh–Ritz on the divergence-free projection (Schur mass M_div,
+#    batched Jacobi-PCG for Kp⁻¹, gradient directions dropped).
+#  - Loss = 2D eigenspace terms on the projected Grams:
+#      span     mean_k √r_k, M_div (mass) and curl–curl (energy ≙ L² of E) norms,
+#               over ALL stored modes
+#      selfsup  −log tr(A_V⁻¹ M_div)  (bounded thanks to the projection)
+#      ortho    off-diagonal correlations of M_div
+#      freq     z-MSE of the Ritz frequencies (freq_weight)
+#  - Metrics: val/field_rel_l2, val/mode_k_rel_l2 (M-norm, sign-/subspace-
+#    agnostic), val/freq_mae_ghz, val/freq_rel_err, */span_rel_l2(_energy),
+#    */grad_frac (gradient mass share of the raw basis), */kp_cg_iters.
+#
+#  Usage:
+#    python convert_3d.py ...                    # → data/maxwell3d.pkl (data half)
+#    python train.py --config configs/eigenspace_3d.yaml [--fast_dev_run]
+#    python scripts/eval_3d.py --checkpoint <ckpt> --split test --csv test3d.csv
+# ═══════════════════════════════════════════════════════════════
+
+model_type: eigenspace3d
+
+dataset:
+  data_path: "data/maxwell3d.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  feature_indices: null         # null = all F vertex features (F read from the data)
+
+model:
+  val_dim: null                 # auto-detect F from the data
+  grid_dim: 3
+  embed_dim: 128
+  n_heads: 4
+  n_basis: 24                   # m ≥ stored modes; ≈ 2–3× K
+  num_field_modes: 6            # K Ritz pairs (compared with the K lowest targets)
+  rff_dim: 64
+  rff_length_scale: 0.1
+  physics_freq: true            # required: f = c·√λ/(2π·scale)
+  dropout: 0.0
+  use_checkpoint: false
+
+  eigenspace:                   # → EigenspaceOperator3D kwargs
+    n_layers: 4
+    edge_rff: true              # RFF(x_mid) enters the edge head
+    kp_tol: 1.0e-8              # PCG relative residual for Kp⁻¹ (forward and backward)
+    kp_maxiter: 2000
+    drop_tol: 1.0e-6            # directions with < 1e-6 divergence-free mass share → θ = ∞
+    mass_ridge: 1.0e-8          # on the Jacobi-scaled unprojected mass (whitening)
+    eig_broadening: 1.0e-4
+
+  # read by train.py for printing only
+  n_shared_layers: 0
+  n_mode_layers: 0
+  num_experts: 1
+  predict_frequency: true
+
+training:
+  learning_rate: 2.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 4
+  max_epochs: 300
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  strategy: "auto"
+
+  span_weight: 1.0
+  span_norm: both               # mass (M_div) + energy (curl–curl ≙ ‖E − Π E‖)
+  span_root: true
+  span_ridge: 1.0e-9
+  selfsup_weight: 0.01
+  selfsup_form: compliance
+  ortho_weight: 0.01
+  freq_weight: 0.1
+  ritz_field_weight: 0.0        # (not used by the 3D path)
+  rayleigh_weight: 0.0
+  smoothness_weight: 0.0
+
+  # near-degenerate clusters: metric only (subspace rel-L2 inside a cluster)
+  degeneracy_mode: hard
+  near_deg_threshold: 0.05
+  near_deg_rel_threshold: 0.02
+
+  augment: true                 # random O(3) of mesh + x,y,z and dir_* features (N0 DOFs invariant up to sign)
+
+  scheduler: "custom_cosine"
+  cosine_eta_min: 1.0e-6
+  patience: 50
+
+  num_workers: 2
+  pin_memory: false             # sparse batches cannot be pinned
+
+  log_dir: "training_logs"
+  exp_name: "eigenspace3d_v1"
+  log_every_n_steps: 10
+  viz_every_n_epochs: 10
+  progress_bar_refresh_rate: 1
+  fast_dev_run: false

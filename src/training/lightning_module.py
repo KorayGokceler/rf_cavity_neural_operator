@@ -349,9 +349,13 @@ def eigenspace_grams(basis, targets, X, elems, mask=None):
 
 def _jacobi_cholesky(G, ridge):
     """(C, d): Cholesky C of D G D + ridge·I with D = diag(G)^{-1/2} (dead
-    columns → 0), i.e. a ridge relative to each column's own norm."""
+    columns → 0), i.e. a ridge relative to each column's own norm.  A column
+    is dead when its diagonal is ≤ 1e-12 × the largest one: e.g. an exact
+    gradient in 3D has rounding-level (≈1e-16) projected mass AND curl–curl
+    entries, which the Jacobi scaling would otherwise blow up to O(1) noise."""
     diag = torch.diagonal(G, dim1=-2, dim2=-1)
-    d = torch.where(diag > 0, diag.clamp(min=1e-300).rsqrt(), torch.zeros_like(diag))
+    alive = diag > 1e-12 * diag.amax(-1, keepdim=True).clamp(min=0)
+    d = torch.where(alive & (diag > 0), diag.clamp(min=1e-300).rsqrt(), torch.zeros_like(diag))
     eye = torch.eye(G.shape[-1], device=G.device, dtype=G.dtype)
     Gs = G * d.unsqueeze(-1) * d.unsqueeze(-2)
     Gs = 0.5 * (Gs + Gs.transpose(-1, -2))
@@ -554,6 +558,20 @@ class GNOTLightning(pl.LightningModule):
                 **{'physics_freq': physics_freq,
                    **(eigenspace_kwargs or {})},  # n_layers, torsion_feature_idx, ridges ...
             )
+        elif model_type == 'eigenspace3d':
+            from src.models.eigenspace_operator_3d import EigenspaceOperator3D
+            self.model = EigenspaceOperator3D(
+                val_dim=val_dim,
+                embed_dim=hidden_dim,
+                n_heads=n_heads,
+                n_basis=n_basis,
+                num_field_modes=num_field_modes,
+                rff_dim=rff_dim,
+                rff_length_scale=rff_length_scale,
+                dropout=dropout,
+                **{'physics_freq': physics_freq,
+                   **(eigenspace_kwargs or {})},  # n_layers, edge_rff, kp_tol, drop_tol ...
+            )
         else:
             self.model = GNOTModel(
                 val_dim=val_dim,
@@ -601,7 +619,7 @@ class GNOTLightning(pl.LightningModule):
         self.selfsup_weight = selfsup_weight
         self.ortho_weight = ortho_weight
         self.ritz_field_weight = ritz_field_weight
-        self.span_loss = (model_type == 'eigenspace') if span_loss is None else bool(span_loss)
+        self.span_loss = (model_type in ('eigenspace', 'eigenspace3d')) if span_loss is None else bool(span_loss)
         self.span_norm = span_norm
         self.span_root = bool(span_root)
         self.span_ridge = span_ridge
@@ -652,6 +670,8 @@ class GNOTLightning(pl.LightningModule):
 
     def _compute_loss(self, batch, prefix):
         """Dispatch to model-specific loss computation."""
+        if self.model_type == 'eigenspace3d':
+            return self._compute_loss_3d(batch, prefix)
         if (self.model_type in ('spectral_no', 'eigenspace')
                 or getattr(self.model, 'ritz_basis', 0)):
             return self._compute_loss_spectral(batch, prefix)   # eigen-ordered output
@@ -858,7 +878,7 @@ class GNOTLightning(pl.LightningModule):
         Returns span_weight·span + selfsup_weight·selfsup + ortho_weight·ortho.
         """
         basis = outputs['basis']                               # [B, N, m]
-        B, _, m = basis.shape
+        m = basis.shape[-1]
         elems = batch.get('Elements', None)
         if elems is None:
             raise ValueError(
@@ -867,6 +887,13 @@ class GNOTLightning(pl.LightningModule):
                 "dataset.max_nodes: null.")
         G_M, G_A = eigenspace_grams(basis, batch['Y_field'], batch['X'], elems,
                                     batch.get('Mask', None))
+        return self._span_terms(G_M, G_A, m, prefix).to(outputs['field'].dtype)
+
+    def _span_terms(self, G_M, G_A, m, prefix):
+        """span / selfsup / ortho terms (see _eigenspace_terms) from the mass
+        and stiffness Grams G_M, G_A [B, m+n, m+n] of [V | T] (2D: exact P1;
+        3D: G_M's VV block is the kernel-projected M_div, hcurl_grams)."""
+        B = G_M.shape[0]
         r_M = span_residual(G_M, m, self.span_ridge)            # [B, n]
         r_A = span_residual(G_A, m, self.span_ridge)
         r = {'mass': r_M, 'energy': r_A, 'both': 0.5 * (r_M + r_A)}[self.span_norm]
@@ -899,7 +926,85 @@ class GNOTLightning(pl.LightningModule):
             self.log(f'{prefix}/span_rel_l2_energy', rl_A.mean().float(), **kw)
             for k in range(rl_M.shape[-1]):
                 self.log(f'{prefix}/span_mode_{k}_rel_l2', rl_M[:, k].mean().float(), **kw)
-        return total.to(outputs['field'].dtype)
+        return total
+
+    def _compute_loss_3d(self, batch, prefix):
+        """model_type='eigenspace3d' (EigenspaceOperator3D, H-field N0 edge DOFs).
+
+        Loss = the 2D span / selfsup / ortho terms (_span_terms) on the Grams
+        of [PV | T] from hcurl_grams: mass block VV = M_div (kernel-projected,
+        so gradient content neither helps nor hurts), curl–curl blocks
+        unchanged (K G = 0), T = ALL stored modes; + freq_weight · z-MSE of
+        the K Ritz frequencies.  Metrics (no grad): per-mode M-norm rel-L2 of
+        the Ritz fields vs the K lowest targets (sign-agnostic, subspace error
+        inside near-degenerate clusters; NaN = excluded for a cluster that the
+        K-th output splits, see _clusters_3d), freq MAE [GHz] and relative
+        error, the basis' gradient mass fraction 1 − diag(M_div)/diag(VᵀMV),
+        CG iterations.
+        """
+        from src.models.hcurl import KpSolve, hcurl_grams, mode_rel_l2
+        out = self.model(batch)
+        V, T = out['basis'], batch['Y_field']
+        B, _, m = V.shape
+        G_M, G_A, MT = hcurl_grams(V, T, out, batch)
+        total = self._span_terms(G_M, G_A, m, prefix)
+        K = out['field'].shape[-1]
+        f_pred, f_true = out['freq'], batch['Y_freq'][:, :K]
+        loss_freq = F.mse_loss(f_pred, f_true)
+        if self.freq_weight > 0.0:
+            total = total + self.freq_weight * loss_freq.to(total.dtype)
+        total = total.float()
+
+        kw = dict(on_step=False, on_epoch=True, batch_size=B, sync_dist=True)
+        with torch.no_grad():
+            Fd, Tk, MTk = out['field'].double(), T[..., :K].double(), MT[..., :K]
+            rl = []
+            for b in range(B):
+                inside, split = self._clusters_3d(batch, b, K)
+                r = mode_rel_l2(Fd[b], Tk[b], MTk[b], inside).float()
+                r[split] = float('nan')
+                rl.append(r)
+            rl = torch.stack(rl)                                            # [B, K]
+            if prefix == 'val':
+                self._val_rl2_buffer.extend(rl.cpu())
+            grad_frac = 1.0 - (torch.diagonal(out['M_div'], dim1=-2, dim2=-1)
+                               / torch.diagonal(out['M_V'], dim1=-2, dim2=-1).clamp(min=1e-300))
+            self.log(f'{prefix}/freq_loss', loss_freq.float(), **kw)
+            self.log(f'{prefix}/grad_frac', grad_frac.mean().float(), **kw)
+            self.log(f'{prefix}/kp_cg_iters', float(KpSolve.last_iters), **kw)
+            for k in range(K):
+                if not torch.isnan(rl[:, k]).all():
+                    self.log(f'{prefix}/mode_{k}_rel_l2', rl[:, k].nanmean(), **kw)
+            if self.freq_stats:
+                fp = f_pred * self.freq_stats['std'] + self.freq_stats['mean']
+                ft = f_true * self.freq_stats['std'] + self.freq_stats['mean']
+                self.log(f'{prefix}/freq_mae_ghz', F.l1_loss(fp, ft), prog_bar=True, **kw)
+                self.log(f'{prefix}/freq_rel_err', ((fp - ft).abs() / ft.abs()).mean(), **kw)
+            # R2 bookkeeping: unit-M-norm targets vs sign-aligned predictions
+            t_unit = Tk / (Tk * MTk).sum(1, keepdim=True).clamp(min=1e-300).sqrt()
+            sgn = torch.sign(torch.einsum('bek,bek->bk', Fd, MTk)).unsqueeze(1)
+            emask = batch['EdgeMask'].unsqueeze(-1).expand_as(Fd)
+            preds, targets = (Fd * sgn)[emask].float(), t_unit[emask].float()
+        self.log(f'{prefix}/loss', total, on_step=True, on_epoch=True, prog_bar=True,
+                 batch_size=B, sync_dist=True)
+        self.log(f'{prefix}/field_rel_l2', rl.nanmean(), on_step=True, on_epoch=True,
+                 prog_bar=True, batch_size=B, sync_dist=True)
+        return total, preds, targets
+
+    def _clusters_3d(self, batch, b, K):
+        """(clusters inside the K outputs, split indices) of sample b, from ALL
+        stored target frequencies plus FreqNext (mode K_data+1).  A near-degenerate
+        cluster that continues past output K−1 is cut by the Ritz output: the
+        K-th Ritz vector may be any combination of the pair, so its per-mode
+        error is undefined → those indices are reported as split (NaN)."""
+        f = batch['Y_freq'][b]
+        nxt = batch.get('FreqNext', None)
+        if nxt is not None and torch.isfinite(nxt[b]):
+            f = torch.cat([f, nxt[b:b + 1]])
+        clusters = self._clusters(f)
+        inside = [c for c in clusters if c[-1] < K]
+        split = [k for c in clusters if c[0] < K <= c[-1] for k in c if k < K]
+        return inside, split
 
     def _rescale_to_target(self, aligned_pred, true_field, valid_mask):
         """For R2/MAE only: with a scale-invariant loss the (unit-norm) aligned
@@ -1218,10 +1323,10 @@ class GNOTLightning(pl.LightningModule):
         if tb is not None and self._val_rl2_buffer and self.current_epoch % _HIST_EVERY == 0:
             rl_all = torch.stack(self._val_rl2_buffer)  # [N_val, K]
             for k in range(rl_all.shape[1]):
-                tb.add_histogram(
-                    f'val/mode_{k}_rel_l2_dist',
-                    rl_all[:, k],
-                    global_step=self.current_epoch)
+                vals = rl_all[:, k][torch.isfinite(rl_all[:, k])]   # 3D: NaN = split cluster
+                if vals.numel():
+                    tb.add_histogram(f'val/mode_{k}_rel_l2_dist', vals,
+                                     global_step=self.current_epoch)
 
     def test_step(self, batch, batch_idx):
         loss, preds, targets = self._compute_loss(batch, "test")
