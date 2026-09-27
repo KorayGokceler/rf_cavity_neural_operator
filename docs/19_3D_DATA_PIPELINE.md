@@ -24,7 +24,7 @@
 python -m src.data_gen.dataset_generator_3d --mode calibration --n_total 2 --n_eigen_modes 8 --h5_filename calib3d.h5
 # rastgele aileler
 python -m src.data_gen.dataset_generator_3d --n_total 1000 --n_eigen_modes 6 --mesh_size 0.10 \
-    --families pillbox axisym_cell blob --seed 0 --n_workers 4 --sample_timeout 300 --h5_filename rf3d.h5
+    --families elliptical reentrant pillbox_pipes freeform --seed 0 --n_workers 4 --sample_timeout 300 --h5_filename rf3d.h5
 python convert_3d.py --h5_filepath rf3d.h5 --output_path data/rf3d.pkl [--modes 0 1 2] [--no_operators]
 ```
 
@@ -34,7 +34,19 @@ Parametreler:
 - Tohum: örnek $s$ için `default_rng([seed, s])`. Sonuç işçi sayısından bağımsızdır.
 - H5 dosyası önce `.partial` uzantısıyla yazılır, iş bitince atomik olarak yeniden adlandırılır.
 
-**Aileler** (gmsh OCC, metre):
+**Aileler — g2 (varsayılan, `src/data_gen/cavity_shapes.py`, metre).** Eksenel simetrik
+kaviteler $(z, r)$ meridyen profilinden $z$ ekseni etrafında döndürülür. Işın tüpleri düz PEC
+kapaklarla kapatılır (kapalı özmod çözümü, CST'deki gibi). Tet boyutu, en küçük detaya göre
+sınırlanır: $h=\max(\min(h_V, h_{detay}), 0.7\,h_V)$.
+
+| Aile | Parametreler |
+|---|---|
+| `elliptical` | TESLA tipi eliptik hücre, 1–3 hücre (olasılık 0.5/0.3/0.2) + ışın tüpleri. Yarım hücre: iris elipsi $(a,b)$ + ekvator elipsi $(A,B)$ + ortak teğet doğru. $R_{eq}\in[4,11]$ cm, $R_{iris}/R_{eq}\in[0.25,0.42]$, $L/R_{eq}\in[0.45,0.65]$, $A/L\in[0.6,0.85]$, $B/A\in[0.85,1.25]$, $a/L\in[0.15,0.3]$, $b/a\in[1,1.9]$; içe dönük (re-entrant) duvar reddedilir. **Doğrulama:** TESLA orta hücresi → TM010 = 1.305 GHz (gerçek 1.300), 3 hücre geçiş bandı 1.294–1.317 GHz |
+| `reentrant` | Burun konili (klystron/IOT tipi): $R\in[3,7]$ cm, $L_c/R\in[0.4,1]$, tüp $r_p/R\in[0.1,0.25]$, burun aralığı $g/L_c\in[0.15,0.6]$, uç kalınlığı $[0.08,0.2]R$, koni açısı $0$–$35°$; burun ucu, kökü ve dış köşeler yuvarlatılır (büyük dış yarıçap → toroidal duvar) |
+| `pillbox_pipes` | Işın tüplü pillbox: $R\in[3,6]$ cm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.12,0.35]$, yuvarlatılmış iris kenarı ve dış köşeler |
+| `freeform` | Süperelipsoit (yarı eksen oranı $[0.45,1]$, üsler $[0.35,1.6]$: kutumsu → elipsoit → sivri) × düzgün rastgele modülasyon × 0–4 çıkıntı/girinti, ardından büküm, burulma, daralma. Hepsi birebir dönüşüm olduğundan yüzey kendini kesmez ve cisim delik içermez. Kapalı üçgen yüzey gmsh'e verilir, `classifySurfaces` + `createGeometry` ile $h$ boyutunda yeniden örülür |
+
+**Aileler — v1** (`--families pillbox axisym_cell blob`, gmsh OCC, metre):
 
 | Aile | Parametreler |
 |---|---|

@@ -52,10 +52,17 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 from scipy.special import jn_zeros, jnp_zeros
 
+try:
+    from src.data_gen import cavity_shapes as cs
+except ImportError:   # run as a script from src/data_gen
+    import cavity_shapes as cs
+
 logging.getLogger('skfem').setLevel(logging.ERROR)
 
 C0 = 299792458.0  # speed of light [m/s]
-FAMILIES = ("pillbox", "axisym_cell", "blob")
+# default families: realistic RF cavities + free-form solids (src/data_gen/cavity_shapes.py);
+# "pillbox", "axisym_cell", "blob" stay available via --families (v1 datasets)
+FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "freeform")
 
 # Calibration geometries [m] (non-degenerate low box spectrum; L < 2.03 R → TM010 first)
 CALIB_BOX = (0.10, 0.08, 0.06)
@@ -70,7 +77,7 @@ def parse_args(argv=None):
     p.add_argument("--n_total", type=int, default=100, help="Number of geometries to generate.")
     p.add_argument("--mode", type=str, default="random", choices=["random", "calibration"],
                    help="random families, or calibration (PEC box / pillbox with analytic spectra).")
-    p.add_argument("--families", type=str, nargs="+", default=list(FAMILIES), choices=list(FAMILIES),
+    p.add_argument("--families", type=str, nargs="+", default=list(FAMILIES), choices=ALL_FAMILIES,
                    help="Geometry families drawn uniformly in random mode.")
     p.add_argument("--n_eigen_modes", type=int, default=6, help="Number K of physical modes stored.")
     p.add_argument("--mesh_size", type=float, default=0.12,
@@ -256,7 +263,27 @@ def build_calibration(occ, s_id):
     return "calib_pillbox", {"R": R, "L": L}
 
 
-BUILDERS = {"pillbox": build_pillbox, "axisym_cell": build_axisym_cell, "blob": build_blob}
+BUILDERS = {"pillbox": build_pillbox, "axisym_cell": build_axisym_cell, "blob": build_blob,
+            "elliptical": cs.build_elliptical, "reentrant": cs.build_reentrant,
+            "pillbox_pipes": cs.build_pillbox_pipes}
+DISCRETE_BUILDERS = {"freeform": cs.freeform_surface}   # closed triangulated surface → gmsh remesh
+
+
+def _discrete_model(P, F):
+    """gmsh volume bounded by the closed triangulation (P, F), reparametrised so the
+    surface is remeshed at the target size (gmsh STL-remesh workflow)."""
+    import gmsh
+    s = gmsh.model.addDiscreteEntity(2)
+    gmsh.model.mesh.addNodes(2, s, np.arange(1, len(P) + 1), np.asarray(P, float).ravel())
+    gmsh.model.mesh.addElementsByType(s, 2, [], (np.asarray(F) + 1).ravel())
+    gmsh.model.mesh.classifySurfaces(np.pi, True, True, np.pi)
+    gmsh.model.mesh.createGeometry()
+    loop = gmsh.model.geo.addSurfaceLoop([t for _, t in gmsh.model.getEntities(2)])
+    gmsh.model.geo.addVolume([loop])
+    gmsh.model.geo.synchronize()
+
+
+ALL_FAMILIES = [*BUILDERS, *DISCRETE_BUILDERS]
 
 
 def _mesh_current_model(h):
@@ -424,17 +451,24 @@ def generate_sample_data(s_id):
             gmsh.model.add(f"rf3d_{s_id}_{attempt}")
             occ = gmsh.model.occ
             try:
-                if ARGS.mode == "calibration":
-                    shape_type, params = build_calibration(occ, s_id)
+                fam = "calibration" if ARGS.mode == "calibration" else \
+                    ARGS.families[int(rng.integers(0, len(ARGS.families)))]
+                if fam in DISCRETE_BUILDERS:
+                    P, F, params = DISCRETE_BUILDERS[fam](rng)
+                    shape_type, volume = fam, cs.surface_volume(P, F)
+                    _discrete_model(P, F)
                 else:
-                    fam = ARGS.families[int(rng.integers(0, len(ARGS.families)))]
-                    shape_type, params = BUILDERS[fam](occ, rng)
-                occ.synchronize()
-                vols = gmsh.model.getEntities(3)
-                if len(vols) != 1:
-                    raise RuntimeError(f"{len(vols)} volumes")
-                volume = gmsh.model.occ.getMass(3, vols[0][1])
+                    shape_type, params = build_calibration(occ, s_id) if fam == "calibration" \
+                        else BUILDERS[fam](occ, rng)
+                    occ.synchronize()
+                    vols = gmsh.model.getEntities(3)
+                    if len(vols) != 1:
+                        raise RuntimeError(f"{len(vols)} volumes")
+                    volume = gmsh.model.occ.getMass(3, vols[0][1])
                 h = ARGS.mesh_size_abs or ARGS.mesh_size * volume ** (1.0 / 3.0)
+                h_cap = params.pop("_h_cap", None)             # smallest feature (iris, nose gap, pipe)
+                if h_cap and not ARGS.mesh_size_abs:
+                    h = max(min(h, h_cap), 0.7 * h)            # ≤ ~3× the tets of the volume rule
                 nodes, tets = _mesh_current_model(h)
                 topo = mesh_topology(tets, len(nodes))
                 if not is_topological_ball(topo):

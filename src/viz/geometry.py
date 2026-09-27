@@ -14,7 +14,8 @@ import numpy as np
 
 from src.data.dataset_converter_3d import boundary_faces
 
-FAMILY_CMAP = {'pillbox': 'Blues', 'axisym_cell': 'Oranges', 'blob': 'Greens'}
+FAMILY_CMAP = {'pillbox': 'Blues', 'axisym_cell': 'Oranges', 'blob': 'Greens', 'elliptical': 'Oranges',
+               'reentrant': 'Purples', 'pillbox_pipes': 'Blues', 'freeform': 'Greens'}
 _LIGHT = np.array([0.4, -0.5, 0.75]) / np.linalg.norm([0.4, -0.5, 0.75])
 
 
@@ -43,15 +44,19 @@ def load_h5(path, n=12, ids=None):
     return out
 
 
-def _draw(ax, g, elev, azim):
+def _draw(ax, g, elev, azim, cut=False):
+    """cut=True: only the far half (y > centre) seen from −y, i.e. the inside wall
+    (nose cones, irises) of a half-sectioned cavity."""
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     import matplotlib.pyplot as plt
     X, P = g['nodes'], g['nodes'][g['faces']]
+    if cut:
+        P = P[P.mean(1)[:, 1] > 0.5 * (X[:, 1].min() + X[:, 1].max())]
     n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
     n /= np.linalg.norm(n, axis=1, keepdims=True)
     e, a = np.radians(elev), np.radians(azim)              # light follows the camera
     cam = np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)])
-    shade = 0.3 + 0.7 * np.clip(n @ (0.6 * cam + 0.4 * _LIGHT), 0, 1)
+    shade = 0.3 + 0.7 * np.clip(np.abs(n @ (0.6 * cam + 0.4 * _LIGHT)) if cut else n @ (0.6 * cam + 0.4 * _LIGHT), 0, 1)
     cmap = plt.get_cmap(FAMILY_CMAP.get(g['shape_type'], 'Greys'))
     ax.add_collection3d(Poly3DCollection(P, facecolors=cmap(0.3 + 0.65 * shade),
                                          edgecolor=(0, 0, 0, 0.1), linewidths=0.2))
@@ -63,8 +68,9 @@ def _draw(ax, g, elev, azim):
     ax.tick_params(labelsize=6)
 
 
-def gallery(geoms, views=((25, -60), (-25, 120)), ncols=4):
-    """Figure: every geometry from each view (default: from above and from below)."""
+def gallery(geoms, views=((25, -60), 'cut'), ncols=4):
+    """Figure: every geometry from each view: (elev, azim) or 'cut' (half section,
+    inside wall).  Default: outside from above + half section."""
     import matplotlib.pyplot as plt
     nv = len(views)
     per_row = max(1, ncols // nv) * nv
@@ -73,10 +79,12 @@ def gallery(geoms, views=((25, -60), (-25, 120)), ncols=4):
     fig = plt.figure(figsize=(4 * per_row, 3.8 * rows))
     for i, g in enumerate(geoms):
         ext = np.round(g['nodes'].max(0) - g['nodes'].min(0)).astype(int)
-        for j, (el, az) in enumerate(views):
+        for j, v in enumerate(views):
             ax = fig.add_subplot(rows, per_row, i * nv + j + 1, projection='3d')
-            _draw(ax, g, el, az)
-            view = 'above' if el >= 0 else 'below'
+            cut = v == 'cut'
+            el, az = (12, -90) if cut else v
+            _draw(ax, g, el, az, cut)
+            view = 'half section' if cut else ('above' if el >= 0 else 'below')
             ax.set_title(f"#{g['id']} {g['shape_type']} ({view})\n{ext[0]}×{ext[1]}×{ext[2]} mm, "
                          f"f1 = {g['freqs'][0]:.2f} GHz", fontsize=8)
     fig.tight_layout()
@@ -88,7 +96,8 @@ def interactive(g):
     import plotly.graph_objects as go
     X, F = g['nodes'], g['faces']
     fig = go.Figure(go.Mesh3d(x=X[:, 0], y=X[:, 1], z=X[:, 2], i=F[:, 0], j=F[:, 1], k=F[:, 2],
-                              color={'pillbox': '#4a90d9', 'axisym_cell': '#e8883a'}.get(g['shape_type'], '#4caf50'),
+                              color={'pillbox': '#4a90d9', 'pillbox_pipes': '#4a90d9', 'axisym_cell': '#e8883a',
+                                     'elliptical': '#e8883a', 'reentrant': '#8e6cc0'}.get(g['shape_type'], '#4caf50'),
                               flatshading=True, opacity=1.0,
                               lighting=dict(ambient=0.35, diffuse=0.8, specular=0.2)))
     fig.update_layout(title=f"#{g['id']} {g['shape_type']} · f = {np.round(g['freqs'][:4], 3)} GHz",

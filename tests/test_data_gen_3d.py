@@ -179,3 +179,63 @@ def test_mesher_error_restarts_gmsh(set_args, monkeypatch):
     monkeypatch.setattr(gmsh, "finalize", finalize)
     res = gen.generate_sample_data(0)
     assert res is not None and state["calls"] == 2 and len(res["freqs"]) == 3
+
+
+# ─────────────────────────── realistic cavities / free-form (cavity_shapes) ───
+
+def _mesh_params(builder, params, mesh_size=0.10):
+    import gmsh
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    try:
+        gmsh.model.add("t")
+        _, prm = builder(gmsh.model.occ, None, params)
+        gmsh.model.occ.synchronize()
+        vol = gmsh.model.occ.getMass(3, gmsh.model.getEntities(3)[0][1])
+        h0 = mesh_size * vol ** (1 / 3)
+        return gen._mesh_current_model(max(min(h0, prm["_h_cap"]), 0.7 * h0))
+    finally:
+        gmsh.finalize()
+
+
+def test_tesla_cell_frequency():
+    """TESLA mid-cell dimensions (Req 103.3, Riris 35, A = B = 42, a 12, b 19, L 57.7 mm)
+    with beam pipes: TM010 = 1.30 GHz (measured 1.305 at mesh 0.10, 1.296 at 0.07)."""
+    from src.data_gen import cavity_shapes as cs
+    tesla = dict(Req=0.1033, Riris=0.035, L=0.0577, A=0.042, B=0.042, a=0.012, b=0.019, n_cells=1.0, Lpipe=0.08)
+    nodes, tets = _mesh_params(cs.build_elliptical, tesla)
+    vals, _, _ = gen.solve_h_modes(gen.assemble_h_n0(nodes, tets), 3)
+    assert abs(gen.eigenvalues_to_ghz(vals[0]) / 1.30 - 1) < 0.015
+
+
+def test_half_cell_common_tangent():
+    from src.data_gen import cavity_shapes as cs
+    w = cs.half_cell_wall(0.1033, 0.035, 0.0577, 0.042, 0.042, 0.012, 0.019)
+    assert np.allclose(w[0], [0, 0.035]) and np.allclose(w[-1], [0.0577, 0.1033])
+    assert np.all(np.diff(w[:, 0]) >= 0) and np.all(np.diff(w[:, 1]) >= 0)
+    d = np.diff(w, axis=0)                                   # C1 wall: no kink at the tangent points
+    ang = np.arctan2(d[:, 1], d[:, 0])
+    assert np.abs(np.diff(ang)).max() < 0.2
+    assert cs.half_cell_wall(0.05, 0.035, 0.03, 0.03, 0.03, 0.01, 0.01) is None   # ellipses overlap
+
+
+def test_fillet_tangency():
+    from src.data_gen import cavity_shapes as cs
+    segs = cs.filleted([(0, 0), (1, 0), (1, 1), (0, 1)], [0.2, 0.0, 0.3, 0.0])
+    arcs = [s for s in segs if s[0] == "arc"]
+    assert len(arcs) == 2
+    for _, p, c, q in arcs:                                  # both ends on the circle
+        assert np.isclose(np.linalg.norm(np.subtract(p, c)), np.linalg.norm(np.subtract(q, c)))
+    lines = [s for s in segs if s[0] == "line"]
+    assert all(np.linalg.norm(np.subtract(s[1], s[2])) > 0 for s in lines)
+
+
+def test_freeform_surface_closed_and_varied():
+    from src.data_gen import cavity_shapes as cs
+    shapes = [cs.freeform_surface(np.random.default_rng(s), level=3) for s in range(6)]
+    for P, F, prm in shapes:
+        e = np.sort(F[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
+        assert (np.unique(e, axis=0, return_counts=True)[1] == 2).all()     # closed 2-manifold
+        assert cs.surface_volume(P, F) > 0 and np.isfinite(P).all()
+    ext = np.array([np.ptp(P, 0) / np.ptp(P, 0).max() for P, _, _ in shapes])
+    assert ext.min() < 0.8                                   # not all spheres
