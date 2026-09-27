@@ -170,3 +170,33 @@ def test_1d_vs_2d_u_consistency(mesh, rng):
     assert s2["H"].shape == (15, 15, 3, 3)
     np.testing.assert_array_equal(s1["inside"], s2["inside"])
     np.testing.assert_allclose(s2["H"][..., 0], s1["H"], equal_nan=True, atol=1e-10)
+
+
+# ───────────────────────── 6. nodal smoothing and curl (display) ──────────
+
+def _rotational_dofs(X, edges, a, b):
+    """DOFs of H = a + b×x (inside N0: exact line integrals via the edge midpoint)."""
+    xa, xb = X[edges[:, 0]], X[edges[:, 1]]
+    H_mid = a + np.cross(b, 0.5 * (xa + xb))
+    return (H_mid * (xb - xa)).sum(-1)
+
+
+def test_vertex_field_and_curl_exact_in_n0(mesh, rng):
+    X, tets, edges = mesh
+    a, b = rng.normal(size=3), rng.normal(size=3)
+    u = _rotational_dofs(X, edges, a, b)
+    Hv = nd.vertex_field(X, tets, edges, u)                  # continuous field → exact at vertices
+    np.testing.assert_allclose(Hv, a + np.cross(b, X), atol=1e-8)
+    Cv = nd.vertex_field(X, tets, edges, np.stack([u, 2 * u], 1), curl=True)
+    assert Cv.shape == (len(X), 3, 2)
+    np.testing.assert_allclose(Cv[..., 0], np.broadcast_to(2 * b, (len(X), 3)), atol=1e-8)
+    np.testing.assert_allclose(Cv[..., 1], 2 * Cv[..., 0], atol=1e-8)
+
+
+def test_smooth_plane_sample_matches_raw_for_n0_field(mesh, rng):
+    X, tets, edges = mesh
+    u = _rotational_dofs(X, edges, rng.normal(size=3), rng.normal(size=3))
+    raw = nd.plane_sample(X, tets, edges, u, axis="z", offset=0.3, res=21)
+    smo = nd.plane_sample(X, tets, edges, u, axis="z", offset=0.3, res=21, smooth=True)
+    np.testing.assert_array_equal(raw["inside"], smo["inside"])
+    np.testing.assert_allclose(smo["H"][smo["inside"]], raw["H"][raw["inside"]], atol=1e-8)

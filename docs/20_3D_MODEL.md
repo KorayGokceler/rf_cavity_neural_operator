@@ -105,9 +105,15 @@ python scripts/plot_3d.py --checkpoint <eğitim dizini | .ckpt> --data_path data
 - `src/viz/predict.py`: tek geometri için saf model tahmini; hedefe hizalanır (izole mod → işaret,
   yakın-dejenere küme → tahmin edilen alt uzaya M-izdüşüm). `rel_l2`, `eval_3d` ile birebir aynıdır.
 - `src/viz/nedelec.py`: kenar DOF'larından H = Σ u_e (λ_a∇λ_b − λ_b∇λ_a); tet başına lineer,
-  normal bileşeni tetler arasında süreksiz (kesitlerdeki üçgen desenler bundan).
+  normal bileşeni tetler arasında süreksiz → ham alan kaba ağda "kesik kesik" (üçgen yamalar).
+  Gösterim için `vertex_field` düğüm ortalaması yapar (CST de böyle gösterir; N0 içindeki
+  a + b×x alanları için birebir); `--raw` ham alanı çizer. `curl=True` → rot H (∝ E).
 - `src/viz/slices.py`: mod başına satır, gerçek |H| | tahmin |H| | |hata| (aynı renk ölçeği);
-  oklar düzlem içi H, uzunluk ∝ düzlem içi genlik (düzleme dik alan → ok yok, ör. TM010'da y-kesiti).
+  `--arrows` ile düzlem içi H okları (uzunluk ∝ düzlem içi genlik).
+- `src/viz/viewer.py` (notebook hücre 10): CST tarzı etkileşimli görüntüleyici. Faz kaydırıcısı
+  0–180° (▶ oynatır), kesit ekseni + konum [mm], alan H / E, bileşen |F| / x / y / z. Kayıpsız
+  özmod duran dalgadır: H·cos φ, E ∝ rot H·sin φ (0° H max, 90° E max, 180° H ters işaretli);
+  desen ilerlemez, genliği salınır. Renk sınırı gerçek alanın hacimdeki maksimumu (sabit).
 - `src/viz/vtk_export.py`: `<ad>.vtu` (ParaView: `H_true_k`, `H_pred_k`, `H_err_k`, `absH_*`;
   `_pt` = düğüm ortalaması, glyph/streamline için) + `<ad>.json` (frekanslar, rel_l2). Koordinatlar mm.
 

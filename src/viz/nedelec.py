@@ -93,6 +93,49 @@ def cell_field(X, tets, edges, u):
     return H[..., 0] if was_1d else H
 
 
+def _nodal_average(tets, n_nodes, vol, vals):
+    """Volume-weighted average onto vertices of per-(tet, local vertex) values [Nt,4,...]."""
+    out = np.zeros((n_nodes,) + vals.shape[2:])
+    w = np.zeros(n_nodes)
+    for i in range(4):
+        np.add.at(out, tets[:, i], vol.reshape((-1,) + (1,) * (vals.ndim - 2)) * vals[:, i])
+        np.add.at(w, tets[:, i], vol)
+    return out / np.maximum(w, 1e-300).reshape((-1,) + (1,) * (vals.ndim - 2))
+
+
+def vertex_field(X, tets, edges, u, curl=False):
+    """Continuous P1 recovery of the N0 field (or of its curl) for display.
+
+    Each tet's field is evaluated at its own 4 vertices and averaged over the
+    tets sharing a vertex, volume-weighted (nodal averaging, as field viewers
+    such as CST do).  The raw N0 field is linear per tet with a normal jump
+    across faces, which shows up as facets on a coarse mesh.  curl=True: the
+    per-tet constant curl H = Σ u_e 2∇λ_a×∇λ_b (∝ E of the mode) instead.
+
+    Returns [Nv,3,K], or [Nv,3] if `u` was 1-D.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    tets = np.asarray(tets, dtype=np.int64)
+    u = np.asarray(u, dtype=np.float64)
+    was_1d = u.ndim == 1
+    if was_1d:
+        u = u[:, None]
+    dof, loc = tet_dofs(tets, edges, len(X))
+    vol, grads = tet_geometry(X, tets)
+    ue = u[dof]                                                     # [Nt,6,K]
+    if curl:
+        ga = np.take_along_axis(grads, loc[..., 0][:, :, None].repeat(3, 2), axis=1)
+        gb = np.take_along_axis(grads, loc[..., 1][:, :, None].repeat(3, 2), axis=1)
+        c = np.einsum("tec,tek->tck", 2.0 * np.cross(ga, gb), ue)   # [Nt,3,K]
+        vals = np.repeat(c[:, None], 4, axis=1)
+    else:
+        eye = np.eye(4)
+        vals = np.stack([np.einsum("tec,tek->tck", _whitney_vectors(grads, loc, np.tile(eye[i], (len(tets), 1))), ue)
+                         for i in range(4)], axis=1)                # [Nt,4,3,K]
+    out = _nodal_average(tets, len(X), vol, vals)
+    return out[..., 0] if was_1d else out
+
+
 def locate(X, tets, points, tol=1e-9):
     """Vectorised point-in-tet-mesh location (centroid k-d tree + barycentric test).
 
@@ -179,8 +222,33 @@ def eval_field(X, tets, edges, u, points):
     return H[..., 0] if was_1d else H
 
 
-def plane_sample(X, tets, edges, u, axis="y", offset=0.0, res=121, pad=0.02):
+def plane_grid(X, axis="y", offset=0.0, res=121, pad=0.02):
+    """Regular grid on the plane {coord[axis] == offset} over the mesh bbox of the
+    two other axes (padded by `pad`): (points [res²,3], U, V, (iu, iv))."""
+    X = np.asarray(X, dtype=np.float64)
+    ia = _AXES[axis]
+    iu, iv = [c for c in range(3) if c != ia]
+    lo, hi = X.min(0), X.max(0)
+    p = pad * (hi - lo)
+    U, V = np.meshgrid(np.linspace(lo[iu] - p[iu], hi[iu] + p[iu], res),
+                       np.linspace(lo[iv] - p[iv], hi[iv] + p[iv], res), indexing="xy")
+    pts = np.empty((U.size, 3))
+    pts[:, ia], pts[:, iu], pts[:, iv] = offset, U.ravel(), V.ravel()
+    return pts, U, V, (iu, iv)
+
+
+def interp_vertex(tets, tet_id, bary, nodal):
+    """Barycentric interpolation of vertex values nodal [Nv,...] at located points
+    (tet_id, bary from locate); NaN outside."""
+    out = np.full((len(tet_id),) + nodal.shape[1:], np.nan)
+    m = tet_id >= 0
+    out[m] = np.einsum("pi,pi...->p...", bary[m], nodal[tets[tet_id[m]]])
+    return out
+
+
+def plane_sample(X, tets, edges, u, axis="y", offset=0.0, res=121, pad=0.02, smooth=False):
     """Sample the field on an axis-aligned plane, on a regular grid.
+    smooth=True samples the nodal-averaged field (vertex_field) instead of the raw N0 one.
 
     plane = {coord[axis] == offset}; the two remaining axes, in (x,y,z) order,
     become (u, v). Grid bounds are the mesh bbox of those two axes, padded by
@@ -193,24 +261,13 @@ def plane_sample(X, tets, edges, u, axis="y", offset=0.0, res=121, pad=0.02):
     'H' ([res,res,3,K] or [res,res,3] if `u` is 1-D, NaN outside), 'in_plane' (iu, iv).
     """
     X = np.asarray(X, dtype=np.float64)
-    ia = _AXES[axis]
-    iu, iv = [c for c in range(3) if c != ia]
     labels = {0: "x", 1: "y", 2: "z"}
-
-    def bounds(col):
-        lo, hi = X[:, col].min(), X[:, col].max()
-        p = pad * (hi - lo)
-        return lo - p, hi + p
-
-    lo_u, hi_u = bounds(iu)
-    lo_v, hi_v = bounds(iv)
-    U, V = np.meshgrid(np.linspace(lo_u, hi_u, res), np.linspace(lo_v, hi_v, res), indexing="xy")
-
-    pts = np.empty((U.size, 3))
-    pts[:, ia] = offset
-    pts[:, iu] = U.ravel()
-    pts[:, iv] = V.ravel()
-    H = eval_field(X, tets, edges, u, pts)
+    pts, U, V, (iu, iv) = plane_grid(X, axis, offset, res, pad)
+    if smooth:
+        tet_id, bary = locate(X, tets, pts)
+        H = interp_vertex(np.asarray(tets, dtype=np.int64), tet_id, bary, vertex_field(X, tets, edges, u))
+    else:
+        H = eval_field(X, tets, edges, u, pts)
     was_1d = H.ndim == 2
     if was_1d:
         H = H[:, :, None]
