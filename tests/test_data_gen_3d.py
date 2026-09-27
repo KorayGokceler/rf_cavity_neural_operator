@@ -151,3 +151,31 @@ def test_cli_writes_h5(tmp_path):
         assert g["h_edges"].shape == (ne, 3) and g["freqs"].shape == (3,)
         assert g.attrs["shape_type"] == "pillbox" and "R" in json.loads(g.attrs["geom_params"])
         assert np.all(g["edges"][:, 0] < g["edges"][:, 1])
+
+
+def test_mesher_error_restarts_gmsh(set_args, monkeypatch):
+    """A 3D mesher error can leave the gmsh session broken (every later generate(3)
+    yields no tets, gmsh.clear() does not help).  Simulated here: the session stays
+    broken until gmsh.finalize(); the generator must restart gmsh and succeed."""
+    import gmsh
+    set_args("--n_eigen_modes", "3", "--mesh_size", "0.2", "--families", "pillbox")
+    state = {"calls": 0, "broken": False}
+    real_mesh, real_finalize = gen._mesh_current_model, gmsh.finalize
+
+    def mesh(h):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            state["broken"] = True
+            raise RuntimeError("PLC Error:  A segment and a facet intersect at point")
+        if state["broken"]:
+            raise RuntimeError("expected only 4-node tets, got 3D element types []")
+        return real_mesh(h)
+
+    def finalize():
+        state["broken"] = False
+        real_finalize()
+
+    monkeypatch.setattr(gen, "_mesh_current_model", mesh)
+    monkeypatch.setattr(gmsh, "finalize", finalize)
+    res = gen.generate_sample_data(0)
+    assert res is not None and state["calls"] == 2 and len(res["freqs"]) == 3

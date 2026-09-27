@@ -398,14 +398,25 @@ def _seeds(s_id):
     return np.random.default_rng([int(ARGS.seed), int(s_id)])
 
 
+def _gmsh_start(restart=False):
+    """(Re)initialise gmsh in this worker.  restart=True after a failed attempt: a
+    3D mesher error (e.g. "PLC Error: A segment and a facet intersect") can leave
+    the session broken — every later generate(3) then returns no tets while
+    gmsh.clear() does not recover it — so the worker gets a fresh session."""
+    import gmsh
+    if restart and gmsh.isInitialized():
+        gmsh.finalize()
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("General.Verbosity", 1)
+        gmsh.option.setNumber("General.NumThreads", 1)
+
+
 def generate_sample_data(s_id):
     import gmsh
     try:
-        if not gmsh.isInitialized():
-            gmsh.initialize()
-            gmsh.option.setNumber("General.Terminal", 0)
-            gmsh.option.setNumber("General.Verbosity", 1)
-            gmsh.option.setNumber("General.NumThreads", 1)
+        _gmsh_start()
         rng = _seeds(s_id)
         t0 = time.perf_counter()
         for attempt in range(ARGS.max_geom_tries):
@@ -430,6 +441,7 @@ def generate_sample_data(s_id):
                     raise RuntimeError(f"not a topological ball: {topo}")
                 break
             except Exception as e:  # re-draw the geometry (random mode only)
+                _gmsh_start(restart=True)
                 if ARGS.mode == "calibration" or attempt == ARGS.max_geom_tries - 1:
                     raise
                 print(f"sample {s_id}: geometry attempt {attempt} rejected ({e}); re-drawing")
@@ -513,7 +525,9 @@ def main(argv=None):
     print(f"Generating {ARGS.n_total} 3D samples ({ARGS.mode}, families={ARGS.families}) with {n_workers} workers")
     tmp_path = ARGS.h5_filename + ".partial"
     n_ok, n_fail, times, calib = 0, 0, [], []
-    pool = Pool(n_workers, initializer=_init_worker, initargs=(ARGS,))
+    # maxtasksperchild: recycle workers (fresh gmsh / OCC state and memory) every 50 samples
+    new_pool = lambda: Pool(n_workers, initializer=_init_worker, initargs=(ARGS,), maxtasksperchild=50)  # noqa: E731
+    pool = new_pool()
     try:
         with h5py.File(tmp_path, "w") as f_h5:
             f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
@@ -523,7 +537,7 @@ def main(argv=None):
                 results, hung = _run_chunk(pool, range(i, min(i + chunk, end)), ARGS.sample_timeout)
                 if hung:
                     pool.terminate()
-                    pool = Pool(n_workers, initializer=_init_worker, initargs=(ARGS,))
+                    pool = new_pool()
                 n_fail += len(hung)
                 for res in results:
                     if res is None:
