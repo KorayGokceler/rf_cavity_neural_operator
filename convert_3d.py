@@ -8,7 +8,8 @@ from src.data.dataset_converter_3d import RFCavity3DConverter
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Convert a 3D N0 (H-field) H5 dataset to the training PKL.")
-    p.add_argument("--h5_filepath", type=str, default="rf_cavity_3d_dataset.h5", help="Input H5 file.")
+    p.add_argument("--h5_filepath", type=str, nargs="+", default=["rf_cavity_3d_dataset.h5"],
+                   help="Input H5 file(s); shards from dataset_generator_3d.py --start_id (disjoint sample ids).")
     p.add_argument("--output_path", type=str, default="data/rf_cavity_3d.pkl", help="Output PKL file.")
     p.add_argument("--modes", type=int, nargs="+", default=None, help="Mode indices to include (default: all).")
     p.add_argument("--max_samples", type=int, default=None, help="Limit the number of geometries.")

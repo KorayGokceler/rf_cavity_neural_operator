@@ -21,6 +21,7 @@ Output contract (docs/19_3D_DATA_PIPELINE.md):
 Scaling: X = (x − center)/scale ⇒ λ_norm = λ_phys·scale², f = c·√λ_norm / (2π·scale).
 """
 import json
+import os
 import pickle
 from collections import defaultdict
 
@@ -292,8 +293,10 @@ def h5_edges_to_canonical(edges_h5, n_nodes, edges):
 # ─────────────────────────── conversion ────────────────────────
 
 class RFCavity3DConverter:
-    def __init__(self, h5_filepath: str):
-        self.h5_filepath = h5_filepath
+    def __init__(self, h5_filepath):
+        """h5_filepath: one H5 path or a list of shard paths (sample ids must be disjoint)."""
+        self.h5_filepaths = [h5_filepath] if isinstance(h5_filepath, (str, os.PathLike)) else list(h5_filepath)
+        self.h5_filepath = self.h5_filepaths[0] if len(self.h5_filepaths) == 1 else self.h5_filepaths
         self.geometry_pool = {}
         self.samples = []
         self.freq_by_mode = defaultdict(list)
@@ -302,16 +305,22 @@ class RFCavity3DConverter:
                         freq_mean=None, freq_std=None, check_rayleigh=True, store_operators=True):
         """store_operators=False drops M/K/G/Kp from the PKL (they dominate its size, ~85 %);
         rebuild them with geometry_operators(X, tets). Everything else is unchanged."""
-        with h5py.File(self.h5_filepath, "r") as f:
-            file_meta = json.loads(f.attrs.get("metadata", "{}"))
-            keys = sorted(k for k in f.keys() if isinstance(f[k], h5py.Group) and "h_edges" in f[k])
+        files = [h5py.File(p, "r") for p in self.h5_filepaths]
+        try:
+            file_meta = json.loads(files[0].attrs.get("metadata", "{}"))
+            keys = sorted(((f, k) for f in files for k in f.keys()
+                           if isinstance(f[k], h5py.Group) and "h_edges" in f[k]),
+                          key=lambda fk: int(fk[1].split("_")[-1]))
             if not keys:
-                raise ValueError(f"No 3D sample groups (sample_XXXX/h_edges) in {self.h5_filepath}")
+                raise ValueError(f"No 3D sample groups (sample_XXXX/h_edges) in {self.h5_filepaths}")
+            sids = [int(k.split("_")[-1]) for _, k in keys]
+            if len(set(sids)) != len(sids):
+                raise ValueError("duplicate sample ids across H5 shards (use disjoint --start_id ranges)")
             if max_samples:
                 keys = keys[:max_samples]
             n_modes = None
             max_rel = 0.0
-            for key in tqdm(keys, desc="Converting 3D"):
+            for f, key in tqdm(keys, desc="Converting 3D"):
                 grp = f[key]
                 sid = int(key.split("_")[-1])
                 freqs = np.asarray(grp["freqs"][:], dtype=np.float64)
@@ -348,6 +357,9 @@ class RFCavity3DConverter:
                         "Theta": np.array([float(i), freqs[m_idx], float(sid)], dtype=np.float32),
                     })
                     self.freq_by_mode[i].append(float(freqs[m_idx]))
+        finally:
+            for f in files:
+                f.close()
         allf = np.concatenate([np.asarray(v) for v in self.freq_by_mode.values()])
         metadata = {
             "freq_stats": {

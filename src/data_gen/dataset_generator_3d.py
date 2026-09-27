@@ -78,6 +78,8 @@ def parse_args(argv=None):
     p.add_argument("--mesh_size_abs", type=float, default=None,
                    help="Absolute target tet size [m]; overrides --mesh_size.")
     p.add_argument("--seed", type=int, default=0, help="Base seed; sample s uses default_rng([seed, s]).")
+    p.add_argument("--start_id", type=int, default=0,
+                   help="First sample id (shards: ids start_id … start_id+n_total−1, same seed → disjoint samples).")
     p.add_argument("--n_workers", type=int, default=None, help="Worker processes (default: min(cpu_count, 4)).")
     p.add_argument("--sample_timeout", type=float, default=300.0, help="Seconds before a sample is skipped.")
     p.add_argument("--max_geom_tries", type=int, default=6,
@@ -516,8 +518,9 @@ def main(argv=None):
         with h5py.File(tmp_path, "w") as f_h5:
             f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
             chunk = 4 * n_workers
-            for i in range(0, ARGS.n_total, chunk):
-                results, hung = _run_chunk(pool, range(i, min(i + chunk, ARGS.n_total)), ARGS.sample_timeout)
+            end = ARGS.start_id + ARGS.n_total
+            for i in range(ARGS.start_id, end, chunk):
+                results, hung = _run_chunk(pool, range(i, min(i + chunk, end)), ARGS.sample_timeout)
                 if hung:
                     pool.terminate()
                     pool = Pool(n_workers, initializer=_init_worker, initargs=(ARGS,))
@@ -532,7 +535,7 @@ def main(argv=None):
                     if "freqs_analytic" in g.attrs:
                         calib.append((res["shape_type"], res["freqs"], g.attrs["freqs_analytic"]))
                 f_h5.flush()
-                print(f"  {min(i + chunk, ARGS.n_total)}/{ARGS.n_total} done ({n_ok} ok, {n_fail} failed)")
+                print(f"  {min(i + chunk, end) - ARGS.start_id}/{ARGS.n_total} done ({n_ok} ok, {n_fail} failed)")
     finally:
         pool.terminate()
     if n_ok == 0:

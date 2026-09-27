@@ -204,3 +204,27 @@ def test_lean_pkl_rebuilds_operators(pkl, tmp_path):
             y = s["Y"].astype(np.float64)
             f_rq = C0 * np.sqrt((y @ (K @ y)) / (y @ (M @ y))) / (2 * np.pi * g["scale"]) / 1e9
             assert np.isclose(f_rq, s["Theta"][1], rtol=1e-5)
+
+
+def test_shards_start_id_and_multi_file_conversion(pkl, tmp_path):
+    """dataset_generator_3d --start_id shards (same seed) reproduce the unsharded samples;
+    the converter merges them and rejects overlapping id ranges."""
+    import src.data_gen.dataset_generator_3d as gen
+    full, _ = pkl
+    shards = [tmp_path / "a.h5", tmp_path / "b.h5"]
+    old = gen.ARGS
+    try:
+        for h5, (start, n) in zip(shards, ((0, 1), (1, 2)), strict=True):
+            gen.main(["--n_total", str(n), "--start_id", str(start), "--n_workers", "2", "--mesh_size", "0.2",
+                      "--n_eigen_modes", "4", "--h5_filename", str(h5), "--seed", "3"])
+    finally:
+        gen.ARGS = old
+    out = tmp_path / "merged.pkl"
+    conv.RFCavity3DConverter([str(p) for p in shards]).convert_dataset(str(out))
+    with open(out, "rb") as f:
+        merged = pickle.load(f)
+    assert sorted(merged["geometry_pool"]) == sorted(full["geometry_pool"]) == [0, 1, 2]
+    for gid, g in merged["geometry_pool"].items():
+        assert np.array_equal(g["tets"], full["geometry_pool"][gid]["tets"])
+    with pytest.raises(ValueError, match="duplicate sample ids"):
+        conv.RFCavity3DConverter([str(shards[1]), str(shards[1])]).convert_dataset(str(tmp_path / "dup.pkl"))
