@@ -14,6 +14,17 @@ PEC end caps, as in a closed eigenmode solve.  Lengths in metres.
                  bend / twist / taper warp (each an injective map, so the surface never
                  self-intersects and the solid stays a topological ball); returned as a
                  closed triangulated surface for gmsh's discrete-surface remeshing.
+
+Out-of-distribution families (OOD_FAMILIES, never in the default training set):
+
+- box:             rectangular cavity: flat faces, sharp edges (analytic spectrum).
+- coax_qw:         quarter-wave coaxial resonator: inner post from one end cap with a
+                   capacitive gap to the other (deep narrow annulus, blind hole → ball).
+- pillbox_port:    pillbox with beam pipes and 1–2 radial side ports (breaks the axial
+                   symmetry every training cavity has).
+- elliptical_long: 4–5 elliptical cells (training: 1–3), same cell-shape ranges.
+- junction:        L / T / cross of box arms (3D cross optional): non-star-shaped with
+                   sharp re-entrant edges (training free-forms are smooth star shapes).
 """
 import numpy as np
 from scipy.optimize import least_squares
@@ -272,3 +283,91 @@ def surface_volume(P, F):
     """Enclosed volume of a closed outward triangulation (divergence theorem)."""
     a, b, c = P[F[:, 0]], P[F[:, 1]], P[F[:, 2]]
     return abs(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0
+
+
+# ─────────────────────────── out-of-distribution families ─────
+
+OOD_FAMILIES = ("box", "coax_qw", "pillbox_port", "elliptical_long", "junction")
+
+
+def _fuse_all(occ, tags):
+    vol = tags[0]
+    for t in tags[1:]:
+        out, _ = occ.fuse([(3, vol)], [(3, t)])
+        vols = [tg for d, tg in out if d == 3]
+        if len(vols) != 1:
+            raise RuntimeError(f"fuse produced {len(vols)} volumes")
+        vol = vols[0]
+    return vol
+
+
+def build_box(occ, rng):
+    a, b, d = rng.uniform(0.03, 0.10, 3)
+    occ.addBox(0, 0, 0, a, b, d)
+    return "box", {"a": a, "b": b, "d": d}
+
+
+def build_coax_qw(occ, rng):
+    Ro = rng.uniform(0.02, 0.05)
+    L = Ro * rng.uniform(1.5, 4.0)
+    ri = Ro * rng.uniform(0.2, 0.45)
+    gap = L * rng.uniform(0.08, 0.3)
+    outer = occ.addCylinder(0, 0, 0, 0, 0, L, Ro)
+    post = occ.addCylinder(0, 0, 0, 0, 0, L - gap, ri)
+    occ.cut([(3, outer)], [(3, post)])
+    return "coax_qw", {"Ro": Ro, "L": L, "ri": ri, "gap": gap, "_h_cap": 0.8 * min(gap, Ro - ri)}
+
+
+def build_pillbox_port(occ, rng):
+    R = rng.uniform(0.03, 0.06)
+    Lc = R * rng.uniform(0.6, 1.6)
+    rp = R * rng.uniform(0.12, 0.3)
+    Lp = rp * rng.uniform(1.5, 3.0)
+    tags = [occ.addCylinder(0, 0, 0, 0, 0, Lc, R), occ.addCylinder(0, 0, -Lp, 0, 0, Lp + 1e-4, rp),
+            occ.addCylinder(0, 0, Lc - 1e-4, 0, 0, Lp + 1e-4, rp)]
+    n_ports = int(rng.integers(1, 3))
+    params = {"R": R, "Lc": Lc, "rp": rp, "Lpipe": Lp, "n_ports": float(n_ports)}
+    phi0 = rng.uniform(0, 2 * np.pi)
+    for i in range(n_ports):
+        rs = min(R, Lc) * rng.uniform(0.12, 0.3)
+        zc = Lc / 2 + rng.uniform(-1, 1) * (Lc / 2 - rs) * 0.8
+        phi = phi0 + i * rng.uniform(0.6, 1.0) * np.pi
+        Ls = R * rng.uniform(0.4, 1.2)
+        u = np.array([np.cos(phi), np.sin(phi), 0.0])
+        x0 = 0.5 * R * u + [0, 0, zc]
+        tags.append(occ.addCylinder(*x0, *((0.5 * R + Ls) * u), rs))
+        params.update({f"p{i}_r": rs, f"p{i}_z": zc, f"p{i}_phi": phi, f"p{i}_len": Ls})
+    _fuse_all(occ, tags)
+    return "pillbox_port", dict(params, _h_cap=0.8 * min([rp] + [params[f"p{i}_r"] for i in range(n_ports)]))
+
+
+def build_elliptical_long(occ, rng):
+    p, wall = draw_elliptical(rng)
+    p["n_cells"] = float(rng.choice([4, 5]))
+    revolve_segments(occ, elliptical_segments(p, wall))
+    return "elliptical_long", dict(p, _h_cap=0.7 * p["Riris"])
+
+
+def build_junction(occ, rng):
+    w = rng.uniform(0.02, 0.04)                       # arm width
+    d = w * rng.uniform(0.5, 1.2)                     # thickness (z)
+    kind = str(rng.choice(["L", "T", "X"]))
+    dirs = {"L": [0, 1], "T": [0, 1, 2], "X": [0, 1, 2, 3]}[kind]
+    tags = [occ.addBox(-w / 2, -w / 2, 0, w, w, d)]   # hub
+    params = {"w": w, "d": d, "kind": float("LTX".index(kind))}
+    for i, q in enumerate(dirs):
+        la = w * rng.uniform(1.0, 2.5)
+        wa = w * rng.uniform(0.6, 1.0)
+        c, s_ = np.cos(q * np.pi / 2), np.sin(q * np.pi / 2)
+        x0 = [w / 2 * c - wa / 2 * abs(s_) - (la if c < -0.5 else 0), w / 2 * s_ - wa / 2 * abs(c) - (la if s_ < -0.5 else 0), 0]
+        size = [la if abs(c) > 0.5 else wa, la if abs(s_) > 0.5 else wa, d]
+        if c > 0.5 or s_ > 0.5:
+            x0 = [w / 2 - 1e-4 if c > 0.5 else -wa / 2, w / 2 - 1e-4 if s_ > 0.5 else -wa / 2, 0]
+        tags.append(occ.addBox(*x0, *size))
+        params[f"arm{i}_len"], params[f"arm{i}_w"] = la, wa
+    if rng.uniform() < 0.3:                           # vertical arm → 3D cross
+        lz = w * rng.uniform(1.0, 2.0)
+        tags.append(occ.addBox(-w / 2, -w / 2, d - 1e-4, w, w, lz))
+        params["arm_z_len"] = lz
+    _fuse_all(occ, tags)
+    return "junction", dict(params, _h_cap=0.8 * min(d, w))

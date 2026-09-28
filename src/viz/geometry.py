@@ -15,7 +15,9 @@ import numpy as np
 from src.data.dataset_converter_3d import boundary_faces
 
 FAMILY_CMAP = {'pillbox': 'Blues', 'axisym_cell': 'Oranges', 'blob': 'Greens', 'elliptical': 'Oranges',
-               'reentrant': 'Purples', 'pillbox_pipes': 'Blues', 'freeform': 'Greens'}
+               'reentrant': 'Purples', 'pillbox_pipes': 'Blues', 'freeform': 'Greens',
+               'box': 'Greys', 'coax_qw': 'Reds', 'pillbox_port': 'PuBu', 'elliptical_long': 'YlOrBr',
+               'junction': 'BuGn'}  # last row: out-of-distribution test families
 _LIGHT = np.array([0.4, -0.5, 0.75]) / np.linalg.norm([0.4, -0.5, 0.75])
 
 

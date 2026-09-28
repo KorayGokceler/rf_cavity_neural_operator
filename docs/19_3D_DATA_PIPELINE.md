@@ -46,6 +46,21 @@ sınırlanır: $h=\max(\min(h_V, h_{detay}), 0.7\,h_V)$.
 | `pillbox_pipes` | Işın tüplü pillbox: $R\in[3,6]$ cm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.12,0.35]$, yuvarlatılmış iris kenarı ve dış köşeler |
 | `freeform` | Süperelipsoit (yarı eksen oranı $[0.45,1]$, üsler $[0.35,1.6]$: kutumsu → elipsoit → sivri) × düzgün rastgele modülasyon × 0–4 çıkıntı/girinti, ardından büküm, burulma, daralma. Hepsi birebir dönüşüm olduğundan yüzey kendini kesmez ve cisim delik içermez. Kapalı üçgen yüzey gmsh'e verilir, `classifySurfaces` + `createGeometry` ile $h$ boyutunda yeniden örülür |
 
+**Dağılım dışı (OOD) test aileleri** (`cavity_shapes.OOD_FAMILIES`; varsayılan eğitim ailelerinde
+yoktur, `--families box coax_qw pillbox_port elliptical_long junction` ile üretilir; notebook hücre 11):
+
+| Aile | Neden OOD | Parametreler |
+|---|---|---|
+| `box` | Düz yüzler, keskin kenar/köşe (eğitimde köşeler yuvarlatılmış) | $a,b,d\in[3,10]$ cm; analitik spektrumla %0.16 uyum (mesh 0.10) |
+| `coax_qw` | Çeyrek dalga koaksiyel: bir uç kapaktan çıkan iç iletken + kapasitif boşluk; dar halka bölge; $f_1\approx0.4$–$1$ GHz (eğitim frekanslarının altında) | $R_o\in[2,5]$ cm, $L/R_o\in[1.5,4]$, $r_i/R_o\in[0.2,0.45]$, boşluk $/L\in[0.08,0.3]$ |
+| `pillbox_port` | 1–2 radyal yan port: eksenel simetri yok | $R\in[3,6]$ cm, port yarıçapı $[0.12,0.3]\min(R,L_c)$, uzunluk $[0.4,1.2]R$ |
+| `elliptical_long` | 4–5 hücre (eğitimde 1–3); hücre şekli aralıkları aynı | `elliptical` ile aynı |
+| `junction` | L/T/X kollu kutular (%30 dikey kol): yıldız biçimli değil, keskin iç köşeler | kol genişliği $[2,4]$ cm, kalınlık $[0.5,1.2]w$, kol uzunluğu $[1,2.5]w$ |
+
+Değerlendirme: `python scripts/eval_3d.py --checkpoint <dir> --data_path ood.pkl --split all --csv ood.csv`
+(şekil tipi kırılımı). `physics_freq` ile tahmin edilen GHz, frekans normalizasyonundan bağımsızdır; bu
+nedenle OOD PKL kendi `freq_stats`'ını kullanabilir.
+
 **Aileler — v1** (`--families pillbox axisym_cell blob`, gmsh OCC, metre):
 
 | Aile | Parametreler |

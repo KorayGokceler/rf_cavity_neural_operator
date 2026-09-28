@@ -265,7 +265,10 @@ def build_calibration(occ, s_id):
 
 BUILDERS = {"pillbox": build_pillbox, "axisym_cell": build_axisym_cell, "blob": build_blob,
             "elliptical": cs.build_elliptical, "reentrant": cs.build_reentrant,
-            "pillbox_pipes": cs.build_pillbox_pipes}
+            "pillbox_pipes": cs.build_pillbox_pipes,
+            # out-of-distribution test families (cs.OOD_FAMILIES), not in the default FAMILIES
+            "box": cs.build_box, "coax_qw": cs.build_coax_qw, "pillbox_port": cs.build_pillbox_port,
+            "elliptical_long": cs.build_elliptical_long, "junction": cs.build_junction}
 DISCRETE_BUILDERS = {"freeform": cs.freeform_surface}   # closed triangulated surface → gmsh remesh
 
 

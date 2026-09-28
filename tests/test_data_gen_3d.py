@@ -239,3 +239,21 @@ def test_freeform_surface_closed_and_varied():
         assert cs.surface_volume(P, F) > 0 and np.isfinite(P).all()
     ext = np.array([np.ptp(P, 0) / np.ptp(P, 0).max() for P, _, _ in shapes])
     assert ext.min() < 0.8                                   # not all spheres
+
+
+@pytest.mark.parametrize("family", ["box", "coax_qw", "pillbox_port", "elliptical_long", "junction"])
+def test_ood_families_are_topological_balls(set_args, family):
+    from src.data_gen import cavity_shapes as cs
+    assert family in cs.OOD_FAMILIES and family not in gen.FAMILIES
+    set_args("--families", family, "--mesh_size", "0.2", "--n_eigen_modes", "3", "--seed", "1000")
+    res = gen.generate_sample_data(0)
+    assert res is not None and res["shape_type"] == family
+    assert gen.is_topological_ball(gen.mesh_topology(res["tets"], len(res["nodes"])))
+
+
+def test_ood_box_matches_analytic(set_args):
+    set_args("--families", "box", "--mesh_size", "0.12", "--n_eigen_modes", "5", "--seed", "1000")
+    res = gen.generate_sample_data(1)
+    p = res["geom_params"]
+    ref = gen.eigenvalues_to_ghz(gen.box_spectrum(p["a"], p["b"], p["d"])[:5])
+    assert np.abs(res["freqs"] / ref - 1).max() < 5e-3
