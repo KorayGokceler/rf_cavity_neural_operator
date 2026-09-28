@@ -199,13 +199,16 @@ def _mesh_params(builder, params, mesh_size=0.10):
 
 
 def test_tesla_cell_frequency():
-    """TESLA mid-cell dimensions (Req 103.3, Riris 35, A = B = 42, a 12, b 19, L 57.7 mm)
-    with beam pipes: TM010 = 1.30 GHz (measured 1.305 at mesh 0.10, 1.296 at 0.07)."""
+    """TESLA mid-cell dimensions (Req 103.3, Riris 35, A = B = 42, a 12, b 19, L 57.7 mm) as a
+    single cell with 80 mm PEC-capped pipes: converged TM010 = 1.288 GHz (Richardson from mesh
+    0.05 / 0.035; the periodic π-mode of the real structure is 1.300).  N0 converges from above,
+    O(h²): +1.3 % at mesh 0.10, +0.63 % at 0.07, +0.33 % at 0.05."""
     from src.data_gen import cavity_shapes as cs
     tesla = dict(Req=0.1033, Riris=0.035, L=0.0577, A=0.042, B=0.042, a=0.012, b=0.019, n_cells=1.0, Lpipe=0.08)
     nodes, tets = _mesh_params(cs.build_elliptical, tesla)
     vals, _, _ = gen.solve_h_modes(gen.assemble_h_n0(nodes, tets), 3)
-    assert abs(gen.eigenvalues_to_ghz(vals[0]) / 1.30 - 1) < 0.015
+    err = gen.eigenvalues_to_ghz(vals[0]) / 1.288 - 1
+    assert 0.005 < err < 0.02
 
 
 def test_half_cell_common_tangent():

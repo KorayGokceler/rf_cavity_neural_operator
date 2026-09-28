@@ -41,7 +41,7 @@ sınırlanır: $h=\max(\min(h_V, h_{detay}), 0.7\,h_V)$.
 
 | Aile | Parametreler |
 |---|---|
-| `elliptical` | TESLA tipi eliptik hücre, 1–3 hücre (olasılık 0.5/0.3/0.2) + ışın tüpleri. Yarım hücre: iris elipsi $(a,b)$ + ekvator elipsi $(A,B)$ + ortak teğet doğru. $R_{eq}\in[4,11]$ cm, $R_{iris}/R_{eq}\in[0.25,0.42]$, $L/R_{eq}\in[0.45,0.65]$, $A/L\in[0.6,0.85]$, $B/A\in[0.85,1.25]$, $a/L\in[0.15,0.3]$, $b/a\in[1,1.9]$; içe dönük (re-entrant) duvar reddedilir. **Doğrulama:** TESLA orta hücresi → TM010 = 1.305 GHz (gerçek 1.300), 3 hücre geçiş bandı 1.294–1.317 GHz |
+| `elliptical` | TESLA tipi eliptik hücre, 1–3 hücre (olasılık 0.5/0.3/0.2) + ışın tüpleri. Yarım hücre: iris elipsi $(a,b)$ + ekvator elipsi $(A,B)$ + ortak teğet doğru. $R_{eq}\in[4,11]$ cm, $R_{iris}/R_{eq}\in[0.25,0.42]$, $L/R_{eq}\in[0.45,0.65]$, $A/L\in[0.6,0.85]$, $B/A\in[0.85,1.25]$, $a/L\in[0.15,0.3]$, $b/a\in[1,1.9]$; içe dönük (re-entrant) duvar reddedilir. **Doğrulama:** TESLA orta hücre boyutları, tüplü tek hücre → yakınsamış TM010 = 1.288 GHz (Richardson; gerçek yapının periyodik π-modu 1.300), mesh 0.10'da +%1.3; 3 hücre: 3 TM010 geçiş bandı modu 1.294–1.317 GHz (mesh 0.07; genişlik ≈ %1.8, TESLA hücreler arası kuplajı ≈ %1.9 ile aynı mertebe) |
 | `reentrant` | Burun konili (klystron/IOT tipi): $R\in[3,7]$ cm, $L_c/R\in[0.4,1]$, tüp $r_p/R\in[0.1,0.25]$, burun aralığı $g/L_c\in[0.15,0.6]$, uç kalınlığı $[0.08,0.2]R$, koni açısı $0$–$35°$; burun ucu, kökü ve dış köşeler yuvarlatılır (büyük dış yarıçap → toroidal duvar) |
 | `pillbox_pipes` | Işın tüplü pillbox: $R\in[3,6]$ cm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.12,0.35]$, yuvarlatılmış iris kenarı ve dış köşeler |
 | `freeform` | Süperelipsoit (yarı eksen oranı $[0.45,1]$, üsler $[0.35,1.6]$: kutumsu → elipsoit → sivri) × düzgün rastgele modülasyon × 0–4 çıkıntı/girinti, ardından büküm, burulma, daralma. Hepsi birebir dönüşüm olduğundan yüzey kendini kesmez ve cisim delik içermez. Kapalı üçgen yüzey gmsh'e verilir, `classifySurfaces` + `createGeometry` ile $h$ boyutunda yeniden örülür |
@@ -190,3 +190,23 @@ Konvansiyonlar:
 - [01_DATA_GENERATION.md](01_DATA_GENERATION.md), [02_FEATURE_ENGINEERING.md](02_FEATURE_ENGINEERING.md): 2D karşılıkları
 
 #3d #maxwell #nedelec #hcurl #veri-hattı #sözleşme
+
+
+## Mesh çözünürlüğü ve gerçek simülasyonlar
+
+Yakınsama (N0, düz kenarlı tet; hata $O(h^2)$, frekans yukarıdan yakınsar):
+
+| mesh | tet | kenar DOF | pillbox $f_1$ hatası (analitik) | TESLA hücresi $f_1$ hatası (Richardson ref.) | süre (tek çekirdek) |
+|---|---|---|---|---|---|
+| 0.14 | 2k | 3k | +0.93 % | +2.4 % | <1 s |
+| **0.10** (eğitim) | 5k | 7k | +0.48 % | +1.3 % | 0.5 s |
+| 0.07 | 14k | 19k | +0.24 % | +0.63 % | 2–4 s |
+| 0.05 | 37k | 48k | +0.12 % | +0.33 % | 13–20 s |
+| 0.035 | 107k | 133k | +0.06 % | +0.16 % | 2–6 dk |
+
+Üretim simülasyonları (CST/HFSS/ACE3P, SRF hücre tasarımı) tipik olarak 2. dereceden eğri kenarlı
+elemanlarla $10^5$–$10^6$ tet kullanır; hedef frekans doğruluğu $10^{-4}$–$10^{-5}$. Buradaki veri
+(mesh 0.10) bundan 2–3 mertebe kabadır: tasarım taraması, mod sınıflandırması, eğilimler ve alan
+desenleri için yeterli; nihai frekans ayarı, yüzey tepe alanları ($E_{pk}$, $H_{pk}$) ve hassas HOM
+empedansı için değil. Çözünürlük genellemesi: `scripts/resolution_study.py` (aynı geometriler, farklı
+mesh; model ve düz FE hatası en ince mesh'e göre), notebook hücre 12.
