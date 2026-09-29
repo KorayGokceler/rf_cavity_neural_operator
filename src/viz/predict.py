@@ -88,7 +88,8 @@ def _align_modes(F, T, MT, clusters):
 def predict(lm, ds, idx, device='cpu'):
     """One geometry's aligned prediction (A2 output dict, numpy float64
     unless noted). See docs/viz3d_contract.md section A2 for the exact keys
-    and the alignment rule."""
+    and the alignment rule; plus 'field' ('H' | 'E', from the PKL metadata):
+    the physical field whose N0 DOFs 'true' / 'pred' / 'err' are."""
     lm.eval().to(device)
     item = ds[idx]
     batch = _to(maxwell3d_collate([item]), device)
@@ -122,6 +123,7 @@ def predict(lm, ds, idx, device='cpu'):
 
     true_np, pred_np = T.numpy(), pred.numpy()
     return {
+        'field': str(getattr(ds, 'field', 'H')),              # 'H' | 'E': what the DOFs are
         'geom_id': int(g_id),
         'shape_type': str(item['shape_type']),
         'X': np.asarray(item['X'].numpy(), dtype=np.float64),

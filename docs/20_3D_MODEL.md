@@ -1,4 +1,7 @@
-# 20 — 3B Maxwell Modeli: EigenspaceOperator3D (H alanı, Whitney N0)
+# 20 — 3B Maxwell Modeli: EigenspaceOperator3D (E veya H alanı, Whitney N0)
+
+> Varsayılan formülasyon artık **E**'dir (kulplu kaviteler dahil her kapalı PEC kavite; bkz. §8).
+> §1–§7 H formülasyonunu anlatır; E'de değişen her şey §8'de özetlenmiştir.
 
 > docs/18 §3'teki tasarımın uygulaması. Veri tarafı: docs/19 (`convert_3d.py` PKL sözleşmesi).
 > Kod: `src/models/eigenspace_operator_3d.py`, `src/models/hcurl.py`, `src/data/dataset_3d.py`,
@@ -90,10 +93,46 @@ Veri: 30 geometri (9 pillbox, 9 axisym_cell, 12 blob), $N_v$ 1.2–1.7k, $N_e$ 6
 ## 7. Veri tarafından beklenenler (sözleşmeye ek)
 
 - `edges` sözlük sırasında ve düşük→yüksek yönlü olmalı, DOF = düşük→yüksek çizgi integrali. `geometry_operators` yeniden kurulumu bu kenar sırasını birebir üretmeli (yükleyici kontrol eder).
-- Mesh bağlantılı olmalı (tek bileşen; ortalamasız PCG bunu varsayar) ve topolojik top olmalı (kulp yok: harmonik alanlar çekirdeğe eklenmiyor).
+- Mesh bağlantılı olmalı (tek bileşen; ortalamasız PCG bunu varsayar) ve **H'de** topolojik top olmalı (kulp yok: harmonik alanlar çekirdeğe eklenmiyor). E'de bu şart yok (§8).
 - `Y` gradyanlara $M$-ortogonal olmalı (ölçek serbest; kayıp ve metrikler normalize eder).
 - `freq_next` saklanmalı: bölünmüş son çiftin metrik dışı bırakılması buna dayanıyor.
 - `feature_names`, `x,y,z`, üç `dir_*` ve `*volume*` sütunlarını içermeli (augmentasyon ve attention ağırlığı bunlarla çalışır).
+
+## 8. E formülasyonu (`metadata['field'] = 'E'`)
+
+Problem: $\mathbf E\in H_0(\mathrm{curl})$, $\int\mathrm{curl}\,\mathbf E\cdot\mathrm{curl}\,\mathbf v=k^2\int\mathbf E\cdot\mathbf v$,
+PEC duvarında $n\times\mathbf E=0$ (**esas** koşul). N0 DOF'ları yine tüm kenarlardadır; duvar
+kenarlarının (sınır yüzlerinin kenarları, `bnd_edge`) DOF'ları sıfırdır. Çekirdek
+$\ker K|_{H_0(\mathrm{curl})}$ = iç düğüm potansiyellerinin gradyanları + (ilki hariç) her sınır
+bileşeni için bir potansiyel ($b_2$ harmonik Dirichlet alanları). Kulplar ($b_1>0$) E'de çekirdeğe
+**hiçbir şey eklemez** — H formülasyonunun topolojik top şartı (§7) E'de yoktur.
+
+| | H (`KpNull='const'`) | E (`KpNull='none'`) |
+|---|---|---|
+| Hedef `Y` | tüm kenarlarda H DOF'ları | E DOF'ları, duvar satırları tam 0 |
+| `G` [Ne×Nv] | tam ayrık gradyan | sütun $j<$`n_pot`: iç düğümler (artan indeks), sonra bileşen potansiyelleri; kalan sütunlar 0. Duvar satırları kendiliğinden 0 |
+| `Kp`$=G^\top MG$ | Neumann, sabitlerde tekil | geçerli blokta (ilk `n_pot`) **SPD**, dışı 0 |
+| PCG | sağ taraf ve $Z$ ortalamasız | ortalamasız adım **yok**; çözüm geçerli blokla sınırlı ($d^{-1}=0$ → dolgu / sıfır sütunlar 0 kalır) |
+| Taban $V$ | `EdgeMask` | `EdgeMask` $\wedge$ `~BndEdge` → E duvarda yapısal olarak tam 0 (2D'deki torsion çarpanı gibi) |
+
+- **Veri:** `Maxwell3DDataset` `metadata['field']`'ı okur ('H' ya da yoksa eski davranış). E
+  öğelerinde `item['BndEdge']` (geometrideki `bnd_edge`, lean PKL'de
+  `geometry_operators(X, tets, field='E')`'den) bulunur; duvar satırı sıfır olmayan hedef
+  sözleşme ihlalidir (hata). `maxwell3d_collate` → `batch['BndEdge']` [B,Ne] (dolgu False),
+  `batch['KpNull']`, `batch['field']`. Bir batch alanları karıştıramaz (açık hata).
+  `item_from_geometry` (active sampling) alanı geometri sözlüğünün `field` anahtarından alır.
+- **Değişmeyenler:** Ritz (`projected_eigh`), Gram'lar (`hcurl_grams`; $KG=0$ ve çapraz blok
+  formülleri aynen geçerli), span/selfsup/ortho/freq kayıpları, metrikler, frekans formülü,
+  `KpSolve`'un geri geçişi (ileri harita simetrik $P K_{p,v}^{-1}P$; geri geçiş aynı `null` ile
+  aynı çözümü uygular — sonlu farkla test edildi). `lightning_module` değişmedi.
+- **Testler:** `tests/test_eigenspace_3d.py`'deki PKL tabanlı testler `field ∈ {H, E}` için
+  parametrelidir (Ritz kesinliği, gradyan kolonlarından θ=0 çıkmaması, yön/dolgu değişmezliği,
+  kayıp + gradyanlar, `fast_dev_run`); E'ye özel: duvar satırları tam 0, SPD PCG, lean yeniden
+  kurulum, karışık batch reddi, sentetik E kutusunun analitik spektruma yakınsaması
+  (`tests/maxwell3d_synth.py`, `field='E'`; n=6'da ilk 6 modda < %3).
+- **Görselleştirme:** Birincil alan PKL'deki alandır (`pred['field']`); ikincisi onun rotasyoneli.
+  E için: E(t) = E·cos φ, H(t) ∝ −rot E·sin φ (0° E maksimum). `.vtu` adları `E_true_k`,
+  `absE_*`, `E_*_pt`; başlık/etiketler |E|.
 
 ## Alan görselleştirme (`scripts/plot_3d.py`, `src/viz/`)
 
@@ -104,6 +143,7 @@ python scripts/plot_3d.py --checkpoint <eğitim dizini | .ckpt> --data_path data
 
 - `src/viz/predict.py`: tek geometri için saf model tahmini; hedefe hizalanır (izole mod → işaret,
   yakın-dejenere küme → tahmin edilen alt uzaya M-izdüşüm). `rel_l2`, `eval_3d` ile birebir aynıdır.
+- (E PKL'lerinde aşağıdaki her "H" yerine E okunur; ikincil alan rot E ∝ H'dir, §8.)
 - `src/viz/nedelec.py`: kenar DOF'larından H = Σ u_e (λ_a∇λ_b − λ_b∇λ_a); tet başına lineer,
   normal bileşeni tetler arasında süreksiz → ham alan kaba ağda "kesik kesik" (üçgen yamalar).
   Gösterim için `vertex_field` düğüm ortalaması yapar (CST de böyle gösterir; N0 içindeki

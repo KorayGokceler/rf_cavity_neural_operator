@@ -242,3 +242,16 @@ def test_write_example_png():
     fig.savefig(out, dpi=130)
     plt.close(fig)
     assert os.path.exists(out)
+
+
+def test_figure_modes_field_label_from_info():
+    st, sp = _pillbox_plane()
+    info = _info(st["H"].shape[-1])
+    fig = vs.figure_modes(st, sp, dict(info, field="E"))
+    titles = " ".join(ax.get_title() for ax in fig.axes)
+    labels = " ".join(ax.get_ylabel() for ax in fig.axes)
+    assert "True |E|" in titles and "|H|" not in titles and "|E|" in labels
+    plt.close(fig)
+    fig = vs.figure_modes(st, sp, info)                                  # default H
+    assert "True |H|" in " ".join(ax.get_title() for ax in fig.axes)
+    plt.close(fig)

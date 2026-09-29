@@ -17,6 +17,8 @@ Conventions
   point-averaged '_pt' versions) are left in normalised-mesh DOF units — they are only ever
   compared to each other / used for relative display (glyph length, colour-by-|H|), so no
   rescaling is applied to them. This is intentional, not an oversight.
+- Array names carry the field letter of the prediction (pred['field'], 'H' default): an
+  E-formulation PKL gives E_true_k / absE_true_k / E_true_k_pt; the docs below say H for short.
 - `field_data` (run-level scalars/arrays such as f_true_GHz, f_pred_GHz, rel_l2, geom_id,
   shape_type) is NOT written into the .vtu itself. meshio 5.3.5's VTU writer does not round-trip
   `meshio.Mesh(..., field_data=...)` for the 'vtu' format — writing it and reading it back gives
@@ -142,7 +144,10 @@ def cell_to_point(tets, n_nodes, cell_vals, weights=None):
 
 
 def export_prediction(path, pred, cell_H_fn=None):
-    """Write one geometry's true/pred/error H-field modes (A2 `predict()` output) to a .vtu.
+    """Write one geometry's true/pred/error field modes (A2 `predict()` output) to a .vtu.
+
+    The array names use the field letter F = pred['field'] ('H' default, 'E' for
+    E-formulation PKLs): F_true_k, absF_true_k, F_true_k_pt, ... (below with F = H).
 
     Args:
         path: output .vtu path.
@@ -183,6 +188,7 @@ def export_prediction(path, pred, cell_H_fn=None):
     err = np.asarray(pred.get("err", predicted - true), dtype=np.float64)
     K = true.shape[1]
     n_nodes = X.shape[0]
+    F = str(pred.get("field", "H") or "H")
 
     H_true = np.asarray(cell_H_fn(X, tets, edges, true))   # [Nt,3,K]
     H_pred = np.asarray(cell_H_fn(X, tets, edges, predicted))
@@ -193,16 +199,16 @@ def export_prediction(path, pred, cell_H_fn=None):
     fields, point_fields = {}, {}
     for k in range(K):
         ht, hp, he = H_true[:, :, k], H_pred[:, :, k], H_err[:, :, k]
-        fields[f"H_true_{k}"] = ht
-        fields[f"H_pred_{k}"] = hp
-        fields[f"H_err_{k}"] = he
-        fields[f"absH_true_{k}"] = np.linalg.norm(ht, axis=1)
-        fields[f"absH_pred_{k}"] = np.linalg.norm(hp, axis=1)
-        fields[f"absH_err_{k}"] = np.linalg.norm(he, axis=1)
+        fields[f"{F}_true_{k}"] = ht
+        fields[f"{F}_pred_{k}"] = hp
+        fields[f"{F}_err_{k}"] = he
+        fields[f"abs{F}_true_{k}"] = np.linalg.norm(ht, axis=1)
+        fields[f"abs{F}_pred_{k}"] = np.linalg.norm(hp, axis=1)
+        fields[f"abs{F}_err_{k}"] = np.linalg.norm(he, axis=1)
 
-        point_fields[f"H_true_{k}_pt"] = cell_to_point(tets, n_nodes, ht, vol)
-        point_fields[f"H_pred_{k}_pt"] = cell_to_point(tets, n_nodes, hp, vol)
-        point_fields[f"H_err_{k}_pt"] = cell_to_point(tets, n_nodes, he, vol)
+        point_fields[f"{F}_true_{k}_pt"] = cell_to_point(tets, n_nodes, ht, vol)
+        point_fields[f"{F}_pred_{k}_pt"] = cell_to_point(tets, n_nodes, hp, vol)
+        point_fields[f"{F}_err_{k}_pt"] = cell_to_point(tets, n_nodes, he, vol)
 
     X_mm = (X * scale + center) * 1e3
 
@@ -212,6 +218,7 @@ def export_prediction(path, pred, cell_H_fn=None):
         "rel_l2": np.asarray(pred["rel_l2"], dtype=np.float64),
         "geom_id": pred.get("geom_id"),
         "shape_type": pred.get("shape_type"),
+        "field": F,
     }
 
     return write_modes_vtu(path, X_mm, tets, fields, point_fields, field_data)

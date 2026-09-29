@@ -1,4 +1,8 @@
-"""Matplotlib figures comparing true vs predicted H-field cross sections.
+"""Matplotlib figures comparing true vs predicted field cross sections.
+
+The field letter (titles, colour-bar labels) is info['field'] ('H' default,
+'E' for E-formulation PKLs) or the explicit `field=` argument; the sample
+dicts keep the historical key 'H' for the field array whatever it is.
 
 Consumes the plane-sample dicts produced by ``src/viz/nedelec.py`` (A1) and
 the per-geometry prediction dicts produced by ``src/viz/predict.py`` (A2),
@@ -32,7 +36,18 @@ matplotlib.use("Agg", force=False)  # no-op if a GUI backend is already set
 FIELD_CMAP = "viridis"
 ERROR_CMAP = "magma"
 _AXIS_IDX = {"x": 0, "y": 1, "z": 2}
-_COL_TITLES = ("True |H|", "Predicted |H|", r"|$H_{pred}-H_{true}$|")
+
+
+def _col_titles(field="H"):
+    return (f"True |{field}|", f"Predicted |{field}|", rf"|${field}_{{pred}}-{field}_{{true}}$|")
+
+
+_COL_TITLES = _col_titles("H")
+
+
+def _field_of(info, field=None):
+    f = field if field is not None else (info or {}).get("field", "H")
+    return str(f or "H")
 
 
 # ── small numeric helpers ────────────────────────────────────────────────────
@@ -160,7 +175,7 @@ def _quiver(ax, Ug, Vg, H, inside, in_plane, vmax, n_per_side=15, color="white",
 # ── public API ───────────────────────────────────────────────────────────────
 
 def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
-                     to_mm=None, arrows=True):
+                     to_mm=None, arrows=True, field="H"):
     """Draw one mode's true | pred | |error| on 3 given Axes.
 
     Uses `sample_true`'s grid ('U','V','inside') for all three panels — the
@@ -168,9 +183,10 @@ def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
     share the same grid; only the field values differ.
 
     Returns (im_true, im_pred, im_err), each a QuadMesh or None (panel left
-    blank because the inside mask was empty / all-NaN).
+    blank because the inside mask was empty / all-NaN).  `field` only labels.
     """
     ax_t, ax_p, ax_e = axes
+    col_titles = _col_titles(field)
 
     Ht = _extract_mode(sample_true, k)
     Hp = _extract_mode(sample_pred, k)
@@ -186,9 +202,9 @@ def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
         vmax_row = max(cands) if cands else None
 
     if vmax_row is None or inside is None:
-        _blank_axis(ax_t, f"{title}\n{_COL_TITLES[0]}" if title else _COL_TITLES[0])
-        _blank_axis(ax_p, _COL_TITLES[1])
-        _blank_axis(ax_e, _COL_TITLES[2])
+        _blank_axis(ax_t, f"{title}\n{col_titles[0]}" if title else col_titles[0])
+        _blank_axis(ax_p, col_titles[1])
+        _blank_axis(ax_e, col_titles[2])
         return (None, None, None)
 
     u_label = sample_true.get("u_label", "u")
@@ -204,7 +220,7 @@ def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
     panels = ((ax_t, mag_t, FIELD_CMAP, Ht), (ax_p, mag_p, FIELD_CMAP, Hp),
               (ax_e, mag_e, ERROR_CMAP, None))
     for i, (ax, mag, cmap, Hfield) in enumerate(panels):
-        col_title = f"{title}\n{_COL_TITLES[i]}" if (title and i == 0) else _COL_TITLES[i]
+        col_title = f"{title}\n{col_titles[i]}" if (title and i == 0) else col_titles[i]
         if mag is None or _finite_max(mag, inside) is None:
             _blank_axis(ax, col_title)
             continue
@@ -223,7 +239,7 @@ def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
     return tuple(ims)
 
 
-def _add_row_colorbars(fig, axes_row, ims):
+def _add_row_colorbars(fig, axes_row, ims, field="H"):
     """One colorbar for the (shared-scale) field panels + one for the error
     panel (different colormap, same vmin/vmax so magnitudes stay comparable).
     """
@@ -231,10 +247,10 @@ def _add_row_colorbars(fig, axes_row, ims):
     im_field = ims[0] if ims[0] is not None else ims[1]
     if im_field is not None:
         cb = fig.colorbar(im_field, ax=[ax_t, ax_p], shrink=0.85, pad=0.02, aspect=28)
-        cb.set_label("|H|  [a.u.]")
+        cb.set_label(f"|{field}|  [a.u.]")
     if ims[2] is not None:
         cb2 = fig.colorbar(ims[2], ax=ax_e, shrink=0.85, pad=0.02, aspect=28)
-        cb2.set_label(r"|$\Delta H$|  [a.u.]")
+        cb2.set_label(rf"|$\Delta {field}$|  [a.u.]")
 
 
 def _row_height(sample, width=13.5):
@@ -248,8 +264,9 @@ def _row_height(sample, width=13.5):
 
 
 def figure_modes(samples_true, samples_pred, info, modes=None, suptitle="",
-                  to_mm=None, arrows=True):
-    """One row per mode: True |H| | Predicted |H| | |H_pred - H_true|.
+                  to_mm=None, arrows=True, field=None):
+    """One row per mode: True |F| | Predicted |F| | |F_pred - F_true|, F = field
+    (default info.get('field', 'H')).
 
     samples_true / samples_pred: single A1 ``plane_sample`` dicts holding all
     K modes for one geometry (['H'] has shape [nv,nu,3,K]).
@@ -263,21 +280,22 @@ def figure_modes(samples_true, samples_pred, info, modes=None, suptitle="",
     else:
         modes = list(modes)
     n = max(1, len(modes))
+    field = _field_of(info, field)
 
     fig, axes = plt.subplots(n, 3, figsize=(13.5, _row_height(samples_true) * n), squeeze=False,
                               constrained_layout=True)
     for i, k in enumerate(modes):
         row_title = _mode_row_text(k, info)
         ims = plot_mode_slice(axes[i], samples_true, samples_pred, k,
-                               title=row_title, to_mm=to_mm, arrows=arrows)
-        _add_row_colorbars(fig, axes[i], ims)
+                               title=row_title, to_mm=to_mm, arrows=arrows, field=field)
+        _add_row_colorbars(fig, axes[i], ims, field)
 
     if suptitle:
         fig.suptitle(suptitle, fontsize=13, fontweight="bold")
     return fig
 
 
-def figure_planes(samples, info, k, to_mm=None, arrows=True, suptitle=""):
+def figure_planes(samples, info, k, to_mm=None, arrows=True, suptitle="", field=None):
     """The same mode `k` on up to three orthogonal cuts.
 
     samples: dict axis -> (sample_true, sample_pred), e.g.
@@ -290,6 +308,7 @@ def figure_planes(samples, info, k, to_mm=None, arrows=True, suptitle=""):
     fig, axes = plt.subplots(n, 3, figsize=(13.5, sum(hs)), squeeze=False,
                               constrained_layout=True, gridspec_kw={"height_ratios": hs})
     row_title = _mode_row_text(k, info)
+    field = _field_of(info, field)
 
     for i, axis_key in enumerate(axis_keys):
         s_true, s_pred = samples[axis_key]
@@ -297,8 +316,8 @@ def figure_planes(samples, info, k, to_mm=None, arrows=True, suptitle=""):
         title = f"{row_title}  cut {axis_key}={offset:.3g}" if i == 0 else \
             f"cut {axis_key}={offset:.3g}"
         ims = plot_mode_slice(axes[i], s_true, s_pred, k, title=title,
-                               to_mm=to_mm, arrows=arrows)
-        _add_row_colorbars(fig, axes[i], ims)
+                               to_mm=to_mm, arrows=arrows, field=field)
+        _add_row_colorbars(fig, axes[i], ims, field)
 
     if suptitle:
         fig.suptitle(suptitle, fontsize=13, fontweight="bold")

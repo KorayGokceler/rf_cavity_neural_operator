@@ -2,7 +2,9 @@
 
 Contract: scratchpad/viz3d_contract.md §A1. Conventions follow
 src/data/dataset_converter_3d.py: DOF e = (a, b), a < b (global vertex index),
-w_e = λ_a∇λ_b − λ_b∇λ_a, H = Σ_e u_e w_e. `edges` here is only assumed to
+w_e = λ_a∇λ_b − λ_b∇λ_a, F = Σ_e u_e w_e.  F is whatever field the DOFs are
+(H for H-formulation PKLs, E for E ones, pred['field']); the functions are
+field-agnostic and keep the historical 'H' names / dict keys. `edges` here is only assumed to
 contain the (low, high) pair of every tet edge exactly once — NOT to be sorted
 (skfem's mesh.edges, used by tests/maxwell3d_synth.py, is not lexicographically
 sorted) — so DOF lookup sorts its own key copy rather than assuming order.
@@ -110,7 +112,8 @@ def vertex_field(X, tets, edges, u, curl=False):
     tets sharing a vertex, volume-weighted (nodal averaging, as field viewers
     such as CST do).  The raw N0 field is linear per tet with a normal jump
     across faces, which shows up as facets on a coarse mesh.  curl=True: the
-    per-tet constant curl H = Σ u_e 2∇λ_a×∇λ_b (∝ E of the mode) instead.
+    per-tet constant curl F = Σ u_e 2∇λ_a×∇λ_b instead (∝ E of the mode for
+    H DOFs, ∝ H for E DOFs).
 
     Returns [Nv,3,K], or [Nv,3] if `u` was 1-D.
     """

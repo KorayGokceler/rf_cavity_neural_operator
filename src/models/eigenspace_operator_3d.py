@@ -1,8 +1,16 @@
 """EigenspaceOperator3D: learned H(curl) trial space + kernel-projected
-Rayleigh–Ritz for 3D Maxwell cavity eigenmodes (H field, Whitney N0 DOFs).
+Rayleigh–Ritz for 3D Maxwell cavity eigenmodes (Whitney N0 DOFs).
 
+H formulation (batch['field'] = 'H' / absent):
     curl curl H = k² H in Ω,  n·H = 0, n×curl H = 0 on PEC ∂Ω  (both natural)
     discrete:   K y = λ M y  on ALL edges,  ker K = G·P1  (docs/18 §1.4, §3.4)
+E formulation (batch['field'] = 'E', any closed PEC cavity incl. handles):
+    curl curl E = k² E in Ω,  n×E = 0 on PEC ∂Ω  (essential)
+    discrete:   K y = λ M y  on the non-wall edges, wall DOFs 0,
+                ker K|H0(curl) = span(G) (interior-vertex + boundary-component
+                potentials; handles add no kernel).  The basis is multiplied
+                by ~batch['BndEdge'], so E = 0 on the wall by construction;
+                everything else below is identical.
 
 1. Trunk (reused from the 2D EigenspaceOperator): RFF(xyz) ‖ vertex features
    → MLP → n_layers mass-aware linear-attention blocks, key/value sums
@@ -62,7 +70,7 @@ class EigenspaceOperator3D(EigenspaceOperator):
                                        nn.Linear(embed_dim, 3 * n_basis))
 
     def edge_basis(self, batch: dict) -> torch.Tensor:
-        """V [B, Ne, m] = ψ(x_mid) · t_e, 0 on padded edges."""
+        """V [B, Ne, m] = ψ(x_mid) · t_e, 0 on padded edges and (E) on PEC wall edges."""
         X, E = batch['X'], batch['Edges'].long()
         h = self.embed(batch)                                 # [B, Nv, D]
         b = torch.arange(X.shape[0], device=X.device)[:, None]
@@ -73,10 +81,17 @@ class EigenspaceOperator3D(EigenspaceOperator):
             z = torch.cat([z, self.rff(0.5 * (xa + xb))], dim=-1)
         psi = self.edge_head(z).view(*E.shape[:2], self.n_basis, 3)
         V = torch.einsum('bemc,bec->bem', psi, xb - xa)
-        return V * batch['EdgeMask'].unsqueeze(-1).to(V.dtype)
+        keep = batch['EdgeMask']
+        bnd = batch.get('BndEdge', None)
+        if bnd is not None:
+            keep = keep & ~bnd.bool()
+        return V * keep.unsqueeze(-1).to(V.dtype)
 
     def forward(self, batch: dict) -> dict:
         missing = [k for k in REQUIRED_KEYS if batch.get(k, None) is None]
+        if (batch.get('field', None) == 'E' or batch.get('KpNull', None) == 'none') \
+                and batch.get('BndEdge', None) is None:
+            missing.append('BndEdge')
         if missing:
             raise ValueError(f"EigenspaceOperator3D needs batch keys {missing}: "
                              "use Maxwell3DDataset + maxwell3d_collate.")

@@ -19,7 +19,7 @@ from src.viz.predict import _align_modes, load, pick, predict          # noqa: E
 from tests.maxwell3d_synth import make_dataset                         # noqa: E402
 
 K_MODES = 6
-ALL_KEYS = {'geom_id', 'shape_type', 'X', 'tets', 'edges', 'scale', 'center',
+ALL_KEYS = {'field', 'geom_id', 'shape_type', 'X', 'tets', 'edges', 'scale', 'center',
             'true', 'pred', 'err', 'f_true', 'f_pred', 'rel_l2', 'split', 'clusters'}
 
 
@@ -244,3 +244,26 @@ def test_load_roundtrip(pkl, ds, tmp_path):
     out = predict(lm2, ds2, 0)
     assert out["pred"].shape == out["true"].shape
     assert set(out) == ALL_KEYS
+
+
+# ── E-formulation PKL: field label, wall rows, eval_3d parity ──────────────
+
+def test_predict_e_field(tmp_path):
+    path = tmp_path / "synth3d_E.pkl"
+    with open(path, "wb") as f:
+        pickle.dump(make_dataset(n_geoms=2, n=4, n_modes=K_MODES, seed=1, field="E"), f)
+    dsE = Maxwell3DDataset(str(path), split="test", train_ratio=0.0, val_ratio=0.0)
+    lmE = _module(dsE[0]["Input_funcs"].shape[-1])
+    lmE.freq_stats = dict(dsE.stats)
+    lmE.eval()
+    eval_3d = importlib.import_module("scripts.eval_3d")
+    rows = {r["geom_id"]: r for r in eval_3d.evaluate(lmE, dsE, device="cpu", batch_size=1)[0]}
+    for idx in range(len(dsE)):
+        out = predict(lmE, dsE, idx)
+        assert out["field"] == "E" and set(out) == ALL_KEYS
+        wall = np.asarray(_geom(dsE, out["geom_id"])["bnd_edge"], bool)
+        assert (out["true"][wall] == 0).all() and (out["pred"][wall] == 0).all()
+        row = rows[out["geom_id"]]
+        assert row["field"] == "E"
+        np.testing.assert_allclose(out["rel_l2"], [row[f"rel_l2_{k}"] for k in range(len(out["rel_l2"]))],
+                                   rtol=1e-8, atol=1e-10, equal_nan=True)

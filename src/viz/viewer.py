@@ -6,10 +6,14 @@ Fields are nodal-averaged (nedelec.vertex_field); colour limits are fixed per
 (mode, field, component) by the true field over the whole volume, so moving
 the phase / the cut shows the real variation.
 
-A lossless eigenmode is a standing wave: H(t) = H·cos φ, E(t) ∝ curl H·sin φ
-(E and H are 90° apart; E from Ampère, up to the constant 1/(jωε)).  So the
-pattern does not travel; 0° = H maximal / E zero, 90° = E maximal / H zero,
-180° = H maximal with the opposite sign.
+The primary field is the one the DOFs are (pred['field']: 'H' default, 'E'
+for E-formulation PKLs); the other one is the curl of the primary.  A
+lossless eigenmode is a standing wave, E and H 90° apart:
+    H primary:  H(t) = H·cos φ,  E(t) ∝ +curl H·sin φ   (Ampère, 1/(jωε))
+    E primary:  E(t) = E·cos φ,  H(t) ∝ −curl E·sin φ   (Faraday, −1/(jωμ))
+So the pattern does not travel; 0° = primary maximal / secondary zero,
+90° = secondary maximal / primary zero, 180° = primary with the opposite sign.
+(Amplitude constants are dropped: each field has its own colour limit.)
 
     from src.viz.predict import load, predict
     from src.viz.viewer import ModeViewer
@@ -32,8 +36,15 @@ class ModeViewer:
         self.tets = np.asarray(pred['tets'], np.int64)
         self.scale, self.center = float(pred['scale']), np.asarray(pred['center'], np.float64)
         self.K = pred['true'].shape[1]
-        self.nodal = {(f, w): vertex_field(self.X, self.tets, pred['edges'], pred[w], curl=(f == 'E'))
-                      for f in ('H', 'E') for w in ('true', 'pred')}      # [Nv,3,K]
+        self.primary = str(pred.get('field', 'H') or 'H').upper()
+        if self.primary not in ('H', 'E'):
+            raise ValueError(f"pred['field'] must be 'H' or 'E', got {self.primary!r}")
+        self.secondary = 'E' if self.primary == 'H' else 'H'
+        self.fields = (self.primary, self.secondary)
+        # secondary(t) ∝ sign · curl(primary) · sin φ  (see module docstring)
+        self._sign = {self.primary: 1.0, self.secondary: 1.0 if self.primary == 'H' else -1.0}
+        self.nodal = {(f, w): vertex_field(self.X, self.tets, pred['edges'], pred[w], curl=(f != self.primary))
+                      for f in self.fields for w in ('true', 'pred')}      # [Nv,3,K]
         self._planes = {}
 
     # ── geometry ────────────────────────────────────────────────────────
@@ -62,14 +73,24 @@ class ModeViewer:
 
     def limit(self, k, field, comp):
         """Colour limit: max of the TRUE field over the volume (prediction saturates above)."""
+        field = self._field(field)
         return float(np.nanmax(np.abs(self._comp(self.nodal[(field, 'true')][:, :, k], comp)))) or 1.0
 
-    def slice(self, k, field='H', comp='abs', axis='y', pos_mm=None, phase=0.0):
-        """(U_mm, V_mm, true, pred, err) grids [res,res] at the given phase [deg]."""
+    def _field(self, field):
+        field = self.primary if field is None else str(field).upper()
+        if field not in self.fields:
+            raise ValueError(f"field must be one of {self.fields}, got {field!r}")
+        return field
+
+    def slice(self, k, field=None, comp='abs', axis='y', pos_mm=None, phase=0.0):
+        """(U_mm, V_mm, true, pred, err) grids [res,res] at the given phase [deg];
+        field None = the primary one."""
+        field = self._field(field)
         if pos_mm is None:
             pos_mm = float(self.mm(0.0, axis))                       # volume centroid
         tid, bary, U, V, iu, iv = self._plane(axis, pos_mm)
-        t = np.cos(np.radians(phase)) if field == 'H' else np.sin(np.radians(phase))
+        ph = np.radians(phase)
+        t = np.cos(ph) if field == self.primary else self._sign[field] * np.sin(ph)
         F = {w: t * interp_vertex(self.tets, tid, bary, self.nodal[(field, w)][:, :, k])
              for w in ('true', 'pred')}
         shape = U.shape
@@ -79,7 +100,8 @@ class ModeViewer:
         return (self.mm(U, lab[iu]), self.mm(V, lab[iv]), *out, err, lab[iu], lab[iv])
 
     # ── drawing ─────────────────────────────────────────────────────────
-    def draw(self, k=0, field='H', comp='abs', axis='y', pos_mm=None, phase=0.0, fig=None):
+    def draw(self, k=0, field=None, comp='abs', axis='y', pos_mm=None, phase=0.0, fig=None):
+        field = self._field(field)
         U, V, ft, fp, fe, lu, lv = self.slice(k, field, comp, axis, pos_mm, phase)
         lim = self.limit(k, field, comp)
         r = np.ptp(V) / max(np.ptp(U), 1e-12)
@@ -90,6 +112,8 @@ class ModeViewer:
         signed = comp != 'abs'
         cmap, vmin = ('RdBu_r', -lim) if signed else ('jet', 0.0)
         name = f"|{field}|" if comp == 'abs' else f"{field}_{comp}"
+        if field != self.primary:
+            name += f" (∝ curl {self.primary})"
         for ax, z, ttl, cm, lo in ((axs[0], ft, f"True {name}", cmap, vmin),
                                    (axs[1], fp, f"Predicted {name}", cmap, vmin),
                                    (axs[2], fe, f"|{field}_pred − {field}_true|", 'magma', 0.0)):
@@ -110,13 +134,13 @@ class ModeViewer:
         return fig
 
     def widget(self):
-        """ipywidgets UI: mode / field / component / cut axis, cut position and phase
-        sliders, ▶ plays the phase 0→180° in a loop."""
+        """ipywidgets UI: mode / field (primary first) / component / cut axis, cut
+        position and phase sliders, ▶ plays the phase 0→180° in a loop."""
         import ipywidgets as w
         from IPython.display import display
 
         mode = w.Dropdown(options=list(range(self.K)), value=0, description='mode')
-        field = w.ToggleButtons(options=['H', 'E'], value='H', description='field')
+        field = w.ToggleButtons(options=list(self.fields), value=self.primary, description='field')
         comp = w.ToggleButtons(options=list(COMPONENTS), value='abs', description='comp.')
         axis = w.ToggleButtons(options=['x', 'y', 'z'], value='y', description='cut ⟂')
         lo, hi = self.range_mm('y')

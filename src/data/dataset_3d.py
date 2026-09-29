@@ -1,10 +1,19 @@
-"""3D Maxwell (H-field, Whitney N0) eigenmode dataset for model_type='eigenspace3d'.
+"""3D Maxwell (Whitney N0) eigenmode dataset for model_type='eigenspace3d'.
 
 Reads the PKL written by convert_3d.py (contract: docs/20_3D_MODEL.md):
 geometry_pool[g] = {X [Nv,3], Input_funcs [Nv,F], edges [Ne,2] (low→high),
 tets, M, K [Ne×Ne], G [Ne×Nv], Kp [Nv×Nv] (CSR), scale, center, shape_type,
-torsion_max}; samples = [{geom_id, Y [Ne] (H-field N0 DOFs, unit M-norm),
+torsion_max}; samples = [{geom_id, Y [Ne] (N0 DOFs, unit M-norm),
 Theta = [mode_idx, freq_GHz, sample_id]}].
+
+Field (metadata['field']):
+  'H' (or missing): H-field DOFs on all edges, G = full discrete gradient,
+      Kp = GᵀMG singular on constants → batch['KpNull'] = 'const'.
+  'E': E-field DOFs, PEC wall edges (geometry 'bnd_edge') are essential
+      zeros; G = interior-vertex (+ boundary-component) potentials, zero
+      columns after n_pot; Kp SPD on its valid block → batch['KpNull'] =
+      'none', and batch['BndEdge'] [B, Ne] (padding False) masks the basis.
+  A batch never mixes fields (maxwell3d_collate raises).
 
 One item = one geometry with ALL its stored modes (sorted by frequency).
 The split is by geometry with the same seeded permutation as GNOTDataset.
@@ -17,6 +26,7 @@ vertex v ↔ column b·Nv_max + v; padding = empty rows/columns).  One sparse
 product then serves the whole batch (src/models/hcurl.py: spmm).
 """
 import collections
+import inspect
 import pickle
 
 import numpy as np
@@ -54,10 +64,43 @@ def _feature_columns(names):
     return (coords if len(coords) == 3 else None), (dirs if len(dirs) == 3 else None), vol
 
 
+FIELDS = ('H', 'E')
+KP_NULL = {'H': 'const', 'E': 'none'}     # null space of Kp handled by hcurl._pcg
+
+
+def field_of(meta):
+    """'H' | 'E' from PKL metadata (missing / None → 'H', the old behaviour)."""
+    f = str((meta or {}).get('field', None) or 'H').upper()
+    if f not in FIELDS:
+        raise ValueError(f"metadata['field'] must be one of {FIELDS}, got {f!r}")
+    return f
+
+
+def rebuild_operators(X, tets, field='H'):
+    """Contract operators of one mesh from (X, tets) (lean PKLs): the converter's
+    geometry_operators(X, tets, field=...) dict (M, K, G, Kp, edges[, bnd_edge])."""
+    X, tets = np.asarray(X, np.float64), np.asarray(tets, np.int64)
+    params = inspect.signature(geometry_operators).parameters
+    if 'field' in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        res = geometry_operators(X, tets, field=field)
+    elif field == 'H':
+        res = geometry_operators(X, tets)                   # pre-E converter: always H
+    else:
+        raise ValueError("this PKL (field='E') has no stored operators and "
+                         "dataset_converter_3d.geometry_operators has no `field` argument: "
+                         "update the converter or store the operators in the PKL.")
+    ops = res[0] if isinstance(res, tuple) else res
+    if field == 'E' and 'bnd_edge' not in ops:
+        raise ValueError("geometry_operators(X, tets, field='E') returned no 'bnd_edge' "
+                         "(PEC wall-edge mask), required by the E formulation.")
+    return ops
+
+
 def random_orthogonal(rng):
     """Haar-random 3×3 orthogonal matrix (rotation or rotoreflection).  N0 DOFs
-    ∫_e H·t are invariant under a rotation of mesh + field; a reflection flips
-    all of them (H is axial), which the sign-agnostic losses ignore."""
+    ∫_e F·t of a polar field (E) are invariant under any orthogonal map of mesh
+    + field; an axial field (H) flips all of them under a reflection, which the
+    sign-agnostic losses ignore.  (The operators are invariant either way.)"""
     Q, R = np.linalg.qr(rng.standard_normal((3, 3)))
     return (Q * np.sign(np.diag(R))).astype(np.float32)
 
@@ -65,9 +108,10 @@ def random_orthogonal(rng):
 class Maxwell3DDataset(Dataset):
     """Items: X [Nv,3], Input_funcs [Nv,F], Area [Nv] (node volume), Edges
     [Ne,2], Y_field [Ne,K], Y_freq [K] (z-scored, ascending), Scale,
-    TorsionMax, geom_id, shape_type, the scipy CSR operators M, K, G, Kp and,
-    when the PKL has it, FreqNext (z-scored frequency of mode K+1: flags a
-    degenerate pair split by the last stored mode).
+    TorsionMax, geom_id, shape_type, field ('H' | 'E'), the scipy CSR
+    operators M, K, G, Kp, for field 'E' BndEdge [Ne] bool (PEC wall edges)
+    and, when the PKL has it, FreqNext (z-scored frequency of mode K+1: flags
+    a degenerate pair split by the last stored mode).
 
     PKLs written with convert_3d.py --no_operators are supported: the operators
     are rebuilt from (X, tets) by the converter's geometry_operators and kept
@@ -83,6 +127,10 @@ class Maxwell3DDataset(Dataset):
         self.samples_metadata = data['samples']
         meta = data.get('metadata', {}) or {}
         self.metadata = meta
+        self.field = field_of(meta)
+        g_fields = {str(g['field']).upper() for g in self.geometry_pool.values() if g.get('field', None)}
+        if g_fields - {self.field}:
+            raise ValueError(f"metadata field {self.field!r} but geometry_pool fields {sorted(g_fields)}")
         self.stats = meta.get('freq_stats', None)
         self.feature_names = list(meta.get('feature_names', None) or FEATURE_NAMES_3D)
         self.feature_indices = feature_indices
@@ -111,7 +159,8 @@ class Maxwell3DDataset(Dataset):
         self.coord_cols, self.dir_cols, self.vol_col = _feature_columns(self.feature_names)
         if self.augment and (self.coord_cols is None or self.dir_cols is None):
             raise ValueError(f"augment needs x,y,z and 3 dir_* feature columns, got {self.feature_names}")
-        print(f"Maxwell3DDataset {split}: {len(self.active_geoms)} geometries × {n_modes} modes")
+        print(f"Maxwell3DDataset {split}: {len(self.active_geoms)} geometries × {n_modes} modes"
+              f" (field {self.field})")
 
     def data_dims(self):
         """(val_dim, n_modes) of the items."""
@@ -123,19 +172,37 @@ class Maxwell3DDataset(Dataset):
     def __len__(self):
         return len(self.active_geoms)
 
-    def operators(self, g_id):
-        """(M, K, G, Kp) scipy CSR of one geometry; rebuilt from (X, tets) if not stored."""
+    def _ops(self, g_id):
         g = self.geometry_pool[g_id]
-        nv, ne = len(g['X']), len(g['edges'])
         ops = g if 'M' in g else self._ops_cache.get(g_id)
         if ops is None:
-            ops, _ = geometry_operators(np.asarray(g['X'], np.float64), np.asarray(g['tets'], np.int64))
+            ops = rebuild_operators(g['X'], g['tets'], self.field)
             if not np.array_equal(ops['edges'], np.asarray(g['edges'])):
                 raise ValueError(f"geometry {g_id}: rebuilt edges differ from the stored ones")
             if self.cache_operators:
                 self._ops_cache[g_id] = ops
+        return ops
+
+    def operators(self, g_id):
+        """(M, K, G, Kp) scipy CSR of one geometry; rebuilt from (X, tets) if not stored."""
+        g = self.geometry_pool[g_id]
+        nv, ne = len(g['X']), len(g['edges'])
+        ops = self._ops(g_id)
         shapes = {'M': (ne, ne), 'K': (ne, ne), 'G': (ne, nv), 'Kp': (nv, nv)}
         return tuple(to_csr(ops[k], shapes[k]) for k in ('M', 'K', 'G', 'Kp'))
+
+    def bnd_edge(self, g_id):
+        """bool [Ne] PEC wall-edge mask of an E geometry (stored, else rebuilt)."""
+        g = self.geometry_pool[g_id]
+        b = g.get('bnd_edge', None)
+        if b is None:
+            if 'M' in g:
+                raise ValueError(f"geometry {g_id}: field 'E' PKL without 'bnd_edge'")
+            b = self._ops(g_id)['bnd_edge']
+        b = np.asarray(b, dtype=bool).reshape(-1)
+        if len(b) != len(g['edges']):
+            raise ValueError(f"geometry {g_id}: bnd_edge has {len(b)} entries, {len(g['edges'])} edges")
+        return b
 
     def __getitem__(self, idx):
         g_id = self.active_geoms[idx]
@@ -176,6 +243,15 @@ class Maxwell3DDataset(Dataset):
             'shape_type': str(g.get('shape_type', '')),
         }
         item['M'], item['K'], item['G'], item['Kp'] = self.operators(g_key)
+        item['field'] = self.field
+        if self.field == 'E':
+            bnd = self.bnd_edge(g_key)
+            wall = np.abs(Y[bnd]).max(initial=0.0)
+            if wall > 1e-6 * max(np.abs(Y).max(initial=0.0), 1e-30):
+                raise ValueError(f"geometry {g_key}: E targets are nonzero on PEC wall edges "
+                                 f"(max {wall:.3g}); contract: wall rows exactly 0")
+            item['Y_field'][torch.from_numpy(bnd)] = 0.0
+            item['BndEdge'] = torch.from_numpy(bnd)
         return item
 
 
@@ -204,7 +280,16 @@ def maxwell3d_collate(batch):
     (see module docstring).  Keys: X, Input_funcs, Area, Mask [B,Nv]; Edges
     [B,Ne,2] (padding (0,0)), EdgeMask, Y_field [B,Ne,K]; Y_freq [B,K], Scale,
     TorsionMax, FreqNext [B]; geom_id [B,1]; shape_type list[str]; M, K, G, Gt, Kp
-    (sparse COO float64) and Kp_diag [B,Nv] (Jacobi preconditioner)."""
+    (sparse CSR float64) and Kp_diag [B,Nv] (Jacobi preconditioner); field
+    ('H' | 'E', one per batch), KpNull ('const' for H, 'none' for E) and, for
+    E, BndEdge [B,Ne] bool (PEC wall edges, padding False)."""
+    fields = {it.get('field', 'H') for it in batch}
+    if len(fields) != 1:
+        raise ValueError(f"maxwell3d_collate: a batch mixes fields {sorted(fields)}; "
+                         "H and E items need separate datasets / loaders.")
+    field = fields.pop()
+    if field not in KP_NULL:
+        raise ValueError(f"unknown field {field!r}, expected one of {FIELDS}")
     pad = lambda k: pad_sequence([it[k] for it in batch], batch_first=True)   # noqa: E731
     nv = [it['X'].shape[0] for it in batch]
     ne = [it['Edges'].shape[0] for it in batch]
@@ -221,12 +306,21 @@ def maxwell3d_collate(batch):
     out['Kp'] = _block_diag([it['Kp'] for it in batch], Nv, Nv)
     out['Kp_diag'] = pad_sequence([torch.from_numpy(it['Kp'].diagonal().astype(np.float64))
                                    for it in batch], batch_first=True)
+    out['field'], out['KpNull'] = field, KP_NULL[field]
+    if field == 'E':
+        if any(it.get('BndEdge', None) is None for it in batch):
+            raise ValueError("maxwell3d_collate: field 'E' item without 'BndEdge'")
+        out['BndEdge'] = pad('BndEdge').bool()                                 # padding False
     return out
 
 
 def item_from_geometry(g, feature_names=None, feature_indices=None, g_id=0):
     """Model input for one converter geometry dict (dataset_converter_3d.extract_geometry_3d)
-    without labels (Y_field / Y_freq dummies): label-free inference, e.g. active sampling."""
+    without labels (Y_field / Y_freq dummies): label-free inference, e.g. active sampling.
+    The field comes from g['field'] (default 'H'); an 'E' geometry needs g['bnd_edge']."""
+    field = str(g.get('field', None) or 'H').upper()
+    if field not in KP_NULL:
+        raise ValueError(f"geometry field must be one of {FIELDS}, got {field!r}")
     names = list(feature_names or FEATURE_NAMES_3D)
     _, _, vol_col = _feature_columns(names)
     F = np.asarray(g['Input_funcs'], dtype=np.float32)
@@ -242,7 +336,14 @@ def item_from_geometry(g, feature_names=None, feature_indices=None, g_id=0):
             'Scale': torch.tensor(float(g['scale']), dtype=torch.float32),
             'TorsionMax': torch.tensor(float(g.get('torsion_max', 0.0) or 0.0), dtype=torch.float32),
             'geom_id': torch.tensor([g_id], dtype=torch.long), 'FreqNext': torch.tensor(float('nan')),
-            'shape_type': str(g.get('shape_type', ''))}
+            'shape_type': str(g.get('shape_type', '')), 'field': field}
     for k in ('M', 'K', 'G', 'Kp'):
         item[k] = to_csr(g[k], shapes[k])
+    if field == 'E':
+        if g.get('bnd_edge', None) is None:
+            raise ValueError("item_from_geometry: field 'E' geometry without 'bnd_edge'")
+        bnd = np.asarray(g['bnd_edge'], dtype=bool).reshape(-1)
+        if len(bnd) != ne:
+            raise ValueError(f"bnd_edge has {len(bnd)} entries, {ne} edges")
+        item['BndEdge'] = torch.from_numpy(bnd)
     return item

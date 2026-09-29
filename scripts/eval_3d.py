@@ -1,5 +1,7 @@
 """Evaluate an eigenspace3d checkpoint (EigenspaceOperator3D) on a 3D Maxwell PKL.
 
+Works for H and E PKLs alike (metadata['field']; the batch carries BndEdge /
+KpNull, the model and metrics need nothing else).
 Per geometry: per-mode M-norm rel-L2 of the projected Ritz fields (sign-agnostic,
 subspace error inside near-degenerate clusters, NaN for a cluster split by the
 last output), predicted / true frequency [GHz] and relative error, span rel-L2 of
@@ -58,6 +60,7 @@ def evaluate(lm, dataset, device='cpu', batch_size=2):
             rl = mode_rel_l2(out['field'][b].double(), T[b, :, :K].double(), MT[b, :, :K], inside)
             rl[split] = float('nan')
             row = {'geom_id': int(batch['geom_id'][b]), 'shape_type': batch['shape_type'][b],
+                   'field': batch.get('field', 'H'),
                    'n_vertices': int(batch['Mask'][b].sum()), 'n_edges': int(batch['EdgeMask'][b].sum()),
                    'grad_frac': float(gfrac[b].mean())}
             for k in range(K):
@@ -109,6 +112,7 @@ def main():
         ds = Maxwell3DDataset(args.data_path, split=args.split, train_ratio=dc.get('train_ratio', 0.8),
                               val_ratio=dc.get('val_ratio', 0.1), **kw)
     lm.freq_stats = ds.stats
+    print(f"field: {ds.field} ({'E: PEC wall edges masked, SPD Kp' if ds.field == 'E' else 'H: all edges'})")
     rows, t = evaluate(lm, ds, args.device, args.batch_size)
     if args.csv:
         with open(args.csv, 'w', newline='') as f:

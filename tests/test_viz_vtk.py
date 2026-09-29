@@ -259,3 +259,18 @@ def test_export_prediction_default_cell_H_fn_lazily_imports_nedelec(tmp_path, mo
     pred = _make_pred()
     with pytest.raises(ImportError):
         export_prediction(str(path), pred, cell_H_fn=None)
+
+
+def test_export_prediction_names_follow_the_field(tmp_path):
+    """E-formulation predictions (pred['field'] = 'E'): E_true_k, absE_*, E_*_pt; no H_* arrays."""
+    path = tmp_path / "geom_E.vtu"
+    pred = dict(_make_pred(), field="E")
+    export_prediction(str(path), pred, cell_H_fn=_stub_cell_H_fn(np.array([0.0, 1.0, 0.0])))
+    m = meshio.read(str(path))
+    for k in range(pred["true"].shape[1]):
+        for prefix in ("E_true", "E_pred", "E_err"):
+            assert f"{prefix}_{k}" in m.cell_data and f"{prefix}_{k}_pt" in m.point_data
+        assert f"absE_true_{k}" in m.cell_data
+    assert not any(n.startswith(("H_", "absH_")) for n in list(m.cell_data) + list(m.point_data))
+    with open(path.with_suffix(".json")) as fh:
+        assert json.load(fh)["field"] == "E"

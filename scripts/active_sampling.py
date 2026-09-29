@@ -6,7 +6,10 @@ by the relative residual of the predicted pairs on the candidate's own N0 operat
 
     η_k = ‖K u_k − λ_k M u_k‖_{D⁻¹} / λ_k ,   ‖u_k‖_M = 1,  D = diag(M)
 
-(η = 0 for an exact discrete eigenpair; eigenvector error ≲ η / relative spectral gap).  The top
+(η = 0 for an exact discrete eigenpair; eigenvector error ≲ η / relative spectral gap; for the E
+formulation the rows of the PEC wall edges are constraints, not equations, and are left out).
+The field (E | H) is the generator's --field (gen.ARGS.field, default E); the checkpoint must have
+been trained on that field.  The top
 --n_select ids are written to --out; label them with
     python src/data_gen/dataset_generator_3d.py --ids_file ids.txt ... --h5_filename active.h5
 
@@ -15,6 +18,7 @@ by the relative residual of the predicted pairs on the candidate's own N0 operat
 """
 import argparse
 import csv
+import inspect
 import os
 import sys
 from multiprocessing import Pool
@@ -31,10 +35,33 @@ from src.data.dataset_3d import item_from_geometry, maxwell3d_collate  # noqa: E
 from src.data.dataset_converter_3d import extract_geometry_3d           # noqa: E402
 
 
-def residual_indicator(K, M, U, lam):
-    """η_k for eigenpairs (λ_k, u_k), U [N, k] with unit M-norm columns, scipy K and M."""
+def residual_indicator(K, M, U, lam, free=None):
+    """η_k for eigenpairs (λ_k, u_k), U [N, k] with unit M-norm columns, scipy K and M;
+    free: bool [N] rows that are equations (E: ~wall edges), default all."""
     R = K @ U - (M @ U) * lam[None, :]
-    return np.sqrt((R ** 2 / M.diagonal()[:, None]).sum(0)) / np.abs(lam)
+    d = M.diagonal()[:, None]
+    if free is not None:
+        R, d = R[free], d[free]
+    return np.sqrt((R ** 2 / d).sum(0)) / np.abs(lam)
+
+
+def _has_field_arg(fn):
+    p = inspect.signature(fn).parameters
+    return "field" in p or any(q.kind is q.VAR_KEYWORD for q in p.values())
+
+
+def extract(nodes, tets, field="E"):
+    """Converter geometry dict of one candidate for `field` (dict['field'] set)."""
+    if _has_field_arg(extract_geometry_3d):
+        geom, _ = extract_geometry_3d(nodes, tets, field=field)
+    elif field == "H":
+        # TODO(E-switch): drop this branch once every converter has extract_geometry_3d(..., field=).
+        geom, _ = extract_geometry_3d(nodes, tets)
+    else:
+        raise RuntimeError("active sampling with --field E needs dataset_converter_3d.extract_geometry_3d"
+                           "(nodes, tets, field='E'); this converter has no field argument (H only).")
+    geom.setdefault("field", field)
+    return geom
 
 
 def _mesh(s_id):
@@ -46,8 +73,8 @@ def _mesh(s_id):
         return s_id, None, None, None
 
 
-def score(lm, s_id, nodes, tets, shape_type, device="cpu", feature_indices=None):
-    geom, _ = extract_geometry_3d(nodes, tets)
+def score(lm, s_id, nodes, tets, shape_type, device="cpu", feature_indices=None, field="E"):
+    geom = extract(nodes, tets, field)
     geom["shape_type"] = shape_type
     item = item_from_geometry(geom, feature_indices=feature_indices, g_id=s_id)
     batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in maxwell3d_collate([item]).items()}
@@ -55,7 +82,8 @@ def score(lm, s_id, nodes, tets, shape_type, device="cpu", feature_indices=None)
         out = lm.model(batch)
     U = out["field"][0].double().cpu().numpy()
     lam = out["eigenvalues"][0].double().cpu().numpy()
-    eta = residual_indicator(item["K"], item["M"], U, lam)
+    free = ~item["BndEdge"].numpy() if "BndEdge" in item else None
+    eta = residual_indicator(item["K"], item["M"], U, lam, free)
     return {"id": s_id, "shape_type": shape_type, "n_edges": len(geom["edges"]), "eta_mean": float(eta.mean()),
             "eta_max": float(eta.max())}
 
@@ -72,6 +100,10 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args, gen_argv = ap.parse_known_args()   # remaining flags go to the generator (--families, --mesh_size, ...)
     gen.ARGS = gen.parse_args(gen_argv + ["--start_id", str(args.start_id), "--n_total", str(args.n_candidates)])
+    field = str(getattr(gen.ARGS, "field", "H") or "H").upper()      # pre-E generators had no --field: H
+    if field != "H" and not _has_field_arg(extract_geometry_3d):
+        raise SystemExit(f"--field {field}: dataset_converter_3d.extract_geometry_3d has no field argument")
+    print(f"field: {field}")
 
     from infer import resolve_checkpoint
     from src.training.lightning_module import GNOTLightning
@@ -83,7 +115,7 @@ def main():
     with Pool(args.n_workers, initializer=gen._init_worker, initargs=(gen.ARGS,), maxtasksperchild=50) as pool:
         for s_id, nodes, tets, st in pool.imap_unordered(_mesh, ids):
             if nodes is not None:
-                rows.append(score(lm, s_id, nodes, tets, st, args.device, fi))
+                rows.append(score(lm, s_id, nodes, tets, st, args.device, fi, field))
     rows.sort(key=lambda r: -r["eta_mean"])
     with open(args.out, "w") as f:
         f.write("\n".join(str(r["id"]) for r in rows[:args.n_select]) + "\n")

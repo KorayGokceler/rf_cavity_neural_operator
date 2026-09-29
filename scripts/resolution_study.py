@@ -9,6 +9,7 @@ Per resolution, over the geometries present at every resolution:
   FE f err (ref)  FE on that mesh vs FE on the finest mesh: the discretisation error a
                   plain solve at that resolution would have — the bar to compare with
 All frequency errors: mean over the K output modes of |f/f_ref − 1|.
+H and E PKLs both work (metadata['field']); all PKLs of one study must share the field.
 
     python scripts/resolution_study.py --checkpoint DIR --pkls p010.pkl p007.pkl p005.pkl \
         --labels 0.10 0.07 0.05 [--csv res.csv] [--plot res.png] [--by_shape]
@@ -35,9 +36,12 @@ MODEL_C, FE_C = '#2a78d6', '#eb6834'     # categorical slots 1 / 2 (dataviz refe
 
 def study(lm, pkls, labels, device='cpu'):
     """Long table: one row per (mesh label, geometry) with the metrics of the docstring."""
-    rows = []
+    rows, fields = [], set()
     for pkl, lab in zip(pkls, labels, strict=True):
         ds = Maxwell3DDataset(pkl, split='test', train_ratio=0.0, val_ratio=0.0)
+        fields.add(ds.field)
+        if len(fields) > 1:
+            raise ValueError(f"PKLs of one resolution study mix fields {sorted(fields)}")
         lm.freq_stats = ds.stats
         r, _ = evaluate(lm, ds, device, batch_size=1)
         for row in r:
