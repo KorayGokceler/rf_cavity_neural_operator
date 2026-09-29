@@ -1,28 +1,23 @@
-"""3D PEC cavity eigenmode dataset generator (H-field, lowest-order Nédélec N0).
+"""3D PEC cavity eigenmode dataset generator (lowest-order Nédélec N0; E field by default).
 
-Physics (docs/18 §1.4, §2.2):  find H ∈ H(curl, Ω) with
+Physics (docs/18 §1.4, §2.2; docs/19 "E formülasyonu"), f = c·√λ/(2π), skfem ``ElementTetN0``:
 
-    ∫ curl H · curl v = k² ∫ H · v        for all v ∈ H(curl, Ω),
+**--field E (default).**  Find E ∈ H0(curl, Ω):  ∫ curl E · curl v = k² ∫ E · v  for all
+v ∈ H0(curl, Ω).  n × E = 0 on the PEC wall is ESSENTIAL: the DOFs of the wall edges (edges of
+boundary faces) are removed.  Kernel of curl in the discrete H0(curl) = {Gφ : φ P1, φ = 0 on the
+first boundary component, constant on every other one}: the interior-vertex gradients plus one
+potential per extra boundary component (the b2 harmonic Dirichlet fields of isolated inner
+conductors).  Handles (b1 > 0: spoke, half-wave coax, DTL stems, tori) add NOTHING to this kernel,
+so every connected, manifold PEC cavity is admissible.  Kp = GᵀMG is SPD without pinning.
 
-with **no essential boundary condition** on the edge DOFs. On a PEC wall both
-n·H = 0 and n × curl H = 0 (⇔ n × E = 0) are natural. Discretisation:
-skfem ``ElementTetN0`` on all edges, ``K u = λ M u``, f = c·√λ/(2π).
+**--field H.**  Find H ∈ H(curl, Ω) with no essential BC (n·H = 0, n × curl H = 0 natural).
+Kernel: gradients of all P1 functions (vertex 0 pinned for the constant) PLUS b1 harmonic Neumann
+fields which the projection does not remove (spurious λ ≈ 0 modes) — so H requires a topological
+ball: connected, V−E+F−T = 1, one boundary shell with χ(∂Ω) = 2 (b1 = b2 = 0).
 
-Kernel: ker K = G·P1 = gradients of *all* P1 functions (boundary vertices
-included). Constants have zero gradient, so one vertex potential is pinned
-(column 0 of G dropped) to make the potential Laplacian Kp = GᵀMG SPD.
-The eigensolver is the validated research recipe (scripts/research_3d/n0lib.py,
-``solve_projected``): shift-invert with σ < 0 (K − σM SPD) and the M-orthogonal
-projection P = I − G Kp⁻¹ GᵀM after every solve, so gradient fields become
-θ = 0 (λ = ∞) and never appear among the returned modes.
-
-**Topology restriction:** domains must be free of handles (first Betti number
-b1 = 0: no through-holes, no tori, no coaxial inner conductor touching both end
-plates). For b1 > 0 the H-formulation kernel additionally contains b1 harmonic
-fields (curl-free, M-orthogonal to all gradients) which the projection does not
-remove; they would appear as spurious λ ≈ 0 modes. Every mesh is certified
-before solving: connected, Euler characteristic V−E+F−T = 1 and a single
-boundary shell with χ(∂Ω) = 2 (⇒ b1 = b2 = 0, a topological ball).
+Both use the validated research recipe (scripts/research_3d/n0lib.py, ``solve_projected``):
+shift-invert with σ < 0 (K − σM SPD) and the M-orthogonal projection P = I − G Kp⁻¹ GᵀM after
+every solve, so gradient fields become θ = 0 (λ = ∞) and never appear among the returned modes.
 
 H5 layout (one group ``sample_XXXX`` per geometry):
     nodes   [Nv,3] float64   vertex coordinates [m]
@@ -31,18 +26,21 @@ H5 layout (one group ``sample_XXXX`` per geometry):
                              skfem ``ElementTetN0`` DOF order; tail < head always
                              (skfem orients each edge from the lower to the higher
                              global vertex index)
-    h_edges [Ne,K] float64   H-field N0 DOFs, h_edges[i,j] = ∫_{tail→head} H_j · dl,
-                             M-orthonormal in physical units (sign arbitrary)
+    e_edges [Ne,K] float64   (E)  E-field N0 DOFs e_edges[i,j] = ∫_{tail→head} E_j · dl on ALL
+                             edges, wall-edge rows exactly 0; M-orthonormal in physical units
+    h_edges [Ne,K] float64   (H)  H-field N0 DOFs, same conventions (no zero rows)
     freqs   [K]    float64   GHz, ascending
     attrs: shape_type, geom_params (JSON) + one float attr per parameter, n_nodes,
            n_edges, n_tets, freq_next (GHz, mode K+1: shows whether K splits a
-           degenerate cluster), div_residual, mesh_h, t_mesh, t_solve, field, fem_element
+           degenerate cluster), div_residual, mesh_h, t_mesh, t_solve, field ('E'|'H'),
+           fem_element, n_bnd_components, betti1
 File attr ``metadata`` (JSON): generator args, formulation, conventions, units.
 """
 import argparse
 import json
 import logging
 import os
+import sys
 import time
 from multiprocessing import Pool, TimeoutError as MPTimeoutError, cpu_count
 
@@ -55,14 +53,20 @@ from scipy.special import jn_zeros, jnp_zeros
 try:
     from src.data_gen import cavity_shapes as cs
 except ImportError:   # run as a script from src/data_gen
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
     import cavity_shapes as cs
+from src.data.dataset_converter_3d import boundary_topology, e_potential_matrix  # noqa: E402
 
 logging.getLogger('skfem').setLevel(logging.ERROR)
 
 C0 = 299792458.0  # speed of light [m/s]
 # default families: realistic RF cavities + free-form solids (src/data_gen/cavity_shapes.py);
 # "pillbox", "axisym_cell", "blob" stay available via --families (v1 datasets)
-FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "composite", "freeform")
+FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "composite", "freeform",
+            "hwr", "spoke", "dtl")
+# default families of --field H: the handle families (b1 > 0) need the E formulation
+H_FAMILIES = tuple(f for f in FAMILIES if f not in cs.HANDLE_FAMILIES)
+FIELD_DATASET = {"E": "e_edges", "H": "h_edges"}
 
 # Calibration geometries [m] (non-degenerate low box spectrum; L < 2.03 R → TM010 first)
 CALIB_BOX = (0.10, 0.08, 0.06)
@@ -72,13 +76,17 @@ ARGS = None
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="Generate 3D PEC cavity eigenmode dataset (H-field, Nédélec N0).")
+    p = argparse.ArgumentParser(description="Generate 3D PEC cavity eigenmode dataset (Nédélec N0, E or H field).")
     p.add_argument("--h5_filename", type=str, default="rf_cavity_3d_dataset.h5", help="Output H5 filename.")
     p.add_argument("--n_total", type=int, default=100, help="Number of geometries to generate.")
     p.add_argument("--mode", type=str, default="random", choices=["random", "calibration"],
                    help="random families, or calibration (PEC box / pillbox with analytic spectra).")
-    p.add_argument("--families", type=str, nargs="+", default=list(FAMILIES), choices=ALL_FAMILIES,
-                   help="Geometry families drawn uniformly in random mode.")
+    p.add_argument("--field", type=str, default="E", choices=["E", "H"],
+                   help="E (default): E in H0(curl), wall edges removed — any closed PEC cavity (handles, "
+                        "isolated conductors). H: H in H(curl), natural BC — topological balls only.")
+    p.add_argument("--families", type=str, nargs="+", default=None, choices=ALL_FAMILIES,
+                   help="Geometry families drawn uniformly in random mode (default: FAMILIES for E, "
+                        "H_FAMILIES — no handle families — for H).")
     p.add_argument("--n_eigen_modes", type=int, default=6, help="Number K of physical modes stored.")
     p.add_argument("--mesh_size", type=float, default=0.12,
                    help="Target tet size relative to the characteristic length V^(1/3) of the cavity.")
@@ -101,7 +109,10 @@ def parse_args(argv=None):
     p.add_argument("--sample_timeout", type=float, default=300.0, help="Seconds before a sample is skipped.")
     p.add_argument("--max_geom_tries", type=int, default=6,
                    help="Re-draws when a random geometry fails the boolean/topology checks.")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.families is None:
+        args.families = list(FAMILIES if args.field == "E" else H_FAMILIES)
+    return args
 
 
 def _init_worker(args):
@@ -279,7 +290,9 @@ BUILDERS = {"pillbox": build_pillbox, "axisym_cell": build_axisym_cell, "blob": 
             "composite": cs.build_composite,
             # out-of-distribution test families (cs.OOD_FAMILIES), not in the default FAMILIES
             "box": cs.build_box, "coax_qw": cs.build_coax_qw, "pillbox_port": cs.build_pillbox_port,
-            "elliptical_long": cs.build_elliptical_long, "junction": cs.build_junction}
+            "elliptical_long": cs.build_elliptical_long, "junction": cs.build_junction,
+            # handle families (b1 > 0; E formulation only)
+            "hwr": cs.build_hwr, "spoke": cs.build_spoke, "dtl": cs.build_dtl}
 DISCRETE_BUILDERS = {"freeform": cs.freeform_surface}   # closed triangulated surface → gmsh remesh
 
 
@@ -329,35 +342,41 @@ def _mesh_current_model(h):
 # ─────────────────────────── topology ──────────────────────────
 
 def mesh_topology(tets, n_nodes):
-    """Returns dict(euler=V−E+F−T, n_components, n_shells, euler_boundary).
-    A topological ball (no handles, no voids) has euler=1, n_components=1, n_shells=1,
-    euler_boundary=2."""
+    """Returns dict(euler=V−E+F−T, n_components, n_shells (= n_bnd_components), euler_boundary,
+    manifold, betti1 = 1 + b2 − χ, betti2 = n_shells − 1).  A topological ball has euler=1,
+    n_components=1, n_shells=1, euler_boundary=2 (⇒ b1 = b2 = 0).  Raises on a face shared by
+    more than two tets.  Boundary components: connected components of the boundary faces (sharing
+    an edge or a vertex) — dataset_converter_3d.boundary_topology."""
     from scipy.sparse.csgraph import connected_components
-    t = np.sort(np.asarray(tets, dtype=np.int64), axis=1)
-    edges = np.unique(t[:, [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]]].reshape(-1, 2), axis=0)
-    faces_all = t[:, [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]].reshape(-1, 3)
-    faces, cnt = np.unique(faces_all, axis=0, return_counts=True)
-    if cnt.max() > 2:
-        raise RuntimeError("non-manifold mesh (face shared by > 2 tets)")
-    bf = faces[cnt == 1]
-    euler = n_nodes - len(edges) + len(faces) - len(t)
+    t = np.asarray(tets, dtype=np.int64)
+    bt = boundary_topology(t, n_nodes)
     A = sp.coo_matrix((np.ones(3 * len(t)), (np.repeat(t[:, 0], 3), t[:, 1:].ravel())), shape=(n_nodes,) * 2)
     n_comp = connected_components(A, directed=False)[0]
-    bv = np.unique(bf)
-    loc = np.searchsorted(bv, bf)
-    be = np.unique(np.sort(loc[:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2), axis=1), axis=0)
-    Ab = sp.coo_matrix((np.ones(len(be)), (be[:, 0], be[:, 1])), shape=(len(bv),) * 2)
-    n_shell = connected_components(Ab, directed=False)[0]
-    return dict(euler=int(euler), n_components=int(n_comp), n_shells=int(n_shell),
-                euler_boundary=int(len(bv) - len(be) + len(bf)))
+    return dict(euler=bt["euler"], n_components=int(n_comp), n_shells=bt["n_comp"],
+                euler_boundary=bt["euler_boundary"], manifold=bt["manifold"], betti1=bt["betti1"],
+                betti2=bt["n_comp"] - 1, n_bnd_components=bt["n_comp"])
 
 
 def is_topological_ball(topo):
+    """H-formulation certificate: b1 = b2 = 0."""
     return (topo["euler"] == 1 and topo["n_components"] == 1 and topo["n_shells"] == 1
             and topo["euler_boundary"] == 2)
 
 
-# ─────────────────────────── N0 solver (H-field) ───────────────
+def is_valid_e_domain(topo):
+    """E-formulation certificate: a connected, manifold mesh (any b1, any number of boundary
+    shells — handles and isolated conductors are handled by the E kernel)."""
+    return topo["n_components"] == 1 and topo["manifold"] and topo["betti1"] >= 0
+
+
+def certify(topo, field):
+    ok = is_valid_e_domain(topo) if field == "E" else is_topological_ball(topo)
+    if not ok:
+        raise RuntimeError(f"{'not a connected manifold mesh' if field == 'E' else 'not a topological ball'}: "
+                           f"{topo}")
+
+
+# ─────────────────────────── N0 solvers (E / H field) ─────────
 
 def assemble_h_n0(nodes, tets):
     """skfem N0 assembly on all edges (no essential BC). Returns dict with K, M [Ne×Ne]
@@ -399,28 +418,14 @@ def spd_factor(A):
 
 
 def solve_h_modes(A, k, tol=1e-10, sigma=None):
-    """k lowest non-zero eigenpairs of K u = λ M u on the full N0 space, gradient kernel
-    removed by projection (research recipe n0lib.solve_projected, with the Neumann/H
-    kernel: G on all vertices, one vertex pinned for the constant)."""
+    """H formulation: k lowest non-zero eigenpairs of K u = λ M u on the full N0 space, gradient
+    kernel removed by projection (research recipe n0lib.solve_projected, with the Neumann/H
+    kernel: G on all vertices, one vertex pinned for the constant).  Valid only for b1 = 0: the
+    b1 harmonic Neumann fields of a handle survive and trigger the zero-eigenvalue check."""
     K, M = A["K"], A["M"]
     Gp = A["G"][:, 1:].tocsr()                             # pin vertex 0 (constants: zero gradient)
-    if sigma is None:                                      # scale-aware small negative shift
-        sigma = -1e-2 * (K.diagonal().mean() / M.diagonal().mean())
-    lu = spd_factor(K - sigma * M)
-    MG = (M @ Gp).tocsr()
-    lup = spd_factor(Gp.T @ MG)                            # Kp: P1 Neumann Laplacian, SPD after pinning
-
-    def P(x):
-        return x - Gp @ lup.solve(MG.T @ x)
-
-    OP = spla.LinearOperator(K.shape, matvec=lambda x: P(lu.solve(x)), dtype=float)
-    v0 = P(np.random.default_rng(0).standard_normal(K.shape[0]))
-    vals, vecs = spla.eigsh(K, k=k, M=M, sigma=sigma, OPinv=OP, which="LM", v0=v0, tol=tol,
-                            ncv=min(K.shape[0] - 1, max(2 * k + 1, 30)))
-    o = np.argsort(vals)
-    vals, vecs = vals[o], vecs[:, o]
-    # ── checks: no zero / gradient modes, M-orthonormal ──
-    lam_scale = K.diagonal().mean() / M.diagonal().mean()     # ~ 1/h² (top of the spectrum)
+    vals, vecs, sigma, lam_scale = _projected_shift_invert(K, M, Gp, k, tol, sigma)
+    # ── checks: no zero / gradient modes, M-orthonormal (lam_scale ~ 1/h², top of the spectrum) ──
     Mv = M @ vecs
     div = np.abs(A["G"].T @ Mv).max(axis=0) / np.abs(Mv).max(axis=0)
     if not np.all(np.isfinite(vals)) or vals.min() <= 1e-6 * lam_scale:
@@ -431,6 +436,66 @@ def solve_h_modes(A, k, tol=1e-10, sigma=None):
     if np.abs(gram - np.eye(k)).max() > 1e-6:
         raise RuntimeError("eigenvectors not M-orthonormal")
     return vals, vecs, dict(sigma=sigma, div_residual=float(div.max()), lam_scale=float(lam_scale))
+
+
+def _projected_shift_invert(K, M, Gp, k, tol, sigma):
+    """Shared recipe: k lowest eigenpairs of K u = λ M u on the M-orthogonal complement of range(Gp)
+    (Gp full column rank).  Shift-invert with σ < 0, projection P = I − Gp Kp⁻¹ GpᵀM after every
+    solve.  Returns (vals, vecs, sigma, lam_scale)."""
+    if sigma is None:                                      # scale-aware small negative shift
+        sigma = -1e-2 * (K.diagonal().mean() / M.diagonal().mean())
+    lu = spd_factor(K - sigma * M)
+    if Gp.shape[1] == 0:                                   # no potentials (E on a mesh without interior
+        def P(x):                                          # vertices): trivial kernel, P = I
+            return x
+    else:
+        MG = (M @ Gp).tocsr()
+        lup = spd_factor(Gp.T @ MG)                        # Kp: SPD potential Laplacian
+
+        def P(x):
+            return x - Gp @ lup.solve(MG.T @ x)
+
+    OP = spla.LinearOperator(K.shape, matvec=lambda x: P(lu.solve(x)), dtype=float)
+    v0 = P(np.random.default_rng(0).standard_normal(K.shape[0]))
+    vals, vecs = spla.eigsh(K, k=k, M=M, sigma=sigma, OPinv=OP, which="LM", v0=v0, tol=tol,
+                            ncv=min(K.shape[0] - 1, max(2 * k + 1, 30)))
+    o = np.argsort(vals)
+    return vals[o], vecs[:, o], sigma, K.diagonal().mean() / M.diagonal().mean()
+
+
+def solve_e_modes(A, k, tol=1e-10, sigma=None, component_potentials=True):
+    """k lowest non-zero eigenpairs of the E formulation: N0 with the PEC wall edges removed
+    (essential n × E = 0), gradient kernel removed by projection with the E potentials
+    (dataset_converter_3d.e_potential_matrix: interior vertices + one potential per boundary
+    component except the first; Kp SPD, no pinning).  Eigenvectors are returned expanded to ALL
+    edges (skfem DOF order, wall rows exactly 0), M-orthonormal.
+    component_potentials=False (validation only) omits the component potentials: an isolated
+    conductor (b2 > 0) then leaves a spurious λ ≈ 0 mode and the zero check raises."""
+    K, M = A["K"], A["M"]
+    Gfull, bnd, n_pot, topo = e_potential_matrix(A["edges"], A["mesh"].p.shape[1], A["mesh"].t.T,
+                                                 component_potentials=component_potentials)
+    free = np.flatnonzero(~bnd)
+    Kf, Mf = K[free][:, free].tocsr(), M[free][:, free].tocsr()
+    Gp = Gfull[free][:, :n_pot].tocsr()
+    vals, vf, sigma, lam_scale = _projected_shift_invert(Kf, Mf, Gp, k, tol, sigma)
+    vecs = np.zeros((K.shape[0], k))
+    vecs[free] = vf
+    # ── checks: no zero / gradient modes (E-kernel potentials), M-orthonormal ──
+    Mv = M @ vecs
+    div = np.abs(Gfull[:, :n_pot].T @ Mv).max(axis=0, initial=0.0) / np.abs(Mv).max(axis=0)
+    if not np.all(np.isfinite(vals)) or vals.min() <= 1e-6 * lam_scale:
+        raise RuntimeError(f"zero / non-physical eigenvalue in {vals} (scale {lam_scale:.3g})")
+    if div.max() > 1e-6:
+        raise RuntimeError(f"mode not M-orthogonal to the E-kernel gradients (div residual {div.max():.2e})")
+    if np.abs(vecs.T @ Mv - np.eye(k)).max() > 1e-6:
+        raise RuntimeError("eigenvectors not M-orthonormal")
+    return vals, vecs, dict(sigma=sigma, div_residual=float(div.max()), lam_scale=float(lam_scale),
+                            n_free=int(len(free)), n_pot=n_pot, n_bnd_components=topo["n_comp"],
+                            betti1=topo["betti1"])
+
+
+def solve_modes(A, k, field="E", **kw):
+    return (solve_e_modes if field == "E" else solve_h_modes)(A, k, **kw)
 
 
 # ─────────────────────────── sample ────────────────────────────
@@ -526,13 +591,17 @@ def smooth_deform(nodes, rng, lip_max=0.5):
 
 def mesh_sample(s_id):
     """Geometry + mesh of sample s_id (no eigen-solve): dict(nodes [m], tets, shape_type, params,
-    h, volume, t_mesh).  Used by generate_sample_data and scripts/active_sampling.py."""
+    h, volume, t_mesh, topo).  The mesh passes the certificate of ARGS.field (E: connected
+    manifold; H: topological ball).  Used by generate_sample_data and scripts/active_sampling.py."""
     import gmsh
     _gmsh_start()
     rng = _sample_rng(s_id)
     t0 = time.perf_counter()
     fam = "calibration" if ARGS.mode == "calibration" else \
         ARGS.families[int(rng.integers(0, len(ARGS.families)))]   # fixed across re-draws: exact family balance
+    field = getattr(ARGS, "field", "E")
+    if field == "H" and fam in cs.HANDLE_FAMILIES:
+        raise ValueError(f"family {fam!r} has handles (b1 > 0): needs --field E")
     for attempt in range(ARGS.max_geom_tries):
         gmsh.clear()
         gmsh.model.add(f"rf3d_{s_id}_{attempt}")
@@ -557,8 +626,7 @@ def mesh_sample(s_id):
                 h = max(min(h, h_cap), 0.7 * h)            # ≤ ~3× the tets of the volume rule
             nodes, tets = _mesh_current_model(h)
             topo = mesh_topology(tets, len(nodes))
-            if not is_topological_ball(topo):
-                raise RuntimeError(f"not a topological ball: {topo}")
+            certify(topo, field)
             break
         except Exception as e:  # re-draw the geometry (random mode only)
             _gmsh_start(restart=True)
@@ -571,7 +639,7 @@ def mesh_sample(s_id):
         nodes, dp = smooth_deform(nodes, rng_d, getattr(ARGS, "deform_max", 0.5))
         params.update(dp)
     return {"nodes": nodes, "tets": tets, "shape_type": shape_type, "params": params, "h": float(h),
-            "volume": float(volume), "t_mesh": time.perf_counter() - t0}
+            "volume": float(volume), "t_mesh": time.perf_counter() - t0, "topo": topo}
 
 
 def generate_sample_data(s_id):
@@ -580,17 +648,20 @@ def generate_sample_data(s_id):
         g = mesh_sample(s_id)
         nodes, tets, shape_type, params, h, volume, t_mesh = (
             g[k] for k in ("nodes", "tets", "shape_type", "params", "h", "volume", "t_mesh"))
+        field = getattr(ARGS, "field", "E")
         t0 = time.perf_counter()
         A = assemble_h_n0(nodes, tets)
         k = ARGS.n_eigen_modes
-        vals, vecs, info = solve_h_modes(A, k + 1)
+        vals, vecs, info = solve_modes(A, k + 1, field)
         t_solve = time.perf_counter() - t0
         return {
             "id": s_id, "nodes": np.ascontiguousarray(A["mesh"].p.T), "tets": np.ascontiguousarray(A["mesh"].t.T),
-            "edges": A["edges"], "h_edges": vecs[:, :k], "freqs": eigenvalues_to_ghz(vals[:k]),
+            "edges": A["edges"], FIELD_DATASET[field]: vecs[:, :k], "field": field,
+            "freqs": eigenvalues_to_ghz(vals[:k]),
             "freq_next": float(eigenvalues_to_ghz(vals[k])), "shape_type": shape_type, "geom_params": params,
             "div_residual": info["div_residual"], "mesh_h": float(h), "volume": float(volume),
-            "t_mesh": t_mesh, "t_solve": t_solve,
+            "t_mesh": t_mesh, "t_solve": t_solve, "n_bnd_components": int(g["topo"]["n_bnd_components"]),
+            "betti1": int(g["topo"]["betti1"]),
         }
     except Exception as e:
         print(f"Error generating sample {s_id}: {e}")
@@ -608,7 +679,8 @@ def write_sample(f_h5, res):
     g.create_dataset("nodes", data=res["nodes"], **z)
     g.create_dataset("tets", data=res["tets"].astype(np.int64), **z)
     g.create_dataset("edges", data=res["edges"].astype(np.int64), **z)
-    g.create_dataset("h_edges", data=res["h_edges"], **z)
+    field = res.get("field", "H")
+    g.create_dataset(FIELD_DATASET[field], data=res[FIELD_DATASET[field]], **z)
     g.create_dataset("freqs", data=res["freqs"])
     g.attrs["shape_type"] = res["shape_type"]
     g.attrs["geom_params"] = json.dumps({k: float(v) for k, v in res["geom_params"].items()})
@@ -618,9 +690,11 @@ def write_sample(f_h5, res):
     g.attrs["n_tets"] = int(len(res["tets"]))
     g.attrs["n_edges"] = int(len(res["edges"]))
     g.attrs["fem_element"] = "N0"
-    g.attrs["field"] = "H"
+    g.attrs["field"] = field
     for k_ in ("freq_next", "div_residual", "mesh_h", "volume", "t_mesh", "t_solve"):
         g.attrs[k_] = float(res[k_])
+    for k_ in ("n_bnd_components", "betti1"):
+        g.attrs[k_] = int(res.get(k_, 1 if k_ == "n_bnd_components" else 0))
     if res["shape_type"].startswith("calib_"):
         ref = eigenvalues_to_ghz(analytic_k2(res["shape_type"], res["geom_params"], len(res["freqs"])))
         g.attrs["freqs_analytic"] = ref
@@ -640,22 +714,32 @@ def _run_chunk(pool, chunk_range, timeout):
 
 
 def file_metadata(args):
-    return {
-        "generator_args": vars(args), "field": "H", "fem_element": "N0 (skfem ElementTetN0, all edges)",
-        "formulation": "curl-curl H = k^2 H, no essential BC (PEC: n.H = 0, n x curl H = 0 natural)",
-        "kernel": "gradients of all P1 functions, removed by M-orthogonal projection (vertex 0 pinned)",
-        "topology": "topological balls only (b1 = b2 = 0): no handles / through-holes / tori / voids",
-        "dof_convention": "h_edges[i] = line integral of H along edges[i,0] -> edges[i,1]; edges[i,0] < edges[i,1]",
-        "normalisation": "h_edges columns M-orthonormal in physical units; sign arbitrary",
-        "freq_unit": "GHz", "length_unit": "m", "c0": C0,
-    }
+    field = getattr(args, "field", "E")
+    if field == "E":
+        f = {"formulation": "curl-curl E = k^2 E in H0(curl): n x E = 0 essential (PEC wall edge DOFs removed)",
+             "kernel": "gradients of P1 potentials: interior vertices + one constant per boundary component except "
+                       "the first (b2 harmonic Dirichlet fields), removed by M-orthogonal projection (Kp SPD)",
+             "topology": "any connected manifold domain: handles (b1 > 0) and isolated conductors (b2 > 0) allowed",
+             "dof_convention": "e_edges[i] = line integral of E along edges[i,0] -> edges[i,1]; "
+                               "edges[i,0] < edges[i,1]; wall-edge rows exactly 0",
+             "normalisation": "e_edges columns M-orthonormal in physical units; sign arbitrary"}
+    else:
+        f = {"formulation": "curl-curl H = k^2 H, no essential BC (PEC: n.H = 0, n x curl H = 0 natural)",
+             "kernel": "gradients of all P1 functions, removed by M-orthogonal projection (vertex 0 pinned)",
+             "topology": "topological balls only (b1 = b2 = 0): no handles / through-holes / tori / voids",
+             "dof_convention": "h_edges[i] = line integral of H along edges[i,0] -> edges[i,1]; "
+                               "edges[i,0] < edges[i,1]",
+             "normalisation": "h_edges columns M-orthonormal in physical units; sign arbitrary"}
+    return {"generator_args": vars(args), "field": field, "fem_element": "N0 (skfem ElementTetN0, all edges)",
+            "dataset": FIELD_DATASET[field], **f, "freq_unit": "GHz", "length_unit": "m", "c0": C0}
 
 
 def main(argv=None):
     global ARGS
     ARGS = parse_args(argv)
     n_workers = ARGS.n_workers or min(cpu_count(), 4)
-    print(f"Generating {'ids from ' + ARGS.ids_file if ARGS.ids_file else ARGS.n_total} 3D samples ({ARGS.mode}, "
+    print(f"Generating {'ids from ' + ARGS.ids_file if ARGS.ids_file else ARGS.n_total} 3D samples "
+          f"(field {ARGS.field}, {ARGS.mode}, "
           f"families={ARGS.families}, sampling={ARGS.sampling}, deform_prob={ARGS.deform_prob}) with {n_workers} workers")
     tmp_path = ARGS.h5_filename + ".partial"
     n_ok, n_fail, times, calib = 0, 0, [], []

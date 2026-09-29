@@ -111,6 +111,9 @@ def main():
     else:
         ds = Maxwell3DDataset(args.data_path, split=args.split, train_ratio=dc.get('train_ratio', 0.8),
                               val_ratio=dc.get('val_ratio', 0.1), **kw)
+    trained = (lm.hparams.get('data_cfg') or {}).get('field')     # recorded since the E switch
+    if trained and getattr(ds, 'field', trained) != trained:
+        raise ValueError(f"checkpoint trained on field {trained!r}, data is {ds.field!r}")
     lm.freq_stats = ds.stats
     print(f"field: {ds.field} ({'E: PEC wall edges masked, SPD Kp' if ds.field == 'E' else 'H: all edges'})")
     rows, t = evaluate(lm, ds, args.device, args.batch_size)

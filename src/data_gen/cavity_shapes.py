@@ -18,6 +18,20 @@ PEC end caps, as in a closed eigenmode solve.  Lengths in metres.
                  self-intersects and the solid stays a topological ball); returned as a
                  closed triangulated surface for gmsh's discrete-surface remeshing.
 
+Handle families (HANDLE_FAMILIES; first Betti number b1 > 0 — need the E formulation, the H
+formulation rejects them):
+
+- hwr:           half-wave coaxial resonator (TEM λ/2, f ≈ c/2L): inner conductor touching both end
+                 plates (straight or tapered, filleted junctions); 50 %: a transverse beam port through
+                 the outer wall and the inner conductor at mid-length.  b1 = 1 (2 with the port).
+- spoke:         cylindrical tank (axis z) with 1–2 spokes (circular / elliptic section) across the
+                 diameter along x, touching the tank wall at both ends; 60 %: a beam bore along z
+                 through the tank and every spoke (+ PEC-capped pipes), else pipe stubs at the end
+                 plates only.  b1 = 1 per spoke (2 per spoke with the bore).
+- dtl:           Alvarez-like tank with 1–3 drift tubes (annular rings with a beam bore and rounded
+                 noses) on stems (cylinders along y) to the tank wall, beam pipes at the tank ends.
+                 b1 = 1 per drift tube.
+
 Out-of-distribution families (OOD_FAMILIES, never in the default training set):
 
 - box:             rectangular cavity: flat faces, sharp edges (analytic spectrum).
@@ -517,6 +531,7 @@ def surface_volume(P, F):
 # ─────────────────────────── out-of-distribution families ─────
 
 OOD_FAMILIES = ("box", "coax_qw", "pillbox_port", "elliptical_long", "junction")
+HANDLE_FAMILIES = ("hwr", "spoke", "dtl")
 
 
 def _fuse_all(occ, tags):
@@ -599,3 +614,138 @@ def build_junction(occ, rng):
         params["arm_z_len"] = lz
     _fuse_all(occ, tags)
     return "junction", dict(params, _h_cap=0.8 * min(d, w))
+
+
+# ─────────────────────────── handle families (b1 > 0, E formulation) ─
+
+def _check_volume(occ, vol, expected, tol=0.1):
+    """Guard against a silently failed OCC boolean (e.g. a cut returning only a tool fragment):
+    the solid's volume must match the analytic estimate (fillets / curved junctions neglected)."""
+    occ.synchronize()
+    v = occ.getMass(3, vol)
+    if not abs(v / expected - 1) < tol:
+        raise RuntimeError(f"boolean volume check failed: {v:.3e} vs expected {expected:.3e}")
+    return v
+
+
+def _cut_all(occ, vol, tools):
+    out, _ = occ.cut([(3, vol)], [(3, t) for t in tools])
+    vols = [t for d, t in out if d == 3]
+    if len(vols) != 1:
+        raise RuntimeError(f"cut produced {len(vols)} volumes")
+    return vols[0]
+
+
+def build_hwr(occ, rng):
+    """Half-wave coaxial resonator: annular region Ri(z) < r < Ro, 0 < z < L, revolved about z; the
+    inner conductor touches both end plates (TEM λ/2 mode, f ≈ c/2L; b1 = 1).  Inner radius
+    straight or tapered (end radius ri, mid radius rm), fillets at the inner-conductor / end-plate
+    junctions and the outer corners.  50 %: transverse beam port (along x, at z = L/2) through the
+    outer wall AND the inner conductor, with PEC-capped pipes (b1 = 2)."""
+    Ro = rng.uniform(0.03, 0.06)
+    L = rng.uniform(0.08, 0.20)                                  # TEM f ≈ 0.75–1.9 GHz
+    ri = Ro * rng.uniform(0.2, 0.5)
+    taper = rng.uniform() < 0.5
+    rm = float(np.clip(ri * rng.uniform(0.6, 1.5), 0.15 * Ro, 0.6 * Ro)) if taper else ri
+    rho_in = min(Ro - max(ri, rm), L / 4) * rng.uniform(0.0, 0.4)
+    rho_out = min(Ro - max(ri, rm), L / 4) * rng.uniform(0.0, 0.5)
+    C = [(0, ri), (0, Ro), (L, Ro), (L, ri)] + ([(L / 2, rm)] if taper else [])
+    rad = [rho_in, rho_out, rho_out, rho_in] + ([0.0] if taper else [])
+    vol = revolve_segments(occ, filleted(C, rad))
+    params = {"Ro": Ro, "L": L, "ri": ri, "rm": rm, "taper": float(taper), "rho_in": rho_in, "rho_out": rho_out}
+    v_exp = np.pi * Ro ** 2 * L - np.pi * L / 3 * (ri ** 2 + ri * rm + rm ** 2)     # two frustums
+    h_cap = Ro - max(ri, rm)
+    if rng.uniform() < 0.5:
+        rb = min(rm, ri) * rng.uniform(0.45, 0.7)
+        Lp = rb * rng.uniform(1.5, 3.0)
+        bore = occ.addCylinder(-(Ro + Lp), 0, L / 2, 2 * (Ro + Lp), 0, 0, rb)
+        vol = _fuse_all(occ, [vol, bore])
+        params.update({"rb": rb, "Lpipe": Lp})
+        v_exp += np.pi * rb ** 2 * (2 * Lp + 2 * rm)
+        h_cap = min(h_cap, rb)
+    _check_volume(occ, vol, v_exp)
+    params["beam_port"] = float("rb" in params)
+    return "hwr", dict(params, _h_cap=0.8 * h_cap)
+
+
+def build_spoke(occ, rng):
+    """Spoke cavity: tank (radius Rt, length Lt, axis z) with n = 1–2 spokes along x across the full
+    diameter (circular or elliptic section, semi-axes ay, az; the second spoke parallel or turned
+    90° about z), each touching the tank wall at both ends (b1 = 1 per spoke).  60 %: beam bore of
+    radius rp along z through the tank and every spoke, continued as PEC-capped pipes (the bore
+    through a spoke adds a second loop: b1 = 2 per spoke); else pipe stubs at the end plates only."""
+    Rt = rng.uniform(0.05, 0.10)                                  # spoke mode f ≈ c/(4Rt)·O(1)
+    n = 1 if rng.uniform() < 0.6 else 2
+    Lt = Rt * (rng.uniform(0.9, 1.4) if n == 1 else rng.uniform(1.5, 2.2))
+    zs = Lt * (np.arange(1, n + 1) / (n + 1) + rng.uniform(-0.04, 0.04, n))
+    spacing = np.diff(np.r_[0.0, zs, Lt]).min()
+    params = {"Rt": Rt, "Lt": Lt, "n_spokes": float(n)}
+    bore = rng.uniform() < 0.6
+    tools, ay_min, az_min = [], np.inf, np.inf
+    v_exp = np.pi * Rt ** 2 * Lt
+    for i, z in enumerate(zs):
+        az = min(Rt * rng.uniform(0.15, 0.28), 0.3 * spacing)    # half-width along the beam axis
+        if bore:                                                  # racetrack-like: wider across the beam
+            ay = az * rng.uniform(1.0, 1.6)
+        else:
+            ay = az * (rng.uniform(0.7, 1.6) if rng.uniform() < 0.6 else 1.0)
+        ay = min(ay, 0.35 * Rt)
+        v_exp -= np.pi * ay * az * 2 * Rt * (1 - (ay / Rt) ** 2 / 6)   # chord length ≈ 2√(Rt² − y²)
+        phi = 0.0 if (i == 0 or rng.uniform() < 0.7) else np.pi / 2
+        t = occ.addCylinder(-(Rt + 0.01), 0, 0, 2 * (Rt + 0.01), 0, 0, 1.0)
+        occ.dilate([(3, t)], 0, 0, 0, 1.0, ay, az)
+        if phi:
+            occ.rotate([(3, t)], 0, 0, 0, 0, 0, 1, phi)
+        occ.translate([(3, t)], 0, 0, z)
+        tools.append(t)
+        ay_min, az_min = min(ay_min, ay), min(az_min, az)
+        params.update({f"s{i}_z": z, f"s{i}_ay": ay, f"s{i}_az": az, f"s{i}_phi": phi})
+    vol = _cut_all(occ, occ.addCylinder(0, 0, 0, 0, 0, Lt, Rt), tools)
+    rp = min(ay_min * rng.uniform(0.45, 0.65), 0.3 * Rt) if bore else Rt * rng.uniform(0.1, 0.25)
+    Lp = rp * rng.uniform(1.5, 3.0)
+    if bore:
+        pipes = [occ.addCylinder(0, 0, -Lp, 0, 0, Lt + 2 * Lp, rp)]
+        v_exp += np.pi * rp ** 2 * 2 * sum(params[f"s{i}_az"] for i in range(n))
+    else:
+        pipes = [occ.addCylinder(0, 0, -Lp, 0, 0, Lp + 1e-4, rp), occ.addCylinder(0, 0, Lt - 1e-4, 0, 0, Lp + 1e-4, rp)]
+    v_exp += 2 * np.pi * rp ** 2 * Lp
+    vol = _fuse_all(occ, [vol] + pipes)
+    _check_volume(occ, vol, v_exp)
+    gap = min(zs[0] - az_min, Lt - zs[-1] - az_min, spacing - 2 * az_min if n > 1 else np.inf)
+    params.update({"rp": rp, "Lpipe": Lp, "bore": float(bore), "gap_min": gap})
+    return "spoke", dict(params, _h_cap=0.8 * min(ay_min, az_min, gap, rp))
+
+
+def build_dtl(occ, rng):
+    """Alvarez-like drift-tube linac tank: cylinder (radius Rt, axis z) of n + 1 cells of length Lc
+    with n = 1–3 drift tubes at the cell boundaries.  Drift tube = annular ring (bore rb, outer
+    radius Rd, length ld, rounded noses; revolved filleted profile) held by a stem (cylinder along
+    +y) to the tank wall; beam pipes of the bore radius at both end plates.  b1 = 1 per tube
+    (the loop through the bore)."""
+    Rt = rng.uniform(0.05, 0.10)                                  # TM010-like f ≈ c·2.405/(2πRt)
+    n = int(rng.integers(1, 4))
+    Lc = Rt * rng.uniform(0.5, 0.9)
+    Lt = (n + 1) * Lc
+    Rd = Rt * rng.uniform(0.2, 0.3)
+    rb = Rd * rng.uniform(0.35, 0.5)
+    ld = Lc * rng.uniform(0.35, 0.6)
+    rs = min(ld / 2, Rd) * rng.uniform(0.35, 0.6)
+    rho_o = min(Rd - rb, ld) * rng.uniform(0.2, 0.45)             # outer nose radius
+    rho_i = min(Rd - rb, ld) * rng.uniform(0.05, 0.2)             # bore edge radius
+    tank = _fuse_all(occ, [occ.addCylinder(0, 0, 0, 0, 0, Lt, Rt)]
+                     + [occ.addCylinder(0, 0, -rb * 2.0, 0, 0, rb * 2.0 + 1e-4, rb * 1.15),
+                        occ.addCylinder(0, 0, Lt - 1e-4, 0, 0, rb * 2.0 + 1e-4, rb * 1.15)])
+    tools = []
+    for i in range(n):
+        zc = (i + 1) * Lc
+        C = [(zc - ld / 2, rb), (zc + ld / 2, rb), (zc + ld / 2, Rd), (zc - ld / 2, Rd)]
+        tools.append(revolve_segments(occ, filleted(C, [rho_i, rho_i, rho_o, rho_o])))
+        y0 = 0.5 * (rb + Rd)
+        tools.append(occ.addCylinder(0, y0, zc, 0, Rt + 0.01 - y0, 0, rs))
+    vol = _cut_all(occ, tank, tools)
+    y0 = 0.5 * (rb + Rd)
+    _check_volume(occ, vol, np.pi * Rt ** 2 * Lt + 2 * np.pi * (1.15 * rb) ** 2 * 2 * rb
+                  - n * (np.pi * (Rd ** 2 - rb ** 2) * ld + np.pi * rs ** 2 * (Rt - y0)), tol=0.12)
+    params = {"Rt": Rt, "Lc": Lc, "Lt": Lt, "n_tubes": float(n), "Rd": Rd, "rb": rb, "ld": ld, "rs": rs,
+              "rho_nose": rho_o, "rho_bore": rho_i, "rpipe": 1.15 * rb, "Lpipe": 2.0 * rb}
+    return "dtl", dict(params, _h_cap=0.8 * min(1.2 * rb, Lc - ld, 1.5 * rs))

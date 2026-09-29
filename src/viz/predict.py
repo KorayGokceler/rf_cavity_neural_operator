@@ -37,6 +37,9 @@ def load(checkpoint, data_path, split='test', device='cpu'):
     else:
         ds = Maxwell3DDataset(data_path, split=split, train_ratio=dc.get('train_ratio', 0.8),
                               val_ratio=dc.get('val_ratio', 0.1), **kw)
+    trained = (lm.hparams.get('data_cfg') or {}).get('field')     # recorded since the E switch
+    if trained and getattr(ds, 'field', trained) != trained:
+        raise ValueError(f"checkpoint trained on field {trained!r}, data is {ds.field!r}")
     lm.freq_stats = ds.stats
     lm.eval().to(device)
     return lm, ds

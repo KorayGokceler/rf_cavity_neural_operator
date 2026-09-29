@@ -1,5 +1,6 @@
 """CLI: 3D H5 (src/data_gen/dataset_generator_3d.py) → PKL for the 3D Maxwell model.
-Contract: src/data/dataset_converter_3d.py, docs/19_3D_DATA_PIPELINE.md."""
+The field (E: 'e_edges', default of the generator; H: 'h_edges') is read from the H5 and stored as
+metadata['field'].  Contract: src/data/dataset_converter_3d.py, docs/19_3D_DATA_PIPELINE.md."""
 import argparse
 import os
 
@@ -7,7 +8,7 @@ from src.data.dataset_converter_3d import RFCavity3DConverter
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Convert a 3D N0 (H-field) H5 dataset to the training PKL.")
+    p = argparse.ArgumentParser(description="Convert a 3D N0 (E- or H-field) H5 dataset to the training PKL.")
     p.add_argument("--h5_filepath", type=str, nargs="+", default=["rf_cavity_3d_dataset.h5"],
                    help="Input H5 file(s); shards from dataset_generator_3d.py --start_id (disjoint sample ids).")
     p.add_argument("--output_path", type=str, default="data/rf_cavity_3d.pkl", help="Output PKL file.")
@@ -17,7 +18,8 @@ def main(argv=None):
     p.add_argument("--freq_std", type=float, default=None, help="Manual override for the frequency std.")
     p.add_argument("--no_rayleigh_check", action="store_true", help="Skip the per-mode Rayleigh/frequency check.")
     p.add_argument("--no_operators", action="store_true",
-                   help="Do not store M/K/G/Kp (rebuild with dataset_converter_3d.geometry_operators(X, tets)).")
+                   help="Do not store M/K/G/Kp (rebuild with dataset_converter_3d.geometry_operators(X, tets, "
+                        "field=metadata['field'])).")
     args = p.parse_args(argv)
     out_dir = os.path.dirname(args.output_path)
     if out_dir:

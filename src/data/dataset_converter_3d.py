@@ -1,6 +1,7 @@
-"""3D H5 (dataset_generator_3d) → training PKL for the 3D Maxwell (H-field, N0) model.
+"""3D H5 (dataset_generator_3d) → training PKL for the 3D Maxwell (N0, E or H field) model.
 
-Output contract (docs/19_3D_DATA_PIPELINE.md):
+Output contract (docs/19_3D_DATA_PIPELINE.md; the field is read from the H5: dataset 'e_edges' /
+'h_edges' and attr 'field'; metadata['field'] = 'E' | 'H'):
 
     {'geometry_pool': {g_id: {
         'X'          float32 [Nv,3]   vertices, centred at the volume centroid, divided by 'scale'
@@ -11,12 +12,19 @@ Output contract (docs/19_3D_DATA_PIPELINE.md):
         'tets'       int64 [Nt,4]
         'M','K'      CSR (indptr, indices, data) [Ne×Ne]  N0 mass ∫w_i·w_j / curl-curl ∫curl w_i·curl w_j
                                       on the NORMALISED mesh (Whitney w_ab = λ_a∇λ_b − λ_b∇λ_a, a < b)
-        'G'          CSR [Ne×Nv]      G[e, high] = +1, G[e, low] = −1  (N0 DOFs of ∇φ for P1 φ)
-        'Kp'         CSR [Nv×Nv]      Gᵀ M G (P1 Neumann stiffness; singular on constants)
+        'G'          CSR [Ne×Nv]      H: G[e, high] = +1, G[e, low] = −1  (N0 DOFs of ∇φ for P1 φ)
+                                      E: potential matrix (e_potential_matrix): column j < n_pot is
+                                      potential j — interior vertices (increasing index), then one
+                                      column per boundary component except the first
+                                      (= G_full @ indicator); columns ≥ n_pot all zero; wall rows 0
+        'Kp'         CSR [Nv×Nv]      Gᵀ M G (H: P1 Neumann stiffness, singular on constants;
+                                      E: SPD on the first n_pot rows/cols, zero elsewhere)
+        E only:  'bnd_edge' bool [Ne] (PEC wall edge = edge of a boundary face), 'n_pot',
+                 'n_bnd_components', 'betti1' (= 1 + b2 − χ, informative), 'field' = 'E'
         'scale','center','shape_type','n_nodes','n_edges', 'torsion_max'}},
-     'samples': [{'geom_id', 'Y' float32 [Ne] (unit M-norm on the normalised mesh, sign arbitrary),
-                  'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id]}],
-     'metadata': {...}}
+     'samples': [{'geom_id', 'Y' float32 [Ne] (unit M-norm on the normalised mesh, sign arbitrary;
+                  E: wall rows exactly 0), 'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id]}],
+     'metadata': {..., 'field'}}
 
 Scaling: X = (x − center)/scale ⇒ λ_norm = λ_phys·scale², f = c·√λ_norm / (2π·scale).
 """
@@ -144,6 +152,92 @@ def discrete_gradient(edges, n_nodes):
                          shape=(ne, n_nodes))
 
 
+def boundary_topology(tets, n_nodes):
+    """Boundary structure of a tet mesh from its connectivity alone (deterministic from tets).
+
+    Returns dict:
+      faces        [Nb,3] boundary triangles (sorted vertex triples; faces of exactly one tet)
+      edge_keys    sorted int64 keys a·Nv + b (a < b) of the edges of the boundary faces (PEC wall edges)
+      vert_comp    int64 [Nv]: −1 for interior vertices, else the boundary component of the vertex.
+                   Components = connected components of the boundary faces (sharing an edge or a
+                   vertex), ordered by vertex count DESCENDING, ties by smallest vertex index —
+                   component 0 is the outer wall (the reference potential φ = 0 in the E formulation)
+      n_comp       number of boundary components (b2 = n_comp − 1 for a connected domain in R³)
+      euler        V − E + F − T of the mesh (χ(Ω) = 1 − b1 + b2)
+      euler_boundary  χ(∂Ω) = V_b − E_b + F_b
+      manifold     every boundary edge lies in exactly 2 boundary faces and χ(∂Ω) = 2χ(Ω)
+                   (identity of compact 3-manifolds with boundary; fails on pinched vertices / edges)
+      betti1       1 + b2 − χ(Ω)   (number of handles; informative)
+    Raises RuntimeError if a face is shared by more than two tets."""
+    from scipy.sparse.csgraph import connected_components
+    t = np.sort(np.asarray(tets, dtype=np.int64), axis=1)
+    n = int(n_nodes)
+    faces, cnt = np.unique(t[:, [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]].reshape(-1, 3), axis=0,
+                           return_counts=True)
+    if cnt.max() > 2:
+        raise RuntimeError("non-manifold mesh (face shared by > 2 tets)")
+    n_edges = len(np.unique(t[:, _TET_EDGES].reshape(-1, 2), axis=0))
+    euler = n - n_edges + len(faces) - len(t)
+    bf = faces[cnt == 1]
+    be_all = bf[:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2)            # sorted pairs (bf rows sorted)
+    ekeys, ecnt = np.unique(be_all[:, 0] * n + be_all[:, 1], return_counts=True)
+    bv = np.unique(bf)
+    vert_comp = np.full(n, -1, dtype=np.int64)
+    n_comp = 0
+    if len(bv):
+        a, b = ekeys // n, ekeys % n
+        loc_a, loc_b = np.searchsorted(bv, a), np.searchsorted(bv, b)
+        Ab = sp.coo_matrix((np.ones(len(ekeys)), (loc_a, loc_b)), shape=(len(bv),) * 2)
+        n_comp, lab = connected_components(Ab, directed=False)
+        size = np.bincount(lab, minlength=n_comp)
+        vmin = np.full(n_comp, np.iinfo(np.int64).max)
+        np.minimum.at(vmin, lab, bv)
+        order = np.lexsort((vmin, -size))                              # size desc, then smallest vertex
+        rank = np.empty(n_comp, dtype=np.int64)
+        rank[order] = np.arange(n_comp)
+        vert_comp[bv] = rank[lab]
+    euler_b = int(len(bv) - len(ekeys) + len(bf))
+    manifold = bool(np.all(ecnt == 2) and euler_b == 2 * euler)
+    return dict(faces=bf, edge_keys=ekeys, vert_comp=vert_comp, n_comp=int(n_comp), euler=int(euler),
+                euler_boundary=euler_b, manifold=manifold, betti1=int(1 + (n_comp - 1) - euler))
+
+
+def e_potential_matrix(edges, n_nodes, tets, component_potentials=True, topo=None):
+    """E-formulation (n × E = 0 on ∂Ω) kernel basis in the order of `edges` (any row order;
+    G[i, edges[i,1]] = +1, G[i, edges[i,0]] = −1 as in discrete_gradient).
+
+    The discrete kernel of curl on the N0 space with the wall edges removed is exactly
+    {Gφ : φ P1, φ = 0 on the first boundary component, constant on each other one}: the
+    interior-vertex gradients (∇H0¹) plus one potential per extra boundary component
+    (G @ indicator(component) — the b2 harmonic Dirichlet fields of isolated conductors).
+    Handles (b1) add nothing.  Columns: interior vertices in increasing index, then the
+    components 1 … n_comp−1; the matrix is padded with ALL-ZERO columns to [Ne × Nv].
+    component_potentials=False drops the component columns (validation only: the b2
+    fields then survive the projection as spurious λ = 0 modes).
+
+    Returns (G CSR [Ne×Nv], bnd_edge bool [Ne], n_pot, topo)."""
+    edges = np.asarray(edges, dtype=np.int64)
+    n = int(n_nodes)
+    topo = boundary_topology(tets, n) if topo is None else topo
+    lo, hi = edges.min(1), edges.max(1)
+    bnd_edge = np.isin(lo * n + hi, topo["edge_keys"])
+    Gf = discrete_gradient(edges, n).tocsc()
+    vc = topo["vert_comp"]
+    interior = np.flatnonzero(vc < 0)
+    blocks = [Gf[:, interior]]
+    if component_potentials and topo["n_comp"] > 1:
+        ind = sp.csr_matrix((np.ones(int((vc > 0).sum())), (np.flatnonzero(vc > 0), vc[vc > 0] - 1)),
+                            shape=(n, topo["n_comp"] - 1))
+        blocks.append((Gf @ ind).tocsc())
+    Gp = sp.hstack(blocks, format="csc")
+    n_pot = Gp.shape[1]
+    G = sp.hstack([Gp, sp.csc_matrix((len(edges), n - n_pot))], format="csr")
+    G.eliminate_zeros()
+    if abs(G[bnd_edge]).sum() != 0:                                      # φ constant on each wall component
+        raise RuntimeError("E potential matrix has non-zero wall-edge rows")
+    return G, bnd_edge, int(n_pot), topo
+
+
 def to_csr_tuple(A):
     A = sp.csr_matrix(A)
     A.sort_indices()
@@ -239,8 +333,9 @@ def torsion_function(X, tets, bnd_vertices):
     return np.clip(w, 0.0, None)
 
 
-def extract_geometry_3d(nodes, tets):
-    """Normalised mesh, features and operators of one geometry (see module docstring)."""
+def extract_geometry_3d(nodes, tets, field="H"):
+    """Normalised mesh, features and operators of one geometry (see module docstring);
+    field 'E' | 'H' selects the kernel operators (geometry_operators)."""
     nodes = np.asarray(nodes, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     vol, _ = tet_geometry(nodes, tets)
@@ -259,7 +354,7 @@ def extract_geometry_3d(nodes, tets):
     torsion_max = float(w.max())
     feats = np.column_stack([X, dist, direc, node_vol / node_vol.max(), w / torsion_max]).astype(np.float32)
 
-    ops, M = geometry_operators(X, tets)
+    ops, M = geometry_operators(X, tets, field=field)
     return {
         "X": X.astype(np.float32), "Input_funcs": feats, "tets": tets, **ops,
         "scale": scale, "center": center.astype(np.float64),
@@ -268,15 +363,27 @@ def extract_geometry_3d(nodes, tets):
     }, M
 
 
-def geometry_operators(X, tets):
-    """Contract operators of one (normalised) mesh: {'edges', 'M', 'K', 'G', 'Kp'} (CSR tuples)
-    and the scipy M. Deterministic from (X, tets) alone, so a loader can rebuild them when the
-    PKL was written with store_operators=False (~1.5 s for 50k edges on one CPU core)."""
+def geometry_operators(X, tets, field="H"):
+    """Contract operators of one (normalised) mesh and the scipy M.  Deterministic from (X, tets)
+    alone, so a loader can rebuild them when the PKL was written with store_operators=False
+    (~1.5 s for 50k edges on one CPU core).  Pass the PKL's field (metadata['field'], 'H' when
+    missing):
+      'H' (default, unchanged): {'edges', 'M', 'K', 'G', 'Kp'} — G the full discrete gradient.
+      'E': the same keys with G = the E potential matrix (e_potential_matrix), Kp = GᵀMG, plus
+           'bnd_edge', 'n_pot', 'n_bnd_components', 'betti1', 'field'."""
+    if field not in ("E", "H"):
+        raise ValueError(f"field must be 'E' or 'H', got {field!r}")
     M, K, edges = assemble_n0(X, tets)
-    G = discrete_gradient(edges, len(X))
+    extra = {}
+    if field == "E":
+        G, bnd_edge, n_pot, topo = e_potential_matrix(edges, len(X), tets)
+        extra = {"bnd_edge": bnd_edge, "n_pot": int(n_pot), "n_bnd_components": int(topo["n_comp"]),
+                 "betti1": int(topo["betti1"]), "field": "E"}
+    else:
+        G = discrete_gradient(edges, len(X))
     Kp = (G.T @ M @ G).tocsr()
     return {"edges": edges.astype(np.int64), "M": to_csr_tuple(M), "K": to_csr_tuple(K),
-            "G": to_csr_tuple(G), "Kp": to_csr_tuple(Kp)}, M
+            "G": to_csr_tuple(G), "Kp": to_csr_tuple(Kp), **extra}, M
 
 
 def h5_edges_to_canonical(edges_h5, n_nodes, edges):
@@ -291,6 +398,15 @@ def h5_edges_to_canonical(edges_h5, n_nodes, edges):
 
 
 # ─────────────────────────── conversion ────────────────────────
+
+def _group_field(grp):
+    """'E' | 'H' of one H5 sample group: the 'field' attr, else from the dataset name."""
+    f = grp.attrs.get("field", None)
+    if f is not None:
+        f = f.decode() if isinstance(f, bytes) else str(f)
+        return f
+    return "E" if "e_edges" in grp else "H"
+
 
 class RFCavity3DConverter:
     def __init__(self, h5_filepath):
@@ -309,10 +425,14 @@ class RFCavity3DConverter:
         try:
             file_meta = json.loads(files[0].attrs.get("metadata", "{}"))
             keys = sorted(((f, k) for f in files for k in f.keys()
-                           if isinstance(f[k], h5py.Group) and "h_edges" in f[k]),
+                           if isinstance(f[k], h5py.Group) and ("e_edges" in f[k] or "h_edges" in f[k])),
                           key=lambda fk: int(fk[1].split("_")[-1]))
             if not keys:
-                raise ValueError(f"No 3D sample groups (sample_XXXX/h_edges) in {self.h5_filepaths}")
+                raise ValueError(f"No 3D sample groups (sample_XXXX/e_edges|h_edges) in {self.h5_filepaths}")
+            fields = {_group_field(f[k]) for f, k in keys}
+            if len(fields) != 1:
+                raise ValueError(f"mixed E / H samples in {self.h5_filepaths}: {sorted(fields)}")
+            field = fields.pop()
             sids = [int(k.split("_")[-1]) for _, k in keys]
             if len(set(sids)) != len(sids):
                 raise ValueError("duplicate sample ids across H5 shards (use disjoint --start_id ranges)")
@@ -324,11 +444,11 @@ class RFCavity3DConverter:
                 grp = f[key]
                 sid = int(key.split("_")[-1])
                 freqs = np.asarray(grp["freqs"][:], dtype=np.float64)
-                H = np.asarray(grp["h_edges"][:], dtype=np.float64)
+                H = np.asarray(grp["e_edges" if field == "E" else "h_edges"][:], dtype=np.float64)
                 order = np.argsort(freqs, kind="stable")
                 freqs, H = freqs[order], H[:, order]
                 n_modes = len(freqs) if n_modes is None else min(n_modes, len(freqs))
-                geom, M = extract_geometry_3d(grp["nodes"][:], grp["tets"][:])
+                geom, M = extract_geometry_3d(grp["nodes"][:], grp["tets"][:], field=field)
                 geom["shape_type"] = str(grp.attrs.get("shape_type", "unknown"))
                 # freq of mode K+1 [GHz]: f_next ≈ f_K means the K-mode cut splits a degenerate cluster
                 geom["freq_next"] = float(grp.attrs.get("freq_next", np.nan))
@@ -336,6 +456,14 @@ class RFCavity3DConverter:
                 Y = np.zeros_like(H)
                 Y[rows] = sign[:, None] * H
                 Y /= np.sqrt(np.einsum("ij,ij->j", Y, M @ Y))[None]
+                if field == "E":   # essential BC: E DOFs exactly 0 on the wall; ⟂_M the E-kernel gradients
+                    if np.any(Y[geom["bnd_edge"]] != 0):
+                        raise RuntimeError(f"{key}: non-zero E DOF on a PEC wall edge")
+                    MY = M @ Y
+                    Gc = from_csr_tuple(geom["G"], (geom["n_edges"], geom["n_nodes"]))
+                    div = np.abs(Gc.T @ MY).max() / np.abs(MY).max()
+                    if div > 1e-6:
+                        raise RuntimeError(f"{key}: E mode not M-orthogonal to the kernel ({div:.1e})")
                 if check_rayleigh:  # λ_norm = λ_phys·scale² ⇒ f from the stored normalised operators
                     Kc = from_csr_tuple(geom["K"], M.shape)
                     lam = np.einsum("ij,ij->j", Y, Kc @ Y)
@@ -370,7 +498,7 @@ class RFCavity3DConverter:
             },
             "n_modes": int(len(self.freq_by_mode)),
             "mode_indices": list(range(n_modes)) if mode_indices is None else list(mode_indices),
-            "field": "H", "element": "N0",
+            "field": field, "element": "N0",
             "feature_names": list(FEATURE_NAMES_3D),
             "n_samples": len(self.samples), "n_geometries": len(self.geometry_pool),
             "edge_convention": "edges = np.unique(sorted tet edges), low->high; DOF = line integral low->high",

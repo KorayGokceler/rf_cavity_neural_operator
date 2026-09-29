@@ -1,4 +1,9 @@
-# 19 — 3D Veri Hattı: Maxwell Kavite Modları (H-alanı, Nédélec N0)
+# 19 — 3D Veri Hattı: Maxwell Kavite Modları (E-alanı varsayılan, H isteğe bağlı; Nédélec N0)
+
+> **Güncelleme (`claude/3d-e-formulation`):** Varsayılan formülasyon artık **E** (`--field E`); kulplu
+> kaviteler (spoke, yarım dalga koaksiyel, DTL gövde + sap) ve yüzen iç iletkenler desteklenir. Ayrıntılar,
+> ölçümler ve yeni aileler: **§6 E formülasyonu**. §1–§5 H formülasyonunu anlatır (`--field H` ile aynen
+> çalışmaya devam eder).
 
 > **Kapsam:** docs/18 Faz 2'nin **veri** yarısı: üretici (`src/data_gen/dataset_generator_3d.py`), dönüştürücü (`src/data/dataset_converter_3d.py`, `convert_3d.py`) ve model tarafının dayandığı PKL sözleşmesi. Model/eğitim kodu bu notun kapsamında değil.
 > **Ortam:** scikit-fem 12.0.2, gmsh 4.15.2, SciPy 1.17.1 (SuperLU). 4 çekirdekli CPU. Yeni bağımlılık yok.
@@ -47,7 +52,7 @@ Parametreler:
 | **Aktif örnekleme** | Adaylar yalnız mesh'lenir, model tahmin eder, $\eta_k = \|K u_k - \lambda_k M u_k\|_{D^{-1}}/\lambda_k$ (etiketsiz artık) ile sıralanır; en kötüler `--ids_file` ile etiketlenir | `scripts/active_sampling.py`, notebook hücre 13 |
 | **Kapsama raporu** | Aile başına sayı, boyut / en-boy / frekans / kenar sayısı aralıkları, deformasyon / ankraj / düşük-β / port / dejenere payları | `scripts/dataset_stats_3d.py`, hücre 5b |
 
-**Sınır:** spoke kaviteler ve iki ucuna değen iç iletkenli koaksiyel (yarım dalga) rezonatörler kulplu topolojidir ($b_1 = 1$); H formülasyonunda harmonik (λ = 0) alanlar oluşturur, topoloji sertifikasıyla reddedilir. Desteklemek için kohomoloji tabanı eklenmesi gerekir.
+**Sınır (yalnız `--field H`):** spoke kaviteler ve iki ucuna değen iç iletkenli koaksiyel (yarım dalga) rezonatörler kulplu topolojidir ($b_1 \ge 1$); H formülasyonunda harmonik (λ = 0) alanlar oluşturur, topoloji sertifikasıyla reddedilir. **E formülasyonu (varsayılan) bu sınırı kaldırır — §6.**
 
 **Aileler — g2 (varsayılan, `src/data_gen/cavity_shapes.py`, metre).** Eksenel simetrik
 kaviteler $(z, r)$ meridyen profilinden $z$ ekseni etrafında döndürülür. Işın tüpleri düz PEC
@@ -147,7 +152,7 @@ Konvansiyonlar:
 - **Yakınsama:** $O(h^2)$. Pillbox'ta hata H-N0 TM010 tarafından belirlenir ($H_\varphi\propto J_1$, eğri duvar düz yüzeylerle yaklaşıklanıyor). Hata pozitiftir, yani özdeğerler gerçeğin üstünde çıkar (docs/18 §3.5 ile tutarlı).
 - **Testlerdeki eşik:** `mesh_size 0.12`'de kutu için $5\cdot10^{-3}$, pillbox için $10^{-2}$.
 
-**Diğer değişmezler** (`tests/test_data_gen_3d.py`, `tests/test_dataset_converter_3d.py`, 19 test, ~7 s):
+**Diğer değişmezler** (`tests/test_data_gen_3d.py`, `tests/test_dataset_converter_3d.py`; E + H ile birlikte 54 test, ~40 s):
 
 - Gradyan ve sıfır mod:
   - $\max|G^\top MU|/\max|MU|\sim10^{-14}$;
@@ -198,6 +203,80 @@ Konvansiyonlar:
 - **Maliyet dağılımı:** Çözüm süresinin çoğu ARPACK iterasyonlarından gelir (~60 çözüm × LU geri yerine koyma). pypardiso/CHOLMOD veya NGSolve $p=2$–3 eğri elemanlar bu süreyi 5–10× kısaltır (docs/18 §2.4). Bu ortamda kurulmadılar.
 - **Bellek ölçeklemesi:** Bellek ve faktör süresi $\sim N_e^{1.5}$ ile büyür.
 - **Ne > 100k:** Örnek başına ~2–3 dk ve ~3 GB RAM gerekir. İşçi sayısı RAM'e göre düşürülmelidir.
+
+## 6. E formülasyonu
+
+### 6.1 Neden
+
+Her iki formülasyon da aynı $k^2$ spektrumunu verir; fark, curl operatörünün çekirdeğinin **topolojiye** nasıl bağlı olduğundadır:
+
+| | H: $\mathbf H\in H(\mathrm{curl})$, doğal SK | E: $\mathbf E\in H_0(\mathrm{curl})$, $\mathbf n\times\mathbf E=0$ esas SK |
+|---|---|---|
+| curl çekirdeği | $\nabla H^1$ ⊕ **$b_1$ harmonik Neumann alanı** (her kulp için bir, $\mathbf n\cdot\mathbf h=0$) | $\nabla H^1_0$ ⊕ **$b_2$ harmonik Dirichlet alanı** (her yüzen iletken için bir, $\mathbf n\times\mathbf h=0$) |
+| harmonik alanın ayrık karşılığı | P1 potansiyellerin gradyanı **değildir** → projeksiyon silemez → λ ≈ 0 sahte mod | $\nabla\varphi$, $\varphi$ = iletken üzerinde 1, dış duvarda 0 → **bir P1 gradyanıdır** → sınır bileşeni başına bir potansiyelle tam silinir |
+| kabul edilen geometri | yalnız topolojik top ($b_1=b_2=0$) | her bağlı, manifold PEC kavite |
+
+Yani H'nin sorunu (kulplar) kohomoloji tabanı gerektirir; E'nin sorunu (yüzen iletkenler) ise sadece **ek bir potansiyel sütunudur**. Kulplu RF yapıları (spoke, HWR, DTL sapları) E'de hiçbir ek işlem gerektirmez.
+
+### 6.2 Ayrıklaştırma ve çözücü
+
+- **DOF:** N0 tüm kenarlarda monte edilir (aynı $K$, $M$). Duvar kenarları (bir sınır yüzünün kenarı) atılır (esas SK). H5'e ise alan **tüm kenarlara genişletilerek** yazılır; duvar satırları tam 0'dır. Böylece kenar başına bir DOF düzeni korunur.
+- **Potansiyel matrisi** (`dataset_converter_3d.e_potential_matrix`, üretici ve dönüştürücü aynı kodu kullanır): önce iç düğümler (artan indeks sırasıyla), sonra ilki hariç her sınır bileşeni için bir sütun ($=G_{tam}\cdot\mathbb 1_{bileşen}$). Sınır bileşenleri, sınır yüzlerinin (kenar ya da düğüm paylaşan) bağlı bileşenleridir. Sıralama düğüm sayısına göre azalandır (eşitlikte en küçük düğüm indeksi); bileşen 0 dış duvardır ve $\varphi=0$ referansıdır. $\varphi$ her duvar bileşeninde sabit olduğundan duvar satırları kendiliğinden sıfırdır. $K_p=G^\top MG$ **sabitleme olmadan SPD**'dir.
+- **Çözücü** `solve_e_modes`: H ile aynı tarif (σ < 0 shift-invert + $P=I-GK_p^{-1}G^\top M$), serbest kenarlar üzerinde. Denetimler de aynıdır: sıfır/gradyan modu yok, $\max|G_E^\top MU|/\max|MU|<10^{-6}$ (E çekirdek potansiyelleriyle; ölçülen $\sim10^{-15}$) ve $U^\top MU=I$. `component_potentials=False` yalnız doğrulama içindir.
+- **Topoloji sertifikası (E):** bağlı (`n_components == 1`) ve manifold mesh. Hiçbir yüz 2'den fazla tet'e ait olamaz, her sınır kenarı tam 2 sınır yüzünde olmalı ve $\chi(\partial\Omega)=2\chi(\Omega)$ sağlanmalıdır (3-manifold özdeşliği; sıkışmış düğüm/kenarda bozulur). $b_2=$ `n_bnd_components` − 1, $b_1=1+b_2-\chi$ hesaplanır ve saklanır (bilgi amaçlı). H sertifikası değişmedi.
+
+### 6.3 Doğrulama (ölçülen)
+
+**Kalibrasyon**, ilk 8 mod, $\max|f/f_{analitik}-1|$. E aşağıdan, H yukarıdan yakınsar; ikisi de $O(h^2)$, iki formülasyon gerçek değeri **sıkıştırır** (E ≤ tam ≤ H):
+
+| `mesh_size` | kutu E | kutu H | pillbox E | pillbox H | TM010 E | TM010 H |
+|---|---|---|---|---|---|---|
+| 0.20 | $1.9\cdot10^{-2}$ | $9.6\cdot10^{-3}$ | $1.7\cdot10^{-2}$ | $2.1\cdot10^{-2}$ | $-0.75\%$ | $+1.72\%$ |
+| 0.15 | $1.1\cdot10^{-2}$ | $8.1\cdot10^{-3}$ | $1.2\cdot10^{-2}$ | $1.2\cdot10^{-2}$ | $-0.49\%$ | $+1.08\%$ |
+| 0.12 | $8.0\cdot10^{-3}$ | $2.8\cdot10^{-3}$ | $7.3\cdot10^{-3}$ | $7.5\cdot10^{-3}$ | $-0.31\%$ | $+0.67\%$ |
+| 0.10 | $5.1\cdot10^{-3}$ | $2.0\cdot10^{-3}$ | $5.3\cdot10^{-3}$ | $4.8\cdot10^{-3}$ | $-0.24\%$ | $+0.48\%$ |
+| 0.07 | $2.0\cdot10^{-3}$ | $3.0\cdot10^{-4}$ | $2.2\cdot10^{-3}$ | $2.4\cdot10^{-3}$ | $-0.10\%$ | $+0.24\%$ |
+| 0.05 | $9.6\cdot10^{-4}$ | $2.2\cdot10^{-4}$ | $1.0\cdot10^{-3}$ | $1.2\cdot10^{-3}$ | $-0.05\%$ | $+0.12\%$ |
+
+Test eşikleri (`mesh_size 0.12`): E kutu ve pillbox için $10^{-2}$; H için eskisi gibi $5\cdot10^{-3}$ / $10^{-2}$. **TESLA hücresi** (Richardson ref. 1.288 GHz): E-N0 TM010 mesh 0.10'da $+0.15\%$, 0.07'de $+0.03\%$ (H: $+1.34\%$ / $+0.64\%$). E'nin hızlanan mod için belirgin şekilde daha doğru olmasının nedeni, $E_z$'nin düzgün olması ve H'deki gibi çokyüzlü duvarda $H_\varphi$ hatası taşımamasıdır. E çözümü, duvar DOF'ları atıldığı için H'den biraz daha hızlıdır (kutu 0.10: 0.45 s / 0.61 s).
+
+**Topoloji testleri:**
+
+| Durum | Topoloji | E | H |
+|---|---|---|---|
+| Yarım dalga koaksiyel $R_o=50$, $r_i=15$, $L=150$ mm, $h=8$ mm (Ne 14.9k) | $b_1=1$ | $f=0.9931, 1.8001, 1.8008, 1.9846$ GHz; TEM $c/2L$ $-0.62\%$, $c/L$ $-0.70\%$ (h = 6 mm: $-0.36\%$ / $-0.41\%$); TE11 benzeri çift 1.80 GHz | sahte $\lambda=3\cdot10^{-12}$ → reddedilir |
+| Torus $R=50$, $r=20$ mm | $b_1=1$ | sıfır mod yok; $f_1$ = 4.537 / 4.433 / 4.386 GHz ($h$ = 12 / 8 / 5 mm) | sahte $\lambda=1.8\cdot10^{-12}$; sıfır olmayan $f_1$ = 4.371 / 4.351 / 4.352 → aynı limit |
+| Kutu 100×80×60 mm içinde yüzen küre $r=15$ mm | $b_2=1$, 2 kabuk | bileşen potansiyeli **olmadan**: $\lambda=0$ sahte mod; **ile**: temiz, $f_1$ = 2.028 / 2.049 GHz ($h$ = 8 / 5 mm) | ($b_1=0$ → H geçerli) $f_1$ = 2.123 / 2.090 GHz, E ile aynı limit |
+| Kutu içinde yüzen silindir $r=10$, $l=20$ mm | $b_2=1$ | olmadan: $\lambda=2\cdot10^{-12}$; ile: $f_1$ = 2.087 GHz | — |
+
+### 6.4 Yeni aileler (kulplu, `cavity_shapes.HANDLE_FAMILIES`, varsayılan `FAMILIES` içinde)
+
+| Aile | Geometri | $b_1$ | $f_1$ (ölçülen, mesh 0.10) |
+|---|---|---|---|
+| `hwr` | Yarım dalga koaksiyel rezonatör: $R_o\in[3,6]$ cm, $L\in[8,20]$ cm, $r_i/R_o\in[0.2,0.5]$; iç iletken iki uç plakaya değer. %50 konik iç iletken (orta yarıçap $r_m$), iç iletken–plaka birleşiminde ve dış köşelerde yuvarlatma. %50 enine ışın portu: dış duvardan ve iç iletkenden geçen $x$ yönlü delik ($r_b = [0.45,0.7]\min(r_i,r_m)$), dışarıda PEC kapaklı tüpler | 1 (port ile 2) | 0.77–1.58 GHz ≈ $c/2L$ |
+| `spoke` | Silindirik tank ($R_t\in[5,10]$ cm, eksen $z$) ve tank çapını $x$ boyunca kesen 1–2 spoke (dairesel veya eliptik kesit, $a_z/R_t\in[0.15,0.28]$). Spoke'lar iki uçta tank duvarına değer; ikinci spoke paralel ya da $z$ etrafında 90° döndürülmüş olabilir. %60 olasılıkla $z$ yönlü ışın deliği (tanktan ve her spoke'tan geçer, spoke kesiti yarış pisti gibi genişletilir), aksi halde uç plakalarda tüp saplamaları. OCC boolean'ı sağlam: hacim denetimi (`_check_volume`) sessiz bozuk kesimleri yakalar ve geometri yeniden çekilir. Yuvarlatma yok | spoke başına 1 (delikli spoke başına 2) | 0.77–1.49 GHz |
+| `dtl` | Alvarez benzeri tank ($R_t\in[5,10]$ cm, $n+1$ hücre, $L_c/R_t\in[0.5,0.9]$). Hücre sınırlarında 1–3 sürüklenme tüpü: delikli halka, $R_d/R_t\in[0.2,0.3]$, $r_b/R_d\in[0.35,0.5]$, yuvarlatılmış burunlar. Her tüp tank duvarına $+y$ yönlü bir sapla bağlanır. Tank uçlarında ışın tüpleri | tüp başına 1 | 0.40–0.77 GHz (sap modları: tüp başına bir düşük mod), ardından TM010 benzeri hızlandırıcı mod |
+
+Kenar sayısı mesh 0.10'da: `hwr` 7–9k (portlu ~21k), `spoke` 11–26k, `dtl` 21–27k. Bu aileler küçük detaylar içerdiği için `_h_cap` taban kuralına ($h\ge0.7\,h_V$) takılır. `--field H` ile bu aileler varsayılandan çıkar (`H_FAMILIES`); açıkça istenirlerse örnek hata verir.
+
+### 6.5 CLI, H5 ve PKL
+
+```bash
+python -m src.data_gen.dataset_generator_3d --n_total 1000 --mesh_size 0.10 --sampling sobol --deform_prob 0.5 \
+    --h5_filename rf3d_e.h5            # --field E varsayılan; tüm FAMILIES (hwr, spoke, dtl dahil)
+python -m src.data_gen.dataset_generator_3d --field H ...   # eski H formülasyonu (yalnız topolojik toplar)
+python convert_3d.py --h5_filepath rf3d_e.h5 --output_path data/rf3d_e.pkl   # alan H5'ten okunur
+```
+
+- **H5:** E için veri kümesi `e_edges` [Ne,K]: tüm kenarlarda $\int\mathbf E\cdot d\mathbf l$, duvar satırları 0, fiziksel birimde $M$-ortonormal. H için `h_edges`. Ek attr'lar: `field`, `n_bnd_components`, `betti1`. Dosya `metadata`'sında `field` ve `dataset` bulunur.
+- **PKL (`metadata['field'] = 'E'`):**
+  - `G`: E potansiyel matrisi [Ne×Nv]. İlk `n_pot` sütun potansiyellerdir, kalanlar sıfırdır.
+  - `Kp` $=G^\top MG$: `n_pot` bloğunda SPD, dışında sıfır.
+  - Ek anahtarlar: `bnd_edge` bool [Ne], `n_pot`, `n_bnd_components`, `betti1`, `field`.
+  - `Y`: E DOF'ları; duvar satırları tam 0, normalize mesh'te $\|Y\|_M=1$.
+  - Dönüştürücü her örnekte duvar satırlarının sıfır olduğunu, $G^\top MY\approx0$ olduğunu ve Rayleigh frekansını denetler.
+  - H PKL'leri değişmedi (`field='H'` veya anahtar yok).
+- **Yalın PKL:** `geometry_operators(X, tets, field=metadata['field'])` saklanan tüm anahtarları yeniden kurar. Varsayılan `field='H'` eski çağrılarla bayt düzeyinde uyumludur; E PKL'lerde `field` mutlaka verilmelidir.
 
 ## 🔗 Bağlantılar
 

@@ -297,7 +297,8 @@ def main():
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                       random_seed=random_seed, feature_indices=feature_indices,
                       max_nodes=max_nodes, augment=augment,
-                      zero_gauge_features=bool(augment)),
+                      zero_gauge_features=bool(augment),
+                      field=getattr(train_dataset, 'field', None)),   # 3D: 'E' | 'H' (checked at eval)
     )
 
     # Pass frequency statistics to the model for physical units logging
