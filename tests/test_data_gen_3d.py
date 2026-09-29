@@ -260,3 +260,77 @@ def test_ood_box_matches_analytic(set_args):
     p = res["geom_params"]
     ref = gen.eigenvalues_to_ghz(gen.box_spectrum(p["a"], p["b"], p["d"])[:5])
     assert np.abs(res["freqs"] / ref - 1).max() < 5e-3
+
+
+# ─────────────────────────── diversity: deformation, Sobol, elliptical v2, active sampling ───
+
+def test_smooth_deform_is_injective_and_orientation_preserving():
+    from skfem import MeshTet
+    m = MeshTet.init_tensor(*(np.linspace(0, 0.05, 7),) * 3)
+    X, T = m.p.T.copy(), m.t.T
+
+    def signed_vol(P):
+        a, b, c, d = (P[T[:, i]] for i in range(4))
+        return np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)
+
+    v0 = signed_vol(X)
+    for seed in range(5):
+        Y, prm = gen.smooth_deform(X, np.random.default_rng(seed), lip_max=0.5)
+        assert np.all(np.sign(signed_vol(Y)) == np.sign(v0))           # no inverted tet
+        assert 0 < prm["deform_lip"] <= 0.5 and prm["deform_max_disp"] > 0
+        J = signed_vol(Y) / v0                                          # det(I + ∇δ) ∈ [(1-L)^3, (1+L)^3]
+        assert J.min() > (1 - prm["deform_lip"]) ** 3 - 1e-9 and J.max() < (1 + prm["deform_lip"]) ** 3 + 1e-9
+
+
+def test_sobol_rng_interface_and_family_balance(set_args):
+    rng = gen.SobolRNG(np.linspace(0.05, 0.95, 8), np.random.default_rng(0))
+    assert isinstance(rng.integers(1, 4), int) and 0.0 <= rng.random() < 1.0
+    assert rng.uniform(2, 3, 3).shape == (3,) and rng.standard_normal((2, 3)).shape == (2, 3)
+    assert sorted(rng.permutation(4).tolist()) == [0, 1, 2, 3] and rng.choice(["a", "b"]) in ("a", "b")
+    assert rng.choice([1, 2, 3], p=[0, 0, 1]) == 3
+    set_args("--sampling", "sobol", "--seed", "0")
+    fams = [gen.ARGS.families[int(gen._sample_rng(s).integers(0, len(gen.ARGS.families)))] for s in range(64)]
+    counts = [fams.count(f) for f in gen.ARGS.families]
+    assert max(counts) - min(counts) <= 2                               # stratified (random: ~±6)
+
+
+def test_elliptical_chain_end_cells_and_ood_split():
+    from src.data_gen import cavity_shapes as cs
+    rng = np.random.default_rng(3)
+    for n in (1, 2, 5):
+        p, halves, walls = cs.draw_elliptical(rng, n_cells=n)
+        chain, z1 = cs.elliptical_chain(halves, walls, n)
+        assert np.all(np.diff(chain[:, 0]) > -1e-12)                   # z monotone along the chain
+        assert np.isclose(chain[0, 1], halves["e1"]["Riris"]) and np.isclose(chain[-1, 1], halves["e2"]["Riris"])
+        assert np.isclose(chain[-1, 0], z1) and np.linalg.norm(np.diff(chain, axis=0), axis=1).max() < 0.2 * z1
+    assert max(cs.N_CELLS) < 6                                          # OOD elliptical_long: 6–9 cells
+
+
+def test_active_residual_indicator(set_args):
+    from scripts.active_sampling import residual_indicator
+    set_args("--families", "pillbox_pipes", "--mesh_size", "0.25", "--n_eigen_modes", "3")
+    g = gen.mesh_sample(0)
+    A = gen.assemble_h_n0(g["nodes"], g["tets"])
+    vals, vecs, _ = gen.solve_h_modes(A, 3)
+    assert residual_indicator(A["K"], A["M"], vecs, vals).max() < 1e-6    # exact discrete pairs
+    noisy = vecs + 0.05 * np.random.default_rng(0).standard_normal(vecs.shape) * np.abs(vecs).max()
+    noisy /= np.sqrt(np.einsum("ij,ij->j", noisy, A["M"] @ noisy))
+    assert residual_indicator(A["K"], A["M"], noisy, vals).min() > 1e-2
+
+
+def test_item_from_geometry_runs_the_model(set_args):
+    import torch
+    from src.data.dataset_3d import item_from_geometry, maxwell3d_collate
+    from src.data.dataset_converter_3d import extract_geometry_3d
+    from src.training.lightning_module import GNOTLightning
+    set_args("--families", "composite", "--mesh_size", "0.25", "--n_eigen_modes", "3")
+    g = gen.mesh_sample(1)
+    geom, _ = extract_geometry_3d(g["nodes"], g["tets"])
+    batch = maxwell3d_collate([item_from_geometry(geom)])
+    torch.manual_seed(0)
+    lm = GNOTLightning(val_dim=9, grid_dim=3, hidden_dim=16, n_heads=2, n_basis=8, num_field_modes=3, rff_dim=8,
+                       model_type="eigenspace3d", physics_freq=True, eigenspace_kwargs={"n_layers": 1})
+    lm.freq_stats = {"mean": 0.0, "std": 1.0}
+    with torch.no_grad():
+        out = lm.model(batch)
+    assert out["field"].shape == (1, len(geom["edges"]), 3) and torch.isfinite(out["eigenvalues"]).all()

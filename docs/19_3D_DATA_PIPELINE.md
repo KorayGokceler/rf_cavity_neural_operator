@@ -34,6 +34,21 @@ Parametreler:
 - Tohum: örnek $s$ için `default_rng([seed, s])`. Sonuç işçi sayısından bağımsızdır.
 - H5 dosyası önce `.partial` uzantısıyla yazılır, iş bitince atomik olarak yeniden adlandırılır.
 
+**Geometri çeşitliliği — g3** (`claude/3d-geometry-diversity`; notebook `GEOM_VER = "g3"`):
+
+| Ne | Nasıl | Bayrak / yer |
+|---|---|---|
+| **Düzgün rastgele deformasyon** (tüm aileler) | Mesh'ten sonra $x \to x + \delta(x)$, $\delta = \sum_m a_m \sin(\omega_m\cdot x + \varphi_m)$ (3–8 dalga, dalga boyu 0.25–1.5 × köşegen). $\|\nabla\delta\|_2 \le \sum|a_m||\omega_m| = L < 1$ ölçeklenir ⇒ $\det(I+\nabla\delta) \ge (1-L)^3 > 0$: birebir, hiçbir tet ters dönmez, topoloji aynı. Ayrı RNG akışı ⇒ aynı id farklı mesh boyutunda aynı $\delta$ (çözünürlük çalışmasıyla uyumlu). Yan etki: eksenel simetrik şekillerin dejenere çiftlerini böler | `--deform_prob 0.5 --deform_max 0.5` |
+| **elliptical v2** | Gerçek tasarım ankrajları (TESLA orta hücre; ILC low-loss yaklaşık) ±%10 + boyut ölçekleme (%30); düşük-β hücreler ($L \propto \beta$, β∈[0.5,0.95], %25); farklı uç yarım-hücreler (%60; uç iris = tüp yarıçapı ×[1, 1.35]); 1–5 hücre (0.35/0.25/0.2/0.1/0.1); tüplerde 1–3 radyal kuplör portu (FPC/HOM, %35). Mesh boyutu hücre başına hacimden | `cavity_shapes.draw_elliptical` |
+| **reentrant v2** | Koni açısı −25…35°: negatif → mantar burun | `build_reentrant` |
+| **ridged_box** (yeni) | Dikdörtgen kavite, 1–2 tam boy sırt (sırtlı dalga kılavuzu rezonatörü), %40 ışın tüpü, tüm kenarlar yuvarlatılmış (keskin kenarlı düz kutu OOD'da kalır) | `build_ridged_box` |
+| **composite** (yeni) | CSG ağacı: silindir/elipsoit gövde + 1–4 ekli silindir (saplama) / elipsoit (lob), derinlik ≤ 2, + 0–2 elipsoit girinti; ağaç yapısı delik oluşturmaz, oluşursa topoloji sertifikası reddeder | `build_composite` |
+| **Sobol örnekleme** | Her örneğin ilk 64 rastgele çekimi (aile + şekil parametreleri) id başına bir karıştırılmış Sobol noktasından: aileler ve parametre aralıkları düzgün kapsanır (64 örnekte aile sayıları ±1); aile yeniden çekimlerde sabit | `--sampling sobol` |
+| **Aktif örnekleme** | Adaylar yalnız mesh'lenir, model tahmin eder, $\eta_k = \|K u_k - \lambda_k M u_k\|_{D^{-1}}/\lambda_k$ (etiketsiz artık) ile sıralanır; en kötüler `--ids_file` ile etiketlenir | `scripts/active_sampling.py`, notebook hücre 13 |
+| **Kapsama raporu** | Aile başına sayı, boyut / en-boy / frekans / kenar sayısı aralıkları, deformasyon / ankraj / düşük-β / port / dejenere payları | `scripts/dataset_stats_3d.py`, hücre 5b |
+
+**Sınır:** spoke kaviteler ve iki ucuna değen iç iletkenli koaksiyel (yarım dalga) rezonatörler kulplu topolojidir ($b_1 = 1$); H formülasyonunda harmonik (λ = 0) alanlar oluşturur, topoloji sertifikasıyla reddedilir. Desteklemek için kohomoloji tabanı eklenmesi gerekir.
+
 **Aileler — g2 (varsayılan, `src/data_gen/cavity_shapes.py`, metre).** Eksenel simetrik
 kaviteler $(z, r)$ meridyen profilinden $z$ ekseni etrafında döndürülür. Işın tüpleri düz PEC
 kapaklarla kapatılır (kapalı özmod çözümü, CST'deki gibi). Tet boyutu, en küçük detaya göre
@@ -53,8 +68,8 @@ yoktur, `--families box coax_qw pillbox_port elliptical_long junction` ile üret
 |---|---|---|
 | `box` | Düz yüzler, keskin kenar/köşe (eğitimde köşeler yuvarlatılmış) | $a,b,d\in[3,10]$ cm; analitik spektrumla %0.16 uyum (mesh 0.10) |
 | `coax_qw` | Çeyrek dalga koaksiyel: bir uç kapaktan çıkan iç iletken + kapasitif boşluk; dar halka bölge; $f_1\approx0.4$–$1$ GHz (eğitim frekanslarının altında) | $R_o\in[2,5]$ cm, $L/R_o\in[1.5,4]$, $r_i/R_o\in[0.2,0.45]$, boşluk $/L\in[0.08,0.3]$ |
-| `pillbox_port` | 1–2 radyal yan port: eksenel simetri yok | $R\in[3,6]$ cm, port yarıçapı $[0.12,0.3]\min(R,L_c)$, uzunluk $[0.4,1.2]R$ |
-| `elliptical_long` | 4–5 hücre (eğitimde 1–3); hücre şekli aralıkları aynı | `elliptical` ile aynı |
+| `pillbox_port` | Gövdede 1–2 radyal yan port (g3 eğitiminde portlar yalnız eliptik hücrelerin ışın tüplerinde) | $R\in[3,6]$ cm, port yarıçapı $[0.12,0.3]\min(R,L_c)$, uzunluk $[0.4,1.2]R$ |
+| `elliptical_long` | 6–9 hücre (g3 eğitiminde 1–5); hücre şekli aralıkları aynı, port yok | `elliptical` ile aynı |
 | `junction` | L/T/X kollu kutular (%30 dikey kol): yıldız biçimli değil, keskin iç köşeler | kol genişliği $[2,4]$ cm, kalınlık $[0.5,1.2]w$, kol uzunluğu $[1,2.5]w$ |
 
 Değerlendirme: `python scripts/eval_3d.py --checkpoint <dir> --data_path ood.pkl --split all --csv ood.csv`

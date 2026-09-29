@@ -222,3 +222,27 @@ def maxwell3d_collate(batch):
     out['Kp_diag'] = pad_sequence([torch.from_numpy(it['Kp'].diagonal().astype(np.float64))
                                    for it in batch], batch_first=True)
     return out
+
+
+def item_from_geometry(g, feature_names=None, feature_indices=None, g_id=0):
+    """Model input for one converter geometry dict (dataset_converter_3d.extract_geometry_3d)
+    without labels (Y_field / Y_freq dummies): label-free inference, e.g. active sampling."""
+    names = list(feature_names or FEATURE_NAMES_3D)
+    _, _, vol_col = _feature_columns(names)
+    F = np.asarray(g['Input_funcs'], dtype=np.float32)
+    nv, ne = len(g['X']), len(g['edges'])
+    vol = F[:, vol_col].copy() if vol_col is not None else np.ones(nv, np.float32)
+    if feature_indices is not None:
+        F = F[:, feature_indices]
+    shapes = {'M': (ne, ne), 'K': (ne, ne), 'G': (ne, nv), 'Kp': (nv, nv)}
+    item = {'X': torch.from_numpy(np.ascontiguousarray(g['X'], dtype=np.float32)),
+            'Input_funcs': torch.from_numpy(np.ascontiguousarray(F)), 'Area': torch.from_numpy(vol),
+            'Edges': torch.from_numpy(np.asarray(g['edges'], dtype=np.int64)),
+            'Y_field': torch.zeros(ne, 1), 'Y_freq': torch.zeros(1),
+            'Scale': torch.tensor(float(g['scale']), dtype=torch.float32),
+            'TorsionMax': torch.tensor(float(g.get('torsion_max', 0.0) or 0.0), dtype=torch.float32),
+            'geom_id': torch.tensor([g_id], dtype=torch.long), 'FreqNext': torch.tensor(float('nan')),
+            'shape_type': str(g.get('shape_type', ''))}
+    for k in ('M', 'K', 'G', 'Kp'):
+        item[k] = to_csr(g[k], shapes[k])
+    return item

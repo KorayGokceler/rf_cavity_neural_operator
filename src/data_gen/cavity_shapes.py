@@ -4,12 +4,15 @@ Axisymmetric cavities are built as a meridian profile in the (z, r) half-plane
 (z = beam axis), revolved 2π about z with gmsh OCC.  Beam pipes are closed by flat
 PEC end caps, as in a closed eigenmode solve.  Lengths in metres.
 
-- elliptical:    TESLA-type elliptical cells (1–3) with beam pipes.  Half-cell =
+- elliptical:    TESLA-type elliptical cells (1–5) with beam pipes; real-design anchors, low-β
+                 cells, different end half-cells, optional coupler ports on the pipes.  Half-cell =
                  iris ellipse (a, b) at the iris plane + equator ellipse (A, B) at the
                  equator, joined by their common tangent (the standard construction).
                  TESLA mid-cell: Req 103.3, Riris 35, A = B = 42, a 12, b 19, L 57.7 mm.
 - reentrant:     nose-cone (klystron / IOT type) cavity with beam pipes, filleted corners.
 - pillbox_pipes: pillbox with beam pipes, rounded iris edge and outer corners.
+- ridged_box:    rectangular cavity with 1–2 full-length ridges (+ optional beam pipes), filleted.
+- composite:     CSG tree: cylinder / ellipsoid body with attached rounded primitives and dents.
 - freeform:      star-shaped superellipsoid × smooth random modulation × lobes, then a
                  bend / twist / taper warp (each an injective map, so the surface never
                  self-intersects and the solid stays a topological ball); returned as a
@@ -22,7 +25,7 @@ Out-of-distribution families (OOD_FAMILIES, never in the default training set):
                    capacitive gap to the other (deep narrow annulus, blind hole → ball).
 - pillbox_port:    pillbox with beam pipes and 1–2 radial side ports (breaks the axial
                    symmetry every training cavity has).
-- elliptical_long: 4–5 elliptical cells (training: 1–3), same cell-shape ranges.
+- elliptical_long: 6–9 elliptical cells (training: 1–5), same cell-shape ranges.
 - junction:        L / T / cross of box arms (3D cross optional): non-star-shaped with
                    sharp re-entrant edges (training free-forms are smooth star shapes).
 """
@@ -81,7 +84,8 @@ def revolve_segments(occ, segs):
         else:                                            # ('spline', [points])
             curves.append(occ.addSpline([pt(p) for p in s[1]]))
     surf = occ.addPlaneSurface([occ.addCurveLoop(curves)])
-    occ.revolve([(2, surf)], 0, 0, 0, 0, 0, 1, 2 * np.pi)
+    out = occ.revolve([(2, surf)], 0, 0, 0, 0, 0, 1, 2 * np.pi)
+    return next(t for d, t in out if d == 3)
 
 
 # ─────────────────────────── elliptical cells ──────────────────
@@ -122,44 +126,137 @@ def half_cell_wall(Req, Riris, L, A, B, a, b, n=24):
     return wall
 
 
-def draw_elliptical(rng):
-    """Random TESLA-type parameters (ratios around TESLA / LEP / CEBAF-like designs)."""
-    for _ in range(100):
-        Req = rng.uniform(0.04, 0.11)
-        p = {"Req": Req, "Riris": Req * rng.uniform(0.25, 0.42), "L": Req * rng.uniform(0.45, 0.65)}
-        p["A"] = p["L"] * rng.uniform(0.6, 0.85)
-        p["B"] = p["A"] * rng.uniform(0.85, 1.25)
-        p["a"] = p["L"] * rng.uniform(0.15, 0.30)
-        p["b"] = p["a"] * rng.uniform(1.0, 1.9)
-        if p["Riris"] + p["b"] >= p["Req"] - p["B"]:
+HALF_KEYS = ("Req", "Riris", "L", "A", "B", "a", "b")
+
+# Mid-cell half-cell geometries of real designs [m], used only as SAMPLING CENTRES (perturbed
+# ±10 %, rescaled in size); labels always come from the FE solve, so small inaccuracies in these
+# literature values do not affect the data.  TESLA: Aune et al., PRST-AB 3, 092001 (2000);
+# ILC low-loss: approximate values of the Cornell/KEK LL cell (verify before citing).
+ANCHORS = {
+    "tesla": dict(Req=0.1033, Riris=0.035, L=0.0577, A=0.042, B=0.042, a=0.012, b=0.019),
+    "ilc_ll": dict(Req=0.0986, Riris=0.030, L=0.0577, A=0.0501, B=0.0342, a=0.0076, b=0.0100),
+}
+N_CELLS, P_CELLS = [1, 2, 3, 4, 5], [0.35, 0.25, 0.2, 0.1, 0.1]     # training; OOD elliptical_long: 6–9
+
+
+def _draw_half(rng, Req, Riris, beta):
+    """Random half-cell (ratios around TESLA / LEP / CEBAF-like cells); L ∝ β (β < 1: shorter cells)."""
+    h = {"Req": Req, "Riris": Riris, "L": Req * rng.uniform(0.45, 0.65) * beta}
+    h["A"] = h["L"] * rng.uniform(0.6, 0.85)
+    h["B"] = h["A"] * rng.uniform(0.85, 1.25)
+    h["a"] = h["L"] * rng.uniform(0.15, 0.30)
+    h["b"] = h["a"] * rng.uniform(1.0, 1.9)
+    return h
+
+
+def _valid_half(h):
+    if h["Riris"] + h["b"] >= h["Req"] - h["B"]:
+        return None
+    return half_cell_wall(**{k: h[k] for k in HALF_KEYS})
+
+
+def draw_elliptical(rng, n_cells=None):
+    """Mid half-cell (random ratios, a real-design anchor, or a low-β cell), optional different
+    end half-cells (larger end iris = beam-pipe radius, perturbed shape) and 1–5 cells.
+    Returns (flat params, {'mid', 'e1', 'e2'} half-cell dicts, {name: wall})."""
+    for _ in range(200):
+        u = rng.uniform()
+        if u < 0.3:                                        # real-design anchor, perturbed and rescaled
+            name = str(rng.choice(sorted(ANCHORS)))
+            s = rng.uniform(0.04, 0.11) / ANCHORS[name]["Req"]
+            mid = {k: v * s * rng.uniform(0.9, 1.1) for k, v in ANCHORS[name].items()}
+            beta, anchor = 1.0, float(1 + sorted(ANCHORS).index(name))
+        else:
+            beta = 1.0 if u < 0.75 else rng.uniform(0.5, 0.95)          # 25 %: low-β cells
+            Req = rng.uniform(0.04, 0.11)
+            mid, anchor = _draw_half(rng, Req, Req * rng.uniform(0.25, 0.42), beta), 0.0
+        w_mid = _valid_half(mid)
+        if w_mid is None:
             continue
-        wall = half_cell_wall(**{k: p[k] for k in ("Req", "Riris", "L", "A", "B", "a", "b")})
-        if wall is not None:
-            p["n_cells"] = float(rng.choice([1, 2, 3], p=[0.5, 0.3, 0.2]))
-            p["Lpipe"] = p["Riris"] * rng.uniform(1.0, 2.5)
-            return p, wall
+        halves, walls = {"mid": mid}, {"mid": w_mid}
+        for e in ("e1", "e2"):
+            end = dict(mid)
+            if rng.uniform() < 0.6:                        # end half-cell differs (as in real structures)
+                end.update({k: mid[k] * rng.uniform(0.85, 1.15) for k in ("L", "A", "B", "a", "b")})
+                end["Riris"] = mid["Riris"] * rng.uniform(1.0, 1.35)
+            w = _valid_half(end)
+            halves[e], walls[e] = (end, w) if w is not None else (dict(mid), w_mid)
+        n = int(n_cells if n_cells is not None else rng.choice(N_CELLS, p=P_CELLS))
+        p = {k: mid[k] for k in HALF_KEYS}
+        for e in ("e1", "e2"):
+            p.update({f"{e}_{k}": halves[e][k] for k in HALF_KEYS if k != "Req"})
+        p.update({"n_cells": float(n), "beta": beta, "anchor": anchor,
+                  "Lpipe1": halves["e1"]["Riris"] * rng.uniform(1.2, 2.5),
+                  "Lpipe2": halves["e2"]["Riris"] * rng.uniform(1.2, 2.5)})
+        return p, halves, walls
     raise RuntimeError("no valid elliptical cell parameters")
 
 
-def elliptical_segments(p, wall):
-    """Profile segments: pipe – n_cells × (half-cell + mirrored half-cell) – pipe."""
-    L, Ri, Lp, n = p["L"], p["Riris"], p["Lpipe"], int(p["n_cells"])
-    cell = np.vstack([wall, (np.array([2 * L, 0]) + np.array([-1, 1]) * wall[::-1])[1:]])
-    chain = np.vstack([cell[(1 if k else 0):] + [2 * L * k, 0] for k in range(n)])
-    z1 = 2 * L * n
-    return [('line', (-Lp, 0.0), (-Lp, Ri)), ('line', (-Lp, Ri), (0.0, Ri)),
+def elliptical_chain(halves, walls, n):
+    """Wall points (z, r) of n cells: left half (iris → equator) + mirrored right half; the
+    first left half is e1, the last right half e2, all others mid."""
+    pts, z = [], 0.0
+    for k in range(n):
+        left, right = ("e1" if k == 0 else "mid"), ("e2" if k == n - 1 else "mid")
+        wl, wr, Lr = walls[left], walls[right], halves[right]["L"]
+        seg_l = wl + [z, 0]
+        z_eq = z + halves[left]["L"]
+        seg_r = np.c_[z_eq + Lr - wr[::-1, 0], wr[::-1, 1]]
+        pts += [seg_l if k == 0 else seg_l[1:], seg_r[1:]]
+        z = z_eq + Lr
+    return np.vstack(pts), z
+
+
+def elliptical_segments(p, halves, walls):
+    """Profile: pipe (radius = e1 iris) – chain – pipe (radius = e2 iris), PEC-capped."""
+    chain, z1 = elliptical_chain(halves, walls, int(p["n_cells"]))
+    r1, r2 = halves["e1"]["Riris"], halves["e2"]["Riris"]
+    L1, L2 = p.get("Lpipe1", p.get("Lpipe")), p.get("Lpipe2", p.get("Lpipe"))
+    return [('line', (-L1, 0.0), (-L1, r1)), ('line', (-L1, r1), (0.0, r1)),
             ('spline', [tuple(q) for q in chain]),
-            ('line', (z1, Ri), (z1 + Lp, Ri)), ('line', (z1 + Lp, Ri), (z1 + Lp, 0.0)),
-            ('line', (z1 + Lp, 0.0), (-Lp, 0.0))]
+            ('line', (z1, r2), (z1 + L2, r2)), ('line', (z1 + L2, r2), (z1 + L2, 0.0)),
+            ('line', (z1 + L2, 0.0), (-L1, 0.0))], z1
 
 
-def build_elliptical(occ, rng, params=None):
-    p, wall = (params, half_cell_wall(**{k: params[k] for k in ("Req", "Riris", "L", "A", "B", "a", "b")})) \
-        if params is not None else draw_elliptical(rng)
-    if wall is None:
-        raise RuntimeError("invalid elliptical parameters")
-    revolve_segments(occ, elliptical_segments(p, wall))
-    return "elliptical", dict(p, _h_cap=0.7 * p["Riris"])
+def _add_pipe_ports(occ, vol, rng, pipes, params):
+    """1–3 radial coupler ports (FPC / HOM-coupler stubs) on the beam pipes, fused; pipes =
+    [(z_centre, radius, length)]."""
+    tags = [vol]
+    n = int(rng.integers(1, 4))
+    for i in range(n):
+        zc, rp, lp = pipes[int(rng.integers(0, len(pipes)))]
+        rs = min(rp * rng.uniform(0.25, 0.6), 0.4 * lp)
+        ls = rp * rng.uniform(0.8, 2.0)
+        phi = rng.uniform(0, 2 * np.pi)
+        u = np.array([np.cos(phi), np.sin(phi), 0.0])
+        x0 = 0.5 * rp * u + [0, 0, zc]
+        tags.append(occ.addCylinder(*x0, *((0.5 * rp + ls) * u), rs))
+        params.update({f"port{i}_r": rs, f"port{i}_len": ls, f"port{i}_z": zc, f"port{i}_phi": phi})
+    params["n_ports"] = float(n)
+    return _fuse_all(occ, tags), min(params[f"port{i}_r"] for i in range(n))
+
+
+def build_elliptical(occ, rng, params=None, n_cells=None, shape_type="elliptical", port_prob=0.35):
+    """params: mid half-cell keys (+ n_cells, Lpipe) → fixed geometry (tests); else random."""
+    if params is not None:
+        mid = {k: params[k] for k in HALF_KEYS}
+        w = _valid_half(mid)
+        if w is None:
+            raise RuntimeError("invalid elliptical parameters")
+        p, halves, walls = dict(params), {"mid": mid, "e1": mid, "e2": mid}, {"mid": w, "e1": w, "e2": w}
+    else:
+        p, halves, walls = draw_elliptical(rng, n_cells)
+    segs, z1 = elliptical_segments(p, halves, walls)
+    vol = revolve_segments(occ, segs)
+    h_cap = min(halves["e1"]["Riris"], halves["mid"]["Riris"], halves["e2"]["Riris"])
+    if rng is not None and rng.uniform() < port_prob:
+        L1, L2 = p.get("Lpipe1", p.get("Lpipe")), p.get("Lpipe2", p.get("Lpipe"))
+        _, rs_min = _add_pipe_ports(occ, vol, rng, [(-L1 / 2, halves["e1"]["Riris"], L1),
+                                                   (z1 + L2 / 2, halves["e2"]["Riris"], L2)], p)
+        h_cap = min(h_cap, rs_min)
+    else:
+        p["n_ports"] = 0.0
+    return shape_type, dict(p, _h_cap=0.7 * h_cap, _vol_div=p["n_cells"])   # h from the per-cell volume
 
 
 # ─────────────────────────── re-entrant / pillbox with pipes ───
@@ -171,17 +268,17 @@ def build_reentrant(occ, rng):
         rp = R * rng.uniform(0.10, 0.25)
         g = Lc * rng.uniform(0.15, 0.6)                 # nose-to-nose gap
         t_tip = R * rng.uniform(0.08, 0.2)              # nose tip wall thickness
-        alpha = np.radians(rng.uniform(0, 35))          # nose outer cone half-angle
+        alpha = np.radians(rng.uniform(-25, 35))        # nose outer cone half-angle (< 0: mushroom nose)
         zt = (Lc - g) / 2
         rt = rp + t_tip
         rn = rt + zt * np.tan(alpha)
-        if rn < 0.75 * R and zt > 0.05 * R:
+        if max(rn, rt) < 0.75 * R and rn > rp + 0.04 * R and zt > 0.05 * R:
             break
     else:
         raise RuntimeError("no valid re-entrant parameters")
     Lp = rp * rng.uniform(1.5, 4.0)
     rho_tip = t_tip * rng.uniform(0.2, 0.5)
-    rho_root = (R - rn) * rng.uniform(0.05, 0.3)
+    rho_root = min(R - rn, rn - rp) * rng.uniform(0.05, 0.3)
     rho_out = min(R - rn, Lc / 2) * rng.uniform(0.05, 0.6)   # large → toroidal outer wall
     C = [(-Lp, 0), (-Lp, rp), (zt, rp), (zt, rt), (0, rn), (0, R), (Lc, R), (Lc, rn),
          (Lc - zt, rt), (Lc - zt, rp), (Lc + Lp, rp), (Lc + Lp, 0)]
@@ -203,6 +300,138 @@ def build_pillbox_pipes(occ, rng):
     revolve_segments(occ, filleted(C, [0, 0, rho_iris, rho_out, rho_out, rho_iris, 0, 0]))
     return "pillbox_pipes", {"R": R, "Lc": Lc, "rp": rp, "Lpipe": Lp, "rho_iris": rho_iris,
                              "rho_out": rho_out, "_h_cap": 0.8 * rp}
+
+
+# ─────────────────────────── ridged rectangular cavity ─────────
+
+def build_ridged_box(occ, rng):
+    """Rectangular cavity with 1–2 full-length ridges (ridged-waveguide resonator), optional
+    round beam pipes through the gap; all edges filleted (training shapes keep rounded edges —
+    the sharp-edged plain box stays an OOD family)."""
+    a, b, d = rng.uniform(0.04, 0.10), rng.uniform(0.03, 0.08), rng.uniform(0.02, 0.06)
+    box = occ.addBox(0, 0, 0, a, b, d)
+    w = b * rng.uniform(0.15, 0.45)
+    double = rng.uniform() < 0.5
+    hr = d * rng.uniform(0.12, 0.3 if double else 0.4)
+    ridges = [occ.addBox(-1e-3, (b - w) / 2, d - hr, a + 2e-3, w, hr + 1e-3)]
+    if double:
+        ridges.append(occ.addBox(-1e-3, (b - w) / 2, -1e-3, a + 2e-3, w, hr + 1e-3))
+    out, _ = occ.cut([(3, box)], [(3, r) for r in ridges])
+    vol = [t for dd, t in out if dd == 3]
+    if len(vol) != 1:
+        raise RuntimeError(f"ridge cut produced {len(vol)} volumes")
+    vol = vol[0]
+    gap = d - hr * (2 if double else 1)
+    params = {"a": a, "b": b, "d": d, "ridge_w": w, "ridge_h": hr, "double": float(double), "gap": gap}
+    occ.synchronize()
+    rho = min(hr, w, gap) * rng.uniform(0.08, 0.25)
+    curves = [c for _, c in occ.getEntities(1)]
+    out = occ.fillet([vol], curves, [rho])
+    vol = next(t for dd, t in out if dd == 3)
+    params["rho"] = rho
+    if rng.uniform() < 0.4:                                     # beam pipes along x through the gap
+        rp = min(gap, w) * rng.uniform(0.2, 0.4)
+        zc = (hr if double else 0.0) + gap / 2
+        Lp = rp * rng.uniform(1.5, 3.0)
+        pipes = [occ.addCylinder(-Lp, b / 2, zc, Lp + rho, 0, 0, rp),
+                 occ.addCylinder(a - rho, b / 2, zc, Lp + rho, 0, 0, rp)]
+        vol = _fuse_all(occ, [vol] + pipes)
+        params.update({"rp": rp, "Lpipe": Lp})
+    return "ridged_box", dict(params, _h_cap=0.8 * min(gap, w, params.get("rp", gap)))
+
+
+# ─────────────────────────── CSG composite (tree of primitives) ─
+
+class _Prim:
+    """Cylinder (local axis z, radius r, half-length hl) or ellipsoid (semi-axes s), placed by a
+    centre and a rotation R (columns = local axes in world coordinates)."""
+
+    def __init__(self, kind, centre, R, dims):
+        self.kind, self.c, self.R, self.dims = kind, np.asarray(centre, float), np.asarray(R, float), dims
+
+    def support(self, d):
+        """Distance from the centre to the surface along the unit world direction d."""
+        l = self.R.T @ d
+        if self.kind == "ell":
+            return 1.0 / np.sqrt(((l / self.dims) ** 2).sum())
+        r, hl = self.dims
+        rho = np.hypot(l[0], l[1])
+        return min(r / rho if rho > 1e-12 else np.inf, hl / abs(l[2]) if abs(l[2]) > 1e-12 else np.inf)
+
+    def width(self):
+        return 2 * (min(self.dims) if self.kind == "ell" else min(self.dims))
+
+    def occ(self, occ):
+        if self.kind == "cyl":
+            r, hl = self.dims
+            ax = self.R[:, 2]
+            return occ.addCylinder(*(self.c - hl * ax), *(2 * hl * ax), r)
+        from scipy.spatial.transform import Rotation
+        t = occ.addSphere(0, 0, 0, 1.0)
+        occ.dilate([(3, t)], 0, 0, 0, *self.dims)
+        rv = Rotation.from_matrix(self.R).as_rotvec()
+        ang = np.linalg.norm(rv)
+        if ang > 1e-12:
+            occ.rotate([(3, t)], 0, 0, 0, *(rv / ang), ang)
+        occ.translate([(3, t)], *self.c)
+        return t
+
+
+def _frame(axis, rng):
+    """Random rotation whose third column is the unit vector axis."""
+    axis = axis / np.linalg.norm(axis)
+    t = rng.standard_normal(3)
+    t -= t @ axis * axis
+    t /= np.linalg.norm(t)
+    return np.c_[t, np.cross(axis, t), axis]
+
+
+def build_composite(occ, rng):
+    """A body (cylinder or ellipsoid) with 1–4 attached rounded primitives (cylinders /
+    ellipsoids, depth ≤ 2: children may carry grandchildren) fused, plus 0–2 ellipsoidal dents
+    cut into the surface.  A tree of attachments keeps the solid a ball; overlaps that close a
+    loop or cut through are rejected by the topology certificate."""
+    R0 = rng.uniform(0.025, 0.05)
+    if rng.uniform() < 0.5:
+        body = _Prim("cyl", np.zeros(3), np.eye(3), (R0, R0 * rng.uniform(0.4, 1.2)))
+    else:
+        body = _Prim("ell", np.zeros(3), _frame(rng.standard_normal(3), rng), R0 * rng.uniform(0.5, 1.0, 3))
+    prims, fuse, cut = [body], [], []
+    n_child = int(rng.integers(1, 5))
+    bw = body.width()
+    for i in range(n_child):
+        parent = prims[int(rng.integers(0, min(len(prims), 2)))]   # body or the first child (depth ≤ 2)
+        d = rng.standard_normal(3)
+        d /= np.linalg.norm(d)
+        q = parent.c + parent.support(d) * d
+        wcap = 0.9 * parent.width()                                # never wider than the parent
+        if rng.uniform() < 0.6:                                    # stub / arm: radius ∝ body, not parent
+            r = min(bw * rng.uniform(0.15, 0.35), wcap / 2)
+            hl = R0 * rng.uniform(0.25, 0.7)
+            ch = _Prim("cyl", q + d * hl * rng.uniform(0.3, 0.7), _frame(d, rng), (r, hl))
+        else:                                                      # lobe
+            sa = np.r_[np.minimum(bw * rng.uniform(0.15, 0.4, 2), wcap / 2), R0 * rng.uniform(0.3, 0.7)]
+            ch = _Prim("ell", q + d * sa[2] * rng.uniform(0.2, 0.6), _frame(d, rng), sa)
+        prims.append(ch)
+        fuse.append(ch)
+    for _ in range(int(rng.integers(0, 3))):
+        d = rng.standard_normal(3)
+        d /= np.linalg.norm(d)
+        q = body.c + body.support(d) * d
+        cut.append(_Prim("ell", q, _frame(d, rng), body.width() * rng.uniform(0.1, 0.3, 3)))
+    vol = _fuse_all(occ, [p.occ(occ) for p in [body] + fuse])
+    for c in cut:
+        out, _ = occ.cut([(3, vol)], [(3, c.occ(occ))])
+        vols = [t for dd, t in out if dd == 3]
+        if len(vols) != 1:
+            raise RuntimeError(f"dent produced {len(vols)} volumes")
+        vol = vols[0]
+    params = {"R0": R0, "body_cyl": float(body.kind == "cyl"), "n_attached": float(len(fuse)),
+              "n_dents": float(len(cut))}
+    for i, pr in enumerate(fuse):
+        params.update({f"c{i}_cyl": float(pr.kind == "cyl"), f"c{i}_w": pr.width(),
+                       f"c{i}_x": pr.c[0], f"c{i}_y": pr.c[1], f"c{i}_z": pr.c[2]})
+    return "composite", dict(params, _h_cap=0.8 * min(p.width() / 2 for p in prims))
 
 
 # ─────────────────────────── free-form solids ──────────────────
@@ -342,10 +571,9 @@ def build_pillbox_port(occ, rng):
 
 
 def build_elliptical_long(occ, rng):
-    p, wall = draw_elliptical(rng)
-    p["n_cells"] = float(rng.choice([4, 5]))
-    revolve_segments(occ, elliptical_segments(p, wall))
-    return "elliptical_long", dict(p, _h_cap=0.7 * p["Riris"])
+    """6–9 cells (training: 1–5), no ports; otherwise the training elliptical distribution."""
+    return build_elliptical(occ, rng, n_cells=int(rng.integers(6, 10)), shape_type="elliptical_long",
+                            port_prob=0.0)
 
 
 def build_junction(occ, rng):

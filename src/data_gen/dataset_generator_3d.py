@@ -62,7 +62,7 @@ logging.getLogger('skfem').setLevel(logging.ERROR)
 C0 = 299792458.0  # speed of light [m/s]
 # default families: realistic RF cavities + free-form solids (src/data_gen/cavity_shapes.py);
 # "pillbox", "axisym_cell", "blob" stay available via --families (v1 datasets)
-FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "freeform")
+FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "composite", "freeform")
 
 # Calibration geometries [m] (non-degenerate low box spectrum; L < 2.03 R → TM010 first)
 CALIB_BOX = (0.10, 0.08, 0.06)
@@ -85,6 +85,16 @@ def parse_args(argv=None):
     p.add_argument("--mesh_size_abs", type=float, default=None,
                    help="Absolute target tet size [m]; overrides --mesh_size.")
     p.add_argument("--seed", type=int, default=0, help="Base seed; sample s uses default_rng([seed, s]).")
+    p.add_argument("--ids_file", type=str, default=None,
+                   help="Text file of sample ids to generate (one per line; e.g. from scripts/active_sampling.py); "
+                        "overrides --start_id/--n_total.")
+    p.add_argument("--sampling", type=str, default="random", choices=["random", "sobol"],
+                   help="sobol: the first 64 random draws of each sample (family, shape parameters) come from one "
+                        "scrambled Sobol point per sample id (low-discrepancy coverage); later draws stay random.")
+    p.add_argument("--deform_prob", type=float, default=0.0,
+                   help="Probability of a smooth random deformation x → x + δ(x) of the mesh (all families).")
+    p.add_argument("--deform_max", type=float, default=0.5,
+                   help="Max Lipschitz constant of δ (< 1 keeps the map injective, tets positively oriented).")
     p.add_argument("--start_id", type=int, default=0,
                    help="First sample id (shards: ids start_id … start_id+n_total−1, same seed → disjoint samples).")
     p.add_argument("--n_workers", type=int, default=None, help="Worker processes (default: min(cpu_count, 4)).")
@@ -265,7 +275,8 @@ def build_calibration(occ, s_id):
 
 BUILDERS = {"pillbox": build_pillbox, "axisym_cell": build_axisym_cell, "blob": build_blob,
             "elliptical": cs.build_elliptical, "reentrant": cs.build_reentrant,
-            "pillbox_pipes": cs.build_pillbox_pipes,
+            "pillbox_pipes": cs.build_pillbox_pipes, "ridged_box": cs.build_ridged_box,
+            "composite": cs.build_composite,
             # out-of-distribution test families (cs.OOD_FAMILIES), not in the default FAMILIES
             "box": cs.build_box, "coax_qw": cs.build_coax_qw, "pillbox_port": cs.build_pillbox_port,
             "elliptical_long": cs.build_elliptical_long, "junction": cs.build_junction}
@@ -443,47 +454,132 @@ def _gmsh_start(restart=False):
         gmsh.option.setNumber("General.NumThreads", 1)
 
 
+class SobolRNG:
+    """numpy-Generator-like stream for the shape builders: the first len(u) uniforms come from one
+    scrambled Sobol point (low-discrepancy across sample ids: families and parameter ranges are
+    covered evenly), later draws from the fallback generator (rejection re-draws, noise fields)."""
+
+    def __init__(self, u, fallback):
+        self.u, self.i, self.rng = np.asarray(u, float), 0, fallback
+
+    def random(self, size=None):
+        n = 1 if size is None else int(np.prod(size))
+        take = min(n, len(self.u) - self.i)
+        v = np.r_[self.u[self.i:self.i + take], self.rng.random(n - take)]
+        self.i += take
+        return float(v[0]) if size is None else v.reshape(size)
+
+    def uniform(self, low=0.0, high=1.0, size=None):
+        return low + (np.asarray(high) - low) * self.random(size)
+
+    def integers(self, low, high=None, size=None):
+        low, high = (0, low) if high is None else (low, high)
+        v = np.minimum(np.floor(low + (high - low) * np.asarray(self.random(size))), high - 1).astype(np.int64)
+        return int(v) if size is None else v
+
+    def choice(self, a, size=None, p=None):
+        a = np.asarray(a)
+        cdf = np.cumsum(np.full(len(a), 1.0 / len(a)) if p is None else np.asarray(p, float))
+        idx = np.minimum(np.searchsorted(cdf / cdf[-1], self.random(size), side="right"), len(a) - 1)
+        return a[idx]
+
+    def standard_normal(self, size=None):
+        from scipy.stats import norm
+        return norm.ppf(np.clip(self.random(size), 1e-12, 1 - 1e-12))
+
+    def permutation(self, x):
+        n = x if np.isscalar(x) else len(x)
+        order = np.argsort(self.random(n))
+        return order if np.isscalar(x) else np.asarray(x)[order]
+
+
+def _sample_rng(s_id):
+    base = _seeds(s_id)
+    if getattr(ARGS, "sampling", "random") != "sobol":
+        return base
+    from scipy.stats import qmc
+    sob = qmc.Sobol(d=64, scramble=True, seed=int(ARGS.seed))
+    if s_id > 0:                                   # scipy: fast_forward(0) overflows
+        sob.fast_forward(int(s_id))
+    return SobolRNG(sob.random(1)[0], base)
+
+
+def smooth_deform(nodes, rng, lip_max=0.5):
+    """x → x + δ(x), δ = Σ_m a_m sin(ω_m·x + φ_m) (3–8 plane waves, wavelengths 0.25–1.5 × the
+    bounding-box diagonal).  ‖∇δ‖₂ ≤ Σ|a_m||ω_m| is scaled to lip ∈ [0.3, 1]·lip_max < 1, so
+    det(I + ∇δ) > 0 everywhere: the map is injective, every tet keeps its orientation and the
+    topology is unchanged.  Returns (new nodes, params)."""
+    X = np.asarray(nodes, float)
+    diag = float(np.linalg.norm(X.max(0) - X.min(0)))
+    n = int(rng.integers(3, 9))
+    dirs = rng.standard_normal((n, 3))
+    dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    om = dirs * (2 * np.pi / (diag * rng.uniform(0.25, 1.5, n)))[:, None]
+    a = rng.standard_normal((n, 3))
+    ph = rng.uniform(0, 2 * np.pi, n)
+    lip = lip_max * rng.uniform(0.3, 1.0)
+    a *= lip / (np.linalg.norm(a, axis=1) * np.linalg.norm(om, axis=1)).sum()
+    Y = X + np.sin(X @ om.T + ph) @ a
+    return Y, {"deform_lip": float(lip), "deform_modes": float(n),
+               "deform_max_disp": float(np.linalg.norm(Y - X, axis=1).max() / diag)}
+
+
+def mesh_sample(s_id):
+    """Geometry + mesh of sample s_id (no eigen-solve): dict(nodes [m], tets, shape_type, params,
+    h, volume, t_mesh).  Used by generate_sample_data and scripts/active_sampling.py."""
+    import gmsh
+    _gmsh_start()
+    rng = _sample_rng(s_id)
+    t0 = time.perf_counter()
+    fam = "calibration" if ARGS.mode == "calibration" else \
+        ARGS.families[int(rng.integers(0, len(ARGS.families)))]   # fixed across re-draws: exact family balance
+    for attempt in range(ARGS.max_geom_tries):
+        gmsh.clear()
+        gmsh.model.add(f"rf3d_{s_id}_{attempt}")
+        occ = gmsh.model.occ
+        try:
+            if fam in DISCRETE_BUILDERS:
+                P, F, params = DISCRETE_BUILDERS[fam](rng)
+                shape_type, volume = fam, cs.surface_volume(P, F)
+                _discrete_model(P, F)
+            else:
+                shape_type, params = build_calibration(occ, s_id) if fam == "calibration" \
+                    else BUILDERS[fam](occ, rng)
+                occ.synchronize()
+                vols = gmsh.model.getEntities(3)
+                if len(vols) != 1:
+                    raise RuntimeError(f"{len(vols)} volumes")
+                volume = gmsh.model.occ.getMass(3, vols[0][1])
+            vol_div = params.pop("_vol_div", 1.0)              # multi-cell: size from the per-cell volume
+            h = ARGS.mesh_size_abs or ARGS.mesh_size * (volume / vol_div) ** (1.0 / 3.0)
+            h_cap = params.pop("_h_cap", None)             # smallest feature (iris, nose gap, pipe)
+            if h_cap and not ARGS.mesh_size_abs:
+                h = max(min(h, h_cap), 0.7 * h)            # ≤ ~3× the tets of the volume rule
+            nodes, tets = _mesh_current_model(h)
+            topo = mesh_topology(tets, len(nodes))
+            if not is_topological_ball(topo):
+                raise RuntimeError(f"not a topological ball: {topo}")
+            break
+        except Exception as e:  # re-draw the geometry (random mode only)
+            _gmsh_start(restart=True)
+            if ARGS.mode == "calibration" or attempt == ARGS.max_geom_tries - 1:
+                raise
+            print(f"sample {s_id}: geometry attempt {attempt} rejected ({e}); re-drawing")
+    params = {k: float(v) for k, v in params.items()}
+    rng_d = np.random.default_rng([int(ARGS.seed), int(s_id), 1])   # own stream: same δ at any mesh size
+    if ARGS.mode != "calibration" and rng_d.uniform() < getattr(ARGS, "deform_prob", 0.0):
+        nodes, dp = smooth_deform(nodes, rng_d, getattr(ARGS, "deform_max", 0.5))
+        params.update(dp)
+    return {"nodes": nodes, "tets": tets, "shape_type": shape_type, "params": params, "h": float(h),
+            "volume": float(volume), "t_mesh": time.perf_counter() - t0}
+
+
 def generate_sample_data(s_id):
     import gmsh
     try:
-        _gmsh_start()
-        rng = _seeds(s_id)
-        t0 = time.perf_counter()
-        for attempt in range(ARGS.max_geom_tries):
-            gmsh.clear()
-            gmsh.model.add(f"rf3d_{s_id}_{attempt}")
-            occ = gmsh.model.occ
-            try:
-                fam = "calibration" if ARGS.mode == "calibration" else \
-                    ARGS.families[int(rng.integers(0, len(ARGS.families)))]
-                if fam in DISCRETE_BUILDERS:
-                    P, F, params = DISCRETE_BUILDERS[fam](rng)
-                    shape_type, volume = fam, cs.surface_volume(P, F)
-                    _discrete_model(P, F)
-                else:
-                    shape_type, params = build_calibration(occ, s_id) if fam == "calibration" \
-                        else BUILDERS[fam](occ, rng)
-                    occ.synchronize()
-                    vols = gmsh.model.getEntities(3)
-                    if len(vols) != 1:
-                        raise RuntimeError(f"{len(vols)} volumes")
-                    volume = gmsh.model.occ.getMass(3, vols[0][1])
-                h = ARGS.mesh_size_abs or ARGS.mesh_size * volume ** (1.0 / 3.0)
-                h_cap = params.pop("_h_cap", None)             # smallest feature (iris, nose gap, pipe)
-                if h_cap and not ARGS.mesh_size_abs:
-                    h = max(min(h, h_cap), 0.7 * h)            # ≤ ~3× the tets of the volume rule
-                nodes, tets = _mesh_current_model(h)
-                topo = mesh_topology(tets, len(nodes))
-                if not is_topological_ball(topo):
-                    raise RuntimeError(f"not a topological ball: {topo}")
-                break
-            except Exception as e:  # re-draw the geometry (random mode only)
-                _gmsh_start(restart=True)
-                if ARGS.mode == "calibration" or attempt == ARGS.max_geom_tries - 1:
-                    raise
-                print(f"sample {s_id}: geometry attempt {attempt} rejected ({e}); re-drawing")
-        t_mesh = time.perf_counter() - t0
-
+        g = mesh_sample(s_id)
+        nodes, tets, shape_type, params, h, volume, t_mesh = (
+            g[k] for k in ("nodes", "tets", "shape_type", "params", "h", "volume", "t_mesh"))
         t0 = time.perf_counter()
         A = assemble_h_n0(nodes, tets)
         k = ARGS.n_eigen_modes
@@ -559,7 +655,8 @@ def main(argv=None):
     global ARGS
     ARGS = parse_args(argv)
     n_workers = ARGS.n_workers or min(cpu_count(), 4)
-    print(f"Generating {ARGS.n_total} 3D samples ({ARGS.mode}, families={ARGS.families}) with {n_workers} workers")
+    print(f"Generating {'ids from ' + ARGS.ids_file if ARGS.ids_file else ARGS.n_total} 3D samples ({ARGS.mode}, "
+          f"families={ARGS.families}, sampling={ARGS.sampling}, deform_prob={ARGS.deform_prob}) with {n_workers} workers")
     tmp_path = ARGS.h5_filename + ".partial"
     n_ok, n_fail, times, calib = 0, 0, [], []
     # maxtasksperchild: recycle workers (fresh gmsh / OCC state and memory) every 50 samples
@@ -569,9 +666,10 @@ def main(argv=None):
         with h5py.File(tmp_path, "w") as f_h5:
             f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
             chunk = 4 * n_workers
-            end = ARGS.start_id + ARGS.n_total
-            for i in range(ARGS.start_id, end, chunk):
-                results, hung = _run_chunk(pool, range(i, min(i + chunk, end)), ARGS.sample_timeout)
+            ids = [int(x) for x in open(ARGS.ids_file).read().split()] if ARGS.ids_file else \
+                list(range(ARGS.start_id, ARGS.start_id + ARGS.n_total))
+            for i in range(0, len(ids), chunk):
+                results, hung = _run_chunk(pool, ids[i:i + chunk], ARGS.sample_timeout)
                 if hung:
                     pool.terminate()
                     pool = new_pool()
@@ -586,7 +684,7 @@ def main(argv=None):
                     if "freqs_analytic" in g.attrs:
                         calib.append((res["shape_type"], res["freqs"], g.attrs["freqs_analytic"]))
                 f_h5.flush()
-                print(f"  {min(i + chunk, end) - ARGS.start_id}/{ARGS.n_total} done ({n_ok} ok, {n_fail} failed)")
+                print(f"  {min(i + chunk, len(ids))}/{len(ids)} done ({n_ok} ok, {n_fail} failed)")
     finally:
         pool.terminate()
     if n_ok == 0:
