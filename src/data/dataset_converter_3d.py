@@ -23,14 +23,20 @@ Output contract (docs/19_3D_DATA_PIPELINE.md; the field is read from the H5: dat
                  'n_bnd_components', 'betti1' (= 1 + b2 − χ, informative), 'field' = 'E'
         'scale','center','shape_type','n_nodes','n_edges', 'torsion_max'}},
      'samples': [{'geom_id', 'Y' float32 [Ne] (unit M-norm on the normalised mesh, sign arbitrary;
-                  E: wall rows exactly 0), 'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id]}],
-     'metadata': {..., 'field'}}
+                  E: wall rows exactly 0), 'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id],
+                  'qoi' {name: float} for src.qoi.QOI_LABELS (cavity figures of merit Q0, G, R/Q, R_sh,
+                  T, Epk/Eacc, Bpk/Eacc of the FE field at the FE frequency, copper, β = 1, 'linac';
+                  docs/24_CAVITY_QOI.md §0.4; absent with compute_qoi=False / convert_3d.py --no_qoi)}],
+     'metadata': {..., 'field'[, 'qoi': {'labels', 'sigma', 'beta', 'convention', 'axis', 'L_acc',
+                  'n_failed'}]}}
 
 Scaling: X = (x − center)/scale ⇒ λ_norm = λ_phys·scale², f = c·√λ_norm / (2π·scale).
 """
+import importlib
 import json
 import os
 import pickle
+import warnings
 from collections import defaultdict
 
 import h5py
@@ -397,6 +403,79 @@ def h5_edges_to_canonical(edges_h5, n_nodes, edges):
     return rows, sign
 
 
+# ─────────────────────────── cavity QoI labels ─────────────────
+
+# Settings of the stored QoI labels (docs/24_CAVITY_QOI.md §0.4): copper wall, β = 1, linac R/Q.
+QOI_LABEL_SETTINGS = {"sigma": 5.8e7, "beta": 1.0, "convention": "linac"}
+
+
+def qoi_api():
+    """src.qoi, imported lazily (the converter / dataset import without it)."""
+    return importlib.import_module("src.qoi")
+
+
+def qoi_metadata(n_failed=0):
+    """metadata['qoi'] of a PKL with QoI labels (§0.4)."""
+    return {"labels": list(qoi_api().QOI_LABELS), **QOI_LABEL_SETTINGS,
+            "axis": "x=y=0, z", "L_acc": "axis chord", "n_failed": int(n_failed)}
+
+
+def qoi_operators_of(geom, field, M=None, **kw):
+    """src.qoi.build_qoi_operators for one geometry_pool entry (X, tets, edges, scale, center);
+    M: scipy mass matrix (assembled by build_qoi_operators when None)."""
+    center = geom.get("center", None)
+    center = np.zeros(3) if center is None else np.asarray(center, dtype=np.float64).reshape(3)
+    return qoi_api().build_qoi_operators(np.asarray(geom["X"], dtype=np.float64),
+                                         np.asarray(geom["tets"], dtype=np.int64),
+                                         np.asarray(geom["edges"], dtype=np.int64),
+                                         float(geom["scale"]), center, field, M=M, **kw)
+
+
+def qoi_labels(ops, Y, f_ghz):
+    """[{name: float} per column of Y [Ne, K]] with the label settings (FE field, FE frequency)."""
+    q = qoi_api()
+    Y = np.asarray(Y, dtype=np.float64).reshape(len(Y), -1)
+    res = q.qoi_from_dofs(ops, Y, np.asarray(f_ghz, dtype=np.float64).reshape(-1) * 1e9, **QOI_LABEL_SETTINGS)
+    cols = {n: np.asarray(res[n], dtype=np.float64).reshape(-1) for n in q.QOI_LABELS}
+    return [{n: float(cols[n][k]) for n in q.QOI_LABELS} for k in range(Y.shape[1])]
+
+
+def _nan_labels():
+    return {n: float("nan") for n in qoi_api().QOI_LABELS}
+
+
+def attach_qoi_labels(data, verbose=True):
+    """Add samples[i]['qoi'] + metadata['qoi'] to a loaded PKL dict in place (back-fill for PKLs
+    converted without QoI; lean PKLs: M is rebuilt from (X, tets)).  The field is
+    metadata['field'] ('H' if missing).  Returns data."""
+    field = str((data.get("metadata") or {}).get("field", None) or "H").upper()
+    by_geom = defaultdict(list)
+    for j, s in enumerate(data["samples"]):
+        by_geom[s["geom_id"]].append(j)
+    n_failed = 0
+    for gid, js in tqdm(by_geom.items(), desc="QoI labels", disable=not verbose):
+        g = data["geometry_pool"][gid]
+        ne = len(g["edges"])
+        try:
+            if "M" in g:
+                M = from_csr_tuple(g["M"], (ne, ne)) if not sp.issparse(g["M"]) else g["M"].tocsr()
+            else:
+                ops_, M = geometry_operators(np.asarray(g["X"], np.float64), g["tets"], field=field)
+                if not np.array_equal(ops_["edges"], np.asarray(g["edges"])):
+                    raise ValueError("rebuilt edges differ from the stored ones")
+            ops = qoi_operators_of(g, field, M=M)
+            Y = np.stack([np.asarray(data["samples"][j]["Y"], np.float64) for j in js], axis=1)
+            lab = qoi_labels(ops, Y, [float(data["samples"][j]["Theta"][1]) for j in js])
+        except Exception as e:                              # noqa: BLE001 — one bad mesh must not stop the run
+            n_failed += 1
+            warnings.warn(f"geometry {gid}: QoI labels failed ({type(e).__name__}: {e}); stored as NaN")
+            lab = [_nan_labels() for _ in js]
+        for j, d in zip(js, lab, strict=True):
+            data["samples"][j]["qoi"] = d
+    data.setdefault("metadata", {})["qoi"] = qoi_metadata(n_failed)
+    return data
+
+
 # ─────────────────────────── conversion ────────────────────────
 
 def _group_field(grp):
@@ -418,9 +497,16 @@ class RFCavity3DConverter:
         self.freq_by_mode = defaultdict(list)
 
     def convert_dataset(self, output_filepath, mode_indices=None, max_samples=None,
-                        freq_mean=None, freq_std=None, check_rayleigh=True, store_operators=True):
+                        freq_mean=None, freq_std=None, check_rayleigh=True, store_operators=True,
+                        compute_qoi=True):
         """store_operators=False drops M/K/G/Kp from the PKL (they dominate its size, ~85 %);
-        rebuild them with geometry_operators(X, tets). Everything else is unchanged."""
+        rebuild them with geometry_operators(X, tets). Everything else is unchanged.
+        compute_qoi: per-sample cavity QoI labels samples[i]['qoi'] + metadata['qoi'] (FE field,
+        FE frequency, copper, β = 1, linac; src.qoi operators built once per geometry; a geometry
+        whose QoI fail gets NaN labels and a warning, counted in metadata['qoi']['n_failed'])."""
+        if compute_qoi:
+            qoi_api()                                       # fail early if src.qoi is missing
+        n_qoi_failed = 0
         files = [h5py.File(p, "r") for p in self.h5_filepaths]
         try:
             file_meta = json.loads(files[0].attrs.get("metadata", "{}"))
@@ -472,18 +558,30 @@ class RFCavity3DConverter:
                     max_rel = max(max_rel, rel)
                     if rel > 1e-6:
                         raise RuntimeError(f"{key}: Rayleigh frequency mismatch {rel:.2e}")
+                modes = range(len(freqs)) if mode_indices is None else mode_indices
+                kept = [(i, m_idx) for i, m_idx in enumerate(modes) if m_idx < len(freqs)]
+                labels = None
+                if compute_qoi and kept:
+                    cols = [m_idx for _, m_idx in kept]
+                    Ys = Y[:, cols].astype(np.float32)          # the stored DOFs
+                    try:
+                        labels = qoi_labels(qoi_operators_of(geom, field, M=M), Ys, freqs[cols])
+                    except Exception as e:                  # noqa: BLE001 — one bad mesh must not stop the run
+                        n_qoi_failed += 1
+                        warnings.warn(f"{key}: QoI labels failed ({type(e).__name__}: {e}); stored as NaN")
+                        labels = [_nan_labels() for _ in kept]
                 if not store_operators:
                     for k_ in ("M", "K", "G", "Kp"):
                         geom.pop(k_)
                 self.geometry_pool[sid] = geom
-                modes = range(len(freqs)) if mode_indices is None else mode_indices
-                for i, m_idx in enumerate(modes):
-                    if m_idx >= len(freqs):
-                        continue
-                    self.samples.append({
+                for n_, (i, m_idx) in enumerate(kept):
+                    s_ = {
                         "geom_id": sid, "Y": Y[:, m_idx].astype(np.float32),
                         "Theta": np.array([float(i), freqs[m_idx], float(sid)], dtype=np.float32),
-                    })
+                    }
+                    if labels is not None:
+                        s_["qoi"] = labels[n_]
+                    self.samples.append(s_)
                     self.freq_by_mode[i].append(float(freqs[m_idx]))
         finally:
             for f in files:
@@ -507,6 +605,8 @@ class RFCavity3DConverter:
             "operators_stored": bool(store_operators),
             "source_h5": self.h5_filepath, "generator_metadata": file_meta,
         }
+        if compute_qoi:
+            metadata["qoi"] = qoi_metadata(n_qoi_failed)
         with open(output_filepath, "wb") as fo:
             pickle.dump({"geometry_pool": self.geometry_pool, "samples": self.samples, "metadata": metadata}, fo,
                         protocol=pickle.HIGHEST_PROTOCOL)
@@ -514,5 +614,6 @@ class RFCavity3DConverter:
         ne = [g["n_edges"] for g in self.geometry_pool.values()]
         print(f"Saved {output_filepath}: {len(self.geometry_pool)} geometries, {len(self.samples)} samples, "
               f"Nv {min(nv)}-{max(nv)}, Ne {min(ne)}-{max(ne)}, f {allf.min():.3f}-{allf.max():.3f} GHz, "
-              f"Rayleigh max rel err {max_rel:.1e}")
+              f"Rayleigh max rel err {max_rel:.1e}"
+              + (f", QoI labels ({n_qoi_failed} geometries failed)" if compute_qoi else ""))
         return output_filepath

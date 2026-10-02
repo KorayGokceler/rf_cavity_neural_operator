@@ -429,6 +429,26 @@ def _chol_logdet(C):
     return 2.0 * torch.log(torch.diagonal(C, dim1=-2, dim2=-1)).sum(-1)
 
 
+# Cavity QoI (docs/24): absolute R/Q floor [Ω] below which a mode counts as
+# non-accelerating whatever the other modes of its geometry do (all-TE batches).
+_QOI_RQ_ABS = 1e-6
+
+
+def _qoi_term_tuple(terms):
+    """qoi_terms as a validated tuple of qoi_torch keys ('a,b' strings accepted)."""
+    from src.qoi.torch_qoi import QOI_KEYS
+    if terms is None:
+        return ()
+    if isinstance(terms, str):
+        terms = [t for t in (x.strip() for x in terms.split(',')) if t]
+    terms = tuple(str(t) for t in terms)
+    bad = [t for t in terms if t not in QOI_KEYS or t in ('U_J', 'L_acc_m', 'f_Hz', 'Rs_ohm')]
+    if bad:
+        raise ValueError(f"qoi_terms {bad} not usable; choose from "
+                         f"{[k for k in QOI_KEYS if k not in ('U_J', 'L_acc_m', 'f_Hz', 'Rs_ohm')]}")
+    return terms
+
+
 class GNOTLightning(pl.LightningModule):
     def __init__(self, val_dim=6, grid_dim=2, hidden_dim=256,
                  n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
@@ -473,7 +493,12 @@ class GNOTLightning(pl.LightningModule):
                  span_norm='both',
                  span_root=True,
                  span_ridge=1e-9,
-                 selfsup_form='compliance'):
+                 selfsup_form='compliance',
+                 # Cavity figures of merit (model_type='eigenspace3d', docs/24 §5)
+                 qoi_weight=0.0,
+                 qoi_terms=('Q0', 'R_over_Q_ohm', 'G_ohm'),
+                 qoi_peak_p=None,
+                 qoi_rq_floor=1e-2):
         """
         scale_invariant_field: compare unit-norm pred/target mode columns in
             the field loss + rel-L2 metric.  None → auto: True for
@@ -507,6 +532,20 @@ class GNOTLightning(pl.LightningModule):
             metric) instead of its square.
         span_ridge: relative ridge of the Jacobi-scaled Gram solves.
         selfsup_form: 'compliance' (−log Σ 1/θ_i, NEO) or 'logdet' (mean log θ_i).
+        qoi_weight (eigenspace3d): weight of the cavity figure-of-merit loss
+            (docs/24 §5): mean squared log-ratio of the QoI of the Ritz fields at
+            the predicted frequency vs the QoI of the FE targets at the FE
+            frequency (same per-geometry operators, src/qoi/torch_qoi.py), over
+            isolated modes.  0 = off (no behaviour change); the qoi_<name>_rel_err
+            metrics are logged whenever the batch carries the QoI operators.
+            Needs Maxwell3DDataset(..., qoi_ops=True) when > 0.
+        qoi_terms: qoi_torch keys in the loss (list/tuple or 'a,b,c' string).
+        qoi_peak_p: None = exact surface peaks (E_pk, B_pk) in the loss, else a
+            p-norm soft max (metrics always use the exact max).
+        qoi_rq_floor: voltage-based quantities (R/Q, R_sh, T, Epk/Eacc,
+            Bpk/Eacc, V, E_acc) only count for modes whose FE R/Q exceeds
+            qoi_rq_floor · max_k R/Q of the same geometry (and _QOI_RQ_ABS Ω):
+            non-accelerating modes have V ≈ 0 and an ill-conditioned log R/Q.
         """
         super().__init__()
         if scale_invariant_field is None:
@@ -624,6 +663,14 @@ class GNOTLightning(pl.LightningModule):
         self.span_root = bool(span_root)
         self.span_ridge = span_ridge
         self.selfsup_form = selfsup_form
+        self.qoi_weight = float(qoi_weight or 0.0)
+        self.qoi_terms = _qoi_term_tuple(qoi_terms)
+        self.qoi_peak_p = None if qoi_peak_p in (None, 0) else float(qoi_peak_p)
+        self.qoi_rq_floor = float(qoi_rq_floor)
+        if self.qoi_weight > 0 and model_type != 'eigenspace3d':
+            raise ValueError("qoi_weight > 0 needs model_type='eigenspace3d'")
+        if self.qoi_weight > 0 and not self.qoi_terms:
+            raise ValueError("qoi_weight > 0 but qoi_terms is empty")
 
         # Optional: Metrics to evaluate and measure model's success
         self.train_r2 = torchmetrics.R2Score()
@@ -940,7 +987,9 @@ class GNOTLightning(pl.LightningModule):
         inside near-degenerate clusters; NaN = excluded for a cluster that the
         K-th output splits, see _clusters_3d), freq MAE [GHz] and relative
         error, the basis' gradient mass fraction 1 − diag(M_div)/diag(VᵀMV),
-        CG iterations.
+        CG iterations.  Cavity figures of merit (batches with the QoI_* operator
+        keys, docs/24 §5): + qoi_weight · QoI log-ratio loss when qoi_weight > 0,
+        qoi_<name>_rel_err metrics always (_qoi_terms_3d).
         """
         from src.models.hcurl import KpSolve, hcurl_grams, mode_rel_l2
         out = self.model(batch)
@@ -953,6 +1002,9 @@ class GNOTLightning(pl.LightningModule):
         loss_freq = F.mse_loss(f_pred, f_true)
         if self.freq_weight > 0.0:
             total = total + self.freq_weight * loss_freq.to(total.dtype)
+        loss_qoi = self._qoi_terms_3d(batch, out, T[..., :K], f_pred, f_true, prefix)
+        if loss_qoi is not None:
+            total = total + self.qoi_weight * loss_qoi.to(total.dtype)
         total = total.float()
 
         kw = dict(on_step=False, on_epoch=True, batch_size=B, sync_dist=True)
@@ -1002,6 +1054,98 @@ class GNOTLightning(pl.LightningModule):
         self.log(f'{prefix}/field_rel_l2', field_rl, on_step=True, on_epoch=True,
                  prog_bar=True, batch_size=n_valid, sync_dist=True)
         return total, preds, targets
+
+    def _to_ghz(self, f):
+        """z-scored frequency → GHz (float64); unchanged when there are no freq_stats."""
+        f = f.double()
+        if self.freq_stats:
+            f = f * float(self.freq_stats['std']) + float(self.freq_stats['mean'])
+        return f
+
+    def _isolated_3d(self, batch, K):
+        """bool [B, K]: output k of sample b is an isolated mode (a singleton
+        cluster of _clusters_3d), i.e. neither inside a near-degenerate cluster
+        (per-mode QoI depend on the arbitrary rotation within the eigenspace)
+        nor in a cluster that the K-th output splits."""
+        B = batch['Y_freq'].shape[0]
+        iso = torch.zeros(B, K, dtype=torch.bool)
+        for b in range(B):
+            inside, _ = self._clusters_3d(batch, b, K)
+            for c in inside:
+                if len(c) == 1:
+                    iso[b, c[0]] = True
+        return iso
+
+    def _qoi_terms_3d(self, batch, out, Tk, f_pred, f_true, prefix):
+        """Cavity figures of merit (docs/24 §5) of the Ritz fields out['field'] at
+        the predicted frequency vs those of the FE targets Tk [B, Ne, K] at the FE
+        frequency, both evaluated on the fly with the batch's QoI operators
+        (src/qoi/torch_qoi.qoi_torch), never with the stored labels.
+
+        Mask (per sample b, output k): isolated modes only (_isolated_3d); the
+        voltage-based quantities (torch_qoi.VOLTAGE_KEYS) additionally only for
+        accelerating modes, FE R/Q > max(qoi_rq_floor · max_k R/Q_b, _QOI_RQ_ABS);
+        non-finite / non-positive FE values are dropped.
+
+        Loss (qoi_weight > 0): mean over qoi_terms of the per-term mean over the
+        valid entries of (log q_pred − log q_true)²; returns None when off.
+        Metrics (no grad, whenever the batch has the operators): for every label
+        quantity {prefix}/qoi_<name>_rel_err = mean |q_pred/q_true − 1| over its
+        valid entries (exact peaks), logged with batch_size = #valid (0 → no
+        contribution; never NaN, as mode_k_rel_l2); {prefix}/qoi_loss and
+        {prefix}/qoi_<term>_log_mse when the loss is on."""
+        from src.qoi.torch_qoi import QOI_LABELS, VOLTAGE_KEYS, has_qoi_ops, qoi_torch
+        if not has_qoi_ops(batch):
+            if self.qoi_weight > 0:
+                raise ValueError("qoi_weight > 0 but the batch has no QoI operators: build the "
+                                 "datasets with Maxwell3DDataset(..., qoi_ops=True) "
+                                 "(train.py does when training.qoi_weight > 0).")
+            return None
+        B, K = f_pred.shape
+        fp, ft = self._to_ghz(f_pred), self._to_ghz(f_true)
+        tiny = 1e-300
+        with torch.no_grad():
+            q_true = qoi_torch(batch, Tk.detach(), ft)
+            iso = self._isolated_3d(batch, K).to(fp.device)
+            rq = q_true['R_over_Q_ohm']
+            acc = rq > torch.clamp(self.qoi_rq_floor * rq.amax(1, keepdim=True), min=_QOI_RQ_ABS)
+
+            def valid(name, q):
+                v = iso & torch.isfinite(q[name]) & (q[name] > 0)
+                return v & acc if name in VOLTAGE_KEYS else v
+
+        loss = q_pred = None
+        if self.qoi_weight > 0:
+            q_pred = qoi_torch(batch, out['field'], fp, peak_p=self.qoi_peak_p)
+            with torch.no_grad():
+                q_ref = q_true if self.qoi_peak_p is None else \
+                    qoi_torch(batch, Tk.detach(), ft, peak_p=self.qoi_peak_p)
+            terms = []
+            for name in self.qoi_terms:
+                v = valid(name, q_ref)
+                d = torch.log(q_pred[name].clamp(min=tiny)) - torch.log(q_ref[name].clamp(min=tiny))
+                d2 = torch.where(v, d * d, torch.zeros_like(d))
+                terms.append(d2.sum() / max(int(v.sum()), 1))
+            loss = torch.stack(terms).mean()
+
+        kw = dict(on_step=False, on_epoch=True, sync_dist=True)
+        with torch.no_grad():
+            if loss is not None:
+                self.log(f'{prefix}/qoi_loss', loss.detach().float(), **dict(kw, batch_size=B))
+                for name, t in zip(self.qoi_terms, terms, strict=True):
+                    self.log(f'{prefix}/qoi_{name}_log_mse', t.detach().float(), **dict(kw, batch_size=B))
+            if q_pred is None or self.qoi_peak_p is not None:
+                q_pred_m = qoi_torch(batch, out['field'].detach(), fp.detach())
+            else:
+                q_pred_m = {k: v.detach() for k, v in q_pred.items()}
+            for name in QOI_LABELS:
+                rel = (q_pred_m[name] / q_true[name].clamp(min=tiny) - 1.0).abs()
+                v = valid(name, q_true) & torch.isfinite(rel)
+                rel = torch.where(v, rel, torch.zeros_like(rel))
+                n = int(v.sum())
+                self.log(f'{prefix}/qoi_{name}_rel_err', (rel.sum() / max(n, 1)).float(),
+                         **dict(kw, batch_size=n))
+        return loss
 
     def _clusters_3d(self, batch, b, K):
         """(clusters inside the K outputs, split indices) of sample b, from ALL

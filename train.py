@@ -24,6 +24,14 @@ def parse_args():
     # Eski CLI argümanları hala destekleniyor (config override olarak):
     parser.add_argument("--fast_dev_run", action="store_true", help="Run 1 epoch to verify pipeline.")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from.")
+    # Cavity figures of merit (eigenspace3d, docs/24): shortcuts for training.qoi_*.
+    parser.add_argument("--qoi_weight", type=float, default=None,
+                        help="training.qoi_weight: weight of the QoI log-ratio loss (0 = off).")
+    parser.add_argument("--qoi_terms", type=str, default=None,
+                        help="training.qoi_terms, comma separated (default Q0,R_over_Q_ohm,G_ohm).")
+    parser.add_argument("--qoi_metrics", action="store_true",
+                        help="training.qoi_metrics: load the QoI operators and log qoi_*_rel_err "
+                             "even with qoi_weight = 0.")
     return parser.parse_args()
 
 def parse_overrides(override_list):
@@ -102,13 +110,21 @@ def _eigenspace3d_kwargs(mc):
     return kw or None
 
 
-def _datasets_3d(dc, random_seed, augment, feature_indices):
+def _qoi_enabled(tc):
+    """QoI operators needed: the loss is on (training.qoi_weight > 0) or only the
+    metrics are requested (training.qoi_metrics)."""
+    return float(getattr(tc, 'qoi_weight', 0.0) or 0.0) > 0 or bool(getattr(tc, 'qoi_metrics', False))
+
+
+def _datasets_3d(dc, random_seed, augment, feature_indices, qoi_ops=False):
     """train / val / test Maxwell3DDataset (model_type='eigenspace3d')."""
     kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
               feature_indices=feature_indices,
               # false for large PKLs written with --no_operators: rebuild M/K/G/Kp
               # per item instead of keeping every geometry's operators in RAM.
               cache_operators=getattr(dc, 'cache_operators', True))
+    if qoi_ops:                    # per-geometry QoI operators (docs/24 §0.4), cached per geometry
+        kw['qoi_ops'] = True
     return tuple(Maxwell3DDataset(dc.data_path, split=s, augment=augment and s == 'train', **kw)
                  for s in ('train', 'val', 'test'))
 
@@ -120,6 +136,12 @@ def main():
     overrides = parse_overrides(args.override)
     if args.fast_dev_run:
         overrides["training.fast_dev_run"] = True
+    if args.qoi_weight is not None:
+        overrides["training.qoi_weight"] = float(args.qoi_weight)
+    if args.qoi_terms is not None:
+        overrides["training.qoi_terms"] = [t.strip() for t in args.qoi_terms.split(",") if t.strip()]
+    if args.qoi_metrics:
+        overrides["training.qoi_metrics"] = True
     cfg = load_config(args.config, overrides=overrides)
     
     # Kısayollar
@@ -169,7 +191,10 @@ def main():
     # (dataset split'i ayrıca aynı seed ile deterministik).
     pl.seed_everything(random_seed, workers=True)
     if is_3d:
-        train_dataset, val_dataset, test_dataset = _datasets_3d(dc, random_seed, augment, feature_indices)
+        train_dataset, val_dataset, test_dataset = _datasets_3d(dc, random_seed, augment, feature_indices,
+                                                                qoi_ops=_qoi_enabled(tc))
+    elif _qoi_enabled(tc):
+        raise ValueError("training.qoi_weight / qoi_metrics need model_type='eigenspace3d'")
     else:
         common = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                       feature_indices=feature_indices, max_nodes=max_nodes, random_seed=random_seed)
@@ -292,13 +317,19 @@ def main():
         span_root=getattr(tc, 'span_root', True),
         span_ridge=getattr(tc, 'span_ridge', 1e-9),
         selfsup_form=getattr(tc, 'selfsup_form', 'compliance'),
+        # Cavity figures of merit (eigenspace3d, docs/24 §5): off by default
+        qoi_weight=float(getattr(tc, 'qoi_weight', 0.0) or 0.0),
+        qoi_terms=getattr(tc, 'qoi_terms', None) or ('Q0', 'R_over_Q_ohm', 'G_ohm'),   # list or 'a,b'
+        qoi_peak_p=getattr(tc, 'qoi_peak_p', None),
+        qoi_rq_floor=getattr(tc, 'qoi_rq_floor', 1e-2),
         # Stored in the checkpoint hparams so infer.py rebuilds the same split
         # and the same input features (feature_indices, gauge zeroing).
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                       random_seed=random_seed, feature_indices=feature_indices,
                       max_nodes=max_nodes, augment=augment,
                       zero_gauge_features=bool(augment),
-                      field=getattr(train_dataset, 'field', None)),   # 3D: 'E' | 'H' (checked at eval)
+                      field=getattr(train_dataset, 'field', None),    # 3D: 'E' | 'H' (checked at eval)
+                      qoi_ops=_qoi_enabled(tc) if is_3d else False),   # 3D: QoI operators loaded
     )
 
     # Pass frequency statistics to the model for physical units logging
