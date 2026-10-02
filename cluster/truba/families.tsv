@@ -1,0 +1,24 @@
+# One row per geometry group; each group is generated, converted and stored SEPARATELY:
+#   $DATA_ROOT/$TAG/h5/<family>/<family>_s00000.h5 …   →   $DATA_ROOT/$TAG/pkl/<family>.pkl
+#
+# family         block  n_total  shard_size  group
+#   block       FIXED forever for a family (ids = block·2^19 + i). Never reuse or renumber a block;
+#               a new family gets a new number (≤ 31).
+#   n_total     geometries wanted. Raise it later and re-submit: only the missing shards run.
+#   shard_size  geometries per job (power of 2 keeps Sobol blocks balanced). Never change it for a
+#               family that already has shards.
+#   group       train | ood (ood = shapes never used for training; separate test sets)
+elliptical      1      10240    1024        train
+reentrant       2      10240    1024        train
+pillbox_pipes   3      10240    1024        train
+ridged_box      4      10240    1024        train
+composite       5      10240    1024        train
+freeform        6      10240    1024        train
+hwr             7      10240    1024        train
+spoke           8      10240    1024        train
+dtl             9      10240    1024        train
+box             20     1024     1024        ood
+coax_qw         21     1024     1024        ood
+pillbox_port    22     1024     1024        ood
+elliptical_long 23     1024     1024        ood
+junction        24     1024     1024        ood

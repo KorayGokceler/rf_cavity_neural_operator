@@ -21,8 +21,8 @@ G, E_pk/E_acc, B_pk/E_acc, …).
 *Mevcut durum:* E formülasyonuna geçildi (`claude/3d-e-formulation`): kulplu kaviteler (spoke, HWR,
 DTL) dahil her kapalı PEC kavite çalışır; H formülasyonu `--field H` ile duruyor. Aileler
 `src/data_gen/cavity_shapes.py` içinde; üretici `--families` ile tek aile
-üretebilir, `--start_id` parçaları ve `convert_3d.py` çok dosya birleştirmeyi destekler. Notebook
-şu an aileleri karışık üretiyor → sınıf başına ayrı üretim düzeni kurulacak. Kapsama raporu:
+üretebilir, `--start_id` parçaları ve `convert_3d.py` çok dosya birleştirmeyi destekler. Notebook aileleri karışık üretiyor; TRUBA'da her aile ayrı üretilir
+(`cluster/truba/README.md`). Kapsama raporu:
 `scripts/dataset_stats_3d.py`.
 
 ### 1.2 Model boyutu
@@ -55,8 +55,9 @@ düzeltmesi §2.2), HOM / kuplaj değerleri, CST ile kıyas.
 
 - Model ve dataset **TÜBİTAK TRUBA**'da üretilecek / eğitilecek.
 
-*Mevcut durum:* çok GPU (tek düğüm DDP) var. Gerekenler: SLURM iş dizileri (sınıf/parça başına veri
-üretimi), çok düğümlü eğitim, parça bazlı tembel veri yükleme (tek büyük pickle ölçeklenmez), FP64
+*Mevcut durum:* çok GPU (tek düğüm DDP) var. TRUBA veri üretimi hazır (`cluster/truba/`, branch
+`claude/truba-datagen`): aile başına SLURM iş dizileri, aileye özel kimlik blokları, `--resume`, aile
+PKL'leri + `merge.sh` karışımları, `status.sh`. Gerekenler: çok düğümlü eğitim, parça bazlı tembel veri yükleme (tek büyük pickle ölçeklenmez), FP64
 (Ritz/CG) performansı için GPU tipi seçimi.
 
 ## 4. Model düzgün hale geldiğinde

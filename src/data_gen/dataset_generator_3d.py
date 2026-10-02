@@ -105,6 +105,9 @@ def parse_args(argv=None):
                    help="Max Lipschitz constant of δ (< 1 keeps the map injective, tets positively oriented).")
     p.add_argument("--start_id", type=int, default=0,
                    help="First sample id (shards: ids start_id … start_id+n_total−1, same seed → disjoint samples).")
+    p.add_argument("--resume", action="store_true",
+                   help="Continue an interrupted run: append to <h5_filename>.partial and skip the ids already in "
+                        "it (cluster jobs killed by the wall-time limit lose nothing).")
     p.add_argument("--n_workers", type=int, default=None, help="Worker processes (default: min(cpu_count, 4)).")
     p.add_argument("--sample_timeout", type=float, default=300.0, help="Seconds before a sample is skipped.")
     p.add_argument("--max_geom_tries", type=int, default=6,
@@ -745,13 +748,22 @@ def main(argv=None):
     n_ok, n_fail, times, calib = 0, 0, [], []
     # maxtasksperchild: recycle workers (fresh gmsh / OCC state and memory) every 50 samples
     new_pool = lambda: Pool(n_workers, initializer=_init_worker, initargs=(ARGS,), maxtasksperchild=50)  # noqa: E731
+    ids = [int(x) for x in open(ARGS.ids_file).read().split()] if ARGS.ids_file else \
+        list(range(ARGS.start_id, ARGS.start_id + ARGS.n_total))
+    n_requested = len(ids)
+    resume = bool(getattr(ARGS, "resume", False)) and os.path.exists(tmp_path)
+    if resume:
+        with h5py.File(tmp_path, "r") as f_h5:
+            done = {int(k.split("_", 1)[1]) for k in f_h5.keys() if k.startswith("sample_")}
+        n_ok = len(done)
+        ids = [i for i in ids if i not in done]
+        print(f"Resuming {tmp_path}: {n_ok} samples already there, {len(ids)} ids left")
     pool = new_pool()
     try:
-        with h5py.File(tmp_path, "w") as f_h5:
-            f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
+        with h5py.File(tmp_path, "a" if resume else "w") as f_h5:
+            if not resume:
+                f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
             chunk = 4 * n_workers
-            ids = [int(x) for x in open(ARGS.ids_file).read().split()] if ARGS.ids_file else \
-                list(range(ARGS.start_id, ARGS.start_id + ARGS.n_total))
             for i in range(0, len(ids), chunk):
                 results, hung = _run_chunk(pool, ids[i:i + chunk], ARGS.sample_timeout)
                 if hung:
@@ -771,11 +783,14 @@ def main(argv=None):
                 print(f"  {min(i + chunk, len(ids))}/{len(ids)} done ({n_ok} ok, {n_fail} failed)")
     finally:
         pool.terminate()
+    with h5py.File(tmp_path, "a") as f_h5:          # bookkeeping for cluster status reports
+        f_h5.attrs["n_requested"] = n_requested
+        f_h5.attrs["n_failed_last_run"] = n_fail
     if n_ok == 0:
         os.remove(tmp_path)
         raise SystemExit(f"No valid samples generated ({n_fail} failed); nothing written.")
     os.replace(tmp_path, ARGS.h5_filename)
-    t = np.array(times)
+    t = np.array(times) if times else np.zeros((1, 4))
     print(f"\nDone: {n_ok} samples ({n_fail} failed) -> {ARGS.h5_filename}")
     print(f"  Nv {t[:, 2].min():.0f}-{t[:, 2].max():.0f}, Ne {t[:, 3].min():.0f}-{t[:, 3].max():.0f}; "
           f"mean t_mesh {t[:, 0].mean():.2f}s, t_solve {t[:, 1].mean():.2f}s per sample (one worker)")

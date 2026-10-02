@@ -14,6 +14,7 @@ Invariants:
 - per-sample seeding is reproducible
 """
 import json
+import os
 
 import h5py
 import numpy as np
@@ -269,6 +270,26 @@ def test_cli_writes_h5(tmp_path, field, families):
             assert int(g.attrs["betti1"]) == (0 if g.attrs["shape_type"] == "pillbox" else 1 + int(g.attrs["beam_port"]))
             assert int(g.attrs["n_bnd_components"]) == 1
             assert np.all(g["edges"][:, 0] < g["edges"][:, 1])
+
+
+def test_cli_resume_appends_missing_ids(tmp_path):
+    """--resume (cluster wall-time kills): an interrupted run's .partial keeps its samples, only
+    the missing ids are generated, and the result equals an uninterrupted run; large id offsets
+    (TRUBA family blocks) work."""
+    common = ["--n_workers", "1", "--mesh_size", "0.2", "--n_eigen_modes", "3", "--families", "pillbox",
+              "--sampling", "sobol", "--start_id", str(3 * 524288)]
+    full, part = tmp_path / "full.h5", tmp_path / "part.h5"
+    gen.main(["--n_total", "3", "--h5_filename", str(full), *common])
+    gen.main(["--n_total", "1", "--h5_filename", str(part), *common])
+    os.replace(part, str(part) + ".partial")                 # = a job killed after its first sample
+    gen.main(["--n_total", "3", "--h5_filename", str(part), "--resume", *common])
+    assert part.exists() and not os.path.exists(str(part) + ".partial")
+    with h5py.File(full, "r") as a, h5py.File(part, "r") as b:
+        assert sorted(a.keys()) == sorted(b.keys()) == [f"sample_{3 * 524288 + i:04d}" for i in range(3)]
+        assert int(b.attrs["n_requested"]) == 3 and int(b.attrs["n_failed_last_run"]) == 0
+        for k in a:
+            np.testing.assert_array_equal(a[k]["nodes"][()], b[k]["nodes"][()])
+            np.testing.assert_allclose(a[k]["freqs"][()], b[k]["freqs"][()], rtol=1e-10)
 
 
 def test_mesher_error_restarts_gmsh(set_args, monkeypatch):
