@@ -59,7 +59,7 @@ def transit_time_factor(k, length, beta=1.0):
     return float(np.sinc(x / np.pi))
 
 
-def _finish(f, U_like, Rs, Pc, V, L, Epk, Bpk, T, convention):
+def _finish(f, Rs, Pc, V, L, Epk, Bpk, T, convention):
     w = 2 * np.pi * f
     fac = 1.0 if convention == "linac" else 0.5
     Q0 = w * 1.0 / Pc
@@ -82,7 +82,7 @@ def pillbox_tm010(R, L, sigma=SIGMA_CU, Rs=None, beta=1.0, convention="linac"):
     Pc = np.pi * Rs * (E0 / ETA0) ** 2 * J1 ** 2 * R * (L + R)
     T = transit_time_factor(w / C0, L, beta)
     V = E0 * L * T
-    return _finish(f, 1.0, Rs, Pc, V, L, E0, MU0 * E0 / ETA0 * J1MAX, T, convention)
+    return _finish(f, Rs, Pc, V, L, E0, MU0 * E0 / ETA0 * J1MAX, T, convention)
 
 
 def box_te101(a, b, d, sigma=SIGMA_CU, Rs=None, beta=1.0, convention="linac"):
@@ -97,7 +97,7 @@ def box_te101(a, b, d, sigma=SIGMA_CU, Rs=None, beta=1.0, convention="linac"):
     Pc = 0.5 * Rs * A ** 2 * (a * b * k ** 2 / 2 + np.pi ** 2 * (a * d / b ** 2 + b * d / a ** 2))
     T = transit_time_factor(w / C0, d, beta)
     V = E0 * d * T
-    return _finish(f, 1.0, Rs, Pc, V, d, E0, MU0 * A * np.pi / min(a, b), T, convention)
+    return _finish(f, Rs, Pc, V, d, E0, MU0 * A * np.pi / min(a, b), T, convention)
 
 
 # ─────────────────────────── FE reference solutions ────────────
