@@ -82,6 +82,13 @@ training:
   rayleigh_weight: 0.0
   smoothness_weight: 0.0
 
+  # cavity figures of merit (docs/24_CAVITY_QOI.md §5): derived from the Ritz field + frequency
+  qoi_weight: 0.0               # >0: + mean (log q_pred − log q_FE)² over isolated modes
+  qoi_terms: [Q0, R_over_Q_ohm, G_ohm]
+  qoi_metrics: false            # log val/qoi_*_rel_err (builds QoI operators per geometry)
+  qoi_peak_p: null              # p-norm soft peak for gradients (null = exact max)
+  qoi_rq_floor: 1.0e-2          # voltage QoI only for modes with R/Q > floor·max R/Q
+
   # near-degenerate clusters: metric only (subspace rel-L2 inside a cluster)
   degeneracy_mode: hard
   near_deg_threshold: 0.05

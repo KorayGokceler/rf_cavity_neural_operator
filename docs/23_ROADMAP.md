@@ -45,8 +45,11 @@ DTL) dahil her kapalı PEC kavite çalışır; H formülasyonu `--field H` ile d
 - Q faktörü ve diğer kavite değerleri (R/Q, geometri faktörü G, shunt empedansı, E_pk/E_acc,
   B_pk/E_acc, hücreler arası kuplaj, HOM değerleri, …) hesaplanacak.
 
-*Mevcut durum:* tasarım konuşuldu (alanlardan son işlem, pillbox analitik doğrulaması, model
-tahmini / düzeltme başlıkları); kod yok.
+*Mevcut durum:* `claude/3d-cavity-qoi` — Q0, G, R/Q, R_sh, T, E_pk/E_acc, B_pk/E_acc tahmin edilen
+alan + frekanstan hesaplanıyor (`src/qoi/`, docs/24_CAVITY_QOI.md): pillbox / kutu analitik doğrulaması,
+PKL'de FE etiketleri, `scripts/eval_qoi.py` (model vs FE), isteğe bağlı eğitim terimi `--qoi_weight`.
+Açık: E formülasyonunda eğri duvarlarda Q0/G birinci mertebe (~%3–6 ağ yanlılığı; kalıntı-akı
+düzeltmesi §2.2), HOM / kuplaj değerleri, CST ile kıyas.
 
 ## 3. Altyapı
 

@@ -390,6 +390,33 @@ def test_degenerate_mask():
     assert ev.degenerate_mask(3, [[0], [1], [2]], [2]).tolist() == [False, False, True]
 
 
+def test_rel_gap_clusters():
+    ev = importlib.import_module('scripts.eval_qoi')
+    f = [1.0, 1.0005, 1.2, 1.5, 1.5004, 2.0]
+    inside, split = ev.rel_gap_clusters(f, 4, 1e-3)
+    assert inside == [[0, 1], [2]] and split == [3]
+    inside, split = ev.rel_gap_clusters(f + [float('nan')], 6, 1e-3)
+    assert inside == [[0, 1], [2], [3, 4], [5]] and split == []
+
+
+def test_regroup_uses_raw_ritz_for_released_modes(synth, fake_qoi):
+    ev = importlib.import_module('scripts.eval_qoi')
+    from src.viz.predict import predict
+    field, path = synth
+    ds = _all(path)
+    lm = _tiny_lm(ds[0]['Input_funcs'].shape[-1], ds.stats)
+    out = predict(lm, ds, 0)
+    K = len(out['f_pred'])
+    out = dict(out, clusters=[list(range(K))], split=np.zeros(K, bool))      # model: one big cluster
+    new = ev.regroup(lm, ds, 0, out, 1e-9)                                    # FE: all isolated
+    assert not ev.degenerate_mask(K, new['clusters'], new['split']).any()
+    with torch.no_grad():
+        F = lm(maxwell3d_collate([ds[0]]))['field'][0, :len(out['edges'])].double().numpy()
+    np.testing.assert_allclose(new['pred'], F)
+    same = ev.regroup(lm, ds, 0, out, 10.0)                                   # FE: everything clustered
+    np.testing.assert_array_equal(same['pred'], out['pred'])
+
+
 def _fake_out(ds, idx, pred=None, f_scale=1.0):
     it = ds[idx]
     K = it['Y_field'].shape[1]
@@ -468,7 +495,7 @@ def test_eval_qoi_main_fake(synth, fake_qoi, tmp_path):
     assert {'geom_id', 'shape_type', 'mode', 'degenerate', 'accel', 't_ops_s', 't_qoi_s', 'label_rel_diff',
             'Q0_true', 'Q0_pred', 'Q0_rel', 'Q0_label'} <= set(rows[0])
     assert max(r['label_rel_diff'] for r in rows) < 1e-5                          # stored == recomputed
-    assert sum(r['accel'] for r in rows) == len(ds)
+    assert sum(r['accel'] for r in rows) == len(ds) and sum(r['accel_all'] for r in rows) == len(ds)
     assert ('all', 'Q0') in summary.index
 
 

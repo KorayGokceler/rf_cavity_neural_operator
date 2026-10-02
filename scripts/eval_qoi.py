@@ -15,12 +15,18 @@ In the summary the voltage-based QoI (R/Q, R_sh, T, Epk/Eacc, Bpk/Eacc) of the '
 only count modes whose true R/Q ≥ --rq_floor × the geometry's max (non-accelerating modes have
 V ≈ 0 and meaningless ratios); Q0, G and f count every isolated mode.
 Stored PKL labels (samples[i]['qoi']), when present, are checked against the recomputed truth.
+--deg_rel r replaces the model's cluster rule (near_deg_rel_threshold of the checkpoint, used by
+eval_3d / predict) by "relative gap of the FE frequencies < r" (all stored modes + freq_next, so a
+pair cut by the last output is still flagged); modes the model clusters but r does not are then
+evaluated with their RAW Ritz column (no oracle rotation) — useful for multicell passbands, whose
+modes (incl. the π mode) are a few 0.1 % apart and fall inside the training threshold (2 %).
 
     python scripts/eval_qoi.py --checkpoint ckpt_or_dir --data_path data/maxwell3d.pkl \\
         [--split test|val|train|all] [--csv qoi.csv] [--summary_csv qoi_summary.csv] [--max_geoms N]
 
 CSV: one row per (geometry, output mode) — geom_id, shape_type, field, n_edges, mode, f_true_GHz,
-f_pred_GHz, f_rel_err, rel_l2, degenerate, accel, rq_frac, for each QoI q: q_true, q_pred, q_rel
+f_pred_GHz, f_rel_err, rel_l2, degenerate, accel, accel_all (argmax true R/Q over ALL outputs,
+degenerate or not), rq_frac, for each QoI q: q_true, q_pred, q_rel
 (signed (pred − true)/|true|, NaN if degenerate) and q_label (stored, NaN if none), label_rel_diff,
 t_ops_s (operator build, once per mesh), t_qoi_s (QoI of the K predicted modes).
 """
@@ -79,6 +85,8 @@ def geometry_rows(ops, out, labels=None, settings=None, ops_time=float('nan')):
     rq = qt['R_over_Q_ohm'] if 'R_over_Q_ohm' in qt else np.full(K, np.nan)
     iso_rq = np.where(~deg & np.isfinite(rq), rq, -np.inf)
     accel = int(np.argmax(iso_rq)) if np.isfinite(iso_rq).any() else -1
+    all_rq = np.where(np.isfinite(rq), rq, -np.inf)
+    accel_all = int(np.argmax(all_rq)) if np.isfinite(all_rq).any() else -1
     rq_max = iso_rq[accel] if accel >= 0 else np.nan
     ft, fp = np.asarray(out['f_true'], np.float64), np.asarray(out['f_pred'], np.float64)
     rows = []
@@ -87,6 +95,7 @@ def geometry_rows(ops, out, labels=None, settings=None, ops_time=float('nan')):
              'n_edges': int(len(out['edges'])), 'mode': k, 'f_true_GHz': float(ft[k]),
              'f_pred_GHz': float(fp[k]), 'f_rel_err': float((fp[k] - ft[k]) / abs(ft[k])),
              'rel_l2': float(out['rel_l2'][k]), 'degenerate': bool(deg[k]), 'accel': k == accel,
+             'accel_all': k == accel_all,
              'rq_frac': float(rq[k] / rq_max) if np.isfinite(rq_max) and rq_max > 0 else float('nan')}
         diffs = []
         for j, n in enumerate(names):
@@ -113,7 +122,49 @@ def stored_labels(ds, g_id, names):
                      for j in s_idx], dtype=np.float64)
 
 
-def evaluate_qoi(lm, ds, device='cpu', max_geoms=None, settings=None, n_axis=None, verbose=False):
+def rel_gap_clusters(f_all, K, rel):
+    """(clusters inside the K outputs, split indices) of ascending FE frequencies f_all (all stored
+    modes, + freq_next if known): consecutive modes with gap < rel·f join a cluster."""
+    f = [float(v) for v in f_all if np.isfinite(v)]
+    clusters = [[0]] if f else []
+    for i in range(1, len(f)):
+        if abs(f[i] - f[i - 1]) < rel * abs(f[i - 1]):
+            clusters[-1].append(i)
+        else:
+            clusters.append([i])
+    inside = [c for c in clusters if c[-1] < K]
+    split = [k for c in clusters if c[0] < K <= c[-1] for k in c if k < K]
+    return inside, split
+
+
+def regroup(lm, ds, idx, out, rel, device='cpu'):
+    """predict() output re-clustered with the FE relative-gap rule (rel_gap_clusters); modes no
+    longer degenerate get their raw Ritz column instead of the cluster-projected target."""
+    import torch
+    from src.data.dataset_3d import maxwell3d_collate
+    from src.viz.predict import _to
+    K = len(out['f_pred'])
+    s_idx = ds.geom_to_samples[out['geom_id']]
+    f_all = [float(ds.samples_metadata[j]['Theta'][1]) for j in s_idx]
+    g = ds.geometry_pool[ds.samples_metadata[s_idx[0]]['geom_id']]
+    f_next = g.get('freq_next', None)
+    if f_next is not None and np.isfinite(f_next):
+        f_all.append(float(f_next))
+    inside, split = rel_gap_clusters(f_all, K, rel)
+    old = degenerate_mask(K, out['clusters'], out['split'])
+    new = degenerate_mask(K, inside, split)
+    pred = np.array(out['pred'], dtype=np.float64, copy=True)
+    redo = np.flatnonzero(old & ~new)
+    if len(redo):
+        with torch.no_grad():
+            o = lm(_to(maxwell3d_collate([ds[idx]]), device))
+        F = o['field'][0, :pred.shape[0]].double().cpu().numpy()
+        pred[:, redo] = F[:, redo]                          # QoI are amplitude / sign invariant
+    return dict(out, pred=pred, clusters=inside, split=new & np.isin(np.arange(K), split))
+
+
+def evaluate_qoi(lm, ds, device='cpu', max_geoms=None, settings=None, n_axis=None, verbose=False,
+                 deg_rel=None):
     """Long table (list of row dicts, see module docstring) over the dataset's geometries."""
     from src.viz.predict import _geom_of, predict
     names = tuple(qoi_api().QOI_LABELS)
@@ -124,6 +175,8 @@ def evaluate_qoi(lm, ds, device='cpu', max_geoms=None, settings=None, n_axis=Non
     n = len(ds) if max_geoms is None else min(len(ds), int(max_geoms))
     for idx in range(n):
         out = predict(lm, ds, idx, device=device)
+        if deg_rel is not None:
+            out = regroup(lm, ds, idx, out, float(deg_rel), device)
         g_id = out['geom_id']
         geom = _geom_of(ds, g_id)
         g_key = ds.samples_metadata[ds.geom_to_samples[g_id][0]]['geom_id']
@@ -175,8 +228,13 @@ def print_summary(rows, summary):
         print("stored labels: none in this PKL (or other settings) — truth recomputed from the FE field")
     acc = df[df['accel'].astype(bool)]
     if len(acc):
-        print(f"accelerating mode (argmax true R/Q): mode index counts {acc['mode'].value_counts().to_dict()}, "
+        print(f"accelerating mode (argmax true R/Q of the isolated outputs): {len(acc)}/{len(g)} geometries, "
+              f"mode index counts {acc['mode'].value_counts().to_dict()}, "
               f"true R/Q median {acc['R_over_Q_ohm_true'].median():.4g} Ω, Q0 {acc['Q0_true'].median():.4g}")
+    hid = df[df['accel_all'].astype(bool) & df['degenerate'].astype(bool)]
+    if len(hid):
+        print(f"  {len(hid)} geometries: the largest-R/Q output is inside a near-degenerate cluster (excluded; "
+              f"see --deg_rel)")
     print("|rel err| = |pred/true − 1| — modes: isolated outputs; accel: accelerating mode")
     with pd.option_context('display.float_format', '{:.3e}'.format, 'display.width', 160,
                            'display.max_rows', 500):
@@ -198,6 +256,8 @@ def main(argv=None):
     ap.add_argument('--beta', type=float, default=QOI_LABEL_SETTINGS['beta'])
     ap.add_argument('--convention', default=QOI_LABEL_SETTINGS['convention'], choices=['linac', 'circuit'])
     ap.add_argument('--n_axis', type=int, default=None, help='axis points (default: build_qoi_operators)')
+    ap.add_argument('--deg_rel', type=float, default=None,
+                    help="degenerate = FE relative frequency gap < deg_rel (default: the model's clusters)")
     ap.add_argument('--device', default=None)
     ap.add_argument('--verbose', action='store_true')
     args = ap.parse_args(argv)
@@ -209,7 +269,7 @@ def main(argv=None):
     if args.Rs is not None:
         settings['Rs'] = args.Rs
     rows = evaluate_qoi(lm, ds, device=device, max_geoms=args.max_geoms, settings=settings,
-                        n_axis=args.n_axis, verbose=args.verbose)
+                        n_axis=args.n_axis, verbose=args.verbose, deg_rel=args.deg_rel)
     if not rows:
         print("no geometries in this split")
         return [], None
