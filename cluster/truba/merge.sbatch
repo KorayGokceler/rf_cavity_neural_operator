@@ -22,6 +22,6 @@ LEAN=(); [ "$PKL_LEAN" = 1 ] && LEAN=(--no_operators)
 mkdir -p "$PKL_DIR"
 OUT=$PKL_DIR/mix_$MIX_NAME.pkl
 cd "$REPO_DIR"
-python convert_3d.py --h5_filepath "${H5S[@]}" --output_path "$OUT.tmp" "${LEAN[@]}"
+python convert_3d.py --h5_filepath "${H5S[@]}" --output_path "$OUT.tmp" ${LEAN[@]+"${LEAN[@]}"}
 mv "$OUT.tmp" "$OUT"
 echo "$(date -Is) wrote $OUT (${#H5S[@]} shards: $MIX_SPEC)"

@@ -417,14 +417,18 @@ def qoi_api():
 def qoi_metadata(n_failed=0):
     """metadata['qoi'] of a PKL with QoI labels (§0.4)."""
     return {"labels": list(qoi_api().QOI_LABELS), **QOI_LABEL_SETTINGS,
-            "axis": "x=y=0, z", "L_acc": "axis chord", "n_failed": int(n_failed)}
+            "axis": "x=y=0 along z (hwr: x through the mid-length, src.qoi.operators.beam_axis)", "L_acc": "axis chord", "n_failed": int(n_failed)}
 
 
 def qoi_operators_of(geom, field, M=None, **kw):
     """src.qoi.build_qoi_operators for one geometry_pool entry (X, tets, edges, scale, center);
-    M: scipy mass matrix (assembled by build_qoi_operators when None)."""
+    M: scipy mass matrix (assembled by build_qoi_operators when None).  The beam axis follows the
+    geometry's family (src.qoi.operators.beam_axis: hwr → transverse, x) unless kw sets one."""
     center = geom.get("center", None)
     center = np.zeros(3) if center is None else np.asarray(center, dtype=np.float64).reshape(3)
+    if not any(k in kw for k in ("axis_xy", "axis_dir", "axis_point")):
+        kw.update(importlib.import_module("src.qoi.operators").beam_axis(
+            geom.get("shape_type", ""), geom["X"], float(geom["scale"]), center))
     return qoi_api().build_qoi_operators(np.asarray(geom["X"], dtype=np.float64),
                                          np.asarray(geom["tets"], dtype=np.int64),
                                          np.asarray(geom["edges"], dtype=np.int64),

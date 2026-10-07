@@ -23,7 +23,12 @@ $DATA_ROOT/$TAG/                         (varsayılan /arf/scratch/$USER/rfcav3d
 | `submit_all.sh [train\|ood\|all]` | gruptaki her aile için `submit_family.sh` |
 | `status.sh` | aile başına ilerleme tablosu + `squeue` |
 | `merge.sh <ad> aile:n …` | ailelerin ilk n parçasından karışık PKL |
-| `gen_shard.sbatch`, `convert_family.sbatch`, `merge.sbatch` | işlerin kendisi (elle çağırmaya gerek yok) |
+| `submit_train.sh [--then-eval]` | GPU eğitimi (`EXP`, `MODEL=small\|base\|large\|xl`, …); aynı EXP → `last.ckpt`'tan devam |
+| `submit_eval.sh` | test (ID) + OOD değerlendirmesi: frekans/alan, Q0/R/Q…, kesit grafikleri, ParaView |
+| `predict.sh …` | yeni bir kavitede saf model tahmini (STEP / mesh / üretilmiş geometri) |
+| `gen_shard.sbatch`, `convert_family.sbatch`, `merge.sbatch`, `train.sbatch`, `eval.sbatch` | işlerin kendisi (elle çağırmaya gerek yok) |
+
+Uçtan uca akış (veri → eğitim → değerlendirme → tahmin): **docs/25_PIPELINE.md**.
 
 ## Adımlar
 

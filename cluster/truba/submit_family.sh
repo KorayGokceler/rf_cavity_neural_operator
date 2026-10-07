@@ -44,7 +44,7 @@ if [ "$MODE" = "" ] && [ ${#MISSING[@]} -eq 0 ] && [ -f "$PKL" ] && \
 fi
 if [ "$MODE" != --no-convert ]; then
   CJ=$(sbatch --parsable $(sbatch_common "$CONVERT_PARTITION") -c "$CONVERT_CPUS" -t "$CONVERT_TIME" \
-       "${DEP[@]}" --job-name="conv_$FAMILY" -o "$LOG_DIR/conv_${FAMILY}_%j.out" \
+       ${DEP[@]+"${DEP[@]}"} --job-name="conv_$FAMILY" -o "$LOG_DIR/conv_${FAMILY}_%j.out" \
        --export=ALL "$TRUBA_DIR/convert_family.sbatch")
   echo "  conversion: job $CJ → $PKL"
 fi

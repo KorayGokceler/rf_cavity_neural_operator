@@ -1,6 +1,6 @@
 #!/bin/bash
-# One-time setup on a TRUBA login node (needs internet): Miniforge + env "rfcav" (CPU torch is
-# enough for data generation / conversion), gmsh from conda-forge (brings its own GL/X libs, the
+# One-time setup on a TRUBA login node (needs internet): Miniforge + env "rfcav" (CPU torch by
+# default — enough for data generation / conversion; TORCH_INDEX=… for a CUDA build), gmsh from conda-forge (brings its own GL/X libs, the
 # PyPI wheel needs system libGLU / libXrender …), the rest from requirements.txt. Ends with a
 # 2-geometry generation check (a few seconds, fine on the login node).
 #   bash cluster/truba/setup_env.sh
@@ -16,10 +16,12 @@ fi
 source "$CONDA_HOME/bin/activate"
 conda env list | grep -q '^rfcav ' || conda create -y -n rfcav -c conda-forge python=3.11 gmsh python-gmsh
 conda activate rfcav
-pip install --index-url https://download.pytorch.org/whl/cpu torch
+# CPU torch is enough for generation / conversion; for GPU training use a CUDA wheel, e.g.
+#   TORCH_INDEX=https://download.pytorch.org/whl/cu121 bash cluster/truba/setup_env.sh
+pip install --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}" torch
 grep -v '^gmsh' "$REPO_DIR/requirements.txt" > "/tmp/req_rfcav_$USER.txt"
 pip install -r "/tmp/req_rfcav_$USER.txt"
-python -c "import gmsh, skfem, h5py, scipy; print('gmsh', gmsh.__version__, '| skfem ok')"
+python -c "import gmsh, skfem, h5py, scipy, torch; print('gmsh', gmsh.__version__, '| torch', torch.__version__, '| CUDA build', torch.version.cuda)"
 cd "$REPO_DIR"
 TMP=$(mktemp -d)
 OMP_NUM_THREADS=1 python src/data_gen/dataset_generator_3d.py --families elliptical --n_total 2 \

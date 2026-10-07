@@ -19,6 +19,6 @@ EXPECTED=$(( (FAM_N + FAM_SHARD - 1) / FAM_SHARD ))
 LEAN=(); [ "$PKL_LEAN" = 1 ] && LEAN=(--no_operators)
 OUT=$PKL_DIR/$FAMILY.pkl
 cd "$REPO_DIR"
-python convert_3d.py --h5_filepath "${H5S[@]}" --output_path "$OUT.tmp" "${LEAN[@]}"
+python convert_3d.py --h5_filepath "${H5S[@]}" --output_path "$OUT.tmp" ${LEAN[@]+"${LEAN[@]}"}
 mv "$OUT.tmp" "$OUT"
 echo "$(date -Is) wrote $OUT from ${#H5S[@]} shards"

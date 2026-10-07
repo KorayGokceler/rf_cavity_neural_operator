@@ -147,31 +147,63 @@ def wall_loss_matrix(X, tets, edges, field, bf=None, basis=None):
 
 # ─────────────────────────── beam axis ─────────────────────────
 
-def axis_operator(X, tets, edges, field, scale, center, n_axis=401, axis_xy=(0.0, 0.0), basis=None):
-    """Axis sampling: midpoints ζ_p of n_axis equal cells over the z-extent of the mesh on the
-    physical line (x, y) = axis_xy, located in the mesh; q_p = Δζ inside, 0 outside.
-    Returns (Az CSR [P×Ne], zeta [P], q [P], L_axis).  Az rows: E primary the z-component of the
-    Whitney field at the point; H primary the z-component of the (per-tet constant) curl."""
+def _axis_line(axis_xy=(0.0, 0.0), axis_dir=None, axis_point=None):
+    """(unit direction d, physical point p) of the beam axis: default the line (x, y) = axis_xy
+    along z; axis_dir 'x' | 'y' | 'z' or a 3-vector, axis_point a physical point on it [m]."""
+    if axis_dir is None:
+        axis_dir = "z"
+    if isinstance(axis_dir, str):
+        d = np.eye(3)["xyz".index(axis_dir.lower())]
+    else:
+        d = np.asarray(axis_dir, dtype=np.float64).reshape(3)
+        d = d / np.linalg.norm(d)
+    if axis_point is None:
+        axis_point = (float(axis_xy[0]), float(axis_xy[1]), 0.0)
+    return d, np.asarray(axis_point, dtype=np.float64).reshape(3)
+
+
+def axis_operator(X, tets, edges, field, scale, center, n_axis=401, axis_xy=(0.0, 0.0), basis=None,
+                  axis_dir=None, axis_point=None):
+    """Axis sampling: midpoints ζ_p of n_axis equal cells over the extent of the mesh along the beam
+    axis (default: the physical line (x, y) = axis_xy along z; or axis_dir / axis_point, see
+    _axis_line), located in the mesh; q_p = Δζ inside, 0 outside.
+    Returns (Az CSR [P×Ne], zeta [P], q [P], L_axis).  Az rows: E primary the axial component of the
+    Whitney field at the point; H primary the axial component of the (per-tet constant) curl."""
     X = np.asarray(X, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     dof, loc, vol, grads, curls = _local_basis(X, tets, edges) if basis is None else basis
-    xy = (np.asarray(axis_xy, dtype=np.float64) - np.asarray(center, dtype=np.float64)[:2]) / float(scale)
-    z0, z1 = X[:, 2].min(), X[:, 2].max()
+    d, p = _axis_line(axis_xy, axis_dir, axis_point)
+    pn = (p - np.asarray(center, dtype=np.float64).reshape(3)) / float(scale)
+    perp = pn - (pn @ d) * d                                  # foot of the axis through the origin
+    t = X @ d
+    z0, z1 = t.min(), t.max()
     dz = (z1 - z0) / n_axis
     zeta = z0 + (np.arange(n_axis) + 0.5) * dz
-    pts = np.column_stack([np.full(n_axis, xy[0]), np.full(n_axis, xy[1]), zeta])
+    pts = perp[None, :] + zeta[:, None] * d[None, :]
     tid, bary = locate(X, tets, pts)
     inside = tid >= 0
     q = np.where(inside, dz, 0.0)
     p_in, ti = np.flatnonzero(inside), tid[inside]
     if field == "E":
-        vals = _whitney_vectors(grads[ti], loc[ti], bary[inside])[..., 2]   # [m,6]
+        vals = _whitney_vectors(grads[ti], loc[ti], bary[inside]) @ d   # [m,6]
     elif field == "H":
-        vals = curls[ti][..., 2]
+        vals = curls[ti] @ d
     else:
         raise ValueError(f"field must be 'E' or 'H', got {field!r}")
     Az = _coo(np.repeat(p_in[:, None], 6, 1), dof[ti], vals, (n_axis, len(edges)))
     return Az, zeta, q, float(q.sum())
+
+
+# Beam axis per generator family when it is not the default line x = y = 0 along z (the families are
+# built with z = beam axis, docs/24 §0.2) — hwr: the coaxial line runs along z, the beam crosses it
+# transversally along x at mid-length (cavity_shapes.build_hwr).
+def beam_axis(shape_type, X, scale, center):
+    """{'axis_dir', 'axis_point'} kwargs of build_qoi_operators for a generator family ({} = default)."""
+    if str(shape_type) == "hwr":
+        X = np.asarray(X, dtype=np.float64)
+        zmid = 0.5 * (X[:, 2].min() + X[:, 2].max()) * float(scale) + float(np.asarray(center).reshape(3)[2])
+        return {"axis_dir": "x", "axis_point": (0.0, 0.0, zmid)}
+    return {}
 
 
 # ─────────────────────────── surface fields ────────────────────
@@ -258,12 +290,14 @@ def surface_operators(X, tets, edges, field, method=SURFACE_METHOD, project=True
 
 # ─────────────────────────── public API (§0.3) ─────────────────
 
-def build_qoi_operators(X, tets, edges, scale, center, field, M=None, n_axis=401, axis_xy=(0.0, 0.0)):
+def build_qoi_operators(X, tets, edges, scale, center, field, M=None, n_axis=401, axis_xy=(0.0, 0.0),
+                        axis_dir=None, axis_point=None):
     """Per-geometry QoI operators on the NORMALISED mesh (docs/24 §0.3).
 
     X [Nv,3] normalised vertices, tets [Nt,4], edges [Ne,2] (DOF order; any row order), scale s [m],
     center [m] (3,), field 'E' | 'H', M the N0 mass (CSR or PKL CSR tuple; assembled if None),
-    n_axis axis sample count, axis_xy the physical (x, y) of the beam axis [m].
+    n_axis axis sample count, axis_xy the physical (x, y) of the beam axis [m] (along z); or a general
+    axis: axis_dir 'x' | 'y' | 'z' | 3-vector and axis_point [m] (beam_axis(shape_type, …) per family).
     Returns dict with keys 'field', 'scale', 'M', 'S', 'Az', 'zeta', 'q', 'L_axis', 'Esurf', 'Hsurf',
     'face_area' (see §0.3).  Surface rows: boundary-face centroids; E from the face's own tet, H
     nodally recovered (SURFACE_METHOD, §2.4); n nᵀE and (I − n nᵀ)H kept.
@@ -287,7 +321,8 @@ def build_qoi_operators(X, tets, edges, scale, center, field, M=None, n_axis=401
     basis = _local_basis(X, tets, edges)
     bf = boundary_face_data(X, tets)
     S = wall_loss_matrix(X, tets, edges, field, bf=bf, basis=basis)
-    Az, zeta, q, L_axis = axis_operator(X, tets, edges, field, scale, center, n_axis, axis_xy, basis=basis)
+    Az, zeta, q, L_axis = axis_operator(X, tets, edges, field, scale, center, n_axis, axis_xy, basis=basis,
+                                        axis_dir=axis_dir, axis_point=axis_point)
     Esurf, Hsurf = surface_operators(X, tets, edges, field, SURFACE_METHOD, True, bf=bf, basis=basis)
     return {"field": field, "scale": float(scale), "M": M, "S": S, "Az": Az, "zeta": zeta, "q": q,
             "L_axis": L_axis, "Esurf": Esurf, "Hsurf": Hsurf, "face_area": bf["area"]}
@@ -358,7 +393,7 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
         }
 
 
-_BUILD_KW = ("n_axis", "axis_xy")
+_BUILD_KW = ("n_axis", "axis_xy", "axis_dir", "axis_point")
 
 
 def cavity_qoi(geom, U, f_ghz, field=None, **kw):

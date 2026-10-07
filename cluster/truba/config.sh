@@ -5,7 +5,8 @@
 REPO_DIR=${REPO_DIR:-$HOME/rf_cavity_neural_operator}        # git clone of this repo
 DATA_ROOT=${DATA_ROOT:-/arf/scratch/$USER/rfcav3d}           # large files: scratch, not $HOME
 # command that activates the Python environment on a compute node (setup_env.sh creates it)
-ENV_ACTIVATE=${ENV_ACTIVATE:-"source $HOME/miniforge3/bin/activate rfcav"}
+CONDA_HOME=${CONDA_HOME:-$HOME/miniforge3}                 # setup_env.sh installs Miniforge here
+ENV_ACTIVATE=${ENV_ACTIVATE:-"source $CONDA_HOME/bin/activate rfcav"}
 
 # ── SLURM (check the current limits: `sinfo`, TRUBA docs "Kuyruk Bilgisi") ─────
 PARTITION=${PARTITION:-orfoz}          # orfoz: 112 cores/node, jobs in multiples of 56 cores
@@ -38,6 +39,36 @@ TEST_N=${TEST_N:-112}
 # geometry (~9 × the H5), lean 0.7–2 MB. 0 only for small sets.
 PKL_LEAN=${PKL_LEAN:-1}
 
+# ── training / evaluation (GPU; check `sinfo` for the GPU queues and their cores-per-GPU rule) ──
+# The Ritz layer and the Kp CG run in float64: pick GPUs with real FP64 (A100 / V100 / H100),
+# not consumer cards.
+GPU_PARTITION=${GPU_PARTITION:-palamut-cuda}
+GPUS=${GPUS:-1}                        # >1: one DDP rank per GPU (srun), training.strategy=ddp
+GPU_CPUS=${GPU_CPUS:-16}               # cores per GPU (DataLoader workers rebuild lean operators)
+GPU_TIME=${GPU_TIME:-3-00:00:00}       # killed runs resume from last.ckpt when re-submitted
+TRAIN_PKL=${TRAIN_PKL:-}               # default: $PKL_DIR/mix_train.pkl
+OOD_PKL=${OOD_PKL:-}                   # default: $PKL_DIR/mix_ood.pkl (merge.sh ood …)
+EXP=${EXP:-base}                       # run name → $OUT_DIR/runs/$EXP
+MODEL=${MODEL:-base}                   # small 0.9M | base 2.8M | large 6.5M | xl 22M (see model_overrides)
+EPOCHS=${EPOCHS:-150}
+BATCH=${BATCH:-4}
+LR=${LR:-3.0e-4}
+NUM_WORKERS=${NUM_WORKERS:-6}          # per GPU; each worker sees the whole PKL (fork, copy-on-write)
+QOI_WEIGHT=${QOI_WEIGHT:-0}            # >0: + figures-of-merit loss (docs/24 §5)
+QOI_METRICS=${QOI_METRICS:-0}          # 1: log qoi_*_rel_err during training (QoI operators per item: slower)
+TRAIN_EXTRA=${TRAIN_EXTRA:-}           # more key=value overrides for train.py --override
+
+# model size presets: embed_dim n_heads eigenspace.n_layers n_basis
+model_overrides() {
+  case "$1" in
+    small) echo "model.embed_dim=128 model.n_heads=4 model.eigenspace.n_layers=4 model.n_basis=24" ;;
+    base)  echo "model.embed_dim=192 model.n_heads=4 model.eigenspace.n_layers=6 model.n_basis=32" ;;
+    large) echo "model.embed_dim=256 model.n_heads=8 model.eigenspace.n_layers=8 model.n_basis=48" ;;
+    xl)    echo "model.embed_dim=384 model.n_heads=8 model.eigenspace.n_layers=12 model.n_basis=64" ;;
+    *) echo "unknown MODEL '$1' (small|base|large|xl)" >&2; return 1 ;;
+  esac
+}
+
 # ── ids: geometry id = block · ID_BLOCK + i  (block per family in families.tsv) ─────
 # Unique ids across families (shards of different families can be merged into one PKL) and a
 # disjoint Sobol range per family. 2^19 = 524288 geometries per family; ids stay < 2^24, exact in
@@ -51,6 +82,9 @@ PKL_DIR=$OUT_DIR/pkl
 LOG_DIR=$OUT_DIR/logs
 TRUBA_DIR=$REPO_DIR/cluster/truba
 FAMILIES_TSV=${FAMILIES_TSV:-$TRUBA_DIR/families.tsv}
+RUN_DIR=$OUT_DIR/runs
+TRAIN_PKL=${TRAIN_PKL:-$PKL_DIR/mix_train.pkl}
+OOD_PKL=${OOD_PKL:-$PKL_DIR/mix_ood.pkl}
 
 # family row from families.tsv → FAM_BLOCK FAM_N FAM_SHARD FAM_GROUP (exit 1 if unknown)
 family_row() {

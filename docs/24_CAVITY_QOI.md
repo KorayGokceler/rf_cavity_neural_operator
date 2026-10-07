@@ -39,8 +39,12 @@ the same operators are applied to the FE field.
   - U = ½ μ0 s³ · uᵀMu
   - P_c = ½ R_s s² · uᵀ S u, with S_ij = ∮_∂Ω̃ (n×w_i)·(n×w_j) dS̃
   - V = |Σ_p q_p (curl_ξ H̃)_z(ξ_p) e^{j ω s ζ_p /(βc)}| / (ωε0)
-- Beam axis: the physical line x = y = 0 along z (all cavity families are built on z = beam
-  axis), i.e. ξ_xy = −center_xy/s. Axis points ζ_p (normalised axial coordinate) with midpoint
+- Beam axis: the physical line x = y = 0 along z (the cavity families are built on z = beam
+  axis), i.e. ξ_xy = −center_xy/s. **Exception hwr**: its coaxial line runs along z and the beam
+  crosses it along x at mid-length, so `qoi_operators_of` (labels, dataset, eval, prediction) uses
+  `beam_axis(shape_type, …)` → axis_dir 'x' through (0, 0, z_mid). General axes: `axis_dir` /
+  `axis_point` of `build_qoi_operators`. Shapes without a beam (ridged_box, composite, freeform)
+  keep the nominal z line: their "R/Q" is a defined functional, not an accelerator figure. Axis points ζ_p (normalised axial coordinate) with midpoint
   quadrature weights q_p (normalised length); points outside the mesh get q_p = 0.
 - R_s: default copper σ = 5.8e7 S/m, R_s(f) = √(π f μ0/σ) at the mode's own frequency (predicted
   frequency for the model, FE frequency for labels); or a fixed `Rs` [Ω] (e.g. SRF Nb).
@@ -229,7 +233,8 @@ For training consistency the bias is benign (labels and predictions go through t
 E-primary Q0/G labels of curved cavities carry a few-% mesh bias at dataset resolution.
 
 ### 2.3 Beam axis
-n_axis = 401 midpoints of equal cells over the mesh z-extent on (ξx, ξy) = (axis_xy − center_xy)/s,
+(General axis d through a point p: the same along the mesh extent of X·d, A rows = basis · d; the
+default below is d = z.) n_axis = 401 midpoints of equal cells over the mesh z-extent on (ξx, ξy) = (axis_xy − center_xy)/s,
 located with `nedelec.locate`; q_p = Δζ inside, 0 outside, L_axis = Σq. A_z row p: the z-component of
 the Whitney basis at the point (E primary, piecewise linear along the axis) or of the constant curl
 of the containing tet (H primary). The quadrature error (O(Δζ²) per smooth piece, ≤ Δζ per wall
