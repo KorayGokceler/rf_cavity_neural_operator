@@ -177,13 +177,16 @@ def _condensed_inverse(form, fes):
     return ext @ inv @ ext_t + form.inner_solve
 
 
-def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4):
+def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4, max_ndof=None):
     """k lowest physical eigenpairs.  Returns dict(lam [k] (k² in 1/m²), f_hz [k], gfs (one
-    GridFunction per mode, unit L2 norm), fes, info)."""
+    GridFunction per mode, unit L2 norm), fes, info).  max_ndof: raise before assembling a larger
+    space (memory guard: ~1 GB per 70k DOF at p = 4)."""
     from ngsolve import BilinearForm, GridFunction, HCurl, TaskManager, curl, dx, grad
 
     t0 = time.perf_counter()
     fes = HCurl(mesh, order=order, dirichlet="wall")
+    if max_ndof is not None and fes.ndof > max_ndof:
+        raise RuntimeError(f"HCurl p={order} on {mesh.ne} curved tets has {fes.ndof} DOF > max_ndof={max_ndof}")
     u, v = fes.TnT()
     free = np.asarray(list(fes.FreeDofs()), dtype=bool)
     with TaskManager():

@@ -64,7 +64,9 @@ def parse_args(argv=None):
                    help="high-order candidates p:curve:maxh_factor:curvaturesafety:grading (maxh = factor × "
                         "label h; netgen's curvaturesafety (default 2) sets the size on curved faces, grading "
                         "(default 0.3) how fast it grows away from them)")
-    p.add_argument("--ref", default="4:4:2:2:0.3", help="reference, same format")
+    p.add_argument("--ref", nargs="+", default=["4:4:2:2:0.3"],
+                   help="reference, same format; several: the first that meshes validly within --max_ndof")
+    p.add_argument("--max_ndof", type=int, default=800_000, help="skip a high-order solve above this size")
     p.add_argument("--deform", action="store_true", help="apply the generator's smooth deformation")
     p.add_argument("--cluster_tol", type=float, default=5e-3, help="relative gap that joins reference modes")
     p.add_argument("--quad_order", type=int, default=5, help="tet quadrature order of the field norms")
@@ -212,13 +214,21 @@ def run_sample(fam, sid, args, tmp):
     X_phys = np.asarray(geom["X"], dtype=np.float64) * s + c
     out.update(h=h, ne_label=int(len(geom["edges"])), params=g["params"])
 
-    pr, cr, fr, mo = _spec(args.ref)
-    t0 = time.perf_counter()
-    mref = ho.netgen_mesh(cad, fr * h, curve=cr, deform=dmap, **mo)
-    ref = ho.solve_modes(mref, K + 2, order=pr)
+    t0, ref, err = time.perf_counter(), None, None
+    for spec in args.ref:
+        pr, cr, fr, mo = _spec(spec)
+        try:
+            mref = ho.netgen_mesh(cad, fr * h, curve=cr, deform=dmap, **mo)
+            ref = ho.solve_modes(mref, K + 2, order=pr, max_ndof=args.max_ndof)
+            break
+        except RuntimeError as e:
+            err = e
+            print(f"  ref {spec}: {e}", flush=True)
+    if ref is None:
+        raise RuntimeError(f"no reference: {err}")
     ref["mesh"] = mref
-    out["ref"] = {"spec": args.ref, "f_hz": ref["f_hz"].tolist(), "t": time.perf_counter() - t0, **ref["info"]}
-    print(f"  ref {args.ref}: ndof {ref['info']['ndof']} {out['ref']['t']:.1f}s  f/GHz "
+    out["ref"] = {"spec": spec, "f_hz": ref["f_hz"].tolist(), "t": time.perf_counter() - t0, **ref["info"]}
+    print(f"  ref {spec}: ndof {ref['info']['ndof']} {out['ref']['t']:.1f}s  f/GHz "
           + " ".join(f"{x / 1e9:.4f}" for x in ref["f_hz"][:K]), flush=True)
 
     pts, w = label_quadrature(X_phys, geom["tets"], args.quad_order)
@@ -270,7 +280,7 @@ def run_sample(fam, sid, args, tmp):
         p, cv, fac, mo = _spec(spec)
         t0 = time.perf_counter()
         mc = ho.netgen_mesh(cad, fac * h, curve=cv, deform=dmap, **mo)
-        rc = ho.solve_modes(mc, K + 2, order=p)
+        rc = ho.solve_modes(mc, K + 2, order=p, max_ndof=args.max_ndof)
         rc["mesh"] = mc
         tc = time.perf_counter() - t0
         qc = ho.mode_qoi(mc, rc["gfs"][:K], rc["f_hz"][:K], axis_dir, axis_point,
@@ -290,7 +300,7 @@ def run_sample(fam, sid, args, tmp):
 
 def markdown(results, args):
     names = list(results[0]["methods"]) if results else []
-    lines = [f"Reference: NGSolve {args.ref} (p:curve:maxh/h:curvaturesafety:grading). K = {args.k}, label mesh {args.mesh_size}, "
+    lines = [f"Reference: NGSolve {' or '.join(args.ref)} (p:curve:maxh/h:curvaturesafety:grading; per sample: results[].ref.spec). K = {args.k}, label mesh {args.mesh_size}, "
              f"deform = {args.deform}.  df: max |f/f_ref − 1| over the K modes; eE / eH: median (max) relative "
              "L2 error of E / curl E; QoI: mode 0 relative error.", ""]
     head = "| family | id | method | max\\|df\\| | eE | eH | " + " | ".join(SHORT[k] for k in QOI_SHOW) + " | t [s] |"
