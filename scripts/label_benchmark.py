@@ -60,10 +60,11 @@ def parse_args(argv=None):
     p.add_argument("--k", type=int, default=6, help="modes compared (K)")
     p.add_argument("--mesh_size", type=float, default=0.10, help="label N0 mesh size (× V^(1/3))")
     p.add_argument("--n0_mesh_sizes", type=float, nargs="*", default=[0.07], help="extra N0 mesh sizes")
-    p.add_argument("--cand", nargs="*", default=["3:3:3:0.5", "3:3:3:1"],
-                   help="high-order candidates p:curve:maxh_factor:curvaturesafety (maxh = factor × label h; "
-                        "netgen's curvaturesafety, default 2, refines curved faces whatever maxh is)")
-    p.add_argument("--ref", default="4:4:3:1", help="reference p:curve:maxh_factor:curvaturesafety")
+    p.add_argument("--cand", nargs="*", default=["3:3:3:2:0.5", "2:3:3:2:0.5"],
+                   help="high-order candidates p:curve:maxh_factor:curvaturesafety:grading (maxh = factor × "
+                        "label h; netgen's curvaturesafety (default 2) sets the size on curved faces, grading "
+                        "(default 0.3) how fast it grows away from them)")
+    p.add_argument("--ref", default="4:4:2:2:0.3", help="reference, same format")
     p.add_argument("--deform", action="store_true", help="apply the generator's smooth deformation")
     p.add_argument("--cluster_tol", type=float, default=5e-3, help="relative gap that joins reference modes")
     p.add_argument("--quad_order", type=int, default=5, help="tet quadrature order of the field norms")
@@ -74,8 +75,8 @@ def parse_args(argv=None):
 
 
 def _spec(s):
-    p, c, f, cs = s.split(":")
-    return int(p), int(c), float(f), float(cs)
+    p, c, f, cs, gr = s.split(":")
+    return int(p), int(c), float(f), dict(curvaturesafety=float(cs), grading=float(gr))
 
 
 # ─────────────────────────── field sampling ────────────────────
@@ -211,9 +212,9 @@ def run_sample(fam, sid, args, tmp):
     X_phys = np.asarray(geom["X"], dtype=np.float64) * s + c
     out.update(h=h, ne_label=int(len(geom["edges"])), params=g["params"])
 
-    pr, cr, fr, csr = _spec(args.ref)
+    pr, cr, fr, mo = _spec(args.ref)
     t0 = time.perf_counter()
-    mref = ho.netgen_mesh(cad, fr * h, curve=cr, deform=dmap, curvaturesafety=csr)
+    mref = ho.netgen_mesh(cad, fr * h, curve=cr, deform=dmap, **mo)
     ref = ho.solve_modes(mref, K + 2, order=pr)
     ref["mesh"] = mref
     out["ref"] = {"spec": args.ref, "f_hz": ref["f_hz"].tolist(), "t": time.perf_counter() - t0, **ref["info"]}
@@ -266,16 +267,16 @@ def run_sample(fam, sid, args, tmp):
         record(f"N0@{ms2:g}", f2, eE, eH, q2, t2, {"ne": int(len(geom2["edges"]))})
 
     for spec in args.cand:
-        p, cv, fac, cs = _spec(spec)
+        p, cv, fac, mo = _spec(spec)
         t0 = time.perf_counter()
-        mc = ho.netgen_mesh(cad, fac * h, curve=cv, deform=dmap, curvaturesafety=cs)
+        mc = ho.netgen_mesh(cad, fac * h, curve=cv, deform=dmap, **mo)
         rc = ho.solve_modes(mc, K + 2, order=p)
         rc["mesh"] = mc
         tc = time.perf_counter() - t0
         qc = ho.mode_qoi(mc, rc["gfs"][:K], rc["f_hz"][:K], axis_dir, axis_point,
                          sigma=QOI_LABEL_SETTINGS["sigma"], beta=QOI_LABEL_SETTINGS["beta"])
         eE, eH = field_errors(R, ho_fields(rc, pts), w, groups, K)
-        name = f"p{p}c{cv}h{fac:g}s{cs:g}"
+        name = f"p{p}c{cv}h{fac:g}g{mo['grading']:g}"
         record(name, rc["f_hz"], eE, eH, qc, tc, {"ndof": rc["info"]["ndof"]})
         Ui, frac = ho.edge_dofs(mc, rc["gfs"], X_phys, np.asarray(geom["edges"]))
         Ui[bnd] = 0.0
@@ -289,7 +290,7 @@ def run_sample(fam, sid, args, tmp):
 
 def markdown(results, args):
     names = list(results[0]["methods"]) if results else []
-    lines = [f"Reference: NGSolve {args.ref} (p:curve:maxh/h:curvaturesafety). K = {args.k}, label mesh {args.mesh_size}, "
+    lines = [f"Reference: NGSolve {args.ref} (p:curve:maxh/h:curvaturesafety:grading). K = {args.k}, label mesh {args.mesh_size}, "
              f"deform = {args.deform}.  df: max |f/f_ref − 1| over the K modes; eE / eH: median (max) relative "
              "L2 error of E / curl E; QoI: mode 0 relative error.", ""]
     head = "| family | id | method | max\\|df\\| | eE | eH | " + " | ".join(SHORT[k] for k in QOI_SHOW) + " | t [s] |"

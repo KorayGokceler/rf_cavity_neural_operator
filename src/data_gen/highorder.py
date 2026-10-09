@@ -76,7 +76,7 @@ def _name_faces(shape):
         f.name = "interface" if count[key] > 1 else "wall"
 
 
-def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, min_jacobian_ratio=0.05,
+def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, min_jacobian_ratio=0.25,
                 **meshing):
     """NGSolve mesh of the solid in `cad_path` (BREP / STEP, metres), curved to order `curve`; the
     cavity surface is the boundary "wall" (internal cut faces: "interface").  deform: optional
@@ -85,7 +85,8 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
     split: True / False / "auto" (plain first, quartered with quarter_cad on failure).
     meshing: netgen GenerateMesh options (curvaturesafety, default 2: element size on curved faces
     ~ radius / curvaturesafety, whatever maxh is).  Curving coarse tets onto small fillets can fold
-    them (det J < 0): surface fields and wall loss are then garbage although the frequencies hardly
+    them (det J < 0) or nearly so: surface fields and wall loss are then garbage (pillbox with pipes:
+    Q0 off 10× at a ratio of 0.05, peaks 3× at 0.07, fine at ≥ 0.4) although the frequencies hardly
     change.  Every curved mesh is checked (jacobian_ratio > min_jacobian_ratio); a failing one is
     regenerated with curvaturesafety doubled, up to `retries` times."""
     import os
