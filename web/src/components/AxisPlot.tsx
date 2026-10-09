@@ -1,7 +1,7 @@
 // E_z on the beam axis: one series, 2px line, recessive grid, crosshair + tooltip; gaps outside Ω.
 import { useMemo, useRef, useState } from 'react';
 
-interface Props { z: number[]; ez: (number | null)[]; title: string; note: string }
+interface Props { z: number[]; ez: (number | null)[]; title: string; note: string; scale: number; empty: string }
 
 const W = 560, H = 190, M = { l: 56, r: 12, t: 10, b: 30 };
 
@@ -22,7 +22,7 @@ function fmtField(v: number) {
   return `${v.toFixed(0)} V/m`;
 }
 
-export default function AxisPlot({ z, ez, title, note }: Props) {
+export default function AxisPlot({ z, ez, title, note, scale, empty }: Props) {
   const ref = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const d = useMemo(() => {
@@ -43,6 +43,7 @@ export default function AxisPlot({ z, ez, title, note }: Props) {
   }, [z, ez]);
 
   if (!d) return <div className="card muted">{title}: —</div>;
+  if (d.ymax < 1e-6 * scale) return <div className="card"><div className="card-title">{title}</div><div className="muted">{empty}</div></div>;
 
   const onMove = (e: React.PointerEvent) => {
     const r = ref.current!.getBoundingClientRect();

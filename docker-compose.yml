@@ -11,7 +11,9 @@ services:
       RFCAV_MAX_UPLOAD_MB: 25
       RFCAV_MESH_TIMEOUT: 120
       RFCAV_MAX_TETS: 400000
+      RFCAV_DATA: /data                        # dataset browser: PKL files / H5 shard directories under ./data
     volumes:
       - ./models:/models:ro
+      - ./data:/data:ro
     mem_limit: 8g
     restart: unless-stopped

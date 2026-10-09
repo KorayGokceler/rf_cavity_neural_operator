@@ -11,6 +11,12 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     GET  /api/predictions/{id}/modes/{k}          surface E/H + beam-axis E_z of mode k
     GET  /api/predictions/{id}/plane?mode&axis&pos&res      cut plane E/H of mode k
     GET  /api/predictions/{id}/export             everything as one JSON file
+    GET  /api/geometries/{id}/features            model input features (names, ranges)
+    GET  /api/geometries/{id}/feature_plane|feature_surface?name&…   one feature on a cut / the wall
+    GET  /api/datasets                            registered datasets (RFCAV_DATA, src/service/datasets.py)
+    GET  /api/datasets/{d}/items | /stats         geometry table (filter, sort, page) / overview
+    POST /api/datasets/{d}/items/{id}/open        geometry + FE solution (+ labels, parameters)
+    POST /api/predictions {geometry_id, compare_to}  + model-vs-FE rows and a difference solution
 The built frontend (web/dist) is served at / when present.
 """
 import base64
@@ -28,6 +34,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.data.dataset_converter_3d import FEATURE_NAMES_3D
 from src.service import geometry as G
 
 VERSION = '0.1.0'
@@ -100,10 +107,16 @@ class SampleReq(BaseModel):
 
 class PredictReq(BaseModel):
     geometry_id: str
+    compare_to: str | None = None          # FE solution id of the same geometry (dataset item)
 
 
-def create_app(service=None):
-    """FastAPI app around a ModelService (built from RFCAV_CHECKPOINT / RFCAV_DEVICE when None)."""
+def create_app(service=None, datasets=None):
+    """FastAPI app around a ModelService (built from RFCAV_CHECKPOINT / RFCAV_DEVICE when None) and
+    a dataset registry ({name: dataset}; RFCAV_DATA when None)."""
+    if datasets is None:
+        from src.service.datasets import discover
+        datasets = discover()
+    ds_ids = {f"d{i}": d for i, d in enumerate(datasets.values())}
     if service is None:
         from src.service.model import ModelService
         service = ModelService(os.environ.get('RFCAV_CHECKPOINT') or None, os.environ.get('RFCAV_DEVICE') or None)
@@ -112,13 +125,16 @@ def create_app(service=None):
     app = FastAPI(title='RF Cavity Neural Solver', version=VERSION)
     app.state.service = service
 
-    def _geometry_response(nodes, tets, source, extra=None):
+    def _geometry_response(nodes, tets, source, extra=None, prepared=None):
         if len(tets) > lim.max_tets:
             raise HTTPException(413, f"mesh has {len(tets)} tets (limit {lim.max_tets}); use a coarser mesh size")
         chk = G.check(nodes, tets, service.field)
         vid, tri = G.surface(nodes, tets)
-        gid = geoms.put({'nodes': nodes, 'tets': tets, 'vid': vid, 'tri': tri, 'source': source,
-                         'family': (extra or {}).get('family', ''), 'check': chk})
+        rec = {'nodes': nodes, 'tets': tets, 'vid': vid, 'tri': tri, 'source': source,
+               'family': (extra or {}).get('family', ''), 'check': chk}
+        if prepared:
+            rec.update(prepared)
+        gid = geoms.put(rec)
         pts = np.asarray(nodes)[vid] * 1e3
         return {'id': gid, 'source': source, 'check': chk, **(extra or {}),
                 'surface': {'n_points': int(len(vid)), 'n_triangles': int(len(tri)),
@@ -172,13 +188,27 @@ def create_app(service=None):
                                                 'mesh_size': req.mesh_size, 'ood': req.family in OOD_FAMILIES},
                                   {'family': req.family, 'params': params})
 
+    def _prepared(g):
+        """Converter geometry (features + operators) of a stored geometry, computed once."""
+        if '_geom' not in g:
+            g['_geom'], g['_M'] = service.geometry(g['nodes'], g['tets'], g['family'])
+        return g['_geom'], g['_M']
+
+    def _summary(sid, sol, extra=None):
+        return {'id': sid, 'source': sol['source'], 'field': sol['field'], 'n_edges': sol['n_edges'],
+                'modes': sol['modes'], 'axis_length_mm': sol['axis_length_mm'], **(extra or {})}
+
     @app.post('/api/predictions')
     def predict(req: PredictReq):
         g = geoms.get(req.geometry_id)
         if not g['check']['ok']:
             raise HTTPException(422, 'geometry failed the checks: ' + '; '.join(g['check']['problems']))
+        if g.get('field', service.field) != service.field:
+            raise HTTPException(422, f"the model is a {service.field}-field model, this geometry's data is "
+                                     f"{g['field']}-field")
         t0 = time.perf_counter()
-        p = service.predict(g['nodes'], g['tets'], g['family'])
+        geom, M = _prepared(g)
+        p = service.predict(g['nodes'], g['tets'], g['family'], geom=geom, M=M)
         p['time_s']['total'] = time.perf_counter() - t0
         p['_geometry_id'] = req.geometry_id
         pid = preds.put(p)
@@ -190,9 +220,17 @@ def create_app(service=None):
                             'Epk/Eacc and Bpk/Eacc are undefined')
         if g['source'].get('ood'):
             warnings.append('out-of-distribution family: verify with a full-wave solver')
-        return {'id': pid, 'geometry_id': req.geometry_id, 'field': p['field'], 'n_edges': p['n_edges'],
-                'modes': p['modes'], 'axis_length_mm': p['axis_length_mm'], 'time_s': p['time_s'],
-                'warnings': warnings, 'model': service.info()}
+        out = _summary(pid, p, {'geometry_id': req.geometry_id, 'time_s': p['time_s'], 'warnings': warnings,
+                                'model': service.info()})
+        if req.compare_to:
+            from src.service.model import compare
+            truth = preds.get(req.compare_to)
+            if truth.get('_geometry_id') != req.geometry_id:
+                raise HTTPException(422, 'compare_to must be the FE solution of the same geometry')
+            rows, diff = compare(p, truth)
+            diff['_geometry_id'] = req.geometry_id
+            out['comparison'] = {'rows': rows, 'diff_id': preds.put(diff), 'truth_id': req.compare_to}
+        return out
 
     @app.get('/api/predictions/{pid}/modes/{k}')
     def mode(pid: str, k: int):
@@ -222,9 +260,114 @@ def create_app(service=None):
         p = preds.get(pid)
         g = geoms.get(p['_geometry_id'])
         body = {'version': VERSION, 'model': service.info(), 'geometry': {'source': g['source'], 'check': g['check']},
-                'field': p['field'], 'modes': p['modes'], 'time_s': p['time_s'],
+                'source': p['source'], 'field': p['field'], 'modes': p['modes'], 'time_s': p.get('time_s'),
                 'conventions': info()['conventions']}
         return JSONResponse(body, headers={'Content-Disposition': f'attachment; filename="prediction_{pid[:8]}.json"'})
+
+    # ── model input features ─────────────────────────────────────────
+    def _feature(g, name):
+        geom, _ = _prepared(g)
+        names = list(g.get('feature_names') or FEATURE_NAMES_3D)
+        if name not in names:
+            raise HTTPException(404, f"unknown feature {name!r}")
+        return geom, np.asarray(geom['Input_funcs'], float)[:, names.index(name)]
+
+    @app.get('/api/geometries/{gid}/features')
+    def features(gid: str):
+        g = geoms.get(gid)
+        geom, _ = _prepared(g)
+        names = list(g.get('feature_names') or FEATURE_NAMES_3D)
+        F = np.asarray(geom['Input_funcs'], float)
+        return {'names': names, 'min': F.min(0).tolist(), 'max': F.max(0).tolist(),
+                'n_vertices': int(len(F)), 'n_edges': int(len(geom['edges'])),
+                'scale_mm': float(geom['scale'] * 1e3), 'torsion_max': float(geom.get('torsion_max', 0.0))}
+
+    @app.get('/api/geometries/{gid}/feature_plane')
+    def feature_plane(gid: str, name: str, axis: str = 'y', pos: float | None = None, res: int = 121):
+        if axis not in ('x', 'y', 'z') or not 16 <= res <= 241:
+            raise HTTPException(422, 'axis in x|y|z, res in [16, 241]')
+        geom, v = _feature(geoms.get(gid), name)
+        pts, tri, (vals,) = service.plane_values(geom, [v], axis, pos, res)
+        return {'name': name, 'n_points': int(len(pts)), 'n_triangles': int(len(tri)), 'points_b64': b64(pts),
+                'triangles_b64': b64(tri, np.uint32), 'values_b64': b64(vals)}
+
+    @app.get('/api/geometries/{gid}/feature_surface')
+    def feature_surface(gid: str, name: str):
+        g = geoms.get(gid)
+        _, v = _feature(g, name)
+        return {'name': name, 'values_b64': b64(v[g['vid']])}
+
+    # ── datasets ─────────────────────────────────────────────────────
+    def _ds(did):
+        if did not in ds_ids:
+            raise HTTPException(404, 'unknown dataset')
+        return ds_ids[did]
+
+    def _rows(d):
+        try:
+            return d.rows()
+        except MemoryError as e:
+            raise HTTPException(413, str(e)) from None
+
+    @app.get('/api/datasets')
+    def datasets_list():
+        return [{'id': i, 'name': d.name, 'kind': d.kind} for i, d in ds_ids.items()]
+
+    @app.get('/api/datasets/{did}/items')
+    def dataset_items(did: str, family: str | None = None, offset: int = 0, limit: int = 50,
+                      sort: str = 'id', desc: bool = False):
+        rows = _rows(_ds(did))
+        if family:
+            rows = [r for r in rows if r['family'] == family]
+        keyf = {'id': lambda r: r['id'], 'family': lambda r: r['family'], 'n_edges': lambda r: r['n_edges'],
+                'n_nodes': lambda r: r['n_nodes'], 'betti1': lambda r: r['betti1'],
+                'f0': lambda r: r['f_GHz'][0] if r['f_GHz'] else np.inf}.get(sort)
+        if keyf is None:
+            raise HTTPException(422, 'sort by id | family | n_edges | n_nodes | betti1 | f0')
+        rows = sorted(rows, key=keyf, reverse=desc)
+        limit = max(1, min(int(limit), 500))
+        return {'total': len(rows), 'offset': offset, 'items': rows[offset:offset + limit]}
+
+    @app.get('/api/datasets/{did}/stats')
+    def dataset_stats(did: str):
+        rows = _rows(_ds(did))
+        fam = collections.defaultdict(lambda: {'count': 0, 'f0': [], 'n_edges': []})
+        for r in rows:
+            e = fam[r['family']]
+            e['count'] += 1
+            e['n_edges'].append(r['n_edges'])
+            if r['f_GHz']:
+                e['f0'].append(r['f_GHz'][0])
+        fields = sorted({r['field'] for r in rows})
+        return {'total': len(rows), 'fields': fields, 'families': dict(sorted(fam.items())),
+                'n_modes': max((len(r['f_GHz']) for r in rows), default=0)}
+
+    @app.post('/api/datasets/{did}/items/{sid}/open')
+    def dataset_open(did: str, sid: int):
+        d = _ds(did)
+        try:
+            r = d.open(sid)
+        except KeyError:
+            raise HTTPException(404, 'no such geometry') from None
+        except MemoryError as e:
+            raise HTTPException(413, str(e)) from None
+        from src.data.dataset_3d import to_csr
+        ne = len(r['geom']['edges'])
+        M = to_csr(r['M'], (ne, ne))
+        resp = _geometry_response(r['nodes'], r['tets'],
+                                  {'kind': 'dataset', 'dataset': d.name, 'family': r['family'], 'id': r['id'],
+                                   'file': r['source_file']},
+                                  {'family': r['family'], 'params': r['params']},
+                                  prepared={'_geom': r['geom'], '_M': M, 'field': r['field'],
+                                            'feature_names': r['features']})
+        truth = None
+        if r['U'].shape[1]:
+            from src.service.model import build_solution
+            sol = build_solution(r['geom'], M, r['U'], r['f_GHz'], r['field'], 'fe')
+            sol['_geometry_id'] = resp['id']
+            truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels']})
+        resp.update(truth=truth, field=r['field'], predictable=r['field'] == service.field)
+        return resp
 
     dist = os.environ.get('RFCAV_WEB_DIST', os.path.join(ROOT, 'web', 'dist'))
     if os.path.isdir(dist):

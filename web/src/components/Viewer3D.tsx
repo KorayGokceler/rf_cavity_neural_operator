@@ -1,5 +1,5 @@
-// vtk.js view: cavity surface (ghost / wall field / hidden) + a coloured cut plane.
-// Phase is applied client-side: E(t) = E·cos φ, H(t) = H·sin φ (server convention).
+// vtk.js view: cavity surface (ghost / coloured / hidden) + a coloured cut plane.
+// The caller passes per-point scalars (field at a phase, or a model input feature) and the range.
 import { useEffect, useRef } from 'react';
 import '@kitware/vtk.js/Rendering/Profiles/Geometry';
 import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
@@ -12,25 +12,24 @@ import { divergingStops, hexToRgb, sequentialStops, type Theme } from '../colors
 import type { Surface } from '../api';
 
 export type Comp = 'abs' | 'x' | 'y' | 'z';
-export type SurfaceMode = 'ghost' | 'field' | 'hidden';
+export type SurfaceMode = 'ghost' | 'field' | 'mesh' | 'hidden';
 
-export interface FieldSet { E: Float32Array; H: Float32Array }
+export interface PlaneGeom { points: Float32Array; triangles: Uint32Array }
 
 interface Props {
   surface: Surface | null;
-  surfaceFields: FieldSet | null;
-  plane: (FieldSet & { points: Float32Array; triangles: Uint32Array }) | null;
-  field: 'E' | 'H';
-  comp: Comp;
-  phaseDeg: number;
-  limit: number;
+  surfaceScalars: Float32Array | null;     // per surface point (coloured surface mode)
+  plane: PlaneGeom | null;
+  planeScalars: Float32Array | null;       // per plane point
+  range: [number, number];
+  signed: boolean;                          // diverging map around 0
   surfaceMode: SurfaceMode;
   theme: Theme;
-  viewAxis: 'x' | 'y' | 'z';            // look along the cut normal
+  viewAxis: 'x' | 'y' | 'z';               // look along the cut normal
 }
 
-/** Scalar per point of a [P,3] vector field at the given phase. */
-export function scalars(F: Float32Array, field: 'E' | 'H', comp: Comp, phaseDeg: number): Float32Array {
+/** Scalar per point of a [P,3] vector field at the given phase: E(t) = E cos φ, H(t) = H sin φ. */
+export function fieldScalars(F: Float32Array, field: 'E' | 'H', comp: Comp, phaseDeg: number): Float32Array {
   const ph = (phaseDeg * Math.PI) / 180;
   const a = field === 'E' ? Math.cos(ph) : Math.sin(ph);
   const n = F.length / 3;
@@ -62,7 +61,6 @@ export default function Viewer3D(p: Props) {
   const host = useRef<HTMLDivElement>(null);
   const vtk = useRef<any>(null);
 
-  // one render window for the component's lifetime
   useEffect(() => {
     const grw = vtkGenericRenderWindow.newInstance({ background: hexToRgb(cssVar('--surface-1', '#fcfcfb')) });
     grw.setContainer(host.current!);
@@ -77,26 +75,25 @@ export default function Viewer3D(p: Props) {
       renderer.addActor(actor);
       return { pd, mapper, actor };
     };
-    const ctf = vtkColorTransferFunction.newInstance();
-    vtk.current = { grw, renderer, rw: grw.getRenderWindow(), surf: mk(), plane: mk(), ctf, geomKey: null };
+    vtk.current = { grw, renderer, rw: grw.getRenderWindow(), surf: mk(), plane: mk(),
+                    ctf: vtkColorTransferFunction.newInstance() };
     const ro = new ResizeObserver(() => { grw.resize(); grw.getRenderWindow().render(); });
     ro.observe(host.current!);
     return () => { ro.disconnect(); grw.delete(); vtk.current = null; };
   }, []);
 
-  // geometry + camera: look along the cut normal (slightly oblique so the cavity reads as 3D)
+  // surface geometry + camera along the cut normal (slightly oblique)
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
-    const { surf } = v;
     if (p.surface) {
-      surf.pd.getPoints().setData(p.surface.points, 3);
-      surf.pd.getPolys().setData(polys(p.surface.triangles));
-      surf.pd.modified();
+      v.surf.pd.getPoints().setData(p.surface.points, 3);
+      v.surf.pd.getPolys().setData(polys(p.surface.triangles));
+      v.surf.pd.modified();
     }
-    surf.actor.setVisibility(!!p.surface);
+    v.surf.actor.setVisibility(!!p.surface);
     const cam = v.renderer.getActiveCamera();
-    const b = surf.pd.getBounds();
+    const b = v.surf.pd.getBounds();
     const c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
     const dir = p.viewAxis === 'x' ? [1, 0.25, 0.2] : p.viewAxis === 'y' ? [0.25, -1, 0.2] : [0.25, 0.2, 1];
     cam.setFocalPoint(c[0], c[1], c[2]);
@@ -109,50 +106,50 @@ export default function Viewer3D(p: Props) {
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
-    v.renderer.setBackground(...hexToRgb(cssVar('--surface-1', '#fcfcfb')));
-    v.rw.render();
-  }, [p.theme]);
-
-  // plane geometry
-  useEffect(() => {
-    const v = vtk.current;
-    if (!v) return;
     if (p.plane && p.plane.triangles.length) {
       v.plane.pd.getPoints().setData(p.plane.points, 3);
       v.plane.pd.getPolys().setData(polys(p.plane.triangles));
       v.plane.pd.modified();
-      v.plane.actor.setVisibility(true);
-    } else {
-      v.plane.actor.setVisibility(false);
     }
     v.rw.render();
   }, [p.plane]);
 
-  // colours, phase, field, component, surface mode
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
-    const signed = p.comp !== 'abs';
-    const lim = p.limit > 0 ? p.limit : 1;
+    const [lo, hi] = p.range[1] > p.range[0] ? p.range : [0, 1];
     v.ctf.removeAllPoints();
-    if (signed) divergingStops(p.theme).forEach(([x, c]) => v.ctf.addRGBPoint(x * lim, ...hexToRgb(c)));
-    else sequentialStops(p.theme).forEach(([x, c]) => v.ctf.addRGBPoint(x * lim, ...hexToRgb(c)));
-    const range: [number, number] = signed ? [-lim, lim] : [0, lim];
-
-    const paint = (o: any, F: Float32Array | null) => {
-      if (!F) { o.mapper.setScalarVisibility(false); return; }
-      const arr = vtkDataArray.newInstance({ name: 'f', values: scalars(F, p.field, p.comp, p.phaseDeg) });
-      o.pd.getPointData().setScalars(arr);
+    if (p.signed) {
+      const m = Math.max(Math.abs(lo), Math.abs(hi));
+      divergingStops(p.theme).forEach(([x, c]) => v.ctf.addRGBPoint(x * m, ...hexToRgb(c)));
+    } else {
+      sequentialStops(p.theme).forEach(([x, c]) => v.ctf.addRGBPoint(lo + x * (hi - lo), ...hexToRgb(c)));
+    }
+    const range: [number, number] = p.signed ? [-Math.max(Math.abs(lo), Math.abs(hi)), Math.max(Math.abs(lo), Math.abs(hi))] : [lo, hi];
+    const paint = (o: any, vals: Float32Array | null) => {
+      if (!vals) { o.mapper.setScalarVisibility(false); return; }
+      o.pd.getPointData().setScalars(vtkDataArray.newInstance({ name: 's', values: vals }));
       o.mapper.setLookupTable(v.ctf);
       o.mapper.setScalarRange(...range);
       o.mapper.setScalarVisibility(true);
       o.pd.modified();
     };
-    if (p.plane && p.plane.triangles.length) paint(v.plane, p.field === 'E' ? p.plane.E : p.plane.H);
+    const planeOn = !!(p.plane && p.plane.triangles.length && p.planeScalars) && p.surfaceMode !== 'mesh';
+    if (planeOn) paint(v.plane, p.planeScalars);
+    v.plane.actor.setVisibility(planeOn);
 
     const sp = v.surf.actor.getProperty();
-    if (p.surfaceMode === 'field' && p.surfaceFields) {
-      paint(v.surf, p.field === 'E' ? p.surfaceFields.E : p.surfaceFields.H);
+    sp.setRepresentationToSurface();
+    sp.setEdgeVisibility(false);
+    if (p.surfaceMode === 'mesh') {
+      v.surf.mapper.setScalarVisibility(false);
+      sp.setColor(...hexToRgb(cssVar('--surface-2', '#f3f2ee')));
+      sp.setEdgeColor(...hexToRgb(cssVar('--text-secondary', '#52514e')));
+      sp.setEdgeVisibility(true);
+      sp.setOpacity(1.0);
+      v.surf.actor.setVisibility(!!p.surface);
+    } else if (p.surfaceMode === 'field' && p.surfaceScalars) {
+      paint(v.surf, p.surfaceScalars);
       sp.setOpacity(1.0);
       v.surf.actor.setVisibility(true);
     } else {
@@ -162,7 +159,7 @@ export default function Viewer3D(p: Props) {
       v.surf.actor.setVisibility(p.surfaceMode !== 'hidden' && !!p.surface);
     }
     v.rw.render();
-  }, [p.plane, p.surfaceFields, p.field, p.comp, p.phaseDeg, p.limit, p.surfaceMode, p.theme, p.surface]);
+  }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.signed, p.surfaceMode, p.theme, p.surface]);
 
-  return <div className="viewer" ref={host} aria-label="3D field view" />;
+  return <div className="viewer" ref={host} aria-label="3D view" />;
 }

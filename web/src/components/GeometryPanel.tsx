@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Geometry, Info } from '../api';
 import { t, type Lang } from '../i18n';
-import { sci } from '../format';
+import { int, sci } from '../format';
 
 interface Props {
   lang: Lang;
@@ -88,13 +88,14 @@ export default function GeometryPanel({ lang, info, geometry, busy, onUpload, on
               {chk.ok ? t(lang, 'closed') : chk.problems.join('; ')}
             </li>
             {chk.betti1 !== undefined && <li><span className="icon">◦</span>{t(lang, 'handles')}: {chk.betti1}</li>}
-            <li><span className="icon">◦</span>{chk.n_tets.toLocaleString()} {t(lang, 'tets')}, {chk.n_nodes.toLocaleString()} {t(lang, 'nodes')}</li>
+            <li><span className="icon">◦</span>{int(chk.n_tets)} {t(lang, 'tets')}, {int(chk.n_nodes)} {t(lang, 'nodes')}</li>
             {chk.volume_cm3 !== undefined && <li><span className="icon">◦</span>{t(lang, 'volume')}: {sci(chk.volume_cm3)} cm³</li>}
             {geometry?.source && 'ood' in geometry.source && geometry.source.ood === true &&
               <li className="warning"><span className="icon">!</span>OOD</li>}
           </ul>
-          <button className="primary" disabled={busy || !chk.ok} onClick={onPredict}>
-            {busy ? t(lang, 'working') : t(lang, 'predict')}
+          {geometry?.predictable === false && <div className="note warning-text">{t(lang, 'wrongField')}</div>}
+          <button className="primary" disabled={busy || !chk.ok || geometry?.predictable === false} onClick={onPredict}>
+            {busy ? t(lang, 'working') : geometry?.truth ? t(lang, 'compare') : t(lang, 'predict')}
           </button>
         </section>
       )}

@@ -19,6 +19,8 @@ from src.training.lightning_module import GNOTLightning
 
 EPS0, MU0 = 8.8541878128e-12, 4e-7 * math.pi
 QOI_SHOW = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
+VOLTAGE_QOI = ('R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
+RQ_FLOOR_OHM = 1e-6        # below: no accelerating field on the axis → voltage figures undefined (shown '—')
 
 
 def load_model(checkpoint, device='cpu', field=None):
@@ -113,6 +115,106 @@ def physical_fields(geom, M, U, f_ghz, field):
     return (a / (w * EPS0 * s)) * C, a * P                                            # Ampère
 
 
+# ─────────────────────────── solutions (model, FE, difference) ────────
+
+def axis_values(geom, M, U, f_ghz, field, ops):
+    """Field component along the beam axis at U = 1 J for every mode: [K, P] V/m (NaN outside Ω)."""
+    s = float(geom['scale'])
+    m = np.einsum('ek,ek->k', U, M @ U)
+    v = np.asarray(ops['Az'] @ U)                                                    # [P, K]
+    if field == 'E':
+        a = np.sqrt(1.0 / (0.5 * EPS0 * s ** 3 * m))
+    else:
+        a = np.sqrt(1.0 / (0.5 * MU0 * s ** 3 * m)) / (2 * np.pi * np.asarray(f_ghz) * 1e9 * EPS0 * s)
+    out = (v * a[None, :]).T
+    out[:, np.asarray(ops['q']) <= 0] = np.nan
+    return out
+
+
+def build_solution(geom, M, U, f_ghz, field, source, eta=None, qoi_kw=None, ops=None):
+    """Everything the UI shows for one set of modes U [Ne,K] at f_ghz [K] (source 'model' | 'fe'):
+    public 'modes' rows + private display arrays (_E, _H [Nv,3,K], _axis [K,P])."""
+    U = np.asarray(U, float)
+    f = np.asarray(f_ghz, float)
+    if ops is None:
+        q, ops = qoi(geom, M, U, f, field, return_ops=True, **(qoi_kw or {}))
+    else:
+        from src.qoi import qoi_from_dofs
+        q = qoi_from_dofs(ops, U, f * 1e9, **{k: v for k, v in (qoi_kw or {}).items() if k != 'axis'})
+    q = {k: np.asarray(v, float).copy() for k, v in q.items()}
+    no_v = ~(np.asarray(q['R_over_Q_ohm']) > RQ_FLOOR_OHM)          # no field along the beam axis
+    for n in VOLTAGE_QOI:
+        q[n][no_v] = np.nan
+    deg = degenerate_mask(f)
+    rq = np.asarray(q['R_over_Q_ohm'], float)
+    ok_rq = np.where(deg | ~np.isfinite(rq), -np.inf, rq)
+    accel = int(np.argmax(ok_rq)) if np.isfinite(ok_rq).any() else -1
+    modes = []
+    for k in range(len(f)):
+        row = {'mode': k, 'f_GHz': float(f[k]), 'degenerate': bool(deg[k]), 'accelerating': k == accel,
+               'eta': None if eta is None else float(eta[k])}
+        row.update({n: _num(q[n][k]) for n in QOI_SHOW})
+        modes.append(row)
+    E, H = physical_fields(geom, M, U, f, field)
+    return {'source': source, 'field': field, 'n_edges': int(len(geom['edges'])), 'modes': modes,
+            'axis_length_mm': float(ops['L_axis'] * geom['scale'] * 1e3),
+            '_geom': geom, '_M': M, '_U': U, '_f': f, '_E': E, '_H': H, '_ops': ops,
+            '_axis': axis_values(geom, M, U, f, field, ops),
+            '_zeta_mm': np.asarray(ops['zeta']) * geom['scale'] * 1e3}
+
+
+def align(Up, Ut, M, f_true, rel=1e-3):
+    """Predicted modes matched to the FE ones (same index): isolated mode → sign flip; inside a
+    degenerate cluster of the FE spectrum → M-projection of t_k on the predicted cluster span,
+    rescaled to ‖t_k‖_M. Returns (aligned [Ne,K], rel-L2 [K] in the M-norm)."""
+    K = min(Up.shape[1], Ut.shape[1])
+    P, T = Up[:, :K] / np.sqrt(np.einsum('ek,ek->k', Up[:, :K], M @ Up[:, :K])), Ut[:, :K]
+    MT = M @ T
+    tt = np.einsum('ek,ek->k', T, MT)
+    C = P.T @ MT
+    out = np.zeros_like(T)
+    f = np.asarray(f_true[:K], float)
+    k = 0
+    while k < K:
+        j = k
+        while j + 1 < K and abs(f[j + 1] - f[j]) < rel * f[j]:
+            j += 1
+        idx = np.arange(k, j + 1)
+        if len(idx) == 1:
+            out[:, k] = (np.sign(C[k, k]) or 1.0) * P[:, k] * np.sqrt(tt[k])
+        else:
+            Cc = C[np.ix_(idx, idx)]
+            proj = P[:, idx] @ Cc
+            out[:, idx] = proj * np.sqrt(tt[idx] / np.maximum((Cc ** 2).sum(0), 1e-300))[None, :]
+        k = j + 1
+    D = out - T
+    rl = np.sqrt(np.einsum('ek,ek->k', D, M @ D) / tt)
+    return out, rl
+
+
+def compare(pred, true, rel=1e-3):
+    """(rows, difference solution) for a model solution vs the FE one on the same mesh."""
+    geom, M, field = true['_geom'], true['_M'], true['field']
+    Ua, rl = align(pred['_U'], true['_U'], M, true['_f'], rel)
+    K = Ua.shape[1]
+    pa = build_solution(geom, M, Ua, pred['_f'][:K], field, 'model', ops=true['_ops'])
+    rows = []
+    for k in range(K):
+        tr, pr = true['modes'][k], pa['modes'][k]
+        row = {'mode': k, 'f_fe': tr['f_GHz'], 'f_model': pr['f_GHz'], 'f_rel_err': pr['f_GHz'] / tr['f_GHz'] - 1,
+               'rel_l2': float(rl[k]), 'degenerate': tr['degenerate'], 'accelerating': tr['accelerating'],
+               'eta': pred['modes'][k]['eta'], 'qoi': {}}
+        for n in QOI_SHOW:
+            a, b = tr[n], pr[n]
+            row['qoi'][n] = {'fe': a, 'model': b,
+                             'rel_err': (None if a in (None, 0) or b is None else b / a - 1)}
+        rows.append(row)
+    diff = dict(pa, source='diff', modes=[dict(m, f_GHz=true['modes'][m['mode']]['f_GHz']) for m in pa['modes']],
+                _E=pa['_E'] - true['_E'][:, :, :K], _H=pa['_H'] - true['_H'][:, :, :K],
+                _axis=pa['_axis'] - true['_axis'][:K], _f=true['_f'][:K])
+    return rows, diff
+
+
 # ─────────────────────────── the service ───────────────────────────────
 
 class ModelService:
@@ -136,65 +238,52 @@ class ModelService:
         return {'field': self.field, 'n_modes': self.n_modes, 'n_params': self.n_params, 'device': self.device,
                 'untrained': self.untrained, 'checkpoint': self.checkpoint and self.checkpoint.split('/')[-1]}
 
-    def predict(self, nodes, tets, family='', qoi_kw=None, warmup=False):
-        """Everything for one mesh: dict with 'modes' (table rows), 'qoi', timings, and private
-        arrays (geom, M, U, fields) kept for the field / plane requests."""
-        t0 = time.perf_counter()
+    def geometry(self, nodes, tets, family=''):
+        """(converter geometry dict with features + operators, CSR mass) of a mesh [m]."""
         geom, M = extract_geometry_3d(nodes, tets, self.field)
         geom.update(field=self.field, shape_type=family or '')
+        return geom, (M.tocsr() if hasattr(M, 'tocsr') else M)
+
+    def predict(self, nodes, tets, family='', qoi_kw=None, warmup=False, geom=None, M=None):
+        """Model solution of one mesh (build_solution dict + 'time_s'); geom / M reuse a prepared
+        geometry (dataset item)."""
+        from src.data.dataset_3d import to_csr
+        t0 = time.perf_counter()
+        if geom is None:
+            geom, M = self.geometry(nodes, tets, family)
         t_ops = time.perf_counter() - t0
         with self._lock:
             U, f, lam, t_model = forward(self.lm, geom, self.feature_indices, self.device, warmup)
         t0 = time.perf_counter()
-        q, ops = qoi(geom, M, U, f, self.field, return_ops=True, **(qoi_kw or {}))
-        t_qoi = time.perf_counter() - t0
+        ne = len(geom['edges'])
+        Mmat = to_csr(M, (ne, ne))
         free = ~np.asarray(geom['bnd_edge'], bool) if self.field == 'E' else None
-        from src.data.dataset_3d import to_csr
-        Kmat = to_csr(geom['K'], (len(geom['edges']),) * 2)
-        Mmat = to_csr(M, (len(geom['edges']),) * 2) if not hasattr(M, 'tocsr') else M.tocsr()
-        eta = residual(Kmat, Mmat, U / np.sqrt(np.einsum('ek,ek->k', U, Mmat @ U)), lam, free)
-        deg = degenerate_mask(f)
-        rq = np.asarray(q['R_over_Q_ohm'], float)
-        ok_rq = np.where(deg | ~np.isfinite(rq), -np.inf, rq)
-        accel = int(np.argmax(ok_rq)) if np.isfinite(ok_rq).any() else -1
-        modes = []
-        for k in range(len(f)):
-            row = {'mode': k, 'f_GHz': float(f[k]), 'degenerate': bool(deg[k]), 'eta': float(eta[k]),
-                   'accelerating': k == accel}
-            row.update({n: _num(q[n][k]) for n in QOI_SHOW})
-            modes.append(row)
-        E, H = physical_fields(geom, Mmat, U, f, self.field)
-        zeta_mm = np.asarray(ops['zeta']) * geom['scale'] * 1e3          # axial, relative to the volume centroid
-        return {
-            'field': self.field, 'n_edges': int(len(geom['edges'])), 'modes': modes,
-            'axis_length_mm': float(ops['L_axis'] * geom['scale'] * 1e3),
-            'time_s': {'operators': t_ops, 'model': t_model, 'qoi': t_qoi},
-            '_geom': geom, '_M': Mmat, '_U': U, '_f': f, '_E': E, '_H': H, '_ops': ops, '_zeta_mm': zeta_mm,
-        }
+        Kmat = to_csr(geom['K'], (ne, ne)) if 'K' in geom else None
+        eta = (residual(Kmat, Mmat, U / np.sqrt(np.einsum('ek,ek->k', U, Mmat @ U)), lam, free)
+               if Kmat is not None else None)
+        sol = build_solution(geom, Mmat, U, f, self.field, 'model', eta=eta, qoi_kw=qoi_kw)
+        sol['time_s'] = {'operators': t_ops, 'model': t_model, 'qoi': time.perf_counter() - t0}
+        return sol
 
-    # ── display data ─────────────────────────────────────────────────
+    # ── display data (any solution: model, FE, difference) ───────────
     @staticmethod
     def to_mm(geom, X):
         return (np.asarray(X) * geom['scale'] + np.asarray(geom['center']).reshape(1, 3)) * 1e3
 
-    def axis_profile(self, pred, k):
-        """(axial coordinate [mm], E_z [V/m]) of mode k on the beam axis (NaN outside the cavity)."""
-        geom, ops, U, f = pred['_geom'], pred['_ops'], pred['_U'], pred['_f']
-        s = float(geom['scale'])
-        m = float(U[:, k] @ (pred['_M'] @ U[:, k]))
-        v = np.asarray(ops['Az'] @ U[:, k]).ravel()
-        if self.field == 'E':
-            ez = v * np.sqrt(1.0 / (0.5 * EPS0 * s ** 3 * m))
-        else:
-            w = 2 * np.pi * f[k] * 1e9
-            ez = v * np.sqrt(1.0 / (0.5 * MU0 * s ** 3 * m)) / (w * EPS0 * s)
-        ez = np.where(np.asarray(ops['q']) > 0, ez, np.nan)
-        return pred['_zeta_mm'], ez
+    @staticmethod
+    def axis_profile(sol, k):
+        """(axial coordinate [mm] relative to the centroid, field along the axis [V/m]) of mode k."""
+        return sol['_zeta_mm'], sol['_axis'][k]
 
-    def plane(self, pred, k, axis='y', pos_mm=None, res=121):
-        """Cut plane through the cavity: (points [P,3] mm, triangles [T,3], E [P,3], H [P,3])."""
+    def plane(self, sol, k, axis='y', pos_mm=None, res=121):
+        """Cut plane: (points [P,3] mm, triangles [T,3], E [P,3], H [P,3]) of mode k."""
+        pts, tri, (E, H) = self.plane_values(sol['_geom'], [sol['_E'][:, :, k], sol['_H'][:, :, k]],
+                                             axis, pos_mm, res)
+        return pts, tri, E, H
+
+    def plane_values(self, geom, nodal, axis='y', pos_mm=None, res=121):
+        """Vertex arrays `nodal` (list of [Nv,…]) interpolated on a cut plane (points mm, triangles, values)."""
         from src.viz.nedelec import interp_vertex, locate, plane_grid
-        geom = pred['_geom']
         ia = 'xyz'.index(axis)
         c, s = float(np.asarray(geom['center']).reshape(3)[ia]), float(geom['scale'])
         off = 0.0 if pos_mm is None else (pos_mm * 1e-3 - c) / s
@@ -207,13 +296,13 @@ class ModelService:
         full = (a >= 0) & (b >= 0) & (cc >= 0) & (d >= 0)
         tri = np.concatenate([np.stack([a[full], b[full], d[full]], 1), np.stack([a[full], d[full], cc[full]], 1)])
         sel = tid >= 0
-        E = interp_vertex(geom['tets'], tid[sel], bary[sel], pred['_E'][:, :, k])
-        H = interp_vertex(geom['tets'], tid[sel], bary[sel], pred['_H'][:, :, k])
-        return self.to_mm(geom, pts[sel]), tri, E, H
+        vals = [interp_vertex(geom['tets'], tid[sel], bary[sel], np.asarray(v)) for v in nodal]
+        return self.to_mm(geom, pts[sel]), tri, vals
 
-    def surface_fields(self, pred, vid, k):
+    @staticmethod
+    def surface_fields(sol, vid, k):
         """E, H [Nb,3] at the display-surface vertices."""
-        return pred['_E'][vid, :, k], pred['_H'][vid, :, k]
+        return sol['_E'][vid, :, k], sol['_H'][vid, :, k]
 
 
 def _num(v):

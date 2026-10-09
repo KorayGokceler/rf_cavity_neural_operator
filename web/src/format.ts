@@ -36,3 +36,6 @@ export const QOI_DEFS: QoiDef[] = [
   { key: 'Epk_Eacc', label: 'E_pk/E_acc', unit: '' },
   { key: 'Bpk_Eacc_mT_per_MVm', label: 'B_pk/E_acc', unit: 'mT/(MV/m)' },
 ];
+
+/** Integer with thin-space grouping (locale-neutral: '1 317', never '1.317' next to frequencies). */
+export const int = (n: number) => (Number.isFinite(n) ? Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009') : '—');

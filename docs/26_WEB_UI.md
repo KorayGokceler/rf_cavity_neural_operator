@@ -53,12 +53,47 @@
 - **Dil:** TR/EN.
 - **Uyarılar:** eğitilmemiş model, OOD aile, ışın ekseni kavitede değil.
 
+## 3b. Geliştirme aracı: dataset, özellikler, FE etiketleri, model–FE karşılaştırması
+
+Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çözümüne ve modelin hatasına kadar her şey görülebilir.
+
+- **Dataset sayfası:** sunucuya `RFCAV_DATA` ile verilen datasetler listelenir (`src/service/datasets.py`).
+  - Her **PKL** dosyası bir dataset; **H5 parçaları** klasör başına bir dataset. TRUBA düzeninde `h5/<aile>/` her aile için ayrı bir dataset olur.
+  - **Genel bakış:** aile başına geometri sayısı (tıklayınca filtreler), en düşük mod frekansı f₀ histogramı, N0 DOF sayısı histogramı.
+  - **Tablo:** id, aile, düğüm, N0, b1, f₀…f₅. Sıralanabilir, sayfalı, aileye göre filtrelenir. "Aç" geometriyi çalışma alanına gönderir.
+- **Geometri açılınca:**
+  - mesh ve kontroller;
+  - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. Değerler aynı operatörlerle yeniden hesaplanır; PKL'de saklı etiket varsa değerin ipucunda gösterilir;
+  - geometri bilgisi: dataset, dosya, id, N0 DOF, ölçek, torsiyon maksimumu, (K+1). mod frekansı, üretici parametreleri.
+- **"Tahmin et ve FE ile karşılaştır":**
+  - **Kaynak** seçimi: FE / Model / **Fark**. Fark = hizalanmış model − FE: işaret ve dejenere çiftler hizalanır, renk ölçeği FE alanına göre.
+  - Mod mod f_FE, f_model, Δf, alan rel-L2 ve η.
+  - Seçili mod için kavite değerleri yan yana: FE, model, Δ%.
+- **Gösterim → Girdi özelliği:** modelin gördüğü 9 düğüm özelliği kesitte ve duvarda:
+  - konum x, y, z;
+  - duvara uzaklık ve yönü (`dist_to_boundary`, `dir_bnd_x|y|z`);
+  - düğüm hacmi;
+  - torsiyon fonksiyonu.
+- **Yüzey → mesh (tel kafes):** yüzey üçgenleri, yani mesh çözünürlüğü.
+- **Hızlandırmayan modlar:** ışın ekseninde alan yoksa (R/Q < 1e-6 Ω) R/Q, R_sh, T, Epk/Eacc ve Bpk/Eacc "—" gösterilir; eksen grafiği de bunu söyler.
+
+**Uç noktalar:**
+- `GET /api/datasets`
+- `GET /api/datasets/{d}/items?family&offset&limit&sort=id|family|n_edges|n_nodes|betti1|f0&desc`
+- `GET /api/datasets/{d}/stats`
+- `POST /api/datasets/{d}/items/{id}/open`
+- `GET /api/geometries/{id}/features`, `…/feature_plane?name&axis&pos&res`, `…/feature_surface?name`
+- `POST /api/predictions {geometry_id, compare_to}`: ek olarak `comparison.rows` ve `comparison.diff_id` döner.
+
+**Bellek:** PKL'ler sunucu belleğine bir kez yüklenir. `RFCAV_MAX_PKL_GB` (8) sınırının üstündeki PKL'ler için H5 parçalarını göster; H5 listesi yalnız öznitelikleri okur ve hızlıdır.
+
 ## 4. Çalıştırma
 
 ```bash
 # geliştirme
 pip install -r requirements.txt -r requirements-web.txt
-RFCAV_CHECKPOINT=runs/large uvicorn src.service.api:app --port 8000     # checkpoint yoksa eğitilmemiş demo modeli
+RFCAV_CHECKPOINT=runs/large RFCAV_DATA=/arf/scratch/$USER/rfcav3d/E_ms0.1_k10_v1 \
+    uvicorn src.service.api:app --port 8000          # checkpoint yoksa eğitilmemiş demo modeli; RFCAV_DATA: dataset kökleri (':' ile)
 cd web && npm install && npm run dev                                     # http://localhost:5173 (/api → :8000)
 
 # tek süreç (derlenmiş arayüz FastAPI'den servis edilir)
@@ -94,6 +129,7 @@ docker compose up --build                                                 # http
 
 | sürüm | içerik |
 |---|---|
+| **v0.1b** ✓ | geliştirme aracı: Dataset sayfası (genel bakış, tablo), FE etiketleri, FE / Model / Fark, girdi özellikleri, mesh görünümü |
 | **v0.1** ✓ | servis katmanı, API, React + vtk.js görünüm, faz animasyonu, mod tablosu, kavite değerleri, η, eksen grafiği, dışa aktarma, Dockerfile |
 | v0.2 | parametrik kurucu (aile başına parametre şeması + önizleme), OOD skoru, iş kuyruğu + "FE ile doğrula" |
 | v0.3 | tarama (parametreye göre f, R/Q eğrileri) ve hedef frekansa ayarlama, PDF rapor |
