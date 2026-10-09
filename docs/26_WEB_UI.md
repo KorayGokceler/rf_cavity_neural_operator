@@ -69,11 +69,17 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
   - **Kaynak** seçimi: FE / Model / **Fark**. Fark = hizalanmış model − FE: işaret ve dejenere çiftler hizalanır, renk ölçeği FE alanına göre.
   - Mod mod f_FE, f_model, Δf, alan rel-L2 ve η.
   - Seçili mod için kavite değerleri yan yana: FE, model, Δ%.
-- **Gösterim → Girdi özelliği:** modelin gördüğü 9 düğüm özelliği kesitte ve duvarda:
-  - konum x, y, z;
-  - duvara uzaklık ve yönü (`dist_to_boundary`, `dir_bnd_x|y|z`);
-  - düğüm hacmi;
-  - torsiyon fonksiyonu.
+- **Gösterim → Girdi özelliği:** her özellik kendi doğasına uygun biçimde gösterilir (`src/service/features.py`), skaler harita tek tip değil:
+
+  | grup | kanallar | gösterim |
+  |---|---|---|
+  | Konum çerçevesi | x, y, z | bir alan değil, koordinat sistemi: kesit üzerinde normalize çerçevenin 0.25 adımlı ızgarası, merkezden geçen eksenler, merkez işareti; ±1 = `scale` mm |
+  | Duvar vektörü | dist_to_boundary + dir_bnd_x/y/z | tek vektör özellik (en yakın duvar noktasına vektör): kesitte oklar, uçları duvara değer; arkada uzaklık haritası + eş-uzaklık çizgileri. Okların ayrıldığı çizgi orta eksen, yönün süreksiz olduğu yer |
+  | Torsiyon | torsion | pürüzsüz skaler: renk + 0.1 adımlı eş-değer çizgileri |
+  | Düğüm hacmi | node_volume | mesh bilgisi: kesiti kesen tet'ler kenarlarıyla ("crinkle cut"), düğüm hacmine göre renkli |
+  | Ham kanal | herhangi biri | tek kanal skaler olarak (hata ayıklama) |
+
+  Uç nokta: `GET /api/geometries/{id}/feature_view?kind=position|wall|torsion|mesh|raw&channel&axis&pos&res` → düzlem / hücreler / çizgi katmanları (rol: grid, axis, marker, iso, arrow).
 - **Yüzey → mesh (tel kafes):** yüzey üçgenleri, yani mesh çözünürlüğü.
 - **Hızlandırmayan modlar:** ışın ekseninde alan yoksa (R/Q < 1e-6 Ω) R/Q, R_sh, T, Epk/Eacc ve Bpk/Eacc "—" gösterilir; eksen grafiği de bunu söyler.
 

@@ -297,6 +297,29 @@ def create_app(service=None, datasets=None):
         _, v = _feature(g, name)
         return {'name': name, 'values_b64': b64(v[g['vid']])}
 
+    @app.get('/api/geometries/{gid}/feature_view')
+    def feature_view_ep(gid: str, kind: str, channel: str | None = None, axis: str = 'y',
+                        pos: float | None = None, res: int = 121):
+        from src.service.features import KINDS, feature_view
+        if kind not in KINDS or axis not in ('x', 'y', 'z') or not 16 <= res <= 241:
+            raise HTTPException(422, f"kind in {KINDS}, axis in x|y|z, res in [16, 241]")
+        g = geoms.get(gid)
+        geom, _ = _prepared(g)
+        try:
+            v = feature_view(geom, kind, axis, pos, res, g.get('feature_names'), channel)
+        except KeyError:
+            raise HTTPException(404, f"unknown feature channel {channel!r}") from None
+
+        def mesh(m):
+            return None if m is None else {'n_points': int(len(m['points'])), 'points_b64': b64(m['points']),
+                                           'triangles_b64': b64(m['triangles'], np.uint32),
+                                           'scalars_b64': b64(np.nan_to_num(m['scalars']))}
+        return {'kind': kind, 'plane': mesh(v['plane']), 'cells': mesh(v['cells']),
+                'segments': [{'role': sg['role'], 'n': int(len(sg['points'])), 'points_b64': b64(sg['points'])}
+                             for sg in v['segments']],
+                'range': v['range'], 'signed': v['signed'], 'neutral': bool(v.get('neutral', False)),
+                'legend': v['legend']}
+
     # ── datasets ─────────────────────────────────────────────────────
     def _ds(did):
         if did not in ds_ids:

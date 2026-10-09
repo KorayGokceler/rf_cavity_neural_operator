@@ -1,20 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, type Features, type Geometry, type Info, type ModeData, type Plane, type Prediction } from './api';
+import { api, type FeatureView, type Features, type Geometry, type Info, type ModeData, type Plane, type Prediction } from './api';
 import GeometryPanel from './components/GeometryPanel';
 import GeometryInfo from './components/GeometryInfo';
 import ModeTable from './components/ModeTable';
 import ModeDetails from './components/ModeDetails';
 import AxisPlot from './components/AxisPlot';
 import DatasetPage from './components/DatasetPage';
-import Viewer3D, { fieldScalars, type Comp, type PlaneGeom, type SurfaceMode } from './components/Viewer3D';
+import Viewer3D, { fieldScalars, type Comp, type SurfaceMode } from './components/Viewer3D';
 import { cssGradient, divergingStops, sequentialStops, type Theme } from './colors';
-import { t, type Lang } from './i18n';
+import { t, type Key, type Lang } from './i18n';
 import { sci } from './format';
 
 const AXES = ['x', 'y', 'z'] as const;
 type Axis = (typeof AXES)[number];
 type Source = 'fe' | 'model' | 'diff';
 type Display = 'field' | 'feature';
+type FeatureKind = 'position' | 'wall' | 'torsion' | 'mesh' | 'raw';
+const FEATURE_KINDS: FeatureKind[] = ['position', 'wall', 'torsion', 'mesh', 'raw'];
 
 function initialTheme(): Theme {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -34,8 +36,9 @@ export default function App() {
   const [plane, setPlane] = useState<Plane | null>(null);
   const [features, setFeatures] = useState<Features | null>(null);
   const [display, setDisplay] = useState<Display>('field');
-  const [feature, setFeature] = useState('torsion');
-  const [fPlane, setFPlane] = useState<(PlaneGeom & { values: Float32Array }) | null>(null);
+  const [fKind, setFKind] = useState<FeatureKind>('wall');
+  const [feature, setFeature] = useState('torsion');                 // channel of the 'raw' view
+  const [fView, setFView] = useState<FeatureView | null>(null);
   const [fSurf, setFSurf] = useState<Float32Array | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +64,7 @@ export default function App() {
   const newGeometry = (g: Geometry | undefined) => {
     if (!g) return;
     setGeom(g); setPred(null); setModeData(null); setTruthData(null); setPlane(null); setPos(null);
-    setFeatures(null); setFPlane(null); setFSurf(null);
+    setFeatures(null); setFView(null); setFSurf(null);
     const acc = g.truth?.modes.find((m) => m.accelerating);
     setMode(acc ? acc.mode : 0);
     setSource(g.truth ? 'fe' : 'model');
@@ -113,11 +116,13 @@ export default function App() {
     if (!geom || display !== 'feature') return;
     let live = true;
     const h = setTimeout(() => {
-      api.featurePlane(geom.id, feature, axis, pos).then((p) => live && setFPlane(p)).catch((e) => setError(e.message));
+      api.featureView(geom.id, fKind, fKind === 'raw' ? feature : null, axis, pos)
+        .then((v) => live && setFView(v)).catch((e) => setError(e.message));
     }, 120);
-    api.featureSurface(geom.id, feature).then((v) => live && setFSurf(v)).catch(() => undefined);
+    if (fKind === 'raw') api.featureSurface(geom.id, feature).then((v) => live && setFSurf(v)).catch(() => undefined);
+    else setFSurf(null);
     return () => { live = false; clearTimeout(h); };
-  }, [geom, feature, axis, pos, display]);
+  }, [geom, fKind, feature, axis, pos, display]);
 
   // phase animation 0 → 180° (loop)
   const raf = useRef<number | null>(null);
@@ -140,10 +145,10 @@ export default function App() {
   // what the viewer colours
   const view = useMemo(() => {
     if (display === 'feature') {
-      const i = features ? features.names.indexOf(feature) : -1;
-      const lo = i >= 0 ? features!.min[i] : 0, hi = i >= 0 ? features!.max[i] : 1;
-      return { plane: fPlane, planeS: fPlane?.values ?? null, surfS: fSurf, range: [lo, hi] as [number, number],
-               signed: lo < 0, label: feature, unit: '' };
+      return { plane: fView?.plane ?? null, planeS: fView?.plane?.scalars ?? null, surfS: fSurf,
+               range: (fView?.range ?? [0, 1]) as [number, number], signed: fView?.signed ?? false,
+               label: fView?.legend ?? '', unit: '', neutral: fView?.neutral ?? false,
+               cells: fView?.cells ?? null, segments: fView?.segments ?? [] };
     }
     const ref = source === 'diff' ? truthData : modeData;
     const lim = ref ? (field === 'E' ? ref.surface.E_max : ref.surface.H_max) : 1;
@@ -153,9 +158,9 @@ export default function App() {
       surfS: modeData ? fieldScalars(field === 'E' ? modeData.surface.E : modeData.surface.H, field, comp, phase) : null,
       range: (signed ? [-lim, lim] : [0, lim]) as [number, number], signed,
       label: `${source === 'diff' ? 'Δ' : ''}${signed ? `${field}${comp}` : `|${field}|`}, U = 1 J`,
-      unit: field === 'E' ? 'V/m' : 'A/m',
+      unit: field === 'E' ? 'V/m' : 'A/m', neutral: false, cells: null, segments: [],
     };
-  }, [display, features, feature, fPlane, fSurf, source, truthData, modeData, plane, field, comp, phase]);
+  }, [display, fView, fSurf, source, truthData, modeData, plane, field, comp, phase]);
   const legend = useMemo(() => cssGradient(view.signed ? divergingStops(theme) : sequentialStops(theme), view.signed),
     [view.signed, theme]);
 
@@ -200,14 +205,17 @@ export default function App() {
             <div className="viewer-card">
               <Viewer3D surface={geom?.surface ?? null} surfaceScalars={view.surfS} plane={view.plane}
                         planeScalars={view.planeS} range={view.range} signed={view.signed}
-                        surfaceMode={surfaceMode} theme={theme} viewAxis={axis} />
+                        surfaceMode={surfaceMode} theme={theme} viewAxis={axis}
+                        neutralPlane={view.neutral} cells={view.cells} segments={view.segments} />
               {!geom && <div className="viewer-empty">{t(lang, 'empty')}</div>}
               {geom && !shown && display === 'field' && <div className="viewer-empty">{t(lang, 'noPrediction')}</div>}
               {(shown || display === 'feature') && geom && (
                 <div className="legend">
-                  <span>{sci(view.range[0])}</span>
-                  <div className="legend-bar" style={{ background: legend }} />
-                  <span>{sci(view.range[1])} {view.unit}</span>
+                  {!view.neutral && <>
+                    <span>{sci(view.range[0])}</span>
+                    <div className="legend-bar" style={{ background: legend }} />
+                    <span>{sci(view.range[1])} {view.unit}</span>
+                  </>}
                   <span className="muted">{view.label}</span>
                 </div>
               )}
@@ -234,13 +242,20 @@ export default function App() {
                     <option value="abs">|·|</option><option value="x">x</option><option value="y">y</option><option value="z">z</option>
                   </select>
                 </label>
-              </>) : (
+              </>) : (<>
                 <label>{t(lang, 'featureMode')}
-                  <select value={feature} onChange={(e) => setFeature(e.target.value)}>
-                    {(features?.names ?? []).map((n) => <option key={n} value={n}>{n}</option>)}
+                  <select value={fKind} onChange={(e) => setFKind(e.target.value as FeatureKind)}>
+                    {FEATURE_KINDS.map((k) => <option key={k} value={k}>{t(lang, `fk_${k}` as Key)}</option>)}
                   </select>
                 </label>
-              )}
+                {fKind === 'raw' && (
+                  <label>{t(lang, 'channel')}
+                    <select value={feature} onChange={(e) => setFeature(e.target.value)}>
+                      {(features?.names ?? []).map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </label>
+                )}
+              </>)}
               <label>{t(lang, 'cut')}
                 <select value={axis} onChange={(e) => { setAxis(e.target.value as Axis); setPos(null); }}>
                   {AXES.map((a) => <option key={a} value={a}>⟂ {a}</option>)}
@@ -266,6 +281,7 @@ export default function App() {
               </label>
             </div>
             {source === 'diff' && display === 'field' && <div className="note">{t(lang, 'diffNote')}</div>}
+            {display === 'feature' && <div className="note">{t(lang, `fkn_${fKind}` as Key)}</div>}
 
             {modeData && display === 'field' && <AxisPlot z={modeData.axis.z_mm} ez={modeData.axis.Ez} title={t(lang, 'axisPlot')} note={t(lang, 'axisNote')}
                                                           scale={(source === 'diff' ? truthData : modeData)?.surface.E_max ?? modeData.surface.E_max}

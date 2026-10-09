@@ -31,6 +31,12 @@ export interface Features {
   names: string[]; min: number[]; max: number[]; n_vertices: number; n_edges: number; scale_mm: number;
   torsion_max: number;
 }
+export interface ScalarMesh { points: Float32Array; triangles: Uint32Array; scalars: Float32Array }
+export interface Segments { role: 'grid' | 'axis' | 'marker' | 'iso' | 'arrow'; points: Float32Array }
+export interface FeatureView {
+  kind: string; plane: ScalarMesh | null; cells: ScalarMesh | null; segments: Segments[];
+  range: [number, number]; signed: boolean; neutral: boolean; legend: string;
+}
 export interface DatasetRef { id: string; name: string; kind: 'h5' | 'pkl' }
 export interface DatasetRow {
   id: number; family: string; n_nodes: number; n_edges: number; n_tets: number; betti1: number;
@@ -113,6 +119,19 @@ export const api = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const j: any = await call(`/api/geometries/${gid}/feature_surface?${new URLSearchParams({ name })}`);
     return f32(j.values_b64);
+  },
+  featureView: async (gid: string, kind: string, channel: string | null, axis: string, pos: number | null,
+                      res = 121): Promise<FeatureView> => {
+    const q = new URLSearchParams({ kind, axis, res: String(res) });
+    if (channel) q.set('channel', channel);
+    if (pos !== null) q.set('pos', String(pos));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const j: any = await call(`/api/geometries/${gid}/feature_view?${q}`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mesh = (m: any) => (m ? { points: f32(m.points_b64), triangles: u32(m.triangles_b64), scalars: f32(m.scalars_b64) } : null);
+    return { ...j, plane: mesh(j.plane), cells: mesh(j.cells),
+             // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             segments: j.segments.map((s: any) => ({ role: s.role, points: f32(s.points_b64) })) };
   },
   datasets: () => call<DatasetRef[]>('/api/datasets'),
   datasetItems: (did: string, p: { family?: string; offset?: number; limit?: number; sort?: string; desc?: boolean }) => {

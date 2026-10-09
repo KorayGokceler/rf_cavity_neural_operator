@@ -123,3 +123,35 @@ def test_dataset_endpoints_and_comparison(client):
     other = client.post("/api/geometries/sample", json={"family": "box", "id": 3, "mesh_size": 0.3}).json()
     bad = client.post("/api/predictions", json={"geometry_id": other["id"], "compare_to": o["truth"]["id"]})
     assert bad.status_code == 422
+
+
+def test_feature_views(client):
+    """Each feature group has its own display: frame grid, wall arrows, torsion iso-lines, cut tets."""
+    g = client.post("/api/geometries/sample", json={"family": "pillbox_pipes", "id": 5, "mesh_size": 0.3}).json()
+    gid = g["id"]
+
+    def view(kind, **kw):
+        r = client.get(f"/api/geometries/{gid}/feature_view", params={"kind": kind, "res": 61, **kw})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    pos = view("position")
+    roles = {s["role"]: s["n"] for s in pos["segments"]}
+    assert pos["neutral"] and roles["grid"] > 0 and roles["axis"] > 0 and roles["marker"] == 2
+    wall = view("wall")
+    arrows = next(s for s in wall["segments"] if s["role"] == "arrow")
+    A = f32(arrows["points_b64"]).reshape(-1, 2, 3)
+    n = len(A) // 3                                                           # shafts first, then two heads
+    shaft = A[:n]
+    assert n > 10 and np.all(np.isfinite(shaft))
+    bb = np.array(g["check"]["bbox_mm"])
+    assert np.all(shaft[:, 1] >= bb[0] - 1) and np.all(shaft[:, 1] <= bb[1] + 1)   # tips stay in the bbox
+    tor = view("torsion")
+    assert tor["plane"]["n_points"] > 0 and tor["segments"][0]["role"] == "iso" and tor["range"] == [0.0, 1.0]
+    mesh = view("mesh")
+    assert mesh["plane"] is None and mesh["cells"]["n_points"] > 0
+    assert "tets cut by the plane" in mesh["legend"]
+    raw = view("raw", channel="dir_bnd_z")
+    assert raw["signed"] and raw["plane"]["n_points"] > 0
+    assert client.get(f"/api/geometries/{gid}/feature_view", params={"kind": "raw", "channel": "nope"}).status_code == 404
+    assert client.get(f"/api/geometries/{gid}/feature_view", params={"kind": "bad"}).status_code == 422

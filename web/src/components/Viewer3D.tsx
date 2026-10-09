@@ -9,7 +9,7 @@ import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import { divergingStops, hexToRgb, sequentialStops, type Theme } from '../colors';
-import type { Surface } from '../api';
+import type { ScalarMesh, Segments, Surface } from '../api';
 
 export type Comp = 'abs' | 'x' | 'y' | 'z';
 export type SurfaceMode = 'ghost' | 'field' | 'mesh' | 'hidden';
@@ -26,6 +26,23 @@ interface Props {
   surfaceMode: SurfaceMode;
   theme: Theme;
   viewAxis: 'x' | 'y' | 'z';               // look along the cut normal
+  neutralPlane?: boolean;                   // plane drawn in one neutral tone (overlays carry the content)
+  cells?: ScalarMesh | null;                // e.g. tets cut by the plane, edges drawn
+  segments?: Segments[];                    // line overlays: grid / axis / marker / iso / arrow
+}
+
+const ROLE_STYLE: Record<string, { color: string; width: number; opacity: number }> = {
+  grid: { color: '--text-secondary', width: 1, opacity: 0.55 },
+  axis: { color: '--text-primary', width: 2, opacity: 0.9 },
+  marker: { color: '--critical', width: 3, opacity: 1 },
+  iso: { color: '--text-primary', width: 1, opacity: 0.45 },
+  arrow: { color: '--text-primary', width: 1, opacity: 0.85 },
+};
+
+function lineCells(n: number): Uint32Array {          // n segments: [2, 2i, 2i+1] …
+  const out = new Uint32Array(3 * n);
+  for (let i = 0; i < n; i++) { out[3 * i] = 2; out[3 * i + 1] = 2 * i; out[3 * i + 2] = 2 * i + 1; }
+  return out;
 }
 
 /** Scalar per point of a [P,3] vector field at the given phase: E(t) = E cos φ, H(t) = H sin φ. */
@@ -75,7 +92,7 @@ export default function Viewer3D(p: Props) {
       renderer.addActor(actor);
       return { pd, mapper, actor };
     };
-    vtk.current = { grw, renderer, rw: grw.getRenderWindow(), surf: mk(), plane: mk(),
+    vtk.current = { grw, renderer, rw: grw.getRenderWindow(), surf: mk(), plane: mk(), cells: mk(), mk, lines: [],
                     ctf: vtkColorTransferFunction.newInstance() };
     const ro = new ResizeObserver(() => { grw.resize(); grw.getRenderWindow().render(); });
     ro.observe(host.current!);
@@ -134,9 +151,25 @@ export default function Viewer3D(p: Props) {
       o.mapper.setScalarVisibility(true);
       o.pd.modified();
     };
-    const planeOn = !!(p.plane && p.plane.triangles.length && p.planeScalars) && p.surfaceMode !== 'mesh';
-    if (planeOn) paint(v.plane, p.planeScalars);
+    const planeOn = !!(p.plane && p.plane.triangles.length && (p.planeScalars || p.neutralPlane)) && p.surfaceMode !== 'mesh';
+    const pp = v.plane.actor.getProperty();
+    if (planeOn && p.neutralPlane) {
+      v.plane.mapper.setScalarVisibility(false);
+      pp.setColor(...hexToRgb(cssVar('--surface-2', '#f3f2ee')));
+    } else if (planeOn) paint(v.plane, p.planeScalars);
     v.plane.actor.setVisibility(planeOn);
+    const cells = p.cells;
+    if (cells && cells.triangles.length) {
+      v.cells.pd.getPoints().setData(cells.points, 3);
+      v.cells.pd.getPolys().setData(polys(cells.triangles));
+      paint(v.cells, cells.scalars);
+      const cp = v.cells.actor.getProperty();
+      cp.setEdgeVisibility(true);
+      cp.setEdgeColor(...hexToRgb(cssVar('--text-secondary', '#52514e')));
+      v.cells.actor.setVisibility(true);
+    } else {
+      v.cells.actor.setVisibility(false);
+    }
 
     const sp = v.surf.actor.getProperty();
     sp.setRepresentationToSurface();
@@ -159,7 +192,39 @@ export default function Viewer3D(p: Props) {
       v.surf.actor.setVisibility(p.surfaceMode !== 'hidden' && !!p.surface);
     }
     v.rw.render();
-  }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.signed, p.surfaceMode, p.theme, p.surface]);
+  }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.signed, p.surfaceMode, p.theme, p.surface, p.cells, p.neutralPlane]);
+
+  // line overlays (rebuilt when they change)
+  useEffect(() => {
+    const v = vtk.current;
+    if (!v) return;
+    v.lines.forEach((o: any) => v.renderer.removeActor(o.actor));
+    v.lines = [];
+    // lift the lines slightly off the cut plane toward the camera (no z-fighting with the plane)
+    const b = v.surf.pd.getBounds();
+    const diag = Math.hypot(b[1] - b[0], b[3] - b[2], b[5] - b[4]) || 1;
+    const ai = p.viewAxis === 'x' ? 0 : p.viewAxis === 'y' ? 1 : 2;
+    const lift = (p.viewAxis === 'y' ? -1 : 1) * 0.004 * diag;
+    for (const sg of p.segments ?? []) {
+      const n = sg.points.length / 6;
+      if (!n) continue;
+      const o = v.mk();
+      const pts = new Float32Array(sg.points);
+      for (let i = ai; i < pts.length; i += 3) pts[i] += lift;
+      o.pd.getPoints().setData(pts, 3);
+      o.pd.getLines().setData(lineCells(n));
+      o.pd.modified();
+      const st = ROLE_STYLE[sg.role] ?? ROLE_STYLE.iso;
+      const pr = o.actor.getProperty();
+      pr.setColor(...hexToRgb(cssVar(st.color, '#0b0b0b')));
+      pr.setLineWidth(st.width);
+      pr.setOpacity(st.opacity);
+      pr.setLighting(false);
+      o.mapper.setScalarVisibility(false);
+      v.lines.push(o);
+    }
+    v.rw.render();
+  }, [p.segments, p.theme, p.viewAxis]);
 
   return <div className="viewer" ref={host} aria-label="3D view" />;
 }
