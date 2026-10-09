@@ -112,7 +112,6 @@ class Maxwell3DDataset(Dataset):
         with open(data_path, 'rb') as f:
             data = pickle.load(f)
         self.data_path, self.split = data_path, split
-        self.is_h5 = False
         self.geometry_pool = data['geometry_pool']
         self.samples_metadata = data['samples']
         meta = data.get('metadata', {}) or {}

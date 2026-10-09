@@ -97,7 +97,7 @@ def test_span_positive_and_decreasing_as_span_improves(disk):
     # nested spans of the true eigenvectors: capture grows with the dimension
     rs = [float(span_residual(_grams(disk, disk['U'][:, :j], T)[0], j).mean())
           for j in (1, 3, 5, 6)]
-    assert all(x > y for x, y in zip(rs, rs[1:])) and rs[-1] < 1e-5
+    assert all(x > y for x, y in zip(rs, rs[1:], strict=False)) and rs[-1] < 1e-5
 
 
 def test_span_gradient_finite_on_degenerate_targets(disk):

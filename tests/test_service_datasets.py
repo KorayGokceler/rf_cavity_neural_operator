@@ -1,6 +1,7 @@
 """Development-UI dataset browsing (src/service/datasets.py), model-vs-FE alignment (model.align)
 and the dataset / feature / comparison endpoints of src/service/api.py."""
 import base64
+import pickle
 import os
 import sys
 
@@ -213,7 +214,7 @@ def test_gen_root_inside_a_data_root_is_listed_once(data_dir, monkeypatch):
 def test_optional_checkpoint_falls_back_to_untrained(tmp_path):
     bad = tmp_path / "last.ckpt"
     bad.write_bytes(b"not a checkpoint")
-    with pytest.raises(Exception):
+    with pytest.raises((pickle.UnpicklingError, RuntimeError, EOFError, KeyError)):
         ModelService(str(bad), "cpu")
     s = ModelService(str(bad), "cpu", optional=True)
     assert s.untrained and s.load_error and s.info()["load_error"] == s.load_error

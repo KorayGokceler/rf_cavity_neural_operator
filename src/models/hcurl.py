@@ -71,7 +71,7 @@ def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10):
         rz = rz_new
     if not converged:
         warnings.warn(f"KpSolve: CG stopped at maxiter={maxiter} before reaching tol={tol:g}; "
-                      "the kernel projection (M_div) may be inaccurate.")
+                      "the kernel projection (M_div) may be inaccurate.", stacklevel=3)
     return x, it
 
 

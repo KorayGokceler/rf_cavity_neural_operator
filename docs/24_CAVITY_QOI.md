@@ -1,6 +1,7 @@
 # 24 · Cavity figures of merit (QoI): Q0, G, R/Q, R_sh, E_pk/E_acc, B_pk/E_acc
 
-> Status: **implemented** (branch `claude/3d-cavity-qoi`). §0 is the binding interface shared by
+> Status: **implemented**. The fields are E primary (the H formulation was removed; its formulas and
+> measurements below are kept as the historical cross-check). §0 is the binding interface shared by
 > `src/qoi/operators.py` (numpy, reference), `src/data/*` (labels, batching), `src/qoi/torch_qoi.py`
 > (differentiable, training). §1–§3 physics, discretisation, validation; §4 data & evaluation; §5 training.
 
@@ -54,20 +55,18 @@ the same operators are applied to the FE field.
 ### 0.3 numpy API — `src/qoi/operators.py` (exported from `src/qoi/__init__.py`)
 
 ```python
-build_qoi_operators(X, tets, edges, scale, center, field, M=None, n_axis=401,
-                    axis_xy=(0.0, 0.0)) -> dict
+build_qoi_operators(X, tets, edges, scale, center, M=None, n_axis=401,
+                    axis_xy=(0.0, 0.0), axis_dir=None, axis_point=None) -> dict
     # keys (all for the NORMALISED mesh, numpy / scipy CSR float64):
-    'field'   'E' | 'H'
     'scale'   float s [m]
     'M'       CSR [Ne×Ne]   volume mass (assembled if M is None)
     'S'       CSR [Ne×Ne]   wall-loss quadratic form (§0.2)
-    'Az'      CSR [P×Ne]    E-primary: Ẽ_z at axis points; H-primary: (curl H̃)_z
+    'Az'      CSR [P×Ne]    Ẽ along the beam axis at the axis points
     'zeta'    float [P]     axial coordinate of the points (normalised, relative to center)
     'q'       float [P]     quadrature weights (normalised length), 0 outside Ω
     'L_axis'  float         chord length of the axis inside Ω (normalised)
-    'Esurf'   CSR [3Nf×Ne]  rows 3i..3i+2 = Cartesian components at surface point i of
-                            E-primary: Ẽ;          H-primary: curl H̃
-    'Hsurf'   CSR [3Nf×Ne]  E-primary: curl Ẽ;     H-primary: H̃
+    'Esurf'   CSR [3Nf×Ne]  rows 3i..3i+2 = Cartesian components of Ẽ at surface point i
+    'Hsurf'   CSR [3Nf×Ne]  curl Ẽ at the surface points
     'face_area' float [Nf]  (surface points = boundary-face centroids, one per boundary face)
 
 qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=5.8e7, beta=1.0, L_acc=None,
@@ -76,9 +75,9 @@ qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=5.8e7, beta=1.0, L_acc=None,
     'f_Hz','Rs_ohm','U_J','P_c_W','Q0','G_ohm','V_acc_V','T_transit','R_over_Q_ohm',
     'R_sh_ohm','L_acc_m','E_acc_Vm','E_pk_Vm','B_pk_T','Epk_Eacc','Bpk_Eacc_mT_per_MVm'
 
-cavity_qoi(geom, U, f_ghz, field=None, **kw) -> dict
-    # geom = PKL geometry_pool entry (X, tets, edges, scale, center[, M]); field default
-    # geom.get('field', 'H'); builds the operators (cache the result yourself if reused).
+cavity_qoi(geom, U, f_ghz, **kw) -> dict
+    # geom = PKL geometry_pool entry (X, tets, edges, scale, center[, M]); builds the operators
+    # (cache the result yourself if reused).
 
 QOI_LABELS = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc',
               'Bpk_Eacc_mT_per_MVm')    # what the PKL stores per sample (§0.4)
@@ -124,7 +123,7 @@ qoi_torch(batch, F, f_ghz, Rs=None, sigma=5.8e7, beta=1.0, convention='linac',
     # F [B, Ne_max, K] DOFs (any amplitude), f_ghz [B,K]; same keys/values as qoi_from_dofs
     # (peaks exact max when peak_p is None, else a p-norm soft max for gradients).
 ```
-Training term (`GNOTLightning(qoi_weight=0.0, qoi_terms=('Q0','R_over_Q_ohm','G_ohm'))`, off by
+Training term (`CavityLightning(qoi_weight=0.0, qoi_terms=('Q0','R_over_Q_ohm','G_ohm'))`, off by
 default): mean squared log-ratio of predicted vs FE QoI over isolated (non-cluster) modes.
 
 ## 1. Physics & definitions
@@ -484,7 +483,7 @@ separate MLP head that regresses Q0, R/Q, ... was not used, because:
 
 ### 5.2 Loss
 
-`GNOTLightning(qoi_weight=0.0, qoi_terms=('Q0','R_over_Q_ohm','G_ohm'), qoi_peak_p=None,
+`CavityLightning(qoi_weight=0.0, qoi_terms=('Q0','R_over_Q_ohm','G_ohm'), qoi_peak_p=None,
 qoi_rq_floor=1e-2)`, used only by `model_type='eigenspace3d'`. It is **off by default**: with
 `qoi_weight = 0` the loss is bit-identical to before.
 

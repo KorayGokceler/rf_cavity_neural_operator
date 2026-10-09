@@ -1,9 +1,9 @@
-# 19 — 3D Veri Hattı: Maxwell Kavite Modları (E-alanı varsayılan, H isteğe bağlı; Nédélec N0)
+# 19 — 3D Veri Hattı: Maxwell Kavite Modları (E alanı, Nédélec N0)
 
-> **Güncelleme (`claude/3d-e-formulation`):** Varsayılan formülasyon artık **E** (`--field E`); kulplu
-> kaviteler (spoke, yarım dalga koaksiyel, DTL gövde + sap) ve yüzen iç iletkenler desteklenir. Ayrıntılar,
-> ölçümler ve yeni aileler: **§6 E formülasyonu**. §1–§5 H formülasyonunu anlatır (`--field H` ile aynen
-> çalışmaya devam eder).
+> **Formülasyon E'dir** ve yalnız E vardır: kulplu kaviteler (spoke, yarım dalga koaksiyel, DTL gövde +
+> sap) ve yüzen iç iletkenler desteklenir. Güncel tarif, ölçümler ve aileler: **§6 E formülasyonu**.
+> §1–§5 projenin ilk sürümündeki H formülasyonunu anlatır. H kodu kaldırıldı (`legacy-2d` etiketi);
+> bu bölümler geometri aileleri, özellikler ve sözleşmenin ortak kısmı için tarihsel kayıt olarak duruyor.
 
 > **Kapsam:** docs/18 Faz 2'nin **veri** yarısı: üretici (`src/data_gen/dataset_generator_3d.py`), dönüştürücü (`src/data/dataset_converter_3d.py`, `convert_3d.py`) ve model tarafının dayandığı PKL sözleşmesi. Model/eğitim kodu bu notun kapsamında değil.
 > **Ortam:** scikit-fem 12.0.2, gmsh 4.15.2, SciPy 1.17.1 (SuperLU). 4 çekirdekli CPU. Yeni bağımlılık yok.
@@ -257,46 +257,46 @@ Test eşikleri (`mesh_size 0.12`): E kutu ve pillbox için $10^{-2}$; H için es
 | `spoke` | Silindirik tank ($R_t\in[5,10]$ cm, eksen $z$) ve tank çapını $x$ boyunca kesen 1–2 spoke (dairesel veya eliptik kesit, $a_z/R_t\in[0.15,0.28]$). Spoke'lar iki uçta tank duvarına değer; ikinci spoke paralel ya da $z$ etrafında 90° döndürülmüş olabilir. %60 olasılıkla $z$ yönlü ışın deliği (tanktan ve her spoke'tan geçer, spoke kesiti yarış pisti gibi genişletilir), aksi halde uç plakalarda tüp saplamaları. OCC boolean'ı sağlam: hacim denetimi (`_check_volume`) sessiz bozuk kesimleri yakalar ve geometri yeniden çekilir. Yuvarlatma yok | spoke başına 1 (delikli spoke başına 2) | 0.77–1.49 GHz |
 | `dtl` | Alvarez benzeri tank ($R_t\in[5,10]$ cm, $n+1$ hücre, $L_c/R_t\in[0.5,0.9]$). Hücre sınırlarında 1–3 sürüklenme tüpü: delikli halka, $R_d/R_t\in[0.2,0.3]$, $r_b/R_d\in[0.35,0.5]$, yuvarlatılmış burunlar. Her tüp tank duvarına $+y$ yönlü bir sapla bağlanır. Tank uçlarında ışın tüpleri | tüp başına 1 | 0.40–0.77 GHz (sap modları: tüp başına bir düşük mod), ardından TM010 benzeri hızlandırıcı mod |
 
-Kenar sayısı mesh 0.10'da: `hwr` 7–9k (portlu ~21k), `spoke` 11–26k, `dtl` 21–27k. Bu aileler küçük detaylar içerdiği için `_h_cap` taban kuralına ($h\ge0.7\,h_V$) takılır. `--field H` ile bu aileler varsayılandan çıkar (`H_FAMILIES`); açıkça istenirlerse örnek hata verir.
+Kenar sayısı mesh 0.10'da: `hwr` 7–9k (portlu ~21k), `spoke` 11–26k, `dtl` 21–27k. Bu aileler küçük detaylar içerdiği için `_h_cap` taban kuralına ($h\ge0.7\,h_V$) takılır.
 
 ### 6.5 CLI, H5 ve PKL
 
 ```bash
 python -m src.data_gen.dataset_generator_3d --n_total 1000 --mesh_size 0.10 --sampling sobol --deform_prob 0.5 \
-    --h5_filename rf3d_e.h5            # --field E varsayılan; tüm FAMILIES (hwr, spoke, dtl dahil)
-python -m src.data_gen.dataset_generator_3d --field H ...   # eski H formülasyonu (yalnız topolojik toplar)
-python convert_3d.py --h5_filepath rf3d_e.h5 --output_path data/rf3d_e.pkl   # alan H5'ten okunur
+    --h5_filename rf3d_e.h5            # tüm FAMILIES (hwr, spoke, dtl dahil)
+python convert_3d.py --h5_filepath rf3d_e.h5 --output_path data/rf3d_e.pkl
 ```
 
-- **H5:** E için veri kümesi `e_edges` [Ne,K]: tüm kenarlarda $\int\mathbf E\cdot d\mathbf l$, duvar satırları 0, fiziksel birimde $M$-ortonormal. H için `h_edges`. Ek attr'lar: `field`, `n_bnd_components`, `betti1`. Dosya `metadata`'sında `field` ve `dataset` bulunur.
+- **H5:** veri kümesi `e_edges` [Ne,K]: tüm kenarlarda $\int\mathbf E\cdot d\mathbf l$, duvar satırları 0, fiziksel birimde $M$-ortonormal. Ek attr'lar: `field`, `n_bnd_components`, `betti1`. Dosya `metadata`'sında `field` ve `dataset` bulunur.
 - **PKL (`metadata['field'] = 'E'`):**
   - `G`: E potansiyel matrisi [Ne×Nv]. İlk `n_pot` sütun potansiyellerdir, kalanlar sıfırdır.
   - `Kp` $=G^\top MG$: `n_pot` bloğunda SPD, dışında sıfır.
   - Ek anahtarlar: `bnd_edge` bool [Ne], `n_pot`, `n_bnd_components`, `betti1`, `field`.
   - `Y`: E DOF'ları; duvar satırları tam 0, normalize mesh'te $\|Y\|_M=1$.
   - Dönüştürücü her örnekte duvar satırlarının sıfır olduğunu, $G^\top MY\approx0$ olduğunu ve Rayleigh frekansını denetler.
-  - H PKL'leri değişmedi (`field='H'` veya anahtar yok).
-- **Yalın PKL:** `geometry_operators(X, tets, field=metadata['field'])` saklanan tüm anahtarları yeniden kurar. Varsayılan `field='H'` eski çağrılarla bayt düzeyinde uyumludur; E PKL'lerde `field` mutlaka verilmelidir.
+  - H formülasyonunun PKL / H5'leri (`field='H'`) açık bir hatayla reddedilir.
+- **Yalın PKL:** `geometry_operators(X, tets)` saklanan tüm anahtarları yeniden kurar.
 
 ## 🔗 Bağlantılar
 
 - [18_3D_EXTENSION.md](18_3D_EXTENSION.md): fizik, çözücü seçenekleri, Schur-projekteli Gram (§3.4)
-- [01_DATA_GENERATION.md](01_DATA_GENERATION.md), [02_FEATURE_ENGINEERING.md](02_FEATURE_ENGINEERING.md): 2D karşılıkları
 
 #3d #maxwell #nedelec #hcurl #veri-hattı #sözleşme
 
 
 ## Mesh çözünürlüğü ve gerçek simülasyonlar
 
-Yakınsama (N0, düz kenarlı tet; hata $O(h^2)$, frekans yukarıdan yakınsar):
+Yakınsama (N0 E formülasyonu, düz kenarlı tet; hata $O(h^2)$, frekans aşağıdan yakınsar; §6.3):
 
-| mesh | tet | kenar DOF | pillbox $f_1$ hatası (analitik) | TESLA hücresi $f_1$ hatası (Richardson ref.) | süre (tek çekirdek) |
-|---|---|---|---|---|---|
-| 0.14 | 2k | 3k | +0.93 % | +2.4 % | <1 s |
-| **0.10** (eğitim) | 5k | 7k | +0.48 % | +1.3 % | 0.5 s |
-| 0.07 | 14k | 19k | +0.24 % | +0.63 % | 2–4 s |
-| 0.05 | 37k | 48k | +0.12 % | +0.33 % | 13–20 s |
-| 0.035 | 107k | 133k | +0.06 % | +0.16 % | 2–6 dk |
+| mesh | kutu (ilk 8 mod, en kötü) | pillbox (ilk 8 mod, en kötü) | pillbox TM010 | TESLA hücresi TM010 (Richardson ref. 1.288 GHz) |
+|---|---|---|---|---|
+| 0.15 | $1.1\cdot10^{-2}$ | $1.2\cdot10^{-2}$ | −0.49 % | — |
+| 0.12 | $8.0\cdot10^{-3}$ | $7.3\cdot10^{-3}$ | −0.31 % | — |
+| **0.10** (eğitim) | $5.1\cdot10^{-3}$ | $5.3\cdot10^{-3}$ | −0.24 % | +0.15 % |
+| 0.07 | $2.0\cdot10^{-3}$ | $2.2\cdot10^{-3}$ | −0.10 % | +0.03 % |
+| 0.05 | $9.6\cdot10^{-4}$ | $1.0\cdot10^{-3}$ | −0.05 % | — |
+
+Kenar DOF ve süre (tek çekirdek, TESLA hücresi): 0.10 → ~7k kenar, ~0.5 s; 0.07 → ~19k, 2–4 s; 0.05 → ~48k, 13–20 s.
 
 Üretim simülasyonları (CST/HFSS/ACE3P, SRF hücre tasarımı) tipik olarak 2. dereceden eğri kenarlı
 elemanlarla $10^5$–$10^6$ tet kullanır; hedef frekans doğruluğu $10^{-4}$–$10^{-5}$. Buradaki veri

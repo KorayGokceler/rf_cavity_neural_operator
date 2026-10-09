@@ -44,12 +44,10 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 from scipy.special import jn_zeros, jnp_zeros
 
-try:
-    from src.data_gen import cavity_shapes as cs
-except ImportError:   # run as a script from src/data_gen
+if __package__ in (None, ""):            # run as a script (python src/data_gen/dataset_generator_3d.py)
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-    import cavity_shapes as cs
 from src.data.dataset_converter_3d import boundary_topology, e_potential_matrix  # noqa: E402
+from src.data_gen import cavity_shapes as cs                                     # noqa: E402
 
 logging.getLogger('skfem').setLevel(logging.ERROR)
 

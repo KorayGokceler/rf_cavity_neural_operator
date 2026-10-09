@@ -341,7 +341,7 @@ def test_fillet_tangency():
 def test_freeform_surface_closed_and_varied():
     from src.data_gen import cavity_shapes as cs
     shapes = [cs.freeform_surface(np.random.default_rng(s), level=3) for s in range(6)]
-    for P, F, prm in shapes:
+    for P, F, _ in shapes:
         e = np.sort(F[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
         assert (np.unique(e, axis=0, return_counts=True)[1] == 2).all()     # closed 2-manifold
         assert cs.surface_volume(P, F) > 0 and np.isfinite(P).all()

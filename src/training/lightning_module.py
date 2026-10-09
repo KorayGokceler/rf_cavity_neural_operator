@@ -55,38 +55,20 @@ def detect_clusters(f_true_matched, threshold, rel_threshold=None, freq_stats=No
 
 
 def count_near_degenerate(dataset, threshold, rel_threshold=None):
-    """How many train geometries contain a near-degenerate mode cluster.
-
-    Same per-geometry normalized, ascending-sorted frequencies and the same detect_clusters
-    threshold as the metric. Cheap: reads only per-mode Theta[1] (raw freq), never fields.
-
-    Returns (n_deg_geoms, n_deg_modes, total_geoms).
-    """
-    n_deg_geo = 0
-    n_deg_modes = 0
-    geoms = dataset.active_geoms
-    use_h5 = getattr(dataset, 'is_h5', False)
-    h5 = dataset._get_h5_handle() if use_h5 else None
+    """(geometries with a near-degenerate cluster, modes in such clusters, geometries) of a
+    Maxwell3DDataset: the same normalized, ascending frequencies and detect_clusters threshold as
+    the metric. Cheap: reads only Theta[1] (raw freq), never fields."""
+    n_deg_geo = n_deg_modes = 0
     stats = dataset.stats
-    for g_id in geoms:
-        s_idx = dataset.geom_to_samples[g_id]
-        if use_h5:
-            raw = [float(h5['samples'][str(j)]['Theta'][1]) for j in s_idx]
-        else:
-            raw = [float(dataset.samples_metadata[j]['Theta'][1])
-                   for j in s_idx]
-        if stats:
-            fn = [(r - stats['mean']) / stats['std'] for r in raw]
-        else:
-            fn = list(raw)
-        fn.sort()  # __getitem__ orders modes by ascending normalized freq
-        cl = detect_clusters(torch.tensor(fn, dtype=torch.float32), threshold,
-                             rel_threshold, stats)
-        deg = [c for c in cl if len(c) > 1]
+    for g_id in dataset.active_geoms:
+        raw = [float(dataset.samples_metadata[j]['Theta'][1]) for j in dataset.geom_to_samples[g_id]]
+        fn = sorted((r - stats['mean']) / stats['std'] for r in raw) if stats else sorted(raw)
+        deg = [c for c in detect_clusters(torch.tensor(fn, dtype=torch.float32), threshold, rel_threshold, stats)
+               if len(c) > 1]
         if deg:
             n_deg_geo += 1
             n_deg_modes += sum(len(c) for c in deg)
-    return n_deg_geo, n_deg_modes, len(geoms)
+    return n_deg_geo, n_deg_modes, len(dataset.active_geoms)
 
 
 def _basis_conditioning_loss(M_mat: torch.Tensor) -> torch.Tensor:

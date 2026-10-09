@@ -18,8 +18,8 @@ G, E_pk/E_acc, B_pk/E_acc, …).
   artırılabilmeli**.
 - Bu nedenle **her sınıf ayrı üretilmeli** (sınıf başına ayrı parçalar / dosyalar, sonradan birleştirilebilir).
 
-*Mevcut durum:* E formülasyonuna geçildi (`claude/3d-e-formulation`): kulplu kaviteler (spoke, HWR,
-DTL) dahil her kapalı PEC kavite çalışır; H formülasyonu `--field H` ile duruyor. Aileler
+*Mevcut durum:* formülasyon E (kulplu kaviteler — spoke, HWR, DTL — dahil her kapalı PEC kavite);
+2D model ve H formülasyonu kaldırıldı (`legacy-2d` etiketi). Aileler
 `src/data_gen/cavity_shapes.py` içinde; üretici `--families` ile tek aile
 üretebilir, `--start_id` parçaları ve `convert_3d.py` çok dosya birleştirmeyi destekler. Notebook aileleri karışık üretiyor; TRUBA'da her aile ayrı üretilir
 (`cluster/truba/README.md`). Kapsama raporu:

@@ -8,20 +8,13 @@ Public API (contract):
     predict(lm, ds, idx, device='cpu') -> dict
     pick(ds, n=3, by='shape_type') -> list[int]
 """
-import os
-import sys
-
 import numpy as np
 import torch
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-
-from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate   # noqa: E402
-from src.models.hcurl import mode_rel_l2                              # noqa: E402
-from src.training.lightning_module import CavityLightning                # noqa: E402
-from src.training.checkpoint import resolve_checkpoint                                    # noqa: E402
+from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate
+from src.models.hcurl import mode_rel_l2
+from src.training.checkpoint import resolve_checkpoint
+from src.training.lightning_module import CavityLightning
 
 
 def load(checkpoint, data_path, split='test', device='cpu'):

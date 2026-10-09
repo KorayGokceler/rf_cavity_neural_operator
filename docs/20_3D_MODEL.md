@@ -1,18 +1,19 @@
-# 20 — 3B Maxwell Modeli: EigenspaceOperator3D (E veya H alanı, Whitney N0)
+# 20 — 3B Maxwell Modeli: EigenspaceOperator3D (E alanı, Whitney N0)
 
-> Varsayılan formülasyon artık **E**'dir (kulplu kaviteler dahil her kapalı PEC kavite; bkz. §8).
-> §1–§7 H formülasyonunu anlatır; E'de değişen her şey §8'de özetlenmiştir.
+> Formülasyon **E**'dir (kulplu kaviteler dahil her kapalı PEC kavite; §8). §1–§7 algoritmayı ilk
+> sürümdeki H formülasyonu üzerinden anlatır: gövde, kenar başlığı, projeksiyon, Ritz ve kayıplar E'de
+> aynıdır; E'de değişen her şey (duvar maskesi, SPD Kp, potansiyel matrisi) §8'dedir. H kodu kaldırıldı.
 
 > docs/18 §3'teki tasarımın uygulaması. Veri tarafı: docs/19 (`convert_3d.py` PKL sözleşmesi).
 > Kod: `src/models/eigenspace_operator_3d.py`, `src/models/hcurl.py`, `src/data/dataset_3d.py`,
-> `GNOTLightning(model_type='eigenspace3d')`, `configs/eigenspace_3d.yaml`, `scripts/eval_3d.py`,
+> `src/training/lightning_module.py` (`CavityLightning`), `configs/eigenspace_3d.yaml`, `scripts/eval_3d.py`,
 > testler: `tests/test_eigenspace_3d.py` (+ sentetik veri `tests/maxwell3d_synth.py`).
 
 ## 1. Mimari
 
 | Adım | Ne yapar |
 |---|---|
-| Gövde | 2D `EigenspaceOperator.embed` aynen kullanılır: RFF(xyz) ‖ F=9 düğüm özelliği → MLP → `n_layers` × kütle-farkında lineer attention. Ağırlıklar düğüm hacmidir (`node_volume` → `batch['Area']`). |
+| Gövde | `EigenspaceOperator3D.embed`: RFF(xyz) ‖ F=9 düğüm özelliği → MLP → `n_layers` × kütle-farkında lineer attention. Ağırlıklar düğüm hacmidir (`node_volume` → `batch['Area']`). |
 | Kenar tabanı | Kenar $e=(a\to b)$, düşük→yüksek indeks. Girdi simetriktir: $z_e=\tfrac12(h_a+h_b)\,\Vert\,\mathrm{RFF}(x_{mid})$. MLP orta noktada $m$ **vektör** alan verir, $\psi_j(x_{mid})\in\mathbb R^3$. DOF $V_{ej}=\psi_j(x_{mid})\cdot t_e$, $t_e=x_b-x_a$ olur; bu, $\int_e\psi\cdot t$'nin orta nokta kuralıdır. |
 | Yön | Kenar ters çevrilince yalnız $t_e$ işaret değiştirir, dolayısıyla $V_e\to-V_e$. Bu yapısal olarak kesindir (test edildi). Sınır kapısı yoktur ($\mathbf H$'de iki PEC koşulu da doğaldır); dolgu kenarları 0 verir. |
 | Ritz | Projekteli span üzerinde yapılır (§2); frekans $f=c\sqrt\lambda/(2\pi\,\mathrm{scale})$ (`_physics_freq_z`). |

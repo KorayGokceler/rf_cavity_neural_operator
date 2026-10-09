@@ -413,7 +413,7 @@ def build_composite(occ, rng):
     prims, fuse, cut = [body], [], []
     n_child = int(rng.integers(1, 5))
     bw = body.width()
-    for i in range(n_child):
+    for _ in range(n_child):
         parent = prims[int(rng.integers(0, min(len(prims), 2)))]   # body or the first child (depth ≤ 2)
         d = rng.standard_normal(3)
         d /= np.linalg.norm(d)

@@ -119,7 +119,7 @@ EXP=large MODEL=large cluster/truba/submit_train.sh --then-eval     # 6.5 M, ön
 
 ### Model nedir, ne öğrenir
 - **Girdi:** tet mesh ve her düğümde 9 özellik: konum, duvara uzaklık ve yönü, düğüm hacmi, torsiyon fonksiyonu.
-- **Ağ:** GNOT tarzı attention katmanları N0 kenarlarında `n_basis` tane baz vektörü üretir.
+- **Ağ:** kütle-farkında lineer attention katmanları N0 kenarlarında `n_basis` tane baz vektörü üretir.
 - **Ritz katmanı:** bazları alır, gradyan kısmını projeksiyonla çıkarır, Ku = λMu problemini bu alt uzayda çözer.
 - **Çıktı:** en alttaki K = 6 modun alanları (M-ortonormal) ve frekansları, f = c√λ/(2π·scale).
 - **Frekans garantisi:** Rayleigh–Ritz, aynı mesh'teki FE çözümünün altına inemez.
