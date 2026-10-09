@@ -12,7 +12,7 @@ Recipe (docs/18 E7, measured on the pillbox: p = 3, curve 3, 3.4k DOF → TM010 
   tets onto the exact CAD surfaces.
 - space: the FULL HCurl space of order p with its own discrete gradient (fes.CreateGradient, H1 of
   order p + 1).  nograds=True with a P1-gradient projection gives ~2 % errors for p ≥ 2.
-- eigensolver: shift-invert with σ < 0 (K − σM SPD) and the M-orthogonal projection
+- eigensolver (static condensation of the element-interior DOFs): shift-invert with σ < 0 (K − σM SPD) and the M-orthogonal projection
   P = I − G Kp⁻¹ GᵀM, Kp = ∇·∇ on the H1 space, after every solve (same as the N0 generator).
   Both factorisations are NGSolve's multithreaded sparse Cholesky; ARPACK runs on numpy views.
   Isolated conductors (more than one wall shell) leave one spurious λ ≈ 0 mode per extra shell
@@ -137,6 +137,17 @@ def _diag_mean(mat, free):
     return float(d[free].mean())
 
 
+def _condensed_inverse(form, fes):
+    """Exact inverse of a statically condensed SPD form: the element-interior DOFs are eliminated
+    element by element and only the coupling DOFs are factorised (sparse Cholesky) — for p ≥ 3
+    most DOFs are interior, so fill and time drop by an order of magnitude."""
+    from ngsolve import IdentityMatrix
+    inv = form.mat.Inverse(fes.FreeDofs(coupling=True), inverse="sparsecholesky")
+    ext = IdentityMatrix() + form.harmonic_extension
+    ext_t = IdentityMatrix() + form.harmonic_extension_trans
+    return ext @ inv @ ext_t + form.inner_solve
+
+
 def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4):
     """k lowest physical eigenpairs.  Returns dict(lam [k] (k² in 1/m²), f_hz [k], gfs (one
     GridFunction per mode, unit L2 norm), fes, info)."""
@@ -151,16 +162,16 @@ def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4):
         M = BilinearForm(u * v * dx, symmetric=True).Assemble()
         G, fesh1 = fes.CreateGradient()
         p, q = fesh1.TnT()
-        Kp = BilinearForm(grad(p) * grad(q) * dx, symmetric=True).Assemble()
+        Kp = BilinearForm(grad(p) * grad(q) * dx, symmetric=True, condense=True).Assemble()
     lam_scale = _diag_mean(K.mat, free) / _diag_mean(M.mat, free)
     if sigma is None:
         sigma = -1e-2 * lam_scale
     with TaskManager():
-        A = BilinearForm((curl(u) * curl(v) - sigma * u * v) * dx, symmetric=True).Assemble()
+        A = BilinearForm((curl(u) * curl(v) - sigma * u * v) * dx, symmetric=True, condense=True).Assemble()
     t1 = time.perf_counter()
     with TaskManager():
-        Ainv = A.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky")
-        Kpinv = Kp.mat.Inverse(fesh1.FreeDofs(), inverse="sparsecholesky")
+        Ainv = _condensed_inverse(A, fes)
+        Kpinv = _condensed_inverse(Kp, fesh1)
     t2 = time.perf_counter()
 
     xv, yv = K.mat.CreateColVector(), K.mat.CreateColVector()
