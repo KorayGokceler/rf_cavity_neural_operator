@@ -155,3 +155,47 @@ def test_feature_views(client):
     assert raw["signed"] and raw["plane"]["n_points"] > 0
     assert client.get(f"/api/geometries/{gid}/feature_view", params={"kind": "raw", "channel": "nope"}).status_code == 404
     assert client.get(f"/api/geometries/{gid}/feature_view", params={"kind": "bad"}).status_code == 422
+
+
+def test_generation_job_writes_family_dataset(tmp_path, monkeypatch):
+    """A generation job writes <root>/<TAG>/h5/<family>/<family>_s00000.h5 + pkl/<family>.pkl (ids from the
+    family's TRUBA block), shows up in the dataset list, and re-submitting skips finished shards."""
+    import time
+    root = tmp_path / "drive"
+    monkeypatch.setenv("RFCAV_GEN_ROOT", str(root))
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    cfg = c.get("/api/jobs/config").json()
+    assert cfg["enabled"] and cfg["blocks"]["pillbox_pipes"] == 3
+    body = {"families": ["pillbox_pipes"], "n_total": 3, "mesh_size": 0.3, "n_modes": 4, "shard_size": 16,
+            "workers": 1, "deform_prob": 0.0, "tag": "t"}
+
+    def run():
+        j = c.post("/api/jobs/generate", json=body).json()[0]
+        for _ in range(600):
+            j = c.get(f"/api/jobs/{j['id']}").json()
+            if j["status"] in ("done", "failed", "cancelled"):
+                return j
+            time.sleep(0.2)
+        raise AssertionError("job did not finish")
+
+    j = run()
+    assert j["status"] == "done", j["log"][-10:]
+    assert j["progress"]["done"] == 3
+    h5 = root / "t" / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5"
+    assert h5.exists() and (root / "t" / "pkl" / "pillbox_pipes.pkl").exists()
+    import h5py
+    with h5py.File(h5) as f:
+        assert sorted(f.keys())[0] == f"sample_{3 * 2 ** 19:04d}"
+    names = {d["name"] for d in c.get("/api/datasets").json()}
+    assert {"generated/t/h5/pillbox_pipes/ (h5)", "generated/t/pkl/pillbox_pipes.pkl"} <= names
+    j2 = run()                                                                # same job again: shard skipped
+    assert j2["status"] == "done" and any("skipped" in line for line in j2["log"])
+    assert c.post("/api/jobs/generate", json=dict(body, families=["nope"])).status_code == 422
+    assert c.post("/api/jobs/generate", json=dict(body, n_total=10 ** 9)).status_code == 422
+
+
+def test_generation_disabled_without_root(monkeypatch):
+    monkeypatch.delenv("RFCAV_GEN_ROOT", raising=False)
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    assert c.get("/api/jobs/config").json()["enabled"] is False
+    assert c.post("/api/jobs/generate", json={"families": ["box"]}).status_code == 503

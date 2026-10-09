@@ -37,6 +37,22 @@ export interface FeatureView {
   kind: string; plane: ScalarMesh | null; cells: ScalarMesh | null; segments: Segments[];
   range: [number, number]; signed: boolean; neutral: boolean; legend: string;
 }
+export interface JobsConfig {
+  enabled: boolean; gen_root: string | null; field: string; cpu_count: number; max_total: number;
+  families: { train: string[]; ood: string[] }; blocks: Record<string, number | null>; tag_example: string;
+}
+export interface GenParams {
+  families: string[]; n_total: number; mesh_size: number; n_modes: number; sampling: 'sobol' | 'random';
+  deform_prob: number; deform_max: number; seed: number; shard_size: number; workers: number | null;
+  convert: boolean; lean: boolean; tag: string | null;
+}
+export interface Job {
+  id: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  params: GenParams & { family: string; tag: string; block: number; field: string };
+  stage: string; progress: { done: number; total: number; ok: number; failed: number };
+  created: number; started: number | null; finished: number | null; error: string | null;
+  outputs: string[]; log: string[];
+}
 export interface DatasetRef { id: string; name: string; kind: 'h5' | 'pkl' }
 export interface DatasetRow {
   id: number; family: string; n_nodes: number; n_edges: number; n_tets: number; betti1: number;
@@ -133,6 +149,11 @@ export const api = {
              // eslint-disable-next-line @typescript-eslint/no-explicit-any
              segments: j.segments.map((s: any) => ({ role: s.role, points: f32(s.points_b64) })) };
   },
+  jobsConfig: () => call<JobsConfig>('/api/jobs/config'),
+  generate: (p: GenParams) => call<Job[]>('/api/jobs/generate', json(p)),
+  jobs: () => call<Job[]>('/api/jobs'),
+  cancelJob: (id: string) => call<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
+  rescan: () => call<DatasetRef[]>('/api/datasets/rescan', { method: 'POST' }),
   datasets: () => call<DatasetRef[]>('/api/datasets'),
   datasetItems: (did: string, p: { family?: string; offset?: number; limit?: number; sort?: string; desc?: boolean }) => {
     const q = new URLSearchParams();

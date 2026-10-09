@@ -6,6 +6,7 @@ import ModeTable from './components/ModeTable';
 import ModeDetails from './components/ModeDetails';
 import AxisPlot from './components/AxisPlot';
 import DatasetPage from './components/DatasetPage';
+import GeneratePage from './components/GeneratePage';
 import Viewer3D, { fieldScalars, type Comp, type SurfaceMode } from './components/Viewer3D';
 import { cssGradient, divergingStops, sequentialStops, type Theme } from './colors';
 import { t, type Key, type Lang } from './i18n';
@@ -25,7 +26,7 @@ function initialTheme(): Theme {
 export default function App() {
   const [lang, setLang] = useState<Lang>(navigator.language?.startsWith('tr') ? 'tr' : 'en');
   const [theme, setTheme] = useState<Theme>(initialTheme);
-  const [page, setPage] = useState<'work' | 'data'>('work');
+  const [page, setPage] = useState<'work' | 'data' | 'gen'>('work');
   const [info, setInfo] = useState<Info | null>(null);
   const [geom, setGeom] = useState<Geometry | null>(null);
   const [pred, setPred] = useState<Prediction | null>(null);
@@ -178,6 +179,7 @@ export default function App() {
         <nav className="seg" role="tablist">
           <button role="tab" aria-selected={page === 'work'} className={page === 'work' ? 'on' : ''} onClick={() => setPage('work')}>{t(lang, 'workspace')}</button>
           <button role="tab" aria-selected={page === 'data'} className={page === 'data' ? 'on' : ''} onClick={() => setPage('data')}>{t(lang, 'datasetTab')}</button>
+          <button role="tab" aria-selected={page === 'gen'} className={page === 'gen' ? 'on' : ''} onClick={() => setPage('gen')}>{t(lang, 'generateTab')}</button>
         </nav>
         <div className="header-right">
           {info && <span className="badge">{info.model.field}-field · {(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}</span>}
@@ -191,7 +193,8 @@ export default function App() {
         <div key={w} className="banner warning"><span className="icon">!</span>{w}</div>)}
       {error && <div className="banner critical"><span className="icon">✕</span>{error}</div>}
 
-      {page === 'data' ? <DatasetPage lang={lang} onOpen={openItem} busy={busy} /> : (
+      {page === 'gen' ? <GeneratePage lang={lang} onShowDatasets={() => setPage('data')} /> :
+       page === 'data' ? <DatasetPage lang={lang} onOpen={openItem} busy={busy} /> : (
         <main>
           <div className="leftcol">
             <GeometryPanel lang={lang} info={info} geometry={geom} busy={busy}

@@ -4,6 +4,7 @@ account), and prints the link + a QR code to scan with the phone camera.
 
     python scripts/serve_web.py --checkpoint runs/large --data /path/to/datasets           # same Wi-Fi
     python scripts/serve_web.py --checkpoint runs/large --data /path/to/datasets --tunnel  # anywhere
+    … --gen_root /content/drive/MyDrive/rfcav/ui_datasets    # + dataset generation from the UI
 
 Same Wi-Fi: the phone opens http://<this machine's LAN address>:<port>/?token=…
 --tunnel: https://<random>.trycloudflare.com/?token=… (downloads `cloudflared` if missing; the link
@@ -118,6 +119,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--checkpoint', default=None, help='.ckpt or training dir (none: UNTRAINED demo model)')
     ap.add_argument('--data', nargs='*', default=[], help='dataset roots (PKL files / H5 directories)')
+    ap.add_argument('--gen_root', default=None,
+                    help='folder for datasets generated from the UI (e.g. a Google Drive folder); off when unset')
     ap.add_argument('--port', type=int, default=8000)
     ap.add_argument('--device', default=None, help='cpu | cuda (default: cuda when available)')
     ap.add_argument('--tunnel', action='store_true', help='public HTTPS link (Cloudflare quick tunnel)')
@@ -128,7 +131,11 @@ def main(argv=None):
     build_frontend(args.rebuild)
     token = None if args.no_token else secrets.token_urlsafe(12)
     env = dict(os.environ, RFCAV_DATA=os.pathsep.join(os.path.abspath(d) for d in args.data))
-    for k, v in (('RFCAV_CHECKPOINT', args.checkpoint), ('RFCAV_DEVICE', args.device), ('RFCAV_TOKEN', token)):
+    gen = os.path.abspath(args.gen_root) if args.gen_root else None
+    if gen:
+        os.makedirs(gen, exist_ok=True)
+    for k, v in (('RFCAV_CHECKPOINT', args.checkpoint), ('RFCAV_DEVICE', args.device), ('RFCAV_TOKEN', token),
+                 ('RFCAV_GEN_ROOT', gen)):
         if v:
             env[k] = v
         else:

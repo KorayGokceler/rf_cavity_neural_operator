@@ -21,6 +21,7 @@ The built frontend (web/dist) is served at / when present.
 """
 import base64
 import collections
+import hashlib
 import hmac
 import os
 import random
@@ -145,10 +146,36 @@ def _access_token(app, token):
 def create_app(service=None, datasets=None):
     """FastAPI app around a ModelService (built from RFCAV_CHECKPOINT / RFCAV_DEVICE when None) and
     a dataset registry ({name: dataset}; RFCAV_DATA when None)."""
-    if datasets is None:
-        from src.service.datasets import discover
-        datasets = discover()
-    ds_ids = {f"d{i}": d for i, d in enumerate(datasets.values())}
+    from src.service.datasets import discover
+    fixed = datasets                                        # tests pass a registry; else RFCAV_DATA
+    gen_root = os.environ.get('RFCAV_GEN_ROOT') or None
+    ds_ids = {}
+
+    def _same(a, b):
+        if type(a) is not type(b):
+            return False
+        if hasattr(a, 'files'):
+            return a.files == b.files
+        return a.path == b.path and os.path.getmtime(a.path) == getattr(a, '_mtime', None)
+
+    def rescan():
+        """(Re)build the registry: RFCAV_DATA (or the fixed one) + generated datasets under RFCAV_GEN_ROOT.
+        Ids are stable per name; unchanged datasets keep their loaded state."""
+        found = dict(fixed) if fixed is not None else discover()
+        if gen_root and os.path.isdir(gen_root):
+            found.update({f"generated/{k}": d for k, d in discover(gen_root).items()})
+        old = {d.name: d for d in ds_ids.values()}
+        new = {}
+        for name, d in found.items():
+            d.name = name
+            if hasattr(d, 'path'):
+                d._mtime = os.path.getmtime(d.path)
+            keep = old.get(name)
+            new['d' + hashlib.sha1(name.encode()).hexdigest()[:8]] = keep if keep is not None and _same(keep, d) else d
+        ds_ids.clear()
+        ds_ids.update(new)
+
+    rescan()
     if service is None:
         from src.service.model import ModelService
         service = ModelService(os.environ.get('RFCAV_CHECKPOINT') or None, os.environ.get('RFCAV_DEVICE') or None)
@@ -424,6 +451,84 @@ def create_app(service=None, datasets=None):
             truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels']})
         resp.update(truth=truth, field=r['field'], predictable=r['field'] == service.field)
         return resp
+
+    @app.post('/api/datasets/rescan')
+    def datasets_rescan():
+        rescan()
+        return datasets_list()
+
+    # ── dataset generation (background jobs; RFCAV_GEN_ROOT, e.g. a Google Drive folder) ──
+    from src.service import jobs as J
+    blocks = J.family_blocks()
+    jm = J.JobManager(gen_root, on_done=lambda job: rescan()) if gen_root else None
+    max_gen = _env('RFCAV_GEN_MAX', 20000, int)
+
+    class GenReq(BaseModel):
+        families: list[str]
+        n_total: int = Field(default=100, ge=1)
+        mesh_size: float = Field(default=0.10, ge=Limits.min_mesh_size, le=0.5)
+        n_modes: int = Field(default=10, ge=1, le=30)
+        sampling: str = Field(default='sobol', pattern='^(sobol|random)$')
+        deform_prob: float = Field(default=0.5, ge=0.0, le=1.0)
+        deform_max: float = Field(default=0.5, ge=0.0, le=0.9)
+        seed: int = Field(default=0, ge=0)
+        shard_size: int = Field(default=256, ge=16, le=4096)
+        workers: int | None = Field(default=None, ge=1, le=256)
+        convert: bool = True
+        lean: bool = True
+        tag: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_.\-]{1,64}$')
+
+    def _jm():
+        if jm is None:
+            raise HTTPException(503, 'dataset generation is off: start the server with RFCAV_GEN_ROOT=<folder> '
+                                     '(e.g. a Google Drive folder)')
+        return jm
+
+    @app.get('/api/jobs/config')
+    def jobs_config():
+        return {'enabled': jm is not None, 'gen_root': gen_root, 'field': service.field,
+                'cpu_count': os.cpu_count() or 1, 'max_total': max_gen,
+                'families': {'train': [f for f in TRAIN_FAMILIES], 'ood': [f for f in OOD_FAMILIES]},
+                'blocks': {f: blocks.get(f) for f in TRAIN_FAMILIES + OOD_FAMILIES},
+                'tag_example': J.tag_of(service.field, 0.10, 10)}
+
+    @app.post('/api/jobs/generate')
+    def jobs_generate(req: GenReq):
+        m = _jm()
+        if not req.families:
+            raise HTTPException(422, 'choose at least one family')
+        bad = [f for f in req.families if f not in TRAIN_FAMILIES + OOD_FAMILIES or blocks.get(f) is None]
+        if bad:
+            raise HTTPException(422, f"unknown family / no id block: {bad}")
+        if req.n_total > max_gen:
+            raise HTTPException(422, f"n_total ≤ {max_gen} per family (RFCAV_GEN_MAX)")
+        tag = req.tag or J.tag_of(service.field, req.mesh_size, req.n_modes)
+        out = []
+        for f in req.families:
+            p = req.model_dump(exclude={'families', 'tag', 'workers'})
+            p.update(family=f, block=blocks[f], tag=tag, field=service.field,
+                     workers=req.workers or os.cpu_count() or 1,
+                     group='ood' if f in OOD_FAMILIES else 'train')
+            out.append(m.submit(p).public())
+        return out
+
+    @app.get('/api/jobs')
+    def jobs_list():
+        return [j.public() for j in reversed(_jm().jobs.values())] if jm else []
+
+    @app.get('/api/jobs/{jid}')
+    def jobs_get(jid: str):
+        m = _jm()
+        if jid not in m.jobs:
+            raise HTTPException(404, 'no such job')
+        return m.jobs[jid].public()
+
+    @app.post('/api/jobs/{jid}/cancel')
+    def jobs_cancel(jid: str):
+        m = _jm()
+        if jid not in m.jobs:
+            raise HTTPException(404, 'no such job')
+        return m.cancel(jid).public()
 
     dist = os.environ.get('RFCAV_WEB_DIST', os.path.join(ROOT, 'web', 'dist'))
     if os.path.isdir(dist):

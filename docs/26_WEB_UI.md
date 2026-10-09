@@ -93,6 +93,29 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 
 **Bellek:** PKL'ler sunucu belleğine bir kez yüklenir. `RFCAV_MAX_PKL_GB` (8) sınırının üstündeki PKL'ler için H5 parçalarını göster; H5 listesi yalnız öznitelikleri okur ve hızlıdır.
 
+## 3c. Arayüzden dataset üretimi (Google Drive'a)
+
+**"Üretim" sayfası:**
+- **Ayarlar:** aileler (eğitim / OOD), aile başına geometri, mesh boyu, saklanan mod sayısı, örnekleme (Sobol), deformasyon, seed, parça boyu, çekirdek, TAG, PKL'e dönüştürme (lean).
+- **İşler:** her aile ayrı bir iş olarak kuyruğa girer, tek bir worker sırayla çalıştırır (`src/service/jobs.py`). İlerleme çubuğu, durum ve log gösterilir; iş iptal edilebilir.
+- **Kayıt:** `RFCAV_GEN_ROOT` klasörüne, TRUBA ile aynı düzende ve aynı kimlik bloklarıyla (`cluster/truba/families.tsv`) yazılır. Bu yüzden arayüzde, Colab'da ve TRUBA'da üretilen datasetler birbiriyle karışabilir:
+  ```
+  <GEN_ROOT>/<TAG>/h5/<aile>/<aile>_s00000.h5 …
+  <GEN_ROOT>/<TAG>/pkl/<aile>.pkl
+  ```
+- **Google Drive:** Colab hücre 15, `GEN = f"{WORK}/ui_datasets"` klasörünü Drive'da açar.
+  - Parçalar önce yerel diske yazılır, tamamlanınca Drive'a taşınır (Drive yavaş bir ağ diski).
+  - Bağlantı koparsa biten parçalar Drive'da kalır. Aynı işi yeniden başlatınca bitmiş parçalar atlanır, kaldığı yerden devam eder.
+- **Dataset sayfası:** iş bitince otomatik yenilenir. Üretilenler `generated/<TAG>/…` adıyla görünür.
+- **Sınırlar:** aile başına ≤ `RFCAV_GEN_MAX` (20000) geometri. Üretim, `RFCAV_GEN_ROOT` verilmezse kapalıdır.
+
+**Uç noktalar:**
+- `GET /api/jobs/config`
+- `POST /api/jobs/generate`
+- `GET /api/jobs`, `GET /api/jobs/{id}`
+- `POST /api/jobs/{id}/cancel`
+- `POST /api/datasets/rescan`
+
 ## 4. Çalıştırma
 
 ```bash
