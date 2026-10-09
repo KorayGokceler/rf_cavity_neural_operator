@@ -177,24 +177,43 @@ def _condensed_inverse(form, fes):
     return ext @ inv @ ext_t + form.inner_solve
 
 
+def _galerkin_product(G, M):
+    """NGSolve sparse matrix GᵀMG (exact, formed in scipy)."""
+    from ngsolve.la import SparseMatrixd
+    Gs, Ms = _tosp(G), _tosp(M)
+    A = (Gs.T @ Ms @ Gs).tocoo()
+    return SparseMatrixd.CreateFromCOO(A.row.astype(np.int64).tolist(), A.col.astype(np.int64).tolist(),
+                                       A.data.tolist(), A.shape[0], A.shape[1])
+
+
+def volume_measure(order, bonus=4):
+    """dx with ONE explicit tet rule (degree 2·order + bonus) for every form of a solve: NGSolve picks
+    each form's default rule from its own integrand, and on curved elements (rational integrands)
+    curl·curl − σ·u·v assembled as one form then differs from K − σM (pillbox p = 2: 3e-4), which
+    biases the shift-invert eigenvalues."""
+    from ngsolve import TET, IntegrationRule, dx
+    return dx(intrules={TET: IntegrationRule(TET, 2 * int(order) + int(bonus))})
+
+
 def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4, max_ndof=None):
     """k lowest physical eigenpairs.  Returns dict(lam [k] (k² in 1/m²), f_hz [k], gfs (one
     GridFunction per mode, unit L2 norm), fes, info).  max_ndof: raise before assembling a larger
     space (memory guard: ~1 GB per 70k DOF at p = 4)."""
-    from ngsolve import BilinearForm, GridFunction, HCurl, TaskManager, curl, dx, grad
+    from ngsolve import BilinearForm, GridFunction, HCurl, TaskManager, curl
 
     t0 = time.perf_counter()
     fes = HCurl(mesh, order=order, dirichlet="wall")
     if max_ndof is not None and fes.ndof > max_ndof:
         raise RuntimeError(f"HCurl p={order} on {mesh.ne} curved tets has {fes.ndof} DOF > max_ndof={max_ndof}")
     u, v = fes.TnT()
+    dx = volume_measure(order)
     free = np.asarray(list(fes.FreeDofs()), dtype=bool)
     with TaskManager():
         K = BilinearForm(curl(u) * curl(v) * dx, symmetric=True).Assemble()
         M = BilinearForm(u * v * dx, symmetric=True).Assemble()
         G, fesh1 = fes.CreateGradient()
-        p, q = fesh1.TnT()
-        Kp = BilinearForm(grad(p) * grad(q) * dx, symmetric=True, condense=True).Assemble()
+        # Kp = GᵀMG from the assembled M, so P is an exact M-orthogonal projector
+        Kp = _galerkin_product(G, M.mat)
     lam_scale = _diag_mean(K.mat, free) / _diag_mean(M.mat, free)
     if sigma is None:
         sigma = -1e-2 * lam_scale
@@ -203,11 +222,11 @@ def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4, max_ndof=Non
     t1 = time.perf_counter()
     with TaskManager():
         Ainv = _condensed_inverse(A, fes)
-        Kpinv = _condensed_inverse(Kp, fesh1)
+        Kpinv = Kp.Inverse(fesh1.FreeDofs(), inverse="sparsecholesky")
     t2 = time.perf_counter()
 
     xv, yv = K.mat.CreateColVector(), K.mat.CreateColVector()
-    hv, hw = Kp.mat.CreateColVector(), Kp.mat.CreateColVector()
+    hv, hw = Kp.CreateColVector(), Kp.CreateColVector()
     Gt = G.T
     xn, yn = xv.FV().NumPy(), yv.FV().NumPy()
 
@@ -246,8 +265,14 @@ def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4, max_ndof=Non
                        OPinv=LinearOperator((n, n), matvec=opinv, dtype=float), which="LM", v0=v0,
                        tol=tol, ncv=max(2 * nev + 1, 30))
     t3 = time.perf_counter()
-    order_ = np.argsort(vals)
-    vals, vecs = vals[order_], vecs[:, order_]
+    # final Rayleigh–Ritz of the converged block with K, M (cheap; also rotates degenerate pairs into
+    # a K/M-orthonormal basis)
+    import scipy.linalg as sla
+    KV = np.column_stack([kmul(vecs[:, j]) for j in range(vecs.shape[1])])
+    MV = np.column_stack([mmul(vecs[:, j]) for j in range(vecs.shape[1])])
+    sym = lambda A: 0.5 * (A + A.T)                    # noqa: E731
+    vals, c = sla.eigh(sym(vecs.T @ KV), sym(vecs.T @ MV))
+    vecs = vecs @ c
     phys = vals > 1e-6 * lam_scale                     # drop isolated-conductor zero modes
     n_zero = int((~phys).sum())
     vals, vecs = vals[phys][:k], vecs[:, phys][:, :k]
@@ -358,3 +383,107 @@ def edge_dofs(mesh, gfs, X_phys, edges, n_gauss=4):
         U[:, j] = np.einsum("q,eqc,ec->e", wq, Ev, tvec)
     frac = loc[1].reshape(len(edges), n_gauss).mean(1)
     return U, frac
+
+
+# ─────────────────────────── learned-field operators (model option B) ───────
+
+def _tosp(mat):
+    import scipy.sparse as sp
+    r, c, v = mat.COO()
+    return sp.csr_matrix((np.asarray(v), (np.asarray(r), np.asarray(c))), shape=(mat.height, mat.width))
+
+
+def wall_shells(mesh):
+    """Connected components of the wall surface → list of vertex-index arrays (largest first)."""
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+    tris = np.array([[v.nr - 1 for v in el.vertices] for el in mesh.ngmesh.Elements2D()
+                     if mesh.ngmesh.GetBCName(el.index - 1) == "wall"], dtype=np.int64)
+    nv = mesh.nv
+    A = sp.coo_matrix((np.ones(3 * len(tris)), (np.repeat(tris[:, 0], 3), tris.ravel())), shape=(nv, nv))
+    n, lab = connected_components(A + A.T, directed=False)
+    on = np.zeros(nv, bool)
+    on[tris.ravel()] = True
+    shells = [np.flatnonzero(on & (lab == k)) for k in range(n)]
+    shells = [s for s in shells if len(s)]
+    return sorted(shells, key=len, reverse=True)
+
+
+def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
+    """Operators of the high-order learned-field Ritz (model option B, docs/28) on a curved mesh,
+    on the NORMALISED geometry ξ = (x − center)/scale (λ_ξ = λ_x·scale²):
+
+        K, M    [n×n]    HCurl(order) curl–curl / mass (all DOFs; wall DOFs are rows of `bnd`)
+        G       [n×p]    gradients of the kernel potentials: interior H1(order+1) DOFs, then one
+                         potential per extra wall shell (isolated conductors)
+        Kp      [p×p]    GᵀMG (SPD)
+        C       [n×L]    projection-based interpolation VectorL2(order) → HCurl(order), columns in
+                         element-major order (element t, component c, local l)
+        P       [Nt, nl, nq]  per element: point values at the nq quadrature points → L2(order)
+                         coefficients (|J|-weighted least squares, exact on the L2 space)
+        qx      [Nt, nq, 3]   quadrature points (curved / deformed physical geometry, normalised)
+        bary    [nq, 4]  their barycentric coordinates in the element's vertices `tets`
+        X, tets          normalised vertices, tets (vertex order of `bary`)
+    A learned vector field ψ evaluated at qx gives the HCurl DOFs  u = C · vec_t,c,l(P ψ).
+    """
+    import scipy.sparse as sp
+    from ngsolve import (CF, HCurl, L2, TET, VOL, BilinearForm, Det, ElementId, GridFunction,
+                         IntegrationRule, TaskManager, VectorL2, curl, specialcf, x, y, z)
+
+    fes = HCurl(mesh, order=order, dirichlet="wall")
+    u, v = fes.TnT()
+    dx = volume_measure(order)
+    with TaskManager():
+        K = BilinearForm(curl(u) * curl(v) * dx, symmetric=True).Assemble()
+        M = BilinearForm(u * v * dx, symmetric=True).Assemble()
+        Gm, fesh1 = fes.CreateGradient()
+    Ks, Ms, Gs = _tosp(K.mat), _tosp(M.mat), _tosp(Gm)
+    Xv = np.array([tuple(p.p) for p in mesh.ngmesh.Points()], dtype=np.float64)
+    tets = np.array([[vv.nr - 1 for vv in el.vertices] for el in mesh.ngmesh.Elements3D()], dtype=np.int64)
+    if center is None:
+        center = Xv.mean(0)
+    if scale is None:
+        scale = float(np.max(np.abs(Xv - center)))
+    s = float(scale)
+    Ks, Ms = (Ks * s).tocsr(), (Ms / s).tocsr()                # ξ-scaling of the covariant basis
+    free_h1 = np.flatnonzero(np.asarray(list(fesh1.FreeDofs()), dtype=bool))
+    cols = [Gs[:, free_h1]]
+    for shell in wall_shells(mesh)[1:]:                       # H1 vertex DOF i = vertex i
+        ind = np.zeros(fesh1.ndof)
+        ind[shell] = 1.0
+        cols.append(sp.csr_matrix(Gs @ ind).T)
+    G = sp.hstack(cols).tocsr()
+    Kp = (G.T @ Ms @ G).tocsr()
+    bnd = ~np.asarray(list(fes.FreeDofs()), dtype=bool)
+
+    # learned field → DOFs: point values → VectorL2 (per element) → HCurl (ConvertOperator)
+    vl, sl = VectorL2(mesh, order=order), L2(mesh, order=order)
+    from ngsolve import ConvertOperator
+    Cs = _tosp(ConvertOperator(vl, fes))
+    nt = mesh.ne
+    sdofs = np.array([sl.GetDofNrs(ElementId(VOL, e)) for e in range(nt)], dtype=np.int64)   # [Nt, nl]
+    nl, ns = sdofs.shape[1], sl.ndof
+    colmap = (np.arange(3)[None, :, None] * ns + sdofs[:, None, :]).reshape(-1)               # (t, c, l)
+    C = Cs[:, colmap].tocsr()
+    ir = IntegrationRule(TET, int(quad_order or 2 * order))
+    ref = np.array([tuple(pt) for pt in ir.points])[:, :3]
+    wq = np.array(list(ir.weights))
+    nq = len(wq)
+    mips = mesh.MapToAllElements(ir, VOL)
+    qx = np.asarray(CF((x, y, z))(mips)).reshape(nt, nq, 3)
+    detJ = np.abs(np.asarray(Det(specialcf.JacobianMatrix(3))(mips)).reshape(nt, nq))
+    Phi = np.zeros((nt, nq, nl))
+    g = GridFunction(sl)
+    for li in range(nl):
+        g.vec[:] = 0.0
+        g.vec.FV().NumPy()[sdofs[:, li]] = 1.0
+        Phi[:, :, li] = np.asarray(g(mips)).reshape(nt, nq)
+    W = detJ * wq[None, :]
+    A = np.einsum("tqi,tq,tqj->tij", Phi, W, Phi)
+    P = np.linalg.solve(A, np.einsum("tqi,tq->tiq", Phi, W))                                  # [Nt, nl, nq]
+    bary = np.column_stack([ref, 1.0 - ref.sum(1)])
+    # NGSolve's reference tet: vertices (1,0,0), (0,1,0), (0,0,1), (0,0,0) ↔ the element's vertices
+    return {"K": Ks, "M": Ms, "G": G, "Kp": Kp, "C": C, "P": P, "bnd": bnd,
+            "qx": (qx - center) / s, "bary": bary, "X": (Xv - center) / s, "tets": tets,
+            "scale": s, "center": np.asarray(center, dtype=np.float64), "order": int(order),
+            "n_dof": int(fes.ndof), "n_pot": int(G.shape[1])}
