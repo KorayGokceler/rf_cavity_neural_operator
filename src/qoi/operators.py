@@ -334,12 +334,25 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
     Pc_raw = 0.5 * Rs / (w * MU0) ** 2 * uSu
     V_raw, V0_raw = s * Vc, s * V0
     Epk_raw, Bpk_raw = ep, hp / (w * s)
+    L = ops["L_axis"] * s if L_acc is None else L_acc
+    return figures_of_merit(f, Rs, U_raw, Pc_raw, V_raw, V0_raw, Epk_raw, Bpk_raw, L, convention)
+
+
+def figures_of_merit(f, Rs, U_raw, Pc_raw, V_raw, V0_raw, Epk_raw, Bpk_raw, L, convention="linac"):
+    """QOI_KEYS dict [K] from the raw functionals of a mode at arbitrary amplitude (SI units):
+    stored energy U_raw [J], wall loss Pc_raw [W], |V| with / without the transit phase V_raw,
+    V0_raw [V], surface peaks Epk_raw [V/m], Bpk_raw [T], accelerating length L [m].  Rescaled to
+    U = 1 J.  Shared by qoi_from_dofs (N0 operators) and src.data_gen.highorder (NGSolve fields)."""
+    f, Rs, U_raw, Pc_raw, V_raw, V0_raw, Epk_raw, Bpk_raw = (
+        np.atleast_1d(np.asarray(x, dtype=np.float64)) for x in (f, Rs, U_raw, Pc_raw, V_raw, V0_raw,
+                                                                 Epk_raw, Bpk_raw))
+    K = len(U_raw)
+    w = 2.0 * np.pi * f
     a = 1.0 / np.sqrt(U_raw)                                               # amplitude → U = 1 J
     fac = 1.0 if convention == "linac" else 0.5
     P_c = a ** 2 * Pc_raw
     V = a * V_raw
-    L = np.broadcast_to(np.asarray(ops["L_axis"] * s if L_acc is None else L_acc, dtype=np.float64),
-                        (K,)).copy()
+    L = np.broadcast_to(np.asarray(L, dtype=np.float64), (K,)).copy()
     with np.errstate(divide="ignore", invalid="ignore"):
         Q0 = w / P_c
         E_acc = V / L

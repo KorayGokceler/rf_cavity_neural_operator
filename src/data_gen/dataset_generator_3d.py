@@ -524,11 +524,10 @@ def _sample_rng(s_id):
     return SobolRNG(sob.random(1)[0], base)
 
 
-def smooth_deform(nodes, rng, lip_max=0.5):
-    """x → x + δ(x), δ = Σ_m a_m sin(ω_m·x + φ_m) (3–8 plane waves, wavelengths 0.25–1.5 × the
-    bounding-box diagonal).  ‖∇δ‖₂ ≤ Σ|a_m||ω_m| is scaled to lip ∈ [0.3, 1]·lip_max < 1, so
-    det(I + ∇δ) > 0 everywhere: the map is injective, every tet keeps its orientation and the
-    topology is unchanged.  Returns (new nodes, params)."""
+def deform_map(nodes, rng, lip_max=0.5):
+    """Draw the smooth map δ(x) = Σ_m a_m sin(ω_m·x + φ_m) of smooth_deform: (om [n,3], a [n,3],
+    ph [n], lip).  3–8 plane waves, wavelengths 0.25–1.5 × the bounding-box diagonal;
+    ‖∇δ‖₂ ≤ Σ|a_m||ω_m| is scaled to lip ∈ [0.3, 1]·lip_max < 1."""
     X = np.asarray(nodes, float)
     diag = float(np.linalg.norm(X.max(0) - X.min(0)))
     n = int(rng.integers(3, 9))
@@ -539,14 +538,28 @@ def smooth_deform(nodes, rng, lip_max=0.5):
     ph = rng.uniform(0, 2 * np.pi, n)
     lip = lip_max * rng.uniform(0.3, 1.0)
     a *= lip / (np.linalg.norm(a, axis=1) * np.linalg.norm(om, axis=1)).sum()
+    return om, a, ph, lip
+
+
+def smooth_deform(nodes, rng, lip_max=0.5, return_map=False):
+    """x → x + δ(x) (deform_map).  ‖∇δ‖₂ ≤ lip < 1, so det(I + ∇δ) > 0 everywhere: the map is
+    injective, every tet keeps its orientation and the topology is unchanged.  Returns (new nodes,
+    params[, (om, a, ph)] with return_map — the exact map, for a high-order mesh of the same solid)."""
+    X = np.asarray(nodes, float)
+    diag = float(np.linalg.norm(X.max(0) - X.min(0)))
+    om, a, ph, lip = deform_map(X, rng, lip_max)
     Y = X + np.sin(X @ om.T + ph) @ a
-    return Y, {"deform_lip": float(lip), "deform_modes": float(n),
-               "deform_max_disp": float(np.linalg.norm(Y - X, axis=1).max() / diag)}
+    params = {"deform_lip": float(lip), "deform_modes": float(len(ph)),
+              "deform_max_disp": float(np.linalg.norm(Y - X, axis=1).max() / diag)}
+    return (Y, params, (om, a, ph)) if return_map else (Y, params)
 
 
-def mesh_sample(s_id):
+def mesh_sample(s_id, cad_path=None):
     """Geometry + mesh of sample s_id (no eigen-solve): dict(nodes [m], tets, shape_type, params,
-    h, volume, t_mesh, topo).  The mesh is certified a connected manifold.  Used by generate_sample_data and scripts/active_sampling.py."""
+    h, volume, t_mesh, topo, deform).  The mesh is certified a connected manifold.  deform: the
+    smooth map (om, a, ph) applied to the nodes, or None.  cad_path: also write the OCC solid there
+    (BREP / STEP by extension; None for the discrete freeform family) — src.data_gen.highorder.
+    Used by generate_sample_data, scripts/active_sampling.py and scripts/label_benchmark.py."""
     import gmsh
     _gmsh_start()
     rng = _sample_rng(s_id)
@@ -570,6 +583,8 @@ def mesh_sample(s_id):
                 if len(vols) != 1:
                     raise RuntimeError(f"{len(vols)} volumes")
                 volume = gmsh.model.occ.getMass(3, vols[0][1])
+                if cad_path:
+                    gmsh.write(str(cad_path))
             vol_div = params.pop("_vol_div", 1.0)              # multi-cell: size from the per-cell volume
             h = ARGS.mesh_size_abs or ARGS.mesh_size * (volume / vol_div) ** (1.0 / 3.0)
             h_cap = params.pop("_h_cap", None)             # smallest feature (iris, nose gap, pipe)
@@ -585,12 +600,14 @@ def mesh_sample(s_id):
                 raise
             print(f"sample {s_id}: geometry attempt {attempt} rejected ({e}); re-drawing")
     params = {k: float(v) for k, v in params.items()}
+    dmap = None
     rng_d = np.random.default_rng([int(ARGS.seed), int(s_id), 1])   # own stream: same δ at any mesh size
     if ARGS.mode != "calibration" and rng_d.uniform() < getattr(ARGS, "deform_prob", 0.0):
-        nodes, dp = smooth_deform(nodes, rng_d, getattr(ARGS, "deform_max", 0.5))
+        nodes, dp, dmap = smooth_deform(nodes, rng_d, getattr(ARGS, "deform_max", 0.5), return_map=True)
         params.update(dp)
     return {"nodes": nodes, "tets": tets, "shape_type": shape_type, "params": params, "h": float(h),
-            "volume": float(volume), "t_mesh": time.perf_counter() - t0, "topo": topo}
+            "volume": float(volume), "t_mesh": time.perf_counter() - t0, "topo": topo, "deform": dmap,
+            "cad_path": None if fam in DISCRETE_BUILDERS else cad_path}
 
 
 def generate_sample_data(s_id):
