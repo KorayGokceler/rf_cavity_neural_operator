@@ -1,0 +1,11 @@
+.git
+**/__pycache__
+**/node_modules
+web/dist
+data/
+training_logs/
+models/
+*.pkl
+*.h5
+*.ckpt
+*.ipynb

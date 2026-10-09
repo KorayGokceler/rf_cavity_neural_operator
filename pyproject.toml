@@ -1,0 +1,24 @@
+# Tool configuration only (this repo is not an installable package).
+# Dependencies live in requirements.txt / requirements-dev.txt.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: long-running test (deselect with -m 'not slow')",
+    "gmsh: needs gmsh + its system libraries (libglu1-mesa, libxrender1, ...)",
+]
+filterwarnings = [
+    # Unit tests call compute_loss() without a Trainer; Lightning warns on self.log().
+    "ignore:You are trying to `self.log\\(\\)` but the `self.trainer` reference is not registered:UserWarning",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["examples", "*.ipynb"]
+
+[tool.ruff.lint]
+# CI-blocking set: syntax errors, undefined names, invalid comparisons.
+# Wider local audit: ruff check --select E9,F63,F7,F82,F401,F811,F841,B .
+select = ["E9", "F63", "F7", "F82"]

@@ -1,0 +1,19 @@
+# RF Cavity Neural Solver: one container (API + frontend). Put a trained checkpoint (.ckpt or a
+# training run directory) under ./models and point RFCAV_CHECKPOINT at it; without it the service
+# runs an UNTRAINED demo model (UI development only, flagged in the UI).
+services:
+  app:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      RFCAV_CHECKPOINT: /models/large          # e.g. a copied runs/<EXP>/ directory or a .ckpt file
+      RFCAV_DEVICE: cpu                        # cuda: build with TORCH_INDEX=…/cu121 and add a GPU reservation
+      RFCAV_MAX_UPLOAD_MB: 25
+      RFCAV_MESH_TIMEOUT: 120
+      RFCAV_MAX_TETS: 400000
+      RFCAV_DATA: /data                        # dataset browser: PKL files / H5 shard directories under ./data
+    volumes:
+      - ./models:/models:ro
+      - ./data:/data:ro
+    mem_limit: 8g
+    restart: unless-stopped
