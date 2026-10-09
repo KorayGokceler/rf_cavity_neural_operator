@@ -9,6 +9,7 @@ Güncel çalışma belgeleri (kod bunlara göre yazılır):
 | [24_CAVITY_QOI](24_CAVITY_QOI.md) | kavite büyüklükleri (Q0, G, R/Q, R_sh, T, Epk/Eacc, Bpk/Eacc): sözleşme, fizik, doğrulama |
 | [25_PIPELINE](25_PIPELINE.md) | uçtan uca akış: üretim → birleştirme → eğitim → değerlendirme → tahmin |
 | [26_WEB_UI](26_WEB_UI.md) | web arayüzü: API, dataset gezgini, üretim, eğitim, Colab / telefon |
+| [27_LABEL_BENCHMARK](27_LABEL_BENCHMARK.md) | etiket kalitesi: N0 ve NGSolve p2/p3 eğri eleman etiketleri, frekans + alan + QoI |
 | [23_ROADMAP](23_ROADMAP.md) | yol haritası |
 | [../cluster/truba/README.md](../cluster/truba/README.md) | TRUBA (SLURM) betikleri |
 
