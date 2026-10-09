@@ -336,32 +336,45 @@ def torsion_function(X, tets, bnd_vertices):
     return np.clip(w, 0.0, None)
 
 
-def extract_geometry_3d(nodes, tets):
-    """Normalised mesh, features and operators of one geometry (see module docstring)."""
+def normalise(nodes, tets):
+    """(X = (nodes − center)/scale, center, scale): center = volume centroid, scale = max |x − center|."""
     nodes = np.asarray(nodes, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     vol, _ = tet_geometry(nodes, tets)
     center = (vol[:, None] * nodes[tets].mean(1)).sum(0) / vol.sum()
     scale = float(np.max(np.abs(nodes - center)))
-    X = (nodes - center) / scale
+    return (nodes - center) / scale, center, scale
 
+
+def node_features(X, tets):
+    """Vertex features of a normalised mesh (FEATURE_NAMES_3D order) → (feats [Nv, 9] float32,
+    torsion_max, volume)."""
+    X = np.asarray(X, dtype=np.float64)
+    tets = np.asarray(tets, dtype=np.int64)
     bf = boundary_faces(X, tets)
     bv = np.unique(bf)
     dist, direc = boundary_distance(X, bf)
-    vol_n = vol / scale ** 3
+    vol_n, _ = tet_geometry(X, tets)
     node_vol = np.zeros(len(X))
     for i in range(4):
         np.add.at(node_vol, tets[:, i], vol_n / 4.0)
     w = torsion_function(X, tets, bv)
     torsion_max = float(w.max())
     feats = np.column_stack([X, dist, direc, node_vol / node_vol.max(), w / torsion_max]).astype(np.float32)
+    return feats, torsion_max, float(vol_n.sum())
 
+
+def extract_geometry_3d(nodes, tets):
+    """Normalised mesh, features and operators of one geometry (see module docstring)."""
+    tets = np.asarray(tets, dtype=np.int64)
+    X, center, scale = normalise(nodes, tets)
+    feats, torsion_max, volume = node_features(X, tets)
     ops, M = geometry_operators(X, tets)
     return {
         "X": X.astype(np.float32), "Input_funcs": feats, "tets": tets, **ops,
         "scale": scale, "center": center.astype(np.float64),
         "n_nodes": int(len(X)), "n_edges": int(len(ops["edges"])), "torsion_max": torsion_max,
-        "volume": float(vol_n.sum()),
+        "volume": volume,
     }, M
 
 
