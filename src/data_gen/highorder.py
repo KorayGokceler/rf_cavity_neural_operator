@@ -18,7 +18,7 @@ Recipe (docs/18 E7, measured on the pillbox: p = 3, curve 3, 3.4k DOF → TM010 
   Isolated conductors (more than one wall shell) leave one spurious λ ≈ 0 mode per extra shell
   (H1 with p = 0 on every shell misses their potentials); those are filtered out.
 
-Point evaluation (`eval_field`) returns the volume field: walls are sampled from slightly inside.
+Wall quantities are evaluated on the boundary elements from the adjacent volume element.
 """
 import time
 
@@ -60,23 +60,34 @@ def quarter_cad(src, dst):
 
 
 def _name_faces(shape):
-    """Faces shared by two solids → "interface", every other face → "wall"."""
-    count = {}
+    """Faces shared by two solids → "interface", every other face → "wall".  Faces are matched
+    geometrically (centre of mass + area): OCC's face hash ignores the location, so the rotated
+    copies the quartering produces (e.g. the four quarter end caps) would collide."""
+    lo, hi = (np.asarray(tuple(v)) for v in shape.bounding_box)
+    size = float(np.max(hi - lo))
+    count, faces = {}, []
     for s in shape.solids:
-        for f in set(s.faces):
-            count[f] = count.get(f, 0) + 1
-    for f, n in count.items():
-        f.name = "interface" if n > 1 else "wall"
+        for f in s.faces:
+            c = f.center
+            key = tuple(np.round(np.r_[c.x, c.y, c.z] / size, 7)) + (round(f.mass / size ** 2, 7),)
+            count[key] = count.get(key, 0) + 1
+            faces.append((key, f))
+    for key, f in faces:
+        f.name = "interface" if count[key] > 1 else "wall"
 
 
-def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", **meshing):
+def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, min_jacobian_ratio=0.05,
+                **meshing):
     """NGSolve mesh of the solid in `cad_path` (BREP / STEP, metres), curved to order `curve`; the
     cavity surface is the boundary "wall" (internal cut faces: "interface").  deform: optional
     (om [n,3], a [n,3], ph [n]) of the generator's smooth map x → x + Σ_m a_m sin(om_m·x + ph_m)
     (dataset_generator_3d.deform_map), applied exactly at geometry order `curve`.
     split: True / False / "auto" (plain first, quartered with quarter_cad on failure).
-    meshing: netgen GenerateMesh options (e.g. curvaturesafety: the default 2 refines curved faces to
-    ~h_curv = R/2 whatever maxh is — with curved elements a lower value is usually enough)."""
+    meshing: netgen GenerateMesh options (curvaturesafety, default 2: element size on curved faces
+    ~ radius / curvaturesafety, whatever maxh is).  Curving coarse tets onto small fillets can fold
+    them (det J < 0): surface fields and wall loss are then garbage although the frequencies hardly
+    change.  Every curved mesh is checked (jacobian_ratio > min_jacobian_ratio); a failing one is
+    regenerated with curvaturesafety doubled, up to `retries` times."""
     import os
     import tempfile
 
@@ -92,8 +103,10 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", **meshing):
                 path = os.path.join(tmp, "quartered.brep")
                 quarter_cad(cad_path, path)
             shape = OCCGeometry(path).shape
-            if not quarter and len(shape.solids) != 1:
-                raise ValueError(f"{cad_path}: expected one solid, got {len(shape.solids)}")
+            if not quarter:
+                if len(shape.solids) != 1:
+                    raise ValueError(f"{cad_path}: expected one solid, got {len(shape.solids)}")
+                shape = shape.solids[0]           # gmsh also writes free faces (the revolved profile)
             _name_faces(shape)
             try:
                 mesh = Mesh(OCCGeometry(shape).GenerateMesh(maxh=maxh, **meshing))
@@ -107,7 +120,22 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", **meshing):
     mesh.Curve(int(curve))
     if deform is not None:
         set_deformation(mesh, *deform, order=int(curve))
+    q = jacobian_ratio(mesh)
+    if q <= min_jacobian_ratio:
+        cs = float(meshing.get("curvaturesafety", 2.0))
+        if retries > 0:                           # coarse tets bent onto small fillets fold: refine there
+            return netgen_mesh(cad_path, maxh, curve, deform, split, retries=retries - 1,
+                               min_jacobian_ratio=min_jacobian_ratio, **{**meshing, "curvaturesafety": 2 * cs})
+        raise RuntimeError(f"curved mesh of {cad_path} has folded elements (min det J ratio {q:.2f})")
     return mesh
+
+
+def jacobian_ratio(mesh, order=6):
+    """min over elements of min/max det J at the integration points (≤ 0: a folded curved element)."""
+    from ngsolve import TET, VOL, Det, IntegrationRule, specialcf
+    mips = mesh.MapToAllElements(IntegrationRule(TET, order), VOL)
+    J = np.asarray(Det(specialcf.JacobianMatrix(3))(mips)).reshape(mesh.ne, -1)
+    return float((J.min(1) / J.max(1)).min())
 
 
 def deformation_cf(om, a, ph):
@@ -258,17 +286,6 @@ def eval_field(mesh, cf, pts):
     return evaluate(cf, loc), loc[1]
 
 
-def wall_points(mesh, order=6):
-    """Points on the curved wall (integration points of every boundary element) [N,3], outward
-    normals [N,3] (interface faces excluded)."""
-    from ngsolve import BND, CF, IntegrationRule, TRIG, specialcf, x, y, z
-    mips = mesh.MapToAllElements(IntegrationRule(TRIG, order), BND)
-    on_wall = np.asarray(mesh.BoundaryCF({"wall": 1.0}, default=0.0)(mips)).reshape(-1) > 0.5
-    P = np.asarray(CF((x, y, z))(mips)).reshape(-1, 3)[on_wall]
-    n = np.asarray(specialcf.normal(3)(mips)).reshape(-1, 3)[on_wall]
-    return P, n
-
-
 def axis_samples(mesh, axis_dir, axis_point, n_axis=2001):
     """Axis line through axis_point along axis_dir over the mesh extent: (t [P], dt, points [P,3])."""
     d = np.asarray(axis_dir, dtype=np.float64) / np.linalg.norm(axis_dir)
@@ -283,12 +300,15 @@ def axis_samples(mesh, axis_dir, axis_point, n_axis=2001):
 
 
 def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), sigma=5.8e7, beta=1.0,
-             convention="linac", n_axis=2001, wall_order=6, inset=1e-7):
+             convention="linac", n_axis=2001, wall_order=8):
     """src.qoi QOI_KEYS of the NGSolve modes (copper walls, U = 1 J), directly from the high-order
     fields: U = ½ε0∫|E|², P_c = ½R_s/(ωμ0)² ∫_wall |n × curl E|², V = |∫ E·d e^{jωt/(βc)} dt| on the
-    axis, E_pk / B_pk = max over wall integration points of |E| / |curl E|/ω (sampled `inset`·size
-    inside the wall, so the volume field is evaluated).  L_acc = axis chord inside the mesh."""
-    from ngsolve import Cross, FacetFESpace, GridFunction, InnerProduct, Integrate, curl, dx, specialcf
+    axis, E_pk / B_pk = max over the wall integration points (order wall_order) of |E| / |curl E|/ω.
+    Wall values come from the adjacent volume element (BoundaryFromVolumeCF: a plain boundary
+    evaluation of an HCurl field is its tangential trace, ≈ 0 on PEC).  L_acc = axis chord inside
+    the mesh."""
+    from ngsolve import (BND, TRIG, BoundaryFromVolumeCF, Cross, InnerProduct, IntegrationRule, Integrate,
+                         curl, ds, specialcf)
     from src.qoi.operators import figures_of_merit, surface_resistance
 
     f = np.asarray(f_hz, dtype=np.float64).reshape(-1)
@@ -296,29 +316,25 @@ def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), sigma=5.
     Rs = surface_resistance(f, sigma)
     order = 2 * gfs[0].space.globalorder + 2
     nrm = specialcf.normal(3)
-    # curl E on the wall from the volume element: element-boundary integral × wall-facet indicator
-    # (a BND integral would see only the tangential trace, whose surface curl n·curl E is 0 on PEC)
-    wall = GridFunction(FacetFESpace(mesh, order=0))
-    wall.Set(1, definedon=mesh.Boundaries("wall"))
-    P, n = wall_points(mesh, wall_order)
-    size = float(np.ptp(mesh.ngmesh.Coordinates(), axis=0).max())
-    Pin = P - inset * size * n
+    mips = mesh.MapToAllElements(IntegrationRule(TRIG, wall_order), BND)
+    on_wall = np.asarray(mesh.BoundaryCF({"wall": 1.0}, default=0.0)(mips)).reshape(-1) > 0.5
     tt, dt, axp = axis_samples(mesh, axis_dir, axis_point, n_axis)
     d = np.asarray(axis_dir, dtype=np.float64) / np.linalg.norm(axis_dir)
     raw = {k: np.zeros(len(gfs)) for k in ("U", "P", "V", "V0", "E", "B")}
-    loc_ax, loc_w = locate(mesh, axp), locate(mesh, Pin)
+    loc_ax = locate(mesh, axp)
     q = np.where(loc_ax[1], dt, 0.0)
     L = float(q.sum())
     for j, g in enumerate(gfs):
+        Eb, Cb = BoundaryFromVolumeCF(g), BoundaryFromVolumeCF(curl(g))
+        ct = Cross(nrm, Cb)
         raw["U"][j] = 0.5 * EPS0 * Integrate(InnerProduct(g, g), mesh, order=order)
-        ct = Cross(nrm, curl(g))
-        sw = Integrate(wall * InnerProduct(ct, ct) * dx(element_boundary=True, bonus_intorder=order), mesh)
+        sw = Integrate(InnerProduct(ct, ct) * ds("wall", bonus_intorder=order), mesh)
         raw["P"][j] = 0.5 * Rs[j] / (w[j] * MU0) ** 2 * sw
         Ez = evaluate(g, loc_ax) @ d
         raw["V"][j] = np.abs((q * Ez * np.exp(1j * w[j] * tt / (beta * C0))).sum())
         raw["V0"][j] = (q * np.abs(Ez)).sum()
-        raw["E"][j] = np.linalg.norm(evaluate(g, loc_w), axis=1).max()
-        raw["B"][j] = np.linalg.norm(evaluate(curl(g), loc_w), axis=1).max() / w[j]
+        raw["E"][j] = np.linalg.norm(np.asarray(Eb(mips)).reshape(-1, 3)[on_wall], axis=1).max()
+        raw["B"][j] = np.linalg.norm(np.asarray(Cb(mips)).reshape(-1, 3)[on_wall], axis=1).max() / w[j]
     return figures_of_merit(f, Rs, raw["U"], raw["P"], raw["V"], raw["V0"], raw["E"], raw["B"], L, convention)
 
 
