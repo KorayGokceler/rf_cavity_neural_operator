@@ -35,7 +35,7 @@ böylece farklı ayarlarla üretilmiş veriler birbirine karışmaz.
 ```bash
 cd $HOME
 git clone https://github.com/KorayGokceler/rf_cavity_neural_operator.git
-cd rf_cavity_neural_operator && git checkout claude/truba-datagen
+cd rf_cavity_neural_operator && git checkout main
 bash cluster/truba/setup_env.sh          # Miniforge + "rfcav" ortamı + 2 geometrilik kontrol
 ```
 

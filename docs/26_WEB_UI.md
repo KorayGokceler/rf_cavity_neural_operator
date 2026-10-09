@@ -1,6 +1,6 @@
 # 26 · Web arayüzü: RF Cavity Neural Solver
 
-> Durum: **v0.1** (branch `claude/web-ui`). Hedef: dışarıya açık ürün/demo. Teknoloji: FastAPI +
+> Durum: **v0.1**. Hedef: dışarıya açık ürün/demo. Teknoloji: FastAPI +
 > React + vtk.js. v1 kapsamı: dosya yükle + tahmin, parametrik kurucu, tarama / hedef frekans,
 > güven + FE doğrulama.
 

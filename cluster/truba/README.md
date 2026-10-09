@@ -35,7 +35,7 @@ Uçtan uca akış (veri → eğitim → değerlendirme → tahmin): **docs/25_PI
 ```bash
 # 0) login düğümünde, bir kere
 cd $HOME && git clone <repo> rf_cavity_neural_operator && cd rf_cavity_neural_operator
-git checkout claude/truba-datagen
+git checkout main
 bash cluster/truba/setup_env.sh               # ~10 dk; sonunda "Environment OK"
 nano cluster/truba/config.sh                  # PARTITION / ACCOUNT / TIME / DATA_ROOT'u kontrol et
 
