@@ -42,6 +42,36 @@ def tag_of(field, mesh_size, n_modes):
     return f"{field}_ms{mesh_size:g}_k{int(n_modes)}_v1"
 
 
+def run_logged(job, cmd, on_line=None, threads=1, env=None):
+    """Run cmd (cwd = repo root) with its output in job.log (progress bars collapsed to one live line);
+    job needs .log (deque), ._proc, ._cancel. Raises on a non-zero exit or a cancel."""
+    job.log.append('$ ' + ' '.join(os.path.basename(c) if i == 1 else c for i, c in enumerate(cmd)))
+    t = str(threads)
+    env = dict(os.environ, OMP_NUM_THREADS=t, OPENBLAS_NUM_THREADS=t, MKL_NUM_THREADS=t, PYTHONUNBUFFERED='1',
+               **(env or {}))
+    job._proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+    for raw in job._proc.stdout:
+        line = raw.rstrip().split('\r')[-1].strip()          # progress bars redraw with \r: keep the last state
+        if not line:
+            continue
+        if _TQDM.search(line):                              # one live line per progress bar
+            if job.log and _TQDM.search(job.log[-1]):
+                job.log[-1] = line[-300:]
+            else:
+                job.log.append(line[-300:])
+            continue
+        job.log.append(line[-300:])
+        if on_line:
+            on_line(line)
+    rc = job._proc.wait()
+    job._proc = None
+    if job._cancel:
+        raise RuntimeError('cancelled')
+    if rc != 0:
+        raise RuntimeError(f"{os.path.basename(cmd[1])} exited with code {rc}")
+
+
 class Job:
     def __init__(self, params):
         self.id = uuid.uuid4().hex[:12]
@@ -124,30 +154,7 @@ class JobManager:
                     job.log.append(f"rescan failed: {e}")
 
     def _exec(self, job, cmd, on_line=None):
-        job.log.append('$ ' + ' '.join(os.path.basename(c) if i == 1 else c for i, c in enumerate(cmd)))
-        env = dict(os.environ, OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1',
-                   PYTHONUNBUFFERED='1')
-        job._proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     text=True, bufsize=1)
-        for raw in job._proc.stdout:
-            line = raw.rstrip().split('\r')[-1].strip()      # progress bars redraw with \r: keep the last state
-            if not line:
-                continue
-            if _TQDM.search(line):                          # one live line per progress bar
-                if job.log and _TQDM.search(job.log[-1]):
-                    job.log[-1] = line[-300:]
-                else:
-                    job.log.append(line[-300:])
-                continue
-            job.log.append(line[-300:])
-            if on_line:
-                on_line(line)
-        rc = job._proc.wait()
-        job._proc = None
-        if job._cancel:
-            raise RuntimeError('cancelled')
-        if rc != 0:
-            raise RuntimeError(f"{os.path.basename(cmd[1])} exited with code {rc}")
+        run_logged(job, cmd, on_line)
 
     def _run(self, job):
         p = job.params

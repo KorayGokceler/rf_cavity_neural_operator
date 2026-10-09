@@ -6,6 +6,7 @@ account), and prints the link + a QR code to scan with the phone camera.
     python scripts/serve_web.py --checkpoint runs/large --data /path/to/datasets --tunnel  # anywhere
     … --gen_root /content/drive/MyDrive/rfcav/ui_datasets    # + dataset generation from the UI
     … --checkpoint auto --ckpt_search <training_logs dir>   # newest training run there (else untrained)
+    … --runs_root /content/drive/MyDrive/rf_cavity_3d/training_logs   # + model training from the UI
 
 Same Wi-Fi: the phone opens http://<this machine's LAN address>:<port>/?token=…
 --tunnel: https://<random>.trycloudflare.com/?token=… (downloads `cloudflared` if missing; the link
@@ -162,6 +163,8 @@ def main(argv=None):
     ap.add_argument('--data', nargs='*', default=[], help='dataset roots (PKL files / H5 directories)')
     ap.add_argument('--gen_root', default=None,
                     help='folder for datasets generated from the UI (e.g. a Google Drive folder); off when unset')
+    ap.add_argument('--runs_root', default=None,
+                    help='training runs folder (e.g. <Drive>/training_logs): training from the UI; off when unset')
     ap.add_argument('--port', type=int, default=8000)
     ap.add_argument('--device', default=None, help='cpu | cuda (default: cuda when available)')
     ap.add_argument('--tunnel', action='store_true', help='public HTTPS link (Cloudflare quick tunnel)')
@@ -181,8 +184,11 @@ def main(argv=None):
     gen = os.path.abspath(args.gen_root) if args.gen_root else None
     if gen:
         os.makedirs(gen, exist_ok=True)
+    runs = os.path.abspath(args.runs_root) if args.runs_root else None
+    if runs:
+        os.makedirs(runs, exist_ok=True)
     for k, v in (('RFCAV_CHECKPOINT', ckpt), ('RFCAV_DEVICE', args.device), ('RFCAV_TOKEN', token),
-                 ('RFCAV_GEN_ROOT', gen), ('RFCAV_CHECKPOINT_OPTIONAL', '1' if args.checkpoint_optional else None)):
+                 ('RFCAV_GEN_ROOT', gen), ('RFCAV_RUNS_ROOT', runs), ('RFCAV_CHECKPOINT_OPTIONAL', '1' if args.checkpoint_optional else None)):
         if v:
             env[k] = v
         else:

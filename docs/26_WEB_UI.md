@@ -116,6 +116,37 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 - `POST /api/jobs/{id}/cancel`
 - `POST /api/datasets/rescan`
 
+## 3d. Arayüzden model eğitimi
+
+**"Eğitim" sayfası** (`src/service/training.py`, `RFCAV_RUNS_ROOT` / `--runs_root`; Colab: `<Drive>/rf_cavity_3d/training_logs`):
+- **Veri:** Dataset sayfasındaki datasetlerden bir ya da birkaçı seçilir.
+  - Tek PKL olduğu gibi kullanılır.
+  - Birden çok dataset, H5 parçalarından (üretilen / TRUBA aile PKL'lerinin yanındaki `h5/<aile>/`) lean bir eğitim PKL'ine birleştirilir (`convert_3d.py --no_operators`).
+  - Birleşik PKL yerel önbelleğe yazılır (`/tmp/rfcav_train`); VM yeniden başlarsa H5'lerden yeniden üretilir.
+  - Bölme 80/10/10 eğitim/doğrulama/test (geometri bazında, seed 42).
+- **Model boyu:** `tiny` (0.03 M, boru hattı denemesi) · `small` 0.85 M · `base` 2.8 M · `large` 6.5 M · `xl` 21.7 M. `cluster/truba/config.sh` ile aynı ön ayarlar (testle eşitliği denetlenir).
+- **Ayarlar:** epoch, batch, öğrenme hızı, tahmin edilen mod sayısı, erken durdurma sabrı, QoI kayıp ağırlığı, operatörleri RAM'de tutma (otomatik: veri < 300 MB ise açık).
+- **Çalışma:** aynı anda bir eğitim (tek GPU). `train.py` alt süreç olarak çalışır; checkpoint'ler (`best-…ckpt`, `last.ckpt`) her doğrulamada doğrudan `<runs_root>/<ad>/` altına (Drive) yazılır.
+- **İlerleme:** `train.py`, her çalıştırma klasörüne `progress.json` yazar (`src/training/progress.py`): durum, epoch, batch, epoch başına metrikler, en iyi checkpoint, test sonuçları. Sayfa bundan çizer:
+  - alan hatası (göreli L2, M-normu),
+  - frekans hatası,
+  - kayıp,
+  - öğrenme hızı (eğitim ↔ doğrulama).
+
+  Notebook ya da TRUBA eğitimleri de aynı klasördeyse listede görünür.
+- **Durdur / Devam et:**
+  - Durdurulan ya da Colab kopmasıyla kesilen eğitim `last.ckpt`'den devam eder; hedef epoch artırılabilir.
+  - Ayarlar `train_params.json`'dan okunur.
+- **Bu modeli kullan:** sunucudaki modeli o çalıştırmanın en iyi checkpoint'iyle değiştirir (`POST /api/model/load`). Yalnız `runs_root` altındaki çalıştırmalar yüklenebilir: checkpoint bir pickle dosyasıdır, rastgele yol kabul edilmez.
+
+**Uç noktalar:**
+- `GET /api/train/config`
+- `GET /api/train/runs`, `GET /api/train/runs/{ad}`
+- `POST /api/train/start`
+- `POST /api/train/runs/{ad}/resume`
+- `POST /api/train/stop`
+- `POST /api/model/load`
+
 ## 4. Çalıştırma
 
 ```bash
@@ -179,11 +210,12 @@ docker compose up --build                                                 # http
 
    Her adım yapılmışsa atlanır: aynı VM'de yeniden çalıştırmak saniyeler sürer.
 3. Checkpoint: `CHECKPOINT = "auto"` → `<DRIVE_DIR>/training_logs` altında en yeni `.ckpt`'yi içeren eğitim (o klasörde en iyi `val_rel_l2`, yoksa `last.ckpt`). Bulunamaz ya da yüklenemezse eğitilmemiş demo modeli + arayüzde uyarı (`--checkpoint_optional`, `RFCAV_CHECKPOINT_OPTIONAL=1`).
-4. Sunucu: `--data <DRIVE_DIR>` (Drive'daki PKL / H5'ler) + `--gen_root <GEN_DIR>` + tünel + QR. `GEN_DIR`, `DRIVE_DIR`'in içindeyse oradaki datasetler yalnız bir kez, `generated/…` adıyla listelenir.
+4. Sunucu: `--data <DRIVE_DIR>` (Drive'daki PKL / H5'ler) + `--gen_root <GEN_DIR>` + `--runs_root <DRIVE_DIR>/training_logs` (eğitim) + tünel + QR. `GEN_DIR`, `DRIVE_DIR`'in içindeyse oradaki datasetler yalnız bir kez, `generated/…` adıyla listelenir.
 
 Colab notları:
 - Sekme açık kalmalı. Boşta kalan oturumu Colab kapatır; kapanırsa hücreyi yeniden çalıştırıp aynı işi başlat (bitmiş parçalar atlanır, yarım parça baştan üretilir).
 - Üretim süresi çekirdek sayısıyla ölçeklenir: arayüzdeki tahmin, sunucunun gördüğü çekirdek sayısını kullanır.
+- Eğitim için GPU çalışma zamanı seçin. Üretim CPU'da, eğitim GPU'da aynı anda çalışabilir.
 
 ## 5. Güvenlik notları (dışarıya açık)
 

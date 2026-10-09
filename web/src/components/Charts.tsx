@@ -69,3 +69,85 @@ export function Histogram({ values, title, unit, bins = 30 }: {
     </div>
   );
 }
+
+export interface LineSeries { label: string; cls: 's1' | 's2'; pts: [number, number][] }
+
+/** Training curves: ≤ 2 series on one y-axis (optionally log), legend + end labels, crosshair tooltip. */
+export function LineChart({ title, series, log = false, fmt, xLabel }: {
+  title: string; series: LineSeries[]; log?: boolean; fmt: (v: number) => string; xLabel: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const W = 520, H = 190, M = { l: 52, r: 74, t: 10, b: 28 };
+  const live = series.map((s) => ({ ...s, pts: s.pts.filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y) && (!log || y > 0)) }))
+    .filter((s) => s.pts.length);
+  if (!live.length) return <div className="card plot"><div className="card-title">{title}</div><div className="muted">—</div></div>;
+  const xs = live.flatMap((s) => s.pts.map(([x]) => x)), ys = live.flatMap((s) => s.pts.map(([, y]) => y));
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const tf = (y: number) => (log ? Math.log10(y) : y);
+  let y0 = Math.min(...ys.map(tf)), y1 = Math.max(...ys.map(tf));
+  if (y1 - y0 < 1e-12) { y0 -= log ? 0.5 : Math.abs(y0) * 0.1 + 1e-12; y1 += log ? 0.5 : Math.abs(y1) * 0.1 + 1e-12; }
+  if (!log && y0 > 0 && y0 < 0.35 * y1) y0 = 0;                       // anchor at zero when it is close
+  const sx = (x: number) => M.l + (x1 > x0 ? (x - x0) / (x1 - x0) : 0.5) * (W - M.l - M.r);
+  const sy = (y: number) => M.t + (1 - (tf(y) - y0) / (y1 - y0)) * (H - M.t - M.b);
+  const yt = log
+    ? Array.from({ length: Math.floor(y1) - Math.ceil(y0) + 1 }, (_, i) => 10 ** (Math.ceil(y0) + i))
+    : [0, 0.25, 0.5, 0.75, 1].map((f) => y0 + f * (y1 - y0));
+  const ticksY = yt.length >= 2 ? yt : [10 ** y0, 10 ** y1];
+  const xt = Array.from(new Set([x0, Math.round((x0 + x1) / 2), x1]));
+  const path = (pts: [number, number][]) => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${sx(x).toFixed(1)},${sy(y).toFixed(1)}`).join('');
+  const epochs = Array.from(new Set(xs)).sort((a, b) => a - b);
+  // end labels (2 series): at the last point, pushed apart when they would overlap
+  const ends = live.map((s) => sy(s.pts[s.pts.length - 1][1]) + 4);
+  if (ends.length === 2 && Math.abs(ends[0] - ends[1]) < 12) {
+    const mid = (ends[0] + ends[1]) / 2, up = ends[0] <= ends[1] ? 0 : 1;
+    ends[up] = mid - 6; ends[1 - up] = mid + 6;
+  }
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = x0 + (((e.clientX - r.left) / r.width) * W - M.l) / (W - M.l - M.r) * (x1 - x0);
+    setHover(epochs.reduce((b, v) => (Math.abs(v - x) < Math.abs(b - x) ? v : b), epochs[0]));
+  };
+  return (
+    <div className="card plot">
+      <div className="card-title">{title}
+        {live.length > 1 && <span className="chart-legend">{live.map((s) => <span key={s.label}><span className={`sw ${s.cls}`} />{s.label}</span>)}</span>}
+      </div>
+      <div className="plot-wrap">
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={title} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+          {ticksY.map((y, i) => (
+            <g key={i}>
+              <line x1={M.l} x2={W - M.r} y1={sy(y)} y2={sy(y)} className={i === 0 && !log ? 'axis-base' : 'grid'} />
+              <text x={M.l - 6} y={sy(y) + 4} textAnchor="end" className="tick">{fmt(y)}</text>
+            </g>
+          ))}
+          {xt.map((x, i) => <text key={x} x={sx(x)} y={H - 8} textAnchor="middle" className="tick">{i === xt.length - 1 ? `${x} ${xLabel}` : x}</text>)}
+          {live.map((s, si) => (
+            <g key={s.label}>
+              {s.pts.length > 1 && <path d={path(s.pts)} className={`series-line ${s.cls}`} />}
+              {s.pts.length <= 12 && s.pts.map(([x, y]) => <circle key={x} cx={sx(x)} cy={sy(y)} r={3} className={`series-dot ${s.cls}`} />)}
+              {live.length > 1 && <text x={sx(s.pts[s.pts.length - 1][0]) + 6} y={ends[si]} className="end-label">{s.label}</text>}
+            </g>
+          ))}
+          {hover !== null && (
+            <g>
+              <line x1={sx(hover)} x2={sx(hover)} y1={M.t} y2={H - M.b} className="crosshair" />
+              {live.map((s) => {
+                const p = s.pts.find(([x]) => x === hover);
+                return p ? <circle key={s.label} cx={sx(p[0])} cy={sy(p[1])} r={4} className={`series-dot ${s.cls}`} /> : null;
+              })}
+            </g>
+          )}
+        </svg>
+        {hover !== null && (
+          <div className="tooltip" style={{ left: `${(sx(hover) / W) * 100}%` }}>
+            <strong>{xLabel} {hover}</strong>
+            {live.map((s) => {
+              const p = s.pts.find(([x]) => x === hover);
+              return p ? <span key={s.label}>{s.label}: {fmt(p[1])}</span> : null;
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

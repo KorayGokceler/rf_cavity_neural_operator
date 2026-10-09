@@ -17,14 +17,19 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     GET  /api/datasets/{d}/items | /stats         geometry table (filter, sort, page) / overview
     POST /api/datasets/{d}/items/{id}/open        geometry + FE solution (+ labels, parameters)
     POST /api/predictions {geometry_id, compare_to}  + model-vs-FE rows and a difference solution
+    GET  /api/jobs/config · POST /api/jobs/generate · GET /api/jobs[/{id}] · POST /api/jobs/{id}/cancel
+    GET  /api/train/config · GET /api/train/runs[/{name}] · POST /api/train/start · /runs/{name}/resume
+    POST /api/train/stop · POST /api/model/load {run}   training from the UI (RFCAV_RUNS_ROOT)
 The built frontend (web/dist) is served at / when present.
 """
 import base64
 import collections
+import glob
 import hashlib
 import hmac
 import os
 import random
+import re
 import tempfile
 import threading
 import time
@@ -38,6 +43,7 @@ from pydantic import BaseModel, Field
 
 from src.data.dataset_converter_3d import FEATURE_NAMES_3D
 from src.service import geometry as G
+from src.service import training as T
 
 VERSION = '0.1.0'
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -482,7 +488,7 @@ def create_app(service=None, datasets=None):
         workers: int | None = Field(default=None, ge=1, le=256)
         convert: bool = True
         lean: bool = True
-        tag: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_.\-]{1,64}$')
+        tag: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$')
 
     def _jm():
         if jm is None:
@@ -535,6 +541,131 @@ def create_app(service=None, datasets=None):
         if jid not in m.jobs:
             raise HTTPException(404, 'no such job')
         return m.cancel(jid).public()
+
+    # ── training (src/service/training.py) ────────────────────────────
+    runs_root = os.environ.get('RFCAV_RUNS_ROOT') or None
+    tm = T.TrainManager(runs_root) if runs_root else None
+
+    class TrainReq(BaseModel):
+        name: str = Field(pattern=T.NAME_RE)
+        datasets: list[str] = Field(default_factory=list)
+        preset: str = Field(default='small', pattern='^(' + '|'.join(T.PRESETS) + ')$')
+        epochs: int = Field(default=100, ge=1, le=10000)
+        batch_size: int = Field(default=4, ge=1, le=256)
+        lr: float = Field(default=2e-4, gt=0, le=1.0)
+        n_modes: int = Field(default=6, ge=1, le=30)
+        patience: int = Field(default=50, ge=1, le=10000)
+        qoi_weight: float = Field(default=0.0, ge=0.0, le=100.0)
+        cache_operators: bool | None = None
+
+    class ResumeReq(BaseModel):
+        epochs: int | None = Field(default=None, ge=1, le=10000)
+
+    class LoadReq(BaseModel):
+        run: str = Field(pattern=T.NAME_RE)
+
+    def _tm():
+        if tm is None:
+            raise HTTPException(503, 'training is off: start the server with RFCAV_RUNS_ROOT=<folder> '
+                                     '(e.g. <Drive>/training_logs)')
+        return tm
+
+    def _h5_of(d):
+        """H5 shards of a registered dataset: its own files, or for a generated / TRUBA family PKL
+        (<TAG>/pkl/<fam>.pkl) the shards in <TAG>/h5/<fam>/."""
+        if getattr(d, 'files', None):
+            return list(d.files)
+        p = getattr(d, 'path', '')
+        base, fam = os.path.dirname(os.path.dirname(p)), os.path.splitext(os.path.basename(p))[0]
+        if os.path.basename(os.path.dirname(p)) == 'pkl':
+            return sorted(glob.glob(os.path.join(base, 'h5', fam, '*.h5')))
+        return []
+
+    def _train_data(ids):
+        if not ids:
+            raise HTTPException(422, 'choose at least one dataset')
+        ds = [_ds(i) for i in ids]
+        if len(ds) == 1 and getattr(ds[0], 'path', None):
+            return {'pkl': ds[0].path}, [ds[0].name]
+        files, missing = set(), []
+        for d in ds:
+            h = _h5_of(d)
+            (files.update(h) if h else missing.append(d.name))
+        if missing:
+            raise HTTPException(422, f"no H5 shards for {missing}: several datasets are merged from their H5 "
+                                     "shards — choose a PKL alone, or its H5 folder")
+        return {'h5': sorted(files)}, [d.name for d in ds]
+
+    def _gpu():
+        try:
+            import torch
+            return torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+        except Exception:                                    # noqa: BLE001
+            return None
+
+    @app.get('/api/train/config')
+    def train_config():
+        return {'enabled': tm is not None, 'runs_root': runs_root, 'gpu': _gpu(), 'cpu_count': os.cpu_count() or 1,
+                'presets': {k: {'embed_dim': v[0], 'n_heads': v[1], 'n_layers': v[2], 'n_basis': v[3],
+                                'params_m': T.PRESET_PARAMS_M[k]} for k, v in T.PRESETS.items()},
+                'busy': bool(tm and tm.busy()), 'active': tm.active.name if tm and tm.active else None,
+                'model': service.info()}
+
+    @app.get('/api/train/runs')
+    def train_runs():
+        return _tm().runs() if tm else []
+
+    @app.get('/api/train/runs/{name}')
+    def train_run(name: str):
+        try:
+            return _tm().detail(name)
+        except KeyError:
+            raise HTTPException(404, 'no such run') from None
+
+    def _start(name, params, data, resume):
+        try:
+            _tm().start(name, params, data, resume=resume)
+        except (RuntimeError, FileExistsError) as e:
+            raise HTTPException(409, str(e)) from None
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from None
+        return tm.detail(name)
+
+    @app.post('/api/train/start')
+    def train_start(req: TrainReq):
+        _tm()
+        data, names = _train_data(req.datasets)
+        params = req.model_dump(exclude={'name', 'datasets'})
+        params['sources'] = names
+        return _start(req.name, params, data, False)
+
+    @app.post('/api/train/runs/{name}/resume')
+    def train_resume(name: str, req: ResumeReq):
+        if not re.match(T.NAME_RE, name):
+            raise HTTPException(422, 'bad run name')
+        try:
+            p = _tm().resume_params(name)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from None
+        data = p.pop('data')
+        if req.epochs:
+            p['epochs'] = req.epochs
+        return _start(name, p, data, True)
+
+    @app.post('/api/train/stop')
+    def train_stop():
+        r = _tm().stop()
+        return {'stopped': r.name if r else None}
+
+    @app.post('/api/model/load')
+    def model_load(req: LoadReq):
+        d = _tm().run_dir(req.run)                          # only runs under RFCAV_RUNS_ROOT (pickle!)
+        if not os.path.isdir(d):
+            raise HTTPException(404, 'no such run')
+        try:
+            return service.load(d)
+        except Exception as e:                               # noqa: BLE001
+            raise HTTPException(422, f"could not load {req.run}: {e}") from None
 
     dist = os.environ.get('RFCAV_WEB_DIST', os.path.join(ROOT, 'web', 'dist'))
     if os.path.isdir(dist):

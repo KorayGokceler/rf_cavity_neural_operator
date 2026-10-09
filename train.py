@@ -4,6 +4,7 @@ import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping, TQDMProgressBar
 from src.training.callbacks import FieldVisualizationCallback
+from src.training.progress import ProgressFile
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.data.dataset import GNOTDataset, gnot_collate_fn
@@ -363,6 +364,7 @@ def main():
     early_stop = EarlyStopping(monitor="val/field_rel_l2", patience=tc.patience, mode="min")
     viz_callback = FieldVisualizationCallback(log_every_n_epochs=tc.viz_every_n_epochs)   # 2D plots only
     progress_bar = TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate)
+    progress_file = ProgressFile(f"{tc.log_dir}/{tc.exp_name}/progress.json")   # read by the web UI
     
     try:
         tb_logger = TensorBoardLogger(save_dir=tc.log_dir, name=tc.exp_name)
@@ -396,7 +398,8 @@ def main():
         devices=devices,
         strategy=strategy,
         gradient_clip_val=tc.gradient_clip_val,
-        callbacks=[checkpoint_callback, lr_monitor, early_stop, progress_bar] + ([] if is_3d else [viz_callback]),
+        callbacks=[checkpoint_callback, lr_monitor, early_stop, progress_bar, progress_file]
+                  + ([] if is_3d else [viz_callback]),
         logger=tb_logger,
         log_every_n_steps=tc.log_every_n_steps,
         enable_progress_bar=True,
@@ -425,6 +428,8 @@ def main():
         if local_rank == 0:
             print("Running final evaluation on held-out test split...")
         trainer.test(dataloaders=test_loader, ckpt_path="best")
+    if local_rank == 0:
+        progress_file.finish()
 
 if __name__ == '__main__':
     main()

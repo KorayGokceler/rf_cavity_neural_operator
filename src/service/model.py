@@ -6,6 +6,7 @@ Display convention (all fields at stored energy U = 1 J, standing wave):
     E(t) = E · cos φ,   H(t) = H · sin φ      (the sign of the curl relation is folded into H)
 """
 import math
+import os
 import threading
 import time
 
@@ -242,10 +243,24 @@ class ModelService:
         self.n_params = int(sum(p.numel() for p in self.lm.parameters()))
         self._lock = threading.Lock()
 
+    def load(self, checkpoint):
+        """Switch to another checkpoint (e.g. a run just trained from the UI); on failure the current
+        model stays."""
+        path = resolve_checkpoint(checkpoint)
+        lm, field, fi = load_model(path, self.device)
+        lm.to(self.device)
+        with self._lock:
+            self.lm, self.field, self.feature_indices = lm, field, fi
+            self.untrained, self.load_error, self.checkpoint = False, None, str(path)
+            self.n_modes = int(lm.hparams.get('num_field_modes', 6))
+            self.n_params = int(sum(p.numel() for p in lm.parameters()))
+        return self.info()
+
     def info(self):
         return {'field': self.field, 'n_modes': self.n_modes, 'n_params': self.n_params, 'device': self.device,
                 'untrained': self.untrained, 'checkpoint': self.checkpoint and self.checkpoint.split('/')[-1],
-                'load_error': self.load_error}
+                'load_error': self.load_error,
+                'run': self.checkpoint and os.path.basename(os.path.dirname(os.path.abspath(self.checkpoint)))}
 
     def geometry(self, nodes, tets, family=''):
         """(converter geometry dict with features + operators, CSR mass) of a mesh [m]."""

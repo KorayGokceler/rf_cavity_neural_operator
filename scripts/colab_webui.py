@@ -7,7 +7,8 @@ one-cell notebook Colab_WebUI.ipynb after it has mounted Drive and cloned the re
 
 Each step is skipped when already done, so re-running the cell on the same VM starts in seconds.
 Dataset generation runs here, on the Colab VM's CPUs (one worker per core), and writes to
-<gen_dir>/<TAG>/h5/<family>/… on Drive.
+<gen_dir>/<TAG>/h5/<family>/… on Drive; training (the "Eğitim" page) runs train.py on the VM's GPU
+and writes checkpoints to <drive_dir>/training_logs/<run>/.
 
     python scripts/colab_webui.py --drive_dir /content/drive/MyDrive/rf_cavity_3d --tunnel
 """
@@ -95,12 +96,13 @@ def main(argv=None):
         pip_requirements()
         node()
     os.makedirs(gen, exist_ok=True)
-    print(f'Drive: {drive}\n  generated datasets → {gen}')
+    print(f'Drive: {drive}\n  generated datasets → {gen}\n  training runs      → {drive}/training_logs')
 
     import serve_web
-    cmd = ['--data', drive, '--gen_root', gen, '--port', str(args.port), '--checkpoint_optional']
+    runs = os.path.join(drive, 'training_logs')
+    cmd = ['--data', drive, '--gen_root', gen, '--runs_root', runs, '--port', str(args.port), '--checkpoint_optional']
     if args.checkpoint == 'auto':
-        cmd += ['--checkpoint', 'auto', '--ckpt_search', os.path.join(drive, 'training_logs')]
+        cmd += ['--checkpoint', 'auto', '--ckpt_search', runs]
     elif args.checkpoint:
         cmd += ['--checkpoint', args.checkpoint]
     if args.tunnel:

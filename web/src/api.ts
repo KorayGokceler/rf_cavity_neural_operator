@@ -2,7 +2,7 @@
 
 export interface ModelInfo {
   field: 'E' | 'H'; n_modes: number; n_params: number; device: string; untrained: boolean; checkpoint: string | null;
-  load_error?: string | null;
+  load_error?: string | null; run?: string | null;
 }
 export interface Info {
   version: string; model: ModelInfo; families: { train: string[]; ood: string[] };
@@ -53,6 +53,28 @@ export interface Job {
   stage: string; progress: { done: number; total: number; ok: number; failed: number };
   created: number; started: number | null; finished: number | null; error: string | null;
   outputs: string[]; log: string[];
+}
+export interface Preset { embed_dim: number; n_heads: number; n_layers: number; n_basis: number; params_m: number }
+export interface TrainConfig {
+  enabled: boolean; runs_root: string | null; gpu: string | null; cpu_count: number;
+  presets: Record<string, Preset>; busy: boolean; active: string | null; model: ModelInfo;
+}
+export interface TrainParams {
+  name: string; datasets: string[]; preset: string; epochs: number; batch_size: number; lr: number;
+  n_modes: number; patience: number; qoi_weight: number; cache_operators: boolean | null;
+}
+export type RunStatus = 'preparing' | 'running' | 'finished' | 'stopped' | 'failed' | 'checkpoint' | 'empty';
+export interface RunSummary {
+  name: string; status: RunStatus; epoch: number; max_epochs: number | null; batch: number | null;
+  n_batches: number | null; best_score: number | null; monitor: string | null; val_field_rel_l2: number | null;
+  val_freq_rel_err: number | null; n_params: number | null; updated: number; n_ckpt: number; has_last: boolean;
+  resumable: boolean; preset: string | null; from_ui: boolean; error: string | null;
+}
+export interface RunDetail extends RunSummary {
+  history: Record<string, number>[]; test: Record<string, number> | null;
+  best: { path: string; score: number | null; monitor: string } | null;
+  params: (Omit<TrainParams, 'name' | 'datasets'> & { sources: string[] }) | null;
+  stage: string | null; log: string[]; data_cached: boolean | null;
 }
 export interface DatasetRef { id: string; name: string; kind: 'h5' | 'pkl' }
 export interface DatasetRow {
@@ -154,6 +176,14 @@ export const api = {
   generate: (p: GenParams) => call<Job[]>('/api/jobs/generate', json(p)),
   jobs: () => call<Job[]>('/api/jobs'),
   cancelJob: (id: string) => call<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
+  trainConfig: () => call<TrainConfig>('/api/train/config'),
+  trainRuns: () => call<RunSummary[]>('/api/train/runs'),
+  trainRun: (name: string) => call<RunDetail>(`/api/train/runs/${encodeURIComponent(name)}`),
+  trainStart: (p: TrainParams) => call<RunDetail>('/api/train/start', json(p)),
+  trainResume: (name: string, epochs: number | null) =>
+    call<RunDetail>(`/api/train/runs/${encodeURIComponent(name)}/resume`, json({ epochs })),
+  trainStop: () => call<{ stopped: string | null }>('/api/train/stop', { method: 'POST' }),
+  loadModel: (run: string) => call<ModelInfo>('/api/model/load', json({ run })),
   rescan: () => call<DatasetRef[]>('/api/datasets/rescan', { method: 'POST' }),
   datasets: () => call<DatasetRef[]>('/api/datasets'),
   datasetItems: (did: string, p: { family?: string; offset?: number; limit?: number; sort?: string; desc?: boolean }) => {
