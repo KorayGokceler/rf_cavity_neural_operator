@@ -1,0 +1,5 @@
+# Web service (src/service/api.py): on top of requirements.txt
+fastapi>=0.110          # [0.143]
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9 # multipart uploads
+httpx>=0.27             # tests (fastapi.testclient)

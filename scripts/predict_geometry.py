@@ -32,114 +32,18 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from infer import resolve_checkpoint                                          # noqa: E402
-from src.data.dataset_3d import item_from_geometry, maxwell3d_collate         # noqa: E402
 from src.data.dataset_converter_3d import extract_geometry_3d, h5_edges_to_canonical  # noqa: E402
 from src.data_gen import dataset_generator_3d as gen                          # noqa: E402
-from src.training.lightning_module import GNOTLightning                       # noqa: E402
-
-UNITS = {'m': 1.0, 'cm': 1e-2, 'mm': 1e-3}
-QOI_SHOW = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
-
-
-# ─────────────────────────── geometry → tet mesh [m] ───────────────────
-
-def _gen_args(field, mesh_size, n_modes=6, families=None):
-    gen.ARGS = gen.parse_args(['--field', field, '--mesh_size', str(mesh_size), '--n_eigen_modes', str(n_modes),
-                               *(['--families', *families] if families else [])])
-    return gen.ARGS
+from src.service.geometry import UNITS, from_h5, mesh_file, mesh_step         # noqa: E402,F401
+from src.service.geometry import gen_args as _gen_args                        # noqa: E402
+from src.service.model import QOI_SHOW, degenerate_mask, load_model           # noqa: E402,F401
+from src.service.model import forward as _forward                             # noqa: E402
 
 
-def mesh_step(path, unit, mesh_size, vol_div=1.0, h_abs=None):
-    """CAD file → (nodes [m], tets): OCC import, fuse to one volume, gmsh tets (generator settings)."""
-    import gmsh
-    gen._gmsh_start()
-    gmsh.clear()
-    gmsh.model.occ.importShapes(path)
-    gmsh.model.occ.synchronize()
-    vols = gmsh.model.getEntities(3)
-    if not vols:
-        raise ValueError(f"{path}: no 3D volume (a closed solid is needed: the cavity's vacuum region)")
-    if len(vols) > 1:
-        gmsh.model.occ.fuse(vols[:1], vols[1:])
-        gmsh.model.occ.synchronize()
-        vols = gmsh.model.getEntities(3)
-    V = sum(gmsh.model.occ.getMass(d, t) for d, t in vols)                    # file units³
-    h = (h_abs / UNITS[unit]) if h_abs else mesh_size * (V / vol_div) ** (1 / 3)
-    nodes, tets = gen._mesh_current_model(h)
-    gmsh.clear()
-    return nodes * UNITS[unit], tets
-
-
-def mesh_file(path, unit):
-    import meshio
-    m = meshio.read(path)
-    tets = [c.data for c in m.cells if c.type == 'tetra']
-    if not tets:
-        raise ValueError(f"{path}: no 'tetra' cells (linear tets needed)")
-    tets = np.concatenate(tets).astype(np.int64)
-    used = np.unique(tets)                                                    # drop unused (e.g. surface-only) nodes
-    remap = np.full(len(m.points), -1, np.int64)
-    remap[used] = np.arange(len(used))
-    return np.asarray(m.points[used, :3], np.float64) * UNITS[unit], remap[tets]
-
-
-def from_h5(path, sample):
-    import h5py
-    with h5py.File(path, 'r') as f:
-        keys = sorted(k for k in f if k.startswith('sample_'))
-        key = keys[int(sample)] if str(sample).isdigit() and str(sample) not in keys else str(sample)
-        g = f[key]
-        ds = 'e_edges' if 'e_edges' in g else 'h_edges'
-        return (g['nodes'][()], g['tets'][()], {'edges': g['edges'][()], 'vecs': g[ds][()],
-                                                 'freqs': g['freqs'][()], 'field': 'E' if ds == 'e_edges' else 'H',
-                                                 'shape_type': str(g.attrs.get('shape_type', '')), 'key': key})
-
-
-# ─────────────────────────── prediction ───────────────────────────────
-
-def load_model(checkpoint, device='cpu', field=None):
-    """(lm, field, feature_indices). The field is the checkpoint's training field (data_cfg, recorded
-    by train.py); `field` overrides it and is required for checkpoints that do not record one."""
-    lm = GNOTLightning.load_from_checkpoint(resolve_checkpoint(checkpoint), map_location=device).eval()
-    lm.freq_stats = {'mean': 0.0, 'std': 1.0}            # physics_freq: out['freq'] is then f in GHz
-    dc = dict(lm.hparams.get('data_cfg') or {})
-    trained = dc.get('field')
-    if field and trained and field.upper() != str(trained).upper():
-        raise ValueError(f"checkpoint was trained on field {trained}, --field {field}")
-    field = field or trained
-    if not field:
-        raise ValueError("checkpoint does not record its training field: pass --field E|H")
-    return lm, str(field).upper(), dc.get('feature_indices')
-
-
-def degenerate_mask(f, rel=1e-3):
-    """Modes whose frequency is within rel of a neighbour: their individual field (and so their
-    per-mode QoI) is any rotation inside the pair — only the pair's span is defined."""
-    f = np.asarray(f, float)
-    d = np.zeros(len(f), bool)
-    close = np.abs(np.diff(f)) < rel * np.abs(f[1:])
-    d[1:] |= close
-    d[:-1] |= close
-    return d
-
-
-@torch.no_grad()
 def predict(lm, geom, field, feature_indices=None, device='cpu', warmup=True):
-    item = item_from_geometry(geom, feature_indices=feature_indices)
-    batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in maxwell3d_collate([item]).items()}
-    lm.to(device)
-    if warmup:                                           # first call: allocator / sparse setup / CG warm-up
-        lm.model(batch)
-    if device.startswith('cuda'):
-        torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    out = lm.model(batch)
-    if device.startswith('cuda'):
-        torch.cuda.synchronize()
-    t = time.perf_counter() - t0
-    ne = len(geom['edges'])
-    return out['field'][0, :ne].double().cpu().numpy(), out['freq'][0].double().cpu().numpy(), t
+    """(U [Ne,K], f [K] GHz, model seconds) — src.service.model.forward without λ."""
+    U, f, _, t = _forward(lm, geom, feature_indices, device, warmup)
+    return U, f, t
 
 
 def qoi(geom, M, U, f_ghz, field, args):
