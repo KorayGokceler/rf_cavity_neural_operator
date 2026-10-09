@@ -2,7 +2,7 @@
 
 > **Formülasyon E'dir** ve yalnız E vardır: kulplu kaviteler (spoke, yarım dalga koaksiyel, DTL gövde +
 > sap) ve yüzen iç iletkenler desteklenir. Güncel tarif, ölçümler ve aileler: **§6 E formülasyonu**.
-> §1–§5 projenin ilk sürümündeki H formülasyonunu anlatır. H kodu kaldırıldı (`legacy-2d` etiketi);
+> §1–§5 projenin ilk sürümündeki H formülasyonunu anlatır. H kodu kaldırıldı (`legacy-h` dalı);
 > bu bölümler geometri aileleri, özellikler ve sözleşmenin ortak kısmı için tarihsel kayıt olarak duruyor.
 
 > **Kapsam:** docs/18 Faz 2'nin **veri** yarısı: üretici (`src/data_gen/dataset_generator_3d.py`), dönüştürücü (`src/data/dataset_converter_3d.py`, `convert_3d.py`) ve model tarafının dayandığı PKL sözleşmesi. Model/eğitim kodu bu notun kapsamında değil.

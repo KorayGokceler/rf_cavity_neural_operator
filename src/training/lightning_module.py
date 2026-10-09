@@ -220,10 +220,10 @@ class CavityLightning(pl.LightningModule):
         super().__init__()
         model_type = legacy.pop('model_type', 'eigenspace3d')
         if model_type != 'eigenspace3d':
-            raise ValueError(f"checkpoint of the removed 2D model '{model_type}' (tag legacy-2d)")
+            raise ValueError(f"checkpoint of the removed 2D model '{model_type}' (branch legacy-2d)")
         field = str((data_cfg or {}).get('field') or 'E').upper()
         if field != 'E':
-            raise ValueError("checkpoint of the removed H formulation (field 'H', tag legacy-2d): "
+            raise ValueError("checkpoint of the removed H formulation (field 'H', branch legacy-h): "
                              "only E-field models are supported")
         assert span_norm in ('mass', 'energy', 'both'), f"span_norm: {span_norm!r}"
         assert selfsup_form in ('compliance', 'logdet'), f"selfsup_form: {selfsup_form!r}"

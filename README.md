@@ -112,4 +112,4 @@ python -m pytest -q          # gmsh testleri sistem kütüphanelerini ister
 ruff check .
 ```
 
-2D model (GNOT, SpectralNO) ve H-alanı formülasyonu bu daldan çıkarıldı; git geçmişinde `legacy-2d` etiketiyle duruyor.
+2D model (GNOT, SpectralNO) ve H-alanı formülasyonu çıkarıldı; eski hâlleri `legacy-2d` (2D main) ve `legacy-h` (H dahil son 3D sürüm) dallarında duruyor.

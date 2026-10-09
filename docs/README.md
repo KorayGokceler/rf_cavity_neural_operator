@@ -21,4 +21,4 @@ Araştırma ve inceleme kayıtları (tarihsel; kararların gerekçesi burada, ko
 | [22_3D_REVIEW_MODEL](22_3D_REVIEW_MODEL.md) | model / eğitim kodu incelemesi ve bulguları |
 
 2D model (GNOT, SpectralNO, 2D eigenspace operator) ve onun belgeleri (eski 00–17) ile H-alanı formülasyonu
-kaldırıldı; git geçmişinde `legacy-2d` etiketiyle duruyorlar.
+kaldırıldı; `legacy-2d` (2D) ve `legacy-h` (H formülasyonu) dallarında duruyorlar.
