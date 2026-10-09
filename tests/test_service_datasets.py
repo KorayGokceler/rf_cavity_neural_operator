@@ -199,3 +199,21 @@ def test_generation_disabled_without_root(monkeypatch):
     c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
     assert c.get("/api/jobs/config").json()["enabled"] is False
     assert c.post("/api/jobs/generate", json={"families": ["box"]}).status_code == 503
+
+
+def test_gen_root_inside_a_data_root_is_listed_once(data_dir, monkeypatch):
+    """Colab: --data <drive> and --gen_root <drive>/ui_datasets → the generated sets appear only as generated/…"""
+    monkeypatch.setenv("RFCAV_DATA", str(data_dir))
+    monkeypatch.setenv("RFCAV_GEN_ROOT", str(data_dir / "h5"))
+    c = TestClient(A.create_app(ModelService(None, "cpu")))
+    names = {d["name"] for d in c.get("/api/datasets").json()}
+    assert names == {"pkl/pp.pkl", "generated/pillbox_pipes/ (h5)"}
+
+
+def test_optional_checkpoint_falls_back_to_untrained(tmp_path):
+    bad = tmp_path / "last.ckpt"
+    bad.write_bytes(b"not a checkpoint")
+    with pytest.raises(Exception):
+        ModelService(str(bad), "cpu")
+    s = ModelService(str(bad), "cpu", optional=True)
+    assert s.untrained and s.load_error and s.info()["load_error"] == s.load_error

@@ -162,6 +162,10 @@ def create_app(service=None, datasets=None):
         """(Re)build the registry: RFCAV_DATA (or the fixed one) + generated datasets under RFCAV_GEN_ROOT.
         Ids are stable per name; unchanged datasets keep their loaded state."""
         found = dict(fixed) if fixed is not None else discover()
+        if gen_root:                                        # a data root may contain gen_root: list it once
+            under = os.path.abspath(gen_root) + os.sep
+            found = {k: d for k, d in found.items()
+                     if not any(os.path.abspath(f).startswith(under) for f in getattr(d, 'files', [getattr(d, 'path', '')]))}
         if gen_root and os.path.isdir(gen_root):
             found.update({f"generated/{k}": d for k, d in discover(gen_root).items()})
         old = {d.name: d for d in ds_ids.values()}
@@ -178,7 +182,8 @@ def create_app(service=None, datasets=None):
     rescan()
     if service is None:
         from src.service.model import ModelService
-        service = ModelService(os.environ.get('RFCAV_CHECKPOINT') or None, os.environ.get('RFCAV_DEVICE') or None)
+        service = ModelService(os.environ.get('RFCAV_CHECKPOINT') or None, os.environ.get('RFCAV_DEVICE') or None,
+                               optional=os.environ.get('RFCAV_CHECKPOINT_OPTIONAL') == '1')
     lim = Limits()
     geoms, preds = Store(lim.max_items, lim.ttl_s), Store(lim.max_items, lim.ttl_s)
     app = FastAPI(title='RF Cavity Neural Solver', version=VERSION)
@@ -274,7 +279,8 @@ def create_app(service=None, datasets=None):
         pid = preds.put(p)
         warnings = []
         if service.untrained:
-            warnings.append('untrained demo model: the numbers are meaningless (UI development mode)')
+            warnings.append('untrained demo model: the numbers are meaningless (UI development mode)'
+                            + (f" — the checkpoint did not load ({service.load_error})" if getattr(service, 'load_error', None) else ''))
         if p['axis_length_mm'] <= 0:
             warnings.append('the beam axis (x = y = 0 along z) does not cross the cavity: R/Q, R_sh, T, '
                             'Epk/Eacc and Bpk/Eacc are undefined')

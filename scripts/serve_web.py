@@ -5,6 +5,7 @@ account), and prints the link + a QR code to scan with the phone camera.
     python scripts/serve_web.py --checkpoint runs/large --data /path/to/datasets           # same Wi-Fi
     python scripts/serve_web.py --checkpoint runs/large --data /path/to/datasets --tunnel  # anywhere
     … --gen_root /content/drive/MyDrive/rfcav/ui_datasets    # + dataset generation from the UI
+    … --checkpoint auto --ckpt_search <training_logs dir>   # newest training run there (else untrained)
 
 Same Wi-Fi: the phone opens http://<this machine's LAN address>:<port>/?token=…
 --tunnel: https://<random>.trycloudflare.com/?token=… (downloads `cloudflared` if missing; the link
@@ -12,6 +13,8 @@ lives as long as this process). Anyone holding the full link (with the token) ca
 share it like a password. Ctrl-C stops everything.
 """
 import argparse
+import glob
+import hashlib
 import os
 import platform
 import re
@@ -41,10 +44,28 @@ def lan_ip():
         s.close()
 
 
+def web_sources_hash(web=None):
+    """Hash of the frontend sources (everything in web/ but node_modules and dist): dist is rebuilt when
+    it changes, e.g. after a git pull."""
+    web = web or os.path.join(ROOT, 'web')
+    h = hashlib.sha1()
+    for dp, dns, fns in os.walk(web):
+        dns[:] = sorted(d for d in dns if d not in ('node_modules', 'dist'))
+        for fn in sorted(f for f in fns if not f.endswith('.tsbuildinfo')):   # tsc build output
+            fp = os.path.join(dp, fn)
+            h.update(os.path.relpath(fp, web).encode())
+            with open(fp, 'rb') as f:
+                h.update(f.read())
+    return h.hexdigest()
+
+
 def build_frontend(force=False):
     dist = os.path.join(ROOT, 'web', 'dist', 'index.html')
-    if os.path.exists(dist) and not force:
-        return
+    stamp = os.path.join(ROOT, 'web', 'dist', '.sources')
+    want = web_sources_hash()
+    have = open(stamp).read().strip() if os.path.exists(stamp) else None
+    if os.path.exists(dist) and not force and (have == want or not shutil.which('npm')):
+        return                                         # up to date (or prebuilt elsewhere, no npm to rebuild)
     if not shutil.which('npm'):
         sys.exit("web/dist is missing and npm is not installed: install Node.js ≥ 20.19 (or build the "
                  "frontend elsewhere: cd web && npm ci && npm run build)")
@@ -52,6 +73,22 @@ def build_frontend(force=False):
     web = os.path.join(ROOT, 'web')
     subprocess.run(['npm', 'ci', '--no-audit', '--no-fund'], cwd=web, check=True)
     subprocess.run(['npm', 'run', 'build'], cwd=web, check=True)
+    with open(stamp, 'w') as f:
+        f.write(want)
+
+
+def find_checkpoint(roots):
+    """The training run (dir directly under a root, or a .ckpt file in it) holding the newest .ckpt
+    below the given roots, or None."""
+    best = None
+    for root in roots:
+        root = os.path.abspath(os.path.expanduser(root))
+        for fp in glob.glob(os.path.join(root, '**', '*.ckpt'), recursive=True):
+            t = os.path.getmtime(fp)
+            if best is None or t > best[0]:
+                rel = os.path.relpath(fp, root).split(os.sep)
+                best = (t, fp if len(rel) == 1 else os.path.join(root, rel[0]))
+    return best and best[1]
 
 
 def cloudflared_bin():
@@ -117,7 +154,11 @@ def wait_up(port, token, timeout=180):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--checkpoint', default=None, help='.ckpt or training dir (none: UNTRAINED demo model)')
+    ap.add_argument('--checkpoint', default=None,
+                    help='.ckpt or training dir; "auto": the newest run under --ckpt_search (none: UNTRAINED demo model)')
+    ap.add_argument('--ckpt_search', nargs='*', default=[], help='where --checkpoint auto looks (e.g. training_logs)')
+    ap.add_argument('--checkpoint_optional', action='store_true',
+                    help='a checkpoint that does not load → untrained model + a warning (instead of an error)')
     ap.add_argument('--data', nargs='*', default=[], help='dataset roots (PKL files / H5 directories)')
     ap.add_argument('--gen_root', default=None,
                     help='folder for datasets generated from the UI (e.g. a Google Drive folder); off when unset')
@@ -129,13 +170,19 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     build_frontend(args.rebuild)
+    ckpt = args.checkpoint
+    if ckpt == 'auto':
+        ckpt = find_checkpoint(args.ckpt_search)
+        print(f"checkpoint: {ckpt or 'none found → untrained demo model (generation and the dataset view work)'}",
+              flush=True)
+        args.checkpoint_optional = True
     token = None if args.no_token else secrets.token_urlsafe(12)
     env = dict(os.environ, RFCAV_DATA=os.pathsep.join(os.path.abspath(d) for d in args.data))
     gen = os.path.abspath(args.gen_root) if args.gen_root else None
     if gen:
         os.makedirs(gen, exist_ok=True)
-    for k, v in (('RFCAV_CHECKPOINT', args.checkpoint), ('RFCAV_DEVICE', args.device), ('RFCAV_TOKEN', token),
-                 ('RFCAV_GEN_ROOT', gen)):
+    for k, v in (('RFCAV_CHECKPOINT', ckpt), ('RFCAV_DEVICE', args.device), ('RFCAV_TOKEN', token),
+                 ('RFCAV_GEN_ROOT', gen), ('RFCAV_CHECKPOINT_OPTIONAL', '1' if args.checkpoint_optional else None)):
         if v:
             env[k] = v
         else:

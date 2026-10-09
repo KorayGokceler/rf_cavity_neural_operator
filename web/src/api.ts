@@ -2,6 +2,7 @@
 
 export interface ModelInfo {
   field: 'E' | 'H'; n_modes: number; n_params: number; device: string; untrained: boolean; checkpoint: string | null;
+  load_error?: string | null;
 }
 export interface Info {
   version: string; model: ModelInfo; families: { train: string[]; ood: string[] };

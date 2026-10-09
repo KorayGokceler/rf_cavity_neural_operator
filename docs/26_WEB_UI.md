@@ -103,7 +103,7 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
   <GEN_ROOT>/<TAG>/h5/<aile>/<aile>_s00000.h5 …
   <GEN_ROOT>/<TAG>/pkl/<aile>.pkl
   ```
-- **Google Drive:** Colab hücre 15, `GEN = f"{WORK}/ui_datasets"` klasörünü Drive'da açar.
+- **Google Drive:** `Colab_WebUI.ipynb` (tek hücre) ya da `Colab_Maxwell3D.ipynb` hücre 15, `MyDrive/rf_cavity_3d/ui_datasets` klasörünü kullanır. Üretim **Colab VM'sinin CPU'larında** çalışır (çekirdek başına bir işçi; GPU gerekmez).
   - Parçalar önce yerel diske yazılır, tamamlanınca Drive'a taşınır (Drive yavaş bir ağ diski).
   - Bağlantı koparsa biten parçalar Drive'da kalır. Aynı işi yeniden başlatınca bitmiş parçalar atlanır, kaldığı yerden devam eder.
 - **Dataset sayfası:** iş bitince otomatik yenilenir. Üretilenler `generated/<TAG>/…` adıyla görünür.
@@ -152,7 +152,7 @@ docker compose up --build                                                 # http
 
 | nerede | komut | telefondaki bağlantı |
 |---|---|---|
-| **Colab** (en kolayı) | `Colab_Maxwell3D.ipynb` hücre 15 | `https://….trycloudflare.com/?token=…` (her yerden) |
+| **Colab** (en kolayı) | `Colab_WebUI.ipynb`: sıfırdan tek hücre (§4c) | `https://….trycloudflare.com/?token=…` (her yerden) |
 | kendi bilgisayarın, aynı Wi-Fi | `python scripts/serve_web.py --checkpoint runs/large --data <dataset kökü>` | `http://<bilgisayarın IP'si>:8000/?token=…` |
 | kendi bilgisayarın, her yerden | aynı komut + `--tunnel` | `https://….trycloudflare.com/?token=…` |
 
@@ -164,6 +164,26 @@ docker compose up --build                                                 # http
   - `--no_token` yalnız güvenilir bir ağda kullanılmalı.
 - **Telefon arayüzü:** 760 px altında tek sütun. Sıra: geometri → 3D görünüm → kontroller → modlar → ayrıntılar → geometri bilgisi. 3D görünüm dokunmatik: tek parmakla döndür, iki parmakla yakınlaştır.
 - **TRUBA:** hesaplama düğümleri internete kapalı, dolayısıyla telefondan doğrudan erişilemez. Ya Colab'ı kullan, ya da checkpoint'i ve datasetleri kendi bilgisayarına kopyalayıp orada çalıştır.
+
+## 4c. Colab: sıfırdan tek hücre
+
+`Colab_WebUI.ipynb` boş bir Colab defterinde tek hücreyle her şeyi kurar (hücre kodu yeni bir deftere aynen yapıştırılabilir):
+
+1. Drive'ı bağlar, repoyu `/content/rf_cavity_neural_operator`'a indirir ya da `BRANCH`'e günceller.
+2. `scripts/colab_webui.py`:
+   - gmsh sistem kütüphaneleri (apt),
+   - `requirements.txt` + `requirements-web.txt` (pip),
+   - Node.js 22,
+   - arayüz derlemesi (`web/dist`; `web/` değişince yeniden derlenir, `web/dist/.sources`),
+   - Drive klasörleri.
+
+   Her adım yapılmışsa atlanır: aynı VM'de yeniden çalıştırmak saniyeler sürer.
+3. Checkpoint: `CHECKPOINT = "auto"` → `<DRIVE_DIR>/training_logs` altında en yeni `.ckpt`'yi içeren eğitim (o klasörde en iyi `val_rel_l2`, yoksa `last.ckpt`). Bulunamaz ya da yüklenemezse eğitilmemiş demo modeli + arayüzde uyarı (`--checkpoint_optional`, `RFCAV_CHECKPOINT_OPTIONAL=1`).
+4. Sunucu: `--data <DRIVE_DIR>` (Drive'daki PKL / H5'ler) + `--gen_root <GEN_DIR>` + tünel + QR. `GEN_DIR`, `DRIVE_DIR`'in içindeyse oradaki datasetler yalnız bir kez, `generated/…` adıyla listelenir.
+
+Colab notları:
+- Sekme açık kalmalı. Boşta kalan oturumu Colab kapatır; kapanırsa hücreyi yeniden çalıştırıp aynı işi başlat (bitmiş parçalar atlanır, yarım parça baştan üretilir).
+- Üretim süresi çekirdek sayısıyla ölçeklenir: arayüzdeki tahmin, sunucunun gördüğü çekirdek sayısını kullanır.
 
 ## 5. Güvenlik notları (dışarıya açık)
 

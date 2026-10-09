@@ -220,12 +220,20 @@ def compare(pred, true, rel=1e-3):
 class ModelService:
     """One loaded model + per-mesh prediction. Thread-safe (one forward at a time)."""
 
-    def __init__(self, checkpoint=None, device=None, field=None):
+    def __init__(self, checkpoint=None, device=None, field=None, optional=False):
+        """optional: a checkpoint that does not load falls back to the untrained model (load_error says why)
+        instead of failing — for launchers that pick a checkpoint automatically."""
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.load_error = None
         if checkpoint:
-            self.lm, self.field, self.feature_indices = load_model(checkpoint, self.device, field)
-            self.untrained = False
-        else:
+            try:
+                self.lm, self.field, self.feature_indices = load_model(checkpoint, self.device, field)
+                self.untrained = False
+            except Exception as e:                           # noqa: BLE001 — reported in info()
+                if not optional:
+                    raise
+                self.load_error, checkpoint = f"{type(e).__name__}: {e}", None
+        if not checkpoint:
             self.field = (field or 'E').upper()
             self.lm, self.feature_indices, self.untrained = untrained_model(self.field), None, True
         self.lm.to(self.device)
@@ -236,7 +244,8 @@ class ModelService:
 
     def info(self):
         return {'field': self.field, 'n_modes': self.n_modes, 'n_params': self.n_params, 'device': self.device,
-                'untrained': self.untrained, 'checkpoint': self.checkpoint and self.checkpoint.split('/')[-1]}
+                'untrained': self.untrained, 'checkpoint': self.checkpoint and self.checkpoint.split('/')[-1],
+                'load_error': self.load_error}
 
     def geometry(self, nodes, tets, family=''):
         """(converter geometry dict with features + operators, CSR mass) of a mesh [m]."""

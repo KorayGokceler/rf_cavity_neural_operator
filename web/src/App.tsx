@@ -188,7 +188,7 @@ export default function App() {
         </div>
       </header>
 
-      {info?.model.untrained && <div className="banner warning"><span className="icon">!</span>{t(lang, 'untrained')}</div>}
+      {info?.model.untrained && <div className="banner warning"><span className="icon">!</span>{t(lang, 'untrained')}{info.model.load_error ? ` — ${t(lang, 'ckptFailed')}: ${info.model.load_error}` : ''}</div>}
       {pred?.warnings.filter((w) => !w.startsWith('untrained')).map((w) =>
         <div key={w} className="banner warning"><span className="icon">!</span>{w}</div>)}
       {error && <div className="banner critical"><span className="icon">✕</span>{error}</div>}

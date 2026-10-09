@@ -113,6 +113,7 @@ const S = {
     tr: 'Eğitilmemiş demo modeli: sayılar anlamsız (arayüz geliştirme modu).',
     en: 'Untrained demo model: the numbers are meaningless (UI development mode).',
   },
+  ckptFailed: { tr: 'checkpoint yüklenemedi', en: 'the checkpoint did not load' },
   disclaimer: {
     tr: 'Model tahmini — kritik tasarımları tam dalga çözücüyle doğrulayın. U = 1 J, bakır duvar, β = 1.',
     en: 'Model prediction — verify critical designs with a full-wave solver. U = 1 J, copper wall, β = 1.',
