@@ -9,7 +9,6 @@ Per resolution, over the geometries present at every resolution:
   FE f err (ref)  FE on that mesh vs FE on the finest mesh: the discretisation error a
                   plain solve at that resolution would have — the bar to compare with
 All frequency errors: mean over the K output modes of |f/f_ref − 1|.
-H and E PKLs both work (metadata['field']); all PKLs of one study must share the field.
 
     python scripts/resolution_study.py --checkpoint DIR --pkls p010.pkl p007.pkl p005.pkl \
         --labels 0.10 0.07 0.05 [--csv res.csv] [--plot res.png] [--by_shape]
@@ -26,22 +25,19 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from infer import resolve_checkpoint                                   # noqa: E402
+from src.training.checkpoint import resolve_checkpoint                                   # noqa: E402
 from scripts.eval_3d import evaluate                                   # noqa: E402
 from src.data.dataset_3d import Maxwell3DDataset                       # noqa: E402
-from src.training.lightning_module import GNOTLightning                # noqa: E402
+from src.training.lightning_module import CavityLightning                # noqa: E402
 
 MODEL_C, FE_C = '#2a78d6', '#eb6834'     # categorical slots 1 / 2 (dataviz reference palette)
 
 
 def study(lm, pkls, labels, device='cpu'):
     """Long table: one row per (mesh label, geometry) with the metrics of the docstring."""
-    rows, fields = [], set()
+    rows = []
     for pkl, lab in zip(pkls, labels, strict=True):
         ds = Maxwell3DDataset(pkl, split='test', train_ratio=0.0, val_ratio=0.0)
-        fields.add(ds.field)
-        if len(fields) > 1:
-            raise ValueError(f"PKLs of one resolution study mix fields {sorted(fields)}")
         lm.freq_stats = ds.stats
         r, _ = evaluate(lm, ds, device, batch_size=1)
         for row in r:
@@ -123,7 +119,7 @@ def main():
     ap.add_argument('--by_shape', action='store_true')
     ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = ap.parse_args()
-    lm = GNOTLightning.load_from_checkpoint(resolve_checkpoint(args.checkpoint), map_location=args.device)
+    lm = CavityLightning.load_from_checkpoint(resolve_checkpoint(args.checkpoint), map_location=args.device)
     df = study(lm, args.pkls, args.labels, args.device)
     if args.csv:
         df.to_csv(args.csv, index=False)

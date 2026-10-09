@@ -14,7 +14,7 @@ import threading
 
 import numpy as np
 
-from src.data.dataset_converter_3d import (FEATURE_NAMES_3D, extract_geometry_3d, h5_edges_to_canonical)
+from src.data.dataset_converter_3d import FEATURE_NAMES_3D, extract_geometry_3d, h5_edges_to_canonical, require_e_field
 
 MAX_PKL_GB = float(os.environ.get('RFCAV_MAX_PKL_GB', 8))
 _PARAM_SKIP = {'geom_params', 'fem_element', 'field', 'shape_type'}
@@ -43,7 +43,7 @@ class H5Dataset:
                 rows, index = [], {}
                 for fp in self.files:
                     with h5py.File(fp, 'r') as f:
-                        meta = json.loads(f.attrs.get('metadata', '{}') or '{}')
+                        require_e_field(json.loads(f.attrs.get('metadata', '{}') or '{}'))
                         for key in f:
                             if not key.startswith('sample_'):
                                 continue
@@ -55,14 +55,10 @@ class H5Dataset:
                                          'n_tets': int(g['tets'].shape[0]),
                                          'betti1': int(g.attrs.get('betti1', 0)),
                                          'deformed': 'deform_lip' in g.attrs,
-                                         'f_GHz': [float(x) for x in fr], 'field': meta.get('field', 'E')})
+                                         'f_GHz': [float(x) for x in fr]})
                             index[sid] = (fp, key)
                 self._rows, self._index = rows, index
             return self._rows
-
-    def field(self):
-        r = self.rows()
-        return r[0]['field'] if r else 'E'
 
     def open(self, sid):
         """Full record of sample sid (features are recomputed exactly as the converter does)."""
@@ -73,20 +69,20 @@ class H5Dataset:
         fp, key = self._index[sid]
         with h5py.File(fp, 'r') as f:
             g = f[key]
-            ds = 'e_edges' if 'e_edges' in g else 'h_edges'
-            field = 'E' if ds == 'e_edges' else 'H'
+            if 'e_edges' not in g:
+                raise ValueError(f"{key}: no E-field DOFs (data of the removed H formulation?)")
             nodes, tets, edges_h5 = g['nodes'][()], g['tets'][()], g['edges'][()]
-            V, freqs = np.asarray(g[ds][()], float), np.asarray(g['freqs'][()], float)
+            V, freqs = np.asarray(g['e_edges'][()], float), np.asarray(g['freqs'][()], float)
             attrs = {k: g.attrs[k] for k in g.attrs}
         order = np.argsort(freqs, kind='stable')
         freqs, V = freqs[order], V[:, order]
-        geom, M = extract_geometry_3d(nodes, tets, field)
+        geom, M = extract_geometry_3d(nodes, tets)
         rows, sign = h5_edges_to_canonical(edges_h5, geom['n_nodes'], geom['edges'])
         U = np.zeros_like(V)
         U[rows] = sign[:, None] * V
         params = {k: _float(v) for k, v in attrs.items() if k not in _PARAM_SKIP and _float(v) is not None}
-        geom.update(field=field, shape_type=str(attrs.get('shape_type', '')))
-        return {'id': sid, 'family': geom['shape_type'], 'field': field, 'nodes': np.asarray(nodes, float),
+        geom.update(shape_type=str(attrs.get('shape_type', '')))
+        return {'id': sid, 'family': geom['shape_type'], 'nodes': np.asarray(nodes, float),
                 'tets': np.asarray(tets, np.int64), 'geom': geom, 'M': M, 'U': U, 'f_GHz': freqs,
                 'f_next': _float(attrs.get('freq_next')), 'params': params, 'qoi_labels': None,
                 'features': FEATURE_NAMES_3D, 'source_file': os.path.basename(fp)}
@@ -108,15 +104,13 @@ class PKLDataset:
                                       "browse its H5 shards instead")
                 with open(self.path, 'rb') as f:
                     d = pickle.load(f)
+                require_e_field(d.get('metadata'))
                 by = {}
                 for s in d['samples']:
                     by.setdefault(s['geom_id'], []).append(s)
                 d['_by_geom'] = {g: sorted(v, key=lambda s: float(s['Theta'][0])) for g, v in by.items()}
                 self._d = d
             return self._d
-
-    def field(self):
-        return str((self._data().get('metadata') or {}).get('field') or 'H').upper()
 
     def rows(self):
         d = self._data()
@@ -126,7 +120,7 @@ class PKLDataset:
             out.append({'id': int(gid), 'family': str(g.get('shape_type', '')), 'n_nodes': int(len(g['X'])),
                         'n_edges': int(len(g['edges'])), 'n_tets': int(len(g['tets'])),
                         'betti1': int(g.get('betti1', 0) or 0), 'deformed': None,
-                        'f_GHz': [float(s['Theta'][1]) for s in ss], 'field': self.field()})
+                        'f_GHz': [float(s['Theta'][1]) for s in ss]})
         return out
 
     def open(self, gid):
@@ -136,18 +130,16 @@ class PKLDataset:
         if key is None:
             raise KeyError(gid)
         g = dict(d['geometry_pool'][key])
-        field = self.field()
         ne = len(g['edges'])
         if 'M' not in g:                                      # lean PKL: rebuild the operators
-            g.update(rebuild_operators(g['X'], g['tets'], field))
+            g.update(rebuild_operators(g['X'], g['tets']))
         M = to_csr(g['M'], (ne, ne))
         ss = d['_by_geom'].get(key, [])
         U = np.stack([np.asarray(s['Y'], float) for s in ss], 1) if ss else np.zeros((ne, 0))
         nodes = np.asarray(g['X'], float) * float(g['scale']) + np.asarray(g['center'], float).reshape(1, 3)
-        g.update(field=field)
         names = list((d.get('metadata') or {}).get('feature_names') or FEATURE_NAMES_3D)
         labels = [s.get('qoi') for s in ss] if ss and 'qoi' in ss[0] else None
-        return {'id': int(gid), 'family': str(g.get('shape_type', '')), 'field': field, 'nodes': nodes,
+        return {'id': int(gid), 'family': str(g.get('shape_type', '')), 'nodes': nodes,
                 'tets': np.asarray(g['tets'], np.int64), 'geom': g, 'M': M, 'U': U,
                 'f_GHz': np.array([float(s['Theta'][1]) for s in ss]), 'f_next': _float(g.get('freq_next')),
                 'params': {}, 'qoi_labels': labels, 'features': names, 'source_file': os.path.basename(self.path)}

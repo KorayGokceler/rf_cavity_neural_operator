@@ -72,7 +72,6 @@ const S = {
   cmpTitle: { tr: 'Model ve FE', en: 'Model vs FE' },
   relL2: { tr: 'alan hatası (rel-L2)', en: 'field error (rel-L2)' },
   compare: { tr: 'Tahmin et ve FE ile karşılaştır', en: 'Predict and compare with FE' },
-  wrongField: { tr: 'Bu dataset modelle aynı alan formülasyonunda değil; yalnız FE gösterilir.', en: 'This dataset uses a different field formulation than the model; only FE is shown.' },
   diffNote: { tr: 'Fark = hizalanmış model − FE (işaret ve dejenere çiftler hizalanır); renk ölçeği FE alanına göre.', en: 'Difference = aligned model − FE (sign and degenerate pairs aligned); colour scale of the FE field.' },
   noAxisField: { tr: 'Bu modun ışın ekseni boyunca alanı yok (hızlandırmayan mod): R/Q ve ilgili değerler tanımsız.', en: 'This mode has no field along the beam axis (non-accelerating): R/Q and related values are undefined.' },
   meshView: { tr: 'mesh (tel kafes)', en: 'mesh (wireframe)' },

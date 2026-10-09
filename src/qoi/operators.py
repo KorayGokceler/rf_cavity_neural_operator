@@ -5,9 +5,9 @@ Contract: docs/24_CAVITY_QOI.md §0 (keys, units, conventions); physics and disc
 Every figure of merit is a ratio of quadratic / linear functionals of the DOF vector u, evaluated
 with fixed sparse per-geometry operators on the NORMALISED mesh (ξ = (x − center)/scale):
 
-    U    = ½ c_U s³ · uᵀMu                       c_U = ε0 (E primary) | μ0 (H primary)
-    P_c  = ½ R_s/(ωμ0)² · uᵀSu   (E)  |  ½ R_s s² · uᵀSu   (H)
-    V    = |Σ_p q_p (A_z u)_p e^{jω s ζ_p/(βc)}| · (s (E) | 1/(ωε0) (H))
+    U    = ½ ε0 s³ · uᵀMu
+    P_c  = ½ R_s/(ωμ0)² · uᵀSu
+    V    = |Σ_p q_p (A_z u)_p e^{jω s ζ_p/(βc)}| · s
     E_pk, B_pk = max_i ‖(E_surf u)_i‖, ‖(H_surf u)_i‖ (row triplets) · unit factors
 
 and every reported value is rescaled to a stored energy U = 1 J.
@@ -23,9 +23,9 @@ linearly to the centroid ('recovered').  Both are reduced to the components the 
 has: the NORMAL part of E and the TANGENTIAL part of H (n × E = 0, n · H = 0 on a PEC wall).
 `surface_operators(..., method=...)` exposes the other combinations (scripts/qoi_validation.py).
 
-Known limitation (§2.2, §3): with E primary the wall loss uses the per-tet constant curl Ẽ of the
-boundary tets; on CURVED walls approximated by flat facets this converges only to first order
-(pillbox: P_c +6.5 % → +2.9 % for Ne 3k → 54k), flat walls are fine.  H primary is accurate.
+Known limitation (§2.2, §3): the wall loss uses the per-tet constant curl Ẽ of the boundary tets;
+on CURVED walls approximated by flat facets this converges only to first order (pillbox: P_c
++6.5 % → +2.9 % for Ne 3k → 54k), flat walls are fine.
 """
 import numpy as np
 import scipy.sparse as sp
@@ -106,13 +106,9 @@ def _coo(rows, cols, vals, shape):
 
 # ─────────────────────────── wall-loss form S ──────────────────
 
-def wall_loss_matrix(X, tets, edges, field, bf=None, basis=None):
-    """S [Ne×Ne] CSR: S_ij = ∮_∂Ω̃ (n × v_i)·(n × v_j) dS̃ on the normalised boundary, with
-    v = curl w (field 'E': the wall H is ∝ curl E, constant per boundary tet) or v = w (field 'H':
-    the wall H itself, linear on the face).  Both integrals are exact:
-      E:  area · (c_i·P c_j),  P = I − nnᵀ;
-      H:  Σ products of ∫_F λ_kλ_l = area (1 + δ_kl)/12 (k, l face vertices; 0 for the opposite one)
-          times ∇λ·P∇λ — the face analogue of the closed-form N0 mass matrix."""
+def wall_loss_matrix(X, tets, edges, bf=None, basis=None):
+    """S [Ne×Ne] CSR: S_ij = ∮_∂Ω̃ (n × curl w_i)·(n × curl w_j) dS̃ on the normalised boundary (the
+    wall H is ∝ curl E, constant per boundary tet), exact: area · (c_i·P c_j), P = I − nnᵀ."""
     X = np.asarray(X, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     ne = len(edges)
@@ -120,27 +116,8 @@ def wall_loss_matrix(X, tets, edges, field, bf=None, basis=None):
     dof, loc, vol, grads, curls = _local_basis(X, tets, edges) if basis is None else basis
     t, n, A = bf["tet"], bf["normal"], bf["area"]
     P = np.eye(3)[None] - n[:, :, None] * n[:, None, :]                  # [Nf,3,3]
-    if field == "E":
-        c = curls[t]                                                     # [Nf,6,3]
-        Sl = A[:, None, None] * np.einsum("fic,fcd,fjd->fij", c, P, c)
-    elif field == "H":
-        g = grads[t]                                                     # [Nf,4,3]
-        gg = np.einsum("fkc,fcd,fld->fkl", g, P, g)                      # ∇λ_k·P∇λ_l [Nf,4,4]
-        on = np.arange(4)[None] != bf["opp"][:, None]                    # face vertices [Nf,4]
-        ia, ib = loc[t, :, 0], loc[t, :, 1]                              # [Nf,6]
-
-        def gsel(i, j):
-            return np.take_along_axis(np.take_along_axis(gg, i[:, :, None].repeat(4, 2), 1),
-                                      j[:, None, :].repeat(6, 1), 2)
-
-        def msel(i, j):                                                  # ∫_F λ_iλ_j / area
-            oi, oj = np.take_along_axis(on, i, 1), np.take_along_axis(on, j, 1)
-            return (1.0 + (i[:, :, None] == j[:, None, :])) / 12.0 * (oi[:, :, None] & oj[:, None, :])
-
-        Sl = A[:, None, None] * (msel(ia, ia) * gsel(ib, ib) - msel(ia, ib) * gsel(ib, ia)
-                                 - msel(ib, ia) * gsel(ia, ib) + msel(ib, ib) * gsel(ia, ia))
-    else:
-        raise ValueError(f"field must be 'E' or 'H', got {field!r}")
+    c = curls[t]                                                         # [Nf,6,3]
+    Sl = A[:, None, None] * np.einsum("fic,fcd,fjd->fij", c, P, c)
     d = dof[t]
     return _coo(np.repeat(d, 6, axis=1), np.tile(d, (1, 6)), Sl, (ne, ne))
 
@@ -162,13 +139,13 @@ def _axis_line(axis_xy=(0.0, 0.0), axis_dir=None, axis_point=None):
     return d, np.asarray(axis_point, dtype=np.float64).reshape(3)
 
 
-def axis_operator(X, tets, edges, field, scale, center, n_axis=401, axis_xy=(0.0, 0.0), basis=None,
+def axis_operator(X, tets, edges, scale, center, n_axis=401, axis_xy=(0.0, 0.0), basis=None,
                   axis_dir=None, axis_point=None):
     """Axis sampling: midpoints ζ_p of n_axis equal cells over the extent of the mesh along the beam
     axis (default: the physical line (x, y) = axis_xy along z; or axis_dir / axis_point, see
     _axis_line), located in the mesh; q_p = Δζ inside, 0 outside.
-    Returns (Az CSR [P×Ne], zeta [P], q [P], L_axis).  Az rows: E primary the axial component of the
-    Whitney field at the point; H primary the axial component of the (per-tet constant) curl."""
+    Returns (Az CSR [P×Ne], zeta [P], q [P], L_axis).  Az rows: the axial component of the Whitney
+    field at the point."""
     X = np.asarray(X, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     dof, loc, vol, grads, curls = _local_basis(X, tets, edges) if basis is None else basis
@@ -184,12 +161,7 @@ def axis_operator(X, tets, edges, field, scale, center, n_axis=401, axis_xy=(0.0
     inside = tid >= 0
     q = np.where(inside, dz, 0.0)
     p_in, ti = np.flatnonzero(inside), tid[inside]
-    if field == "E":
-        vals = _whitney_vectors(grads[ti], loc[ti], bary[inside]) @ d   # [m,6]
-    elif field == "H":
-        vals = curls[ti] @ d
-    else:
-        raise ValueError(f"field must be 'E' or 'H', got {field!r}")
+    vals = _whitney_vectors(grads[ti], loc[ti], bary[inside]) @ d       # [m,6]
     Az = _coo(np.repeat(p_in[:, None], 6, 1), dof[ti], vals, (n_axis, len(edges)))
     return Az, zeta, q, float(q.sum())
 
@@ -211,10 +183,10 @@ def beam_axis(shape_type, X, scale, center):
 SURFACE_METHOD = ("centroid", "recovered")   # (physical E, physical H) — docs/24 §2.4
 
 
-def surface_operators(X, tets, edges, field, method=SURFACE_METHOD, project=True, bf=None, basis=None):
+def surface_operators(X, tets, edges, method=SURFACE_METHOD, project=True, bf=None, basis=None):
     """(Esurf, Hsurf) CSR [3Nf×Ne]: Cartesian wall-field components at the boundary-face centroids
-    (rows 3i..3i+2 ↔ face i of boundary_face_data).  E primary: Esurf ↔ Ẽ, Hsurf ↔ curl Ẽ;
-    H primary: Esurf ↔ curl H̃, Hsurf ↔ H̃ (unit factors are applied in qoi_from_dofs).
+    (rows 3i..3i+2 ↔ face i of boundary_face_data): Esurf ↔ Ẽ, Hsurf ↔ curl Ẽ (unit factors are
+    applied in qoi_from_dofs).
 
     method: one name for both, or (method for the physical E, method for the physical H):
       'centroid'  the value of the face's own tet at the centroid (Whitney value with λ_opp = 0 and
@@ -224,11 +196,9 @@ def surface_operators(X, tets, edges, field, method=SURFACE_METHOD, project=True
                   interpolation to the centroid (= mean of the 3 vertex values).
     Default ('centroid', 'recovered'): the most accurate pair on the analytic pillbox / box (§2.4, §3).
     project=True keeps only the physical wall components: n nᵀ E and (I − n nᵀ) H (exact PEC wall
-    fields have nothing else).  For 'centroid' with E primary both projections are identities in
-    exact arithmetic (tangential Ẽ and normal curl Ẽ on a wall face only involve the zero wall DOFs).
+    fields have nothing else).  For 'centroid' both projections are identities in exact
+    arithmetic (tangential Ẽ and normal curl Ẽ on a wall face only involve the zero wall DOFs).
     """
-    if field not in ("E", "H"):
-        raise ValueError(f"field must be 'E' or 'H', got {field!r}")
     m_E, m_H = (method, method) if isinstance(method, str) else tuple(method)
     for m in (m_E, m_H):
         if m not in ("centroid", "recovered"):
@@ -284,26 +254,23 @@ def surface_operators(X, tets, edges, field, method=SURFACE_METHOD, project=True
         return (_coo(r, c, v, (3 * nf, 3 * len(bv))) @ Rv).tocsr()
 
     ops = {"centroid": centroid_op, "recovered": recovered_op}
-    kind_E, kind_H = ("val", "curl") if field == "E" else ("curl", "val")
-    return ops[m_E](kind_E, P_E), ops[m_H](kind_H, P_H)
+    return ops[m_E]("val", P_E), ops[m_H]("curl", P_H)
 
 
 # ─────────────────────────── public API (§0.3) ─────────────────
 
-def build_qoi_operators(X, tets, edges, scale, center, field, M=None, n_axis=401, axis_xy=(0.0, 0.0),
+def build_qoi_operators(X, tets, edges, scale, center, M=None, n_axis=401, axis_xy=(0.0, 0.0),
                         axis_dir=None, axis_point=None):
     """Per-geometry QoI operators on the NORMALISED mesh (docs/24 §0.3).
 
     X [Nv,3] normalised vertices, tets [Nt,4], edges [Ne,2] (DOF order; any row order), scale s [m],
-    center [m] (3,), field 'E' | 'H', M the N0 mass (CSR or PKL CSR tuple; assembled if None),
+    center [m] (3,), M the N0 mass (CSR or PKL CSR tuple; assembled if None),
     n_axis axis sample count, axis_xy the physical (x, y) of the beam axis [m] (along z); or a general
     axis: axis_dir 'x' | 'y' | 'z' | 3-vector and axis_point [m] (beam_axis(shape_type, …) per family).
-    Returns dict with keys 'field', 'scale', 'M', 'S', 'Az', 'zeta', 'q', 'L_axis', 'Esurf', 'Hsurf',
+    Returns dict with keys 'scale', 'M', 'S', 'Az', 'zeta', 'q', 'L_axis', 'Esurf', 'Hsurf',
     'face_area' (see §0.3).  Surface rows: boundary-face centroids; E from the face's own tet, H
     nodally recovered (SURFACE_METHOD, §2.4); n nᵀE and (I − n nᵀ)H kept.
     """
-    if field not in ("E", "H"):
-        raise ValueError(f"field must be 'E' or 'H', got {field!r}")
     X = np.asarray(X, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     edges = np.asarray(edges, dtype=np.int64)
@@ -320,11 +287,11 @@ def build_qoi_operators(X, tets, edges, scale, center, field, M=None, n_axis=401
     M = _as_csr(M, ne)
     basis = _local_basis(X, tets, edges)
     bf = boundary_face_data(X, tets)
-    S = wall_loss_matrix(X, tets, edges, field, bf=bf, basis=basis)
-    Az, zeta, q, L_axis = axis_operator(X, tets, edges, field, scale, center, n_axis, axis_xy, basis=basis,
+    S = wall_loss_matrix(X, tets, edges, bf=bf, basis=basis)
+    Az, zeta, q, L_axis = axis_operator(X, tets, edges, scale, center, n_axis, axis_xy, basis=basis,
                                         axis_dir=axis_dir, axis_point=axis_point)
-    Esurf, Hsurf = surface_operators(X, tets, edges, field, SURFACE_METHOD, True, bf=bf, basis=basis)
-    return {"field": field, "scale": float(scale), "M": M, "S": S, "Az": Az, "zeta": zeta, "q": q,
+    Esurf, Hsurf = surface_operators(X, tets, edges, SURFACE_METHOD, True, bf=bf, basis=basis)
+    return {"scale": float(scale), "M": M, "S": S, "Az": Az, "zeta": zeta, "q": q,
             "L_axis": L_axis, "Esurf": Esurf, "Hsurf": Hsurf, "face_area": bf["area"]}
 
 
@@ -363,18 +330,10 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
     Vc = np.abs((q[:, None] * Az * phase).sum(0))
     V0 = (q[:, None] * np.abs(Az)).sum(0)
     ep, hp = _peak(ops["Esurf"], U), _peak(ops["Hsurf"], U)
-    if ops["field"] == "E":
-        U_raw = 0.5 * EPS0 * s ** 3 * uMu
-        Pc_raw = 0.5 * Rs / (w * MU0) ** 2 * uSu
-        V_raw, V0_raw = s * Vc, s * V0
-        Epk_raw, Bpk_raw = ep, hp / (w * s)
-    elif ops["field"] == "H":
-        U_raw = 0.5 * MU0 * s ** 3 * uMu
-        Pc_raw = 0.5 * Rs * s ** 2 * uSu
-        V_raw, V0_raw = Vc / (w * EPS0), V0 / (w * EPS0)
-        Epk_raw, Bpk_raw = ep / (w * EPS0 * s), MU0 * hp
-    else:
-        raise ValueError(f"ops['field'] must be 'E' or 'H', got {ops['field']!r}")
+    U_raw = 0.5 * EPS0 * s ** 3 * uMu
+    Pc_raw = 0.5 * Rs / (w * MU0) ** 2 * uSu
+    V_raw, V0_raw = s * Vc, s * V0
+    Epk_raw, Bpk_raw = ep, hp / (w * s)
     a = 1.0 / np.sqrt(U_raw)                                               # amplitude → U = 1 J
     fac = 1.0 if convention == "linac" else 0.5
     P_c = a ** 2 * Pc_raw
@@ -396,13 +355,12 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
 _BUILD_KW = ("n_axis", "axis_xy", "axis_dir", "axis_point")
 
 
-def cavity_qoi(geom, U, f_ghz, field=None, **kw):
-    """QoI of PKL geometry `geom` (dict with X, tets, edges, scale, center[, M]; field defaults to
-    geom.get('field', 'H')) for DOFs U [Ne] or [Ne,K] at f_ghz [GHz].  kw: n_axis / axis_xy go to
+def cavity_qoi(geom, U, f_ghz, **kw):
+    """QoI of PKL geometry `geom` (dict with X, tets, edges, scale, center[, M]) for E DOFs U [Ne] or
+    [Ne,K] at f_ghz [GHz].  kw: n_axis / axis_xy go to
     build_qoi_operators, the rest to qoi_from_dofs.  Builds the operators on every call — cache
     build_qoi_operators(...) yourself when a geometry is reused."""
-    field = geom.get("field", "H") if field is None else field
     bkw = {k: kw.pop(k) for k in _BUILD_KW if k in kw}
-    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"], field,
+    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"],
                               M=geom.get("M"), **bkw)
     return qoi_from_dofs(ops, U, np.asarray(f_ghz, dtype=np.float64) * 1e9, **kw)

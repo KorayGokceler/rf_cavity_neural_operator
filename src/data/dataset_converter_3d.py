@@ -1,7 +1,6 @@
-"""3D H5 (dataset_generator_3d) → training PKL for the 3D Maxwell (N0, E or H field) model.
+"""3D H5 (dataset_generator_3d) → training PKL for the 3D Maxwell model (N0, E field).
 
-Output contract (docs/19_3D_DATA_PIPELINE.md; the field is read from the H5: dataset 'e_edges' /
-'h_edges' and attr 'field'; metadata['field'] = 'E' | 'H'):
+Output contract (docs/19_3D_DATA_PIPELINE.md; H5 dataset 'e_edges', metadata['field'] = 'E'):
 
     {'geometry_pool': {g_id: {
         'X'          float32 [Nv,3]   vertices, centred at the volume centroid, divided by 'scale'
@@ -12,18 +11,16 @@ Output contract (docs/19_3D_DATA_PIPELINE.md; the field is read from the H5: dat
         'tets'       int64 [Nt,4]
         'M','K'      CSR (indptr, indices, data) [Ne×Ne]  N0 mass ∫w_i·w_j / curl-curl ∫curl w_i·curl w_j
                                       on the NORMALISED mesh (Whitney w_ab = λ_a∇λ_b − λ_b∇λ_a, a < b)
-        'G'          CSR [Ne×Nv]      H: G[e, high] = +1, G[e, low] = −1  (N0 DOFs of ∇φ for P1 φ)
-                                      E: potential matrix (e_potential_matrix): column j < n_pot is
+        'G'          CSR [Ne×Nv]      E potential matrix (e_potential_matrix): column j < n_pot is
                                       potential j — interior vertices (increasing index), then one
                                       column per boundary component except the first
                                       (= G_full @ indicator); columns ≥ n_pot all zero; wall rows 0
-        'Kp'         CSR [Nv×Nv]      Gᵀ M G (H: P1 Neumann stiffness, singular on constants;
-                                      E: SPD on the first n_pot rows/cols, zero elsewhere)
-        E only:  'bnd_edge' bool [Ne] (PEC wall edge = edge of a boundary face), 'n_pot',
-                 'n_bnd_components', 'betti1' (= 1 + b2 − χ, informative), 'field' = 'E'
+        'Kp'         CSR [Nv×Nv]      Gᵀ M G (SPD on the first n_pot rows/cols, zero elsewhere)
+        'bnd_edge'   bool [Ne]        PEC wall edge (edge of a boundary face); 'n_pot',
+                                      'n_bnd_components', 'betti1' (= 1 + b2 − χ, informative)
         'scale','center','shape_type','n_nodes','n_edges', 'torsion_max'}},
      'samples': [{'geom_id', 'Y' float32 [Ne] (unit M-norm on the normalised mesh, sign arbitrary;
-                  E: wall rows exactly 0), 'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id],
+                  wall rows exactly 0), 'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id],
                   'qoi' {name: float} for src.qoi.QOI_LABELS (cavity figures of merit Q0, G, R/Q, R_sh,
                   T, Epk/Eacc, Bpk/Eacc of the FE field at the FE frequency, copper, β = 1, 'linac';
                   docs/24_CAVITY_QOI.md §0.4; absent with compute_qoi=False / convert_3d.py --no_qoi)}],
@@ -339,9 +336,8 @@ def torsion_function(X, tets, bnd_vertices):
     return np.clip(w, 0.0, None)
 
 
-def extract_geometry_3d(nodes, tets, field="H"):
-    """Normalised mesh, features and operators of one geometry (see module docstring);
-    field 'E' | 'H' selects the kernel operators (geometry_operators)."""
+def extract_geometry_3d(nodes, tets):
+    """Normalised mesh, features and operators of one geometry (see module docstring)."""
     nodes = np.asarray(nodes, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     vol, _ = tet_geometry(nodes, tets)
@@ -360,7 +356,7 @@ def extract_geometry_3d(nodes, tets, field="H"):
     torsion_max = float(w.max())
     feats = np.column_stack([X, dist, direc, node_vol / node_vol.max(), w / torsion_max]).astype(np.float32)
 
-    ops, M = geometry_operators(X, tets, field=field)
+    ops, M = geometry_operators(X, tets)
     return {
         "X": X.astype(np.float32), "Input_funcs": feats, "tets": tets, **ops,
         "scale": scale, "center": center.astype(np.float64),
@@ -369,32 +365,22 @@ def extract_geometry_3d(nodes, tets, field="H"):
     }, M
 
 
-def geometry_operators(X, tets, field="H"):
-    """Contract operators of one (normalised) mesh and the scipy M.  Deterministic from (X, tets)
-    alone, so a loader can rebuild them when the PKL was written with store_operators=False
-    (~1.5 s for 50k edges on one CPU core).  Pass the PKL's field (metadata['field'], 'H' when
-    missing):
-      'H' (default, unchanged): {'edges', 'M', 'K', 'G', 'Kp'} — G the full discrete gradient.
-      'E': the same keys with G = the E potential matrix (e_potential_matrix), Kp = GᵀMG, plus
-           'bnd_edge', 'n_pot', 'n_bnd_components', 'betti1', 'field'."""
-    if field not in ("E", "H"):
-        raise ValueError(f"field must be 'E' or 'H', got {field!r}")
+def geometry_operators(X, tets):
+    """Contract operators of one (normalised) mesh and the scipy M: {'edges', 'M', 'K', 'G' (the E
+    potential matrix, e_potential_matrix), 'Kp' = GᵀMG, 'bnd_edge', 'n_pot', 'n_bnd_components',
+    'betti1', 'field'}. Deterministic from (X, tets) alone, so a loader can rebuild them when the PKL
+    was written with store_operators=False (~1.5 s for 50k edges on one CPU core)."""
     M, K, edges = assemble_n0(X, tets)
-    extra = {}
-    if field == "E":
-        G, bnd_edge, n_pot, topo = e_potential_matrix(edges, len(X), tets)
-        extra = {"bnd_edge": bnd_edge, "n_pot": int(n_pot), "n_bnd_components": int(topo["n_comp"]),
-                 "betti1": int(topo["betti1"]), "field": "E"}
-    else:
-        G = discrete_gradient(edges, len(X))
+    G, bnd_edge, n_pot, topo = e_potential_matrix(edges, len(X), tets)
     Kp = (G.T @ M @ G).tocsr()
     return {"edges": edges.astype(np.int64), "M": to_csr_tuple(M), "K": to_csr_tuple(K),
-            "G": to_csr_tuple(G), "Kp": to_csr_tuple(Kp), **extra}, M
+            "G": to_csr_tuple(G), "Kp": to_csr_tuple(Kp), "bnd_edge": bnd_edge, "n_pot": int(n_pot),
+            "n_bnd_components": int(topo["n_comp"]), "betti1": int(topo["betti1"]), "field": "E"}, M
 
 
 def h5_edges_to_canonical(edges_h5, n_nodes, edges):
     """Map H5 DOF i (edge edges_h5[i] = (tail, head)) to the canonical row and the sign
-    s_i = +1 if tail < head else −1:  Y_canonical[row_i] = s_i · h_edges[i]."""
+    s_i = +1 if tail < head else −1:  Y_canonical[row_i] = s_i · e_edges[i]."""
     edges_h5 = np.asarray(edges_h5, dtype=np.int64)
     rows = _edge_index(edges, n_nodes, edges_h5)
     if len(np.unique(rows)) != len(edges) or len(rows) != len(edges):
@@ -420,7 +406,7 @@ def qoi_metadata(n_failed=0):
             "axis": "x=y=0 along z (hwr: x through the mid-length, src.qoi.operators.beam_axis)", "L_acc": "axis chord", "n_failed": int(n_failed)}
 
 
-def qoi_operators_of(geom, field, M=None, **kw):
+def qoi_operators_of(geom, M=None, **kw):
     """src.qoi.build_qoi_operators for one geometry_pool entry (X, tets, edges, scale, center);
     M: scipy mass matrix (assembled by build_qoi_operators when None).  The beam axis follows the
     geometry's family (src.qoi.operators.beam_axis: hwr → transverse, x) unless kw sets one."""
@@ -432,7 +418,7 @@ def qoi_operators_of(geom, field, M=None, **kw):
     return qoi_api().build_qoi_operators(np.asarray(geom["X"], dtype=np.float64),
                                          np.asarray(geom["tets"], dtype=np.int64),
                                          np.asarray(geom["edges"], dtype=np.int64),
-                                         float(geom["scale"]), center, field, M=M, **kw)
+                                         float(geom["scale"]), center, M=M, **kw)
 
 
 def qoi_labels(ops, Y, f_ghz):
@@ -450,9 +436,8 @@ def _nan_labels():
 
 def attach_qoi_labels(data, verbose=True):
     """Add samples[i]['qoi'] + metadata['qoi'] to a loaded PKL dict in place (back-fill for PKLs
-    converted without QoI; lean PKLs: M is rebuilt from (X, tets)).  The field is
-    metadata['field'] ('H' if missing).  Returns data."""
-    field = str((data.get("metadata") or {}).get("field", None) or "H").upper()
+    converted without QoI; lean PKLs: M is rebuilt from (X, tets)).  Returns data."""
+    require_e_field(data.get("metadata"))
     by_geom = defaultdict(list)
     for j, s in enumerate(data["samples"]):
         by_geom[s["geom_id"]].append(j)
@@ -464,10 +449,10 @@ def attach_qoi_labels(data, verbose=True):
             if "M" in g:
                 M = from_csr_tuple(g["M"], (ne, ne)) if not sp.issparse(g["M"]) else g["M"].tocsr()
             else:
-                ops_, M = geometry_operators(np.asarray(g["X"], np.float64), g["tets"], field=field)
+                ops_, M = geometry_operators(np.asarray(g["X"], np.float64), g["tets"])
                 if not np.array_equal(ops_["edges"], np.asarray(g["edges"])):
                     raise ValueError("rebuilt edges differ from the stored ones")
-            ops = qoi_operators_of(g, field, M=M)
+            ops = qoi_operators_of(g, M=M)
             Y = np.stack([np.asarray(data["samples"][j]["Y"], np.float64) for j in js], axis=1)
             lab = qoi_labels(ops, Y, [float(data["samples"][j]["Theta"][1]) for j in js])
         except Exception as e:                              # noqa: BLE001 — one bad mesh must not stop the run
@@ -482,13 +467,12 @@ def attach_qoi_labels(data, verbose=True):
 
 # ─────────────────────────── conversion ────────────────────────
 
-def _group_field(grp):
-    """'E' | 'H' of one H5 sample group: the 'field' attr, else from the dataset name."""
-    f = grp.attrs.get("field", None)
-    if f is not None:
-        f = f.decode() if isinstance(f, bytes) else str(f)
-        return f
-    return "E" if "e_edges" in grp else "H"
+def require_e_field(metadata):
+    """Raise for data of the removed H formulation (PKL / H5 metadata 'field' = 'H')."""
+    field = str((metadata or {}).get("field", None) or "E").upper()
+    if field != "E":
+        raise ValueError(f"data of the removed {field} formulation (only E-field data is supported; "
+                         "regenerate with the current generator)")
 
 
 class RFCavity3DConverter:
@@ -514,15 +498,12 @@ class RFCavity3DConverter:
         files = [h5py.File(p, "r") for p in self.h5_filepaths]
         try:
             file_meta = json.loads(files[0].attrs.get("metadata", "{}"))
+            require_e_field(file_meta)
             keys = sorted(((f, k) for f in files for k in f.keys()
-                           if isinstance(f[k], h5py.Group) and ("e_edges" in f[k] or "h_edges" in f[k])),
+                           if isinstance(f[k], h5py.Group) and "e_edges" in f[k]),
                           key=lambda fk: int(fk[1].split("_")[-1]))
             if not keys:
-                raise ValueError(f"No 3D sample groups (sample_XXXX/e_edges|h_edges) in {self.h5_filepaths}")
-            fields = {_group_field(f[k]) for f, k in keys}
-            if len(fields) != 1:
-                raise ValueError(f"mixed E / H samples in {self.h5_filepaths}: {sorted(fields)}")
-            field = fields.pop()
+                raise ValueError(f"No E-field sample groups (sample_XXXX/e_edges) in {self.h5_filepaths}")
             sids = [int(k.split("_")[-1]) for _, k in keys]
             if len(set(sids)) != len(sids):
                 raise ValueError("duplicate sample ids across H5 shards (use disjoint --start_id ranges)")
@@ -534,11 +515,11 @@ class RFCavity3DConverter:
                 grp = f[key]
                 sid = int(key.split("_")[-1])
                 freqs = np.asarray(grp["freqs"][:], dtype=np.float64)
-                H = np.asarray(grp["e_edges" if field == "E" else "h_edges"][:], dtype=np.float64)
+                H = np.asarray(grp["e_edges"][:], dtype=np.float64)
                 order = np.argsort(freqs, kind="stable")
                 freqs, H = freqs[order], H[:, order]
                 n_modes = len(freqs) if n_modes is None else min(n_modes, len(freqs))
-                geom, M = extract_geometry_3d(grp["nodes"][:], grp["tets"][:], field=field)
+                geom, M = extract_geometry_3d(grp["nodes"][:], grp["tets"][:])
                 geom["shape_type"] = str(grp.attrs.get("shape_type", "unknown"))
                 # freq of mode K+1 [GHz]: f_next ≈ f_K means the K-mode cut splits a degenerate cluster
                 geom["freq_next"] = float(grp.attrs.get("freq_next", np.nan))
@@ -546,14 +527,14 @@ class RFCavity3DConverter:
                 Y = np.zeros_like(H)
                 Y[rows] = sign[:, None] * H
                 Y /= np.sqrt(np.einsum("ij,ij->j", Y, M @ Y))[None]
-                if field == "E":   # essential BC: E DOFs exactly 0 on the wall; ⟂_M the E-kernel gradients
-                    if np.any(Y[geom["bnd_edge"]] != 0):
-                        raise RuntimeError(f"{key}: non-zero E DOF on a PEC wall edge")
-                    MY = M @ Y
-                    Gc = from_csr_tuple(geom["G"], (geom["n_edges"], geom["n_nodes"]))
-                    div = np.abs(Gc.T @ MY).max() / np.abs(MY).max()
-                    if div > 1e-6:
-                        raise RuntimeError(f"{key}: E mode not M-orthogonal to the kernel ({div:.1e})")
+                # essential BC: E DOFs exactly 0 on the wall; ⟂_M the E-kernel gradients
+                if np.any(Y[geom["bnd_edge"]] != 0):
+                    raise RuntimeError(f"{key}: non-zero E DOF on a PEC wall edge")
+                MY = M @ Y
+                Gc = from_csr_tuple(geom["G"], (geom["n_edges"], geom["n_nodes"]))
+                div = np.abs(Gc.T @ MY).max() / np.abs(MY).max()
+                if div > 1e-6:
+                    raise RuntimeError(f"{key}: E mode not M-orthogonal to the kernel ({div:.1e})")
                 if check_rayleigh:  # λ_norm = λ_phys·scale² ⇒ f from the stored normalised operators
                     Kc = from_csr_tuple(geom["K"], M.shape)
                     lam = np.einsum("ij,ij->j", Y, Kc @ Y)
@@ -569,7 +550,7 @@ class RFCavity3DConverter:
                     cols = [m_idx for _, m_idx in kept]
                     Ys = Y[:, cols].astype(np.float32)          # the stored DOFs
                     try:
-                        labels = qoi_labels(qoi_operators_of(geom, field, M=M), Ys, freqs[cols])
+                        labels = qoi_labels(qoi_operators_of(geom, M=M), Ys, freqs[cols])
                     except Exception as e:                  # noqa: BLE001 — one bad mesh must not stop the run
                         n_qoi_failed += 1
                         warnings.warn(f"{key}: QoI labels failed ({type(e).__name__}: {e}); stored as NaN")
@@ -600,7 +581,7 @@ class RFCavity3DConverter:
             },
             "n_modes": int(len(self.freq_by_mode)),
             "mode_indices": list(range(n_modes)) if mode_indices is None else list(mode_indices),
-            "field": field, "element": "N0",
+            "field": "E", "element": "N0",
             "feature_names": list(FEATURE_NAMES_3D),
             "n_samples": len(self.samples), "n_geometries": len(self.geometry_pool),
             "edge_convention": "edges = np.unique(sorted tet edges), low->high; DOF = line integral low->high",

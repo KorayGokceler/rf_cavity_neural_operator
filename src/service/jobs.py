@@ -38,8 +38,9 @@ def family_blocks(tsv=None):
     return out
 
 
-def tag_of(field, mesh_size, n_modes):
-    return f"{field}_ms{mesh_size:g}_k{int(n_modes)}_v1"
+def tag_of(mesh_size, n_modes):
+    """Dataset tag of the TRUBA layout (cluster/truba/config.sh): E_ms<mesh>_k<modes>_v1."""
+    return f"E_ms{mesh_size:g}_k{int(n_modes)}_v1"
 
 
 def run_logged(job, cmd, on_line=None, threads=1, env=None):
@@ -188,7 +189,7 @@ class JobManager:
                 ok0, f0 = job.ok, job.failed
                 job.ok_shard = job.failed_shard = 0
                 self._exec(job, [self.python, 'src/data_gen/dataset_generator_3d.py', '--families', p['family'],
-                                 '--field', p['field'], '--n_total', str(count), '--start_id', str(start),
+                                 '--n_total', str(count), '--start_id', str(start),
                                  '--seed', str(p['seed']), '--n_eigen_modes', str(p['n_modes']),
                                  '--mesh_size', str(p['mesh_size']), '--sampling', p['sampling'],
                                  '--deform_prob', str(p['deform_prob']), '--deform_max', str(p['deform_max']),

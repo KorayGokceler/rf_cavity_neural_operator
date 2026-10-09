@@ -2,10 +2,11 @@
 
 Invariants:
 - closed-form Whitney M, K == skfem ElementTetN0 (after mapping to the contract edge order)
-- K·G = 0, Kp = GᵀMG; H: Kp·1 = 0; E: Kp SPD on the n_pot block, G columns ≥ n_pot zero,
-  G rows and Y rows of the PEC wall edges (bnd_edge) zero, one potential per extra boundary shell
+- K·G = 0, Kp = GᵀMG SPD on the n_pot block, G columns ≥ n_pot zero, G rows and Y rows of the
+  PEC wall edges (bnd_edge) zero, one potential per extra boundary shell
 - Rayleigh(Y) with the stored normalised K, M reproduces f = c√λ/(2π·scale); ‖Y‖_M = 1; GᵀMY = 0
-- lean PKL: geometry_operators(X, tets, field) rebuilds the stored operators (E and H)
+- lean PKL: geometry_operators(X, tets) rebuilds the stored operators
+- data of the removed H formulation is rejected
 - scale invariance: scaled / translated input → same X, features, M, K; λ_phys ∝ 1/scale²
 - edge orientation: low → high, lexicographic rows, flipped H5 edges handled by sign
 - features finite and in range; distance exact on a box
@@ -34,15 +35,15 @@ def _box_mesh(a=1.0, b=0.8, d=0.6, n=5, seed=0):
     return m.p.T[perm], inv[m.t.T]
 
 
-def _make_pkl(tmp_path_factory, field, families):
+def _make_pkl(tmp_path_factory, name, families):
     pytest.importorskip("gmsh")
     import src.data_gen.dataset_generator_3d as gen
-    d = tmp_path_factory.mktemp(f"d3{field}")
+    d = tmp_path_factory.mktemp(f"d3{name}")
     h5 = d / "s.h5"
     old = gen.ARGS
     try:
         gen.main(["--n_total", "3", "--n_workers", "3", "--mesh_size", "0.2", "--n_eigen_modes", "4",
-                  "--h5_filename", str(h5), "--seed", "3", "--field", field, "--families", *families])
+                  "--h5_filename", str(h5), "--seed", "3", "--families", *families])
     finally:
         gen.ARGS = old
     out = d / "s.pkl"
@@ -53,18 +54,18 @@ def _make_pkl(tmp_path_factory, field, families):
 
 @pytest.fixture(scope="module")
 def pkl(tmp_path_factory):
-    """E (default field) with handle families (b1 > 0) in the mix."""
-    return _make_pkl(tmp_path_factory, "E", ["hwr", "spoke", "dtl"])
+    """Handle families (b1 > 0)."""
+    return _make_pkl(tmp_path_factory, "handles", ["hwr", "spoke", "dtl"])
 
 
 @pytest.fixture(scope="module")
-def pkl_h(tmp_path_factory):
-    return _make_pkl(tmp_path_factory, "H", ["pillbox", "composite"])
+def pkl_balls(tmp_path_factory):
+    return _make_pkl(tmp_path_factory, "balls", ["pillbox", "composite"])
 
 
-@pytest.fixture(params=["E", "H"])
+@pytest.fixture(params=["handles", "balls"])
 def any_pkl(request):
-    return request.getfixturevalue("pkl" if request.param == "E" else "pkl_h")
+    return request.getfixturevalue("pkl" if request.param == "handles" else "pkl_balls")
 
 
 def _ops(g):
@@ -113,8 +114,7 @@ def test_contract_structure(any_pkl):
     data, _ = any_pkl
     assert set(data) == {"geometry_pool", "samples", "metadata"}
     md = data["metadata"]
-    field = md["field"]
-    assert field in ("E", "H") and md["element"] == "N0" and md["n_modes"] == 4
+    assert md["field"] == "E" and md["element"] == "N0" and md["n_modes"] == 4
     assert md["feature_names"] == FEATURE_NAMES_3D and len(FEATURE_NAMES_3D) == 9
     assert md["n_geometries"] == len(data["geometry_pool"]) == 3 and md["n_samples"] == len(data["samples"]) == 12
     assert {"mean", "std"} <= set(md["freq_stats"])
@@ -131,13 +131,9 @@ def test_contract_structure(any_pkl):
         assert isinstance(g["shape_type"], str) and g["torsion_max"] > 0
         assert np.isclose(np.abs(g["X"]).max(), 1.0, atol=1e-6)
         assert np.array_equal(g["edges"], conv.edges_from_tets(g["tets"]))
-        e_keys = {"bnd_edge", "n_pot", "n_bnd_components", "betti1", "field"}
-        if field == "E":
-            assert e_keys <= set(g) and g["field"] == "E"
-            assert g["bnd_edge"].dtype == bool and g["bnd_edge"].shape == (ne,) and 0 < g["bnd_edge"].sum() < ne
-            assert isinstance(g["n_pot"], int) and 0 < g["n_pot"] < nv and g["n_bnd_components"] >= 1
-        else:
-            assert not e_keys & set(g)                                     # H geometry unchanged
+        assert {"bnd_edge", "n_pot", "n_bnd_components", "betti1"} <= set(g)
+        assert g["bnd_edge"].dtype == bool and g["bnd_edge"].shape == (ne,) and 0 < g["bnd_edge"].sum() < ne
+        assert isinstance(g["n_pot"], int) and 0 < g["n_pot"] < nv and g["n_bnd_components"] >= 1
     for s in data["samples"]:
         g = data["geometry_pool"][s["geom_id"]]
         assert s["Y"].dtype == np.float32 and s["Y"].shape == (g["n_edges"],)
@@ -146,15 +142,11 @@ def test_contract_structure(any_pkl):
 
 def test_operators_and_rayleigh(any_pkl):
     data, h5 = any_pkl
-    field = data["metadata"]["field"]
     betti = set()
     for g in data["geometry_pool"].values():
         M, K, G, Kp = _ops(g)
         assert abs(K @ G).max() < 1e-11 * abs(K).max()
         assert abs(Kp - (G.T @ M @ G)).max() < 1e-12 * abs(Kp).max()
-        if field == "H":
-            assert abs(Kp @ np.ones(g["n_nodes"])).max() < 1e-12 * abs(Kp).max()
-            continue
         n_pot, bnd = g["n_pot"], g["bnd_edge"]
         betti.add(g["betti1"])
         assert abs(G[:, n_pot:]).sum() == 0 and abs(G[bnd]).sum() == 0 and abs(Kp[n_pot:]).sum() == 0
@@ -168,15 +160,14 @@ def test_operators_and_rayleigh(any_pkl):
         # wall edges = edges of boundary faces
         bf_edges = np.unique(np.sort(bt["faces"][:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2), axis=1), axis=0)
         assert np.array_equal(g["edges"][bnd], bf_edges)
-    if field == "E":
-        assert max(betti) >= 1                                                  # handle families in the mix
+    assert max(betti) >= 1 or all(g["shape_type"] in ("pillbox", "composite")
+                                  for g in data["geometry_pool"].values())
     with h5py.File(h5, "r") as f:
         for s in data["samples"]:
             g = data["geometry_pool"][s["geom_id"]]
             M, K, G, Kp = _ops(g)
             y = s["Y"].astype(np.float64)
-            if field == "E":
-                assert np.all(s["Y"][g["bnd_edge"]] == 0)                       # n × E = 0 exactly
+            assert np.all(s["Y"][g["bnd_edge"]] == 0)                           # n × E = 0 exactly
             my = M @ y
             assert np.isclose(y @ my, 1.0, rtol=1e-5)
             assert np.abs(G.T @ my).max() < 1e-5 * np.abs(my).max()        # float32 round-off level
@@ -235,17 +226,16 @@ def test_features_valid():
 
 def test_lean_pkl_rebuilds_operators(any_pkl, tmp_path):
     full, h5 = any_pkl
-    field = full["metadata"]["field"]
     out = tmp_path / "lean.pkl"
     conv.RFCavity3DConverter(str(h5)).convert_dataset(str(out), store_operators=False, mode_indices=[0, 1])
     with open(out, "rb") as f:
         lean = pickle.load(f)
     assert lean["metadata"]["operators_stored"] is False and lean["metadata"]["n_modes"] == 2
-    assert lean["metadata"]["field"] == field
+    assert lean["metadata"]["field"] == "E"
     for gid, g in lean["geometry_pool"].items():
         assert not {"M", "K", "G", "Kp"} & set(g)
         assert np.isfinite(g["freq_next"])
-        ops, M = conv.geometry_operators(g["X"].astype(np.float64), g["tets"], field=field)  # stored float32 X
+        ops, M = conv.geometry_operators(g["X"].astype(np.float64), g["tets"])  # stored float32 X
         gf = full["geometry_pool"][gid]
         assert set(gf) - set(g) == {"M", "K", "G", "Kp"}
         assert {k for k in ops} | set(g) == set(gf)                             # same keys as the full PKL
@@ -300,7 +290,7 @@ def test_e_operators_isolated_conductor():
     remap = np.full(m.p.shape[1], -1)
     remap[used] = np.arange(len(used))
     nodes, tets = m.p.T[used], remap[m.t[:, keep].T]
-    ops, M = conv.geometry_operators(nodes, tets, field="E")
+    ops, M = conv.geometry_operators(nodes, tets)
     bt = conv.boundary_topology(tets, len(nodes))
     assert ops["n_bnd_components"] == bt["n_comp"] == 2 and ops["betti1"] == 0 and bt["manifold"]
     inner = bt["vert_comp"] == 1
@@ -314,11 +304,16 @@ def test_e_operators_isolated_conductor():
     assert abs(G[ops["bnd_edge"]]).sum() == 0 and abs(G[:, ops["n_pot"]:]).sum() == 0
     assert abs(K @ G).max() < 1e-11 * abs(K).max()
     assert np.linalg.eigvalsh(Kp[:ops["n_pot"], :ops["n_pot"]].toarray()).min() > 0
-    ops_h, _ = conv.geometry_operators(nodes, tets)                     # default H: unchanged contract
-    assert set(ops_h) == {"edges", "M", "K", "G", "Kp"}
-    assert abs(from_csr_tuple(ops_h["G"], (ne, nv)) - Gf).sum() == 0
 
 
-def test_mixed_fields_rejected(pkl, pkl_h, tmp_path):
-    with pytest.raises(ValueError, match="mixed E / H"):
-        conv.RFCavity3DConverter([str(pkl[1]), str(pkl_h[1])]).convert_dataset(str(tmp_path / "x.pkl"))
+def test_h_formulation_data_rejected(pkl, tmp_path):
+    """H5 of the removed H formulation (metadata field 'H'): a clear error, not silent garbage."""
+    import json
+    import shutil
+    h5 = tmp_path / "h.h5"
+    shutil.copy(pkl[1], h5)
+    with h5py.File(h5, "a") as f:
+        meta = json.loads(f.attrs["metadata"])
+        f.attrs["metadata"] = json.dumps({**meta, "field": "H"})
+    with pytest.raises(ValueError, match="removed H formulation"):
+        conv.RFCavity3DConverter(str(h5)).convert_dataset(str(tmp_path / "x.pkl"))

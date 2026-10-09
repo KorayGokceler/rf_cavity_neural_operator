@@ -199,7 +199,7 @@ def create_app(service=None, datasets=None):
     def _geometry_response(nodes, tets, source, extra=None, prepared=None):
         if len(tets) > lim.max_tets:
             raise HTTPException(413, f"mesh has {len(tets)} tets (limit {lim.max_tets}); use a coarser mesh size")
-        chk = G.check(nodes, tets, service.field)
+        chk = G.check(nodes, tets)
         vid, tri = G.surface(nodes, tets)
         rec = {'nodes': nodes, 'tets': tets, 'vid': vid, 'tri': tri, 'source': source,
                'family': (extra or {}).get('family', ''), 'check': chk}
@@ -238,7 +238,7 @@ def create_app(service=None, datasets=None):
             with open(path, 'wb') as fo:
                 fo.write(data)
             try:
-                nodes, tets = G.run_isolated(G.mesh_upload, path, unit, mesh_size, n_cells, None, service.field,
+                nodes, tets = G.run_isolated(G.mesh_upload, path, unit, mesh_size, n_cells, None,
                                              timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
             except (RuntimeError, TimeoutError) as e:
                 raise HTTPException(422, f"could not mesh the file: {e}") from None
@@ -251,7 +251,7 @@ def create_app(service=None, datasets=None):
             raise HTTPException(422, f"unknown family {req.family!r}")
         s_id = req.id if req.id is not None else random.randrange(2 ** 20, 2 ** 21)   # beyond the training ids
         try:
-            nodes, tets, params = G.run_isolated(G.mesh_family, req.family, s_id, service.field, req.mesh_size,
+            nodes, tets, params = G.run_isolated(G.mesh_family, req.family, s_id, req.mesh_size,
                                                  timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
         except (RuntimeError, TimeoutError) as e:
             raise HTTPException(422, f"could not build the geometry: {e}") from None
@@ -266,7 +266,7 @@ def create_app(service=None, datasets=None):
         return g['_geom'], g['_M']
 
     def _summary(sid, sol, extra=None):
-        return {'id': sid, 'source': sol['source'], 'field': sol['field'], 'n_edges': sol['n_edges'],
+        return {'id': sid, 'source': sol['source'], 'n_edges': sol['n_edges'],
                 'modes': sol['modes'], 'axis_length_mm': sol['axis_length_mm'], **(extra or {})}
 
     @app.post('/api/predictions')
@@ -274,9 +274,6 @@ def create_app(service=None, datasets=None):
         g = geoms.get(req.geometry_id)
         if not g['check']['ok']:
             raise HTTPException(422, 'geometry failed the checks: ' + '; '.join(g['check']['problems']))
-        if g.get('field', service.field) != service.field:
-            raise HTTPException(422, f"the model is a {service.field}-field model, this geometry's data is "
-                                     f"{g['field']}-field")
         t0 = time.perf_counter()
         geom, M = _prepared(g)
         p = service.predict(g['nodes'], g['tets'], g['family'], geom=geom, M=M)
@@ -332,7 +329,7 @@ def create_app(service=None, datasets=None):
         p = preds.get(pid)
         g = geoms.get(p['_geometry_id'])
         body = {'version': VERSION, 'model': service.info(), 'geometry': {'source': g['source'], 'check': g['check']},
-                'source': p['source'], 'field': p['field'], 'modes': p['modes'], 'time_s': p.get('time_s'),
+                'source': p['source'], 'modes': p['modes'], 'time_s': p.get('time_s'),
                 'conventions': info()['conventions']}
         return JSONResponse(body, headers={'Content-Disposition': f'attachment; filename="prediction_{pid[:8]}.json"'})
 
@@ -433,8 +430,7 @@ def create_app(service=None, datasets=None):
             e['n_edges'].append(r['n_edges'])
             if r['f_GHz']:
                 e['f0'].append(r['f_GHz'][0])
-        fields = sorted({r['field'] for r in rows})
-        return {'total': len(rows), 'fields': fields, 'families': dict(sorted(fam.items())),
+        return {'total': len(rows), 'families': dict(sorted(fam.items())),
                 'n_modes': max((len(r['f_GHz']) for r in rows), default=0)}
 
     @app.post('/api/datasets/{did}/items/{sid}/open')
@@ -453,15 +449,14 @@ def create_app(service=None, datasets=None):
                                   {'kind': 'dataset', 'dataset': d.name, 'family': r['family'], 'id': r['id'],
                                    'file': r['source_file']},
                                   {'family': r['family'], 'params': r['params']},
-                                  prepared={'_geom': r['geom'], '_M': M, 'field': r['field'],
-                                            'feature_names': r['features']})
+                                  prepared={'_geom': r['geom'], '_M': M, 'feature_names': r['features']})
         truth = None
         if r['U'].shape[1]:
             from src.service.model import build_solution
-            sol = build_solution(r['geom'], M, r['U'], r['f_GHz'], r['field'], 'fe')
+            sol = build_solution(r['geom'], M, r['U'], r['f_GHz'], 'fe')
             sol['_geometry_id'] = resp['id']
             truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels']})
-        resp.update(truth=truth, field=r['field'], predictable=r['field'] == service.field)
+        resp.update(truth=truth)
         return resp
 
     @app.post('/api/datasets/rescan')
@@ -498,11 +493,11 @@ def create_app(service=None, datasets=None):
 
     @app.get('/api/jobs/config')
     def jobs_config():
-        return {'enabled': jm is not None, 'gen_root': gen_root, 'field': service.field,
+        return {'enabled': jm is not None, 'gen_root': gen_root,
                 'cpu_count': os.cpu_count() or 1, 'max_total': max_gen,
                 'families': {'train': [f for f in TRAIN_FAMILIES], 'ood': [f for f in OOD_FAMILIES]},
                 'blocks': {f: blocks.get(f) for f in TRAIN_FAMILIES + OOD_FAMILIES},
-                'tag_example': J.tag_of(service.field, 0.10, 10)}
+                'tag_example': J.tag_of(0.10, 10)}
 
     @app.post('/api/jobs/generate')
     def jobs_generate(req: GenReq):
@@ -514,11 +509,11 @@ def create_app(service=None, datasets=None):
             raise HTTPException(422, f"unknown family / no id block: {bad}")
         if req.n_total > max_gen:
             raise HTTPException(422, f"n_total ≤ {max_gen} per family (RFCAV_GEN_MAX)")
-        tag = req.tag or J.tag_of(service.field, req.mesh_size, req.n_modes)
+        tag = req.tag or J.tag_of(req.mesh_size, req.n_modes)
         out = []
         for f in req.families:
             p = req.model_dump(exclude={'families', 'tag', 'workers'})
-            p.update(family=f, block=blocks[f], tag=tag, field=service.field,
+            p.update(family=f, block=blocks[f], tag=tag,
                      workers=req.workers or os.cpu_count() or 1,
                      group='ood' if f in OOD_FAMILIES else 'train')
             out.append(m.submit(p).public())

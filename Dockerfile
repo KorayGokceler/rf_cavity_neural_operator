@@ -20,7 +20,6 @@ ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir --index-url ${TORCH_INDEX} torch \
     && pip install --no-cache-dir -r requirements.txt -r requirements-web.txt
 COPY src/ src/
-COPY infer.py ./
 COPY --from=web /web/dist web/dist
 RUN useradd --create-home --uid 10001 app && mkdir -p /models && chown app /models
 USER app

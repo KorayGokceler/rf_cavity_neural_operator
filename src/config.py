@@ -2,12 +2,12 @@
 
 Kullanım:
     from src.config import load_config
-    cfg = load_config("configs/default.yaml")
+    cfg = load_config("configs/eigenspace_3d.yaml")
     print(cfg.model.embed_dim)        # 256
     print(cfg.training.learning_rate)  # 0.001
     
     # CLI override: 
-    cfg = load_config("configs/default.yaml", overrides={"model.embed_dim": 128})
+    cfg = load_config("configs/eigenspace_3d.yaml", overrides={"model.embed_dim": 128})
 """
 import yaml
 from pathlib import Path
@@ -43,7 +43,7 @@ def _deep_update(base: dict, override: dict) -> dict:
     return base
 
 
-def load_config(config_path: str = "configs/default.yaml", overrides: dict = None) -> ConfigDict:
+def load_config(config_path: str = "configs/eigenspace_3d.yaml", overrides: dict = None) -> ConfigDict:
     """Load YAML config and apply optional overrides.
     
     Args:

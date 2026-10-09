@@ -66,20 +66,11 @@ def test_config_to_flat_dict():
     assert flat == {'a': 1, 'b.c': 2, 'b.d.e': 3}
 
 
-def test_default_config_loads(tmp_path):
-    """Repodaki configs/default.yaml düzgün parse edilebilmeli."""
+def test_default_config_loads():
+    """configs/eigenspace_3d.yaml parses and has the keys train.py reads."""
     from pathlib import Path
-    repo_root = Path(__file__).resolve().parent.parent
-    default_cfg = repo_root / "configs" / "default.yaml"
-    if not default_cfg.exists():
-        pytest.skip("configs/default.yaml not found")
-    cfg = load_config(str(default_cfg))
-    # Beklenen kritik anahtarların varlığı
-    assert hasattr(cfg, 'model')
-    assert hasattr(cfg, 'training')
-    assert hasattr(cfg, 'dataset')
-    assert hasattr(cfg, 'data_gen')
-    # Kritik tipler
-    assert isinstance(cfg.model.embed_dim, int)
+    cfg = load_config(str(Path(__file__).resolve().parent.parent / "configs" / "eigenspace_3d.yaml"))
+    assert hasattr(cfg, 'model') and hasattr(cfg, 'training') and hasattr(cfg, 'dataset')
+    assert isinstance(cfg.model.embed_dim, int) and isinstance(cfg.model.eigenspace.n_layers, int)
     assert isinstance(cfg.training.learning_rate, float)
     assert isinstance(cfg.training.batch_size, int)

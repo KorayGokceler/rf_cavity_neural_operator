@@ -49,7 +49,7 @@ def pillbox_msh(tmp_path_factory):
 
 def test_info(client):
     j = client.get("/api/info").json()
-    assert j["model"]["untrained"] is True and j["model"]["field"] == "E"
+    assert j["model"]["untrained"] is True
     assert "elliptical" in j["families"]["train"] and "box" in j["families"]["ood"]
 
 
@@ -119,11 +119,11 @@ def test_physical_fields_energy_normalisation(pillbox_msh):
     """U = ½ε0∫|E|² = 1 J for the displayed E (nodal average ≈ the N0 field on a fine-enough mesh)."""
     from src.data.dataset_converter_3d import extract_geometry_3d, tet_geometry
     nodes, tets = G.mesh_file(str(pillbox_msh / "pillbox.msh"), "mm")
-    geom, M = extract_geometry_3d(nodes, tets, "E")
+    geom, M = extract_geometry_3d(nodes, tets)
     rng = np.random.default_rng(0)
     U = rng.standard_normal((len(geom["edges"]), 1))
     U[np.asarray(geom["bnd_edge"], bool)] = 0
-    E, H = physical_fields(geom, M, U, np.array([1.0]), "E")
+    E, H = physical_fields(geom, M, U, np.array([1.0]))
     vol, _ = tet_geometry(nodes, tets)
     e2 = (np.linalg.norm(E[:, :, 0], axis=1) ** 2)[tets].mean(1)            # per-tet mean of |E|² at vertices
     U_J = 0.5 * 8.8541878128e-12 * (vol * e2).sum()

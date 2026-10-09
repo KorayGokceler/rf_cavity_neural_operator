@@ -10,7 +10,7 @@ import math
 import pytest
 import torch
 
-from src.models.gnot import RandomFourierFeatures
+from src.models.layers import RandomFourierFeatures
 
 
 def test_output_shape():

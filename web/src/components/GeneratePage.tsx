@@ -42,7 +42,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
     return () => { live = false; clearInterval(h); };
   }, [cfg, active]);
 
-  const tag = p.tag || `${cfg?.field ?? 'E'}_ms${p.mesh_size}_k${p.n_modes}_v1`;
+  const tag = p.tag || `E_ms${p.mesh_size}_k${p.n_modes}_v1`;
   const workers = p.workers ?? cfg?.cpu_count ?? 1;
   const est = useMemo(() => fams.reduce((a, f) => a + p.n_total * (SEC[f] ?? 1.5)
     * Math.pow(0.1 / p.mesh_size, 2.5) * (p.n_modes / 10) ** 0.5, 0) / workers, [fams, p, workers]);
@@ -96,7 +96,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
           </div>
           <label className="check"><input type="checkbox" checked={p.convert} onChange={(e) => set('convert', e.target.checked)} /><span>{t(lang, 'convertPkl')}</span></label>
           <label className="check"><input type="checkbox" checked={p.lean} disabled={!p.convert} onChange={(e) => set('lean', e.target.checked)} /><span>{t(lang, 'leanPkl')}</span></label>
-          <div className="note">{t(lang, 'genTarget')}: <code>{cfg?.gen_root}/{tag}/h5/&lt;{t(lang, 'family')}&gt;/</code> · {cfg?.field}-field</div>
+          <div className="note">{t(lang, 'genTarget')}: <code>{cfg?.gen_root}/{tag}/h5/&lt;{t(lang, 'family')}&gt;/</code></div>
           <div className="note">{int(fams.length * p.n_total)} {t(lang, 'geometries')} · {workers} {t(lang, 'workers').toLowerCase()} · ≈ {fmtDur(est)} ({t(lang, 'roughEst')})</div>
           <button className="primary" disabled={!fams.length || !cfg} onClick={submit}>{t(lang, 'startGen')} ({fams.length})</button>
         </div>

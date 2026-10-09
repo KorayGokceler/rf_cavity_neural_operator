@@ -18,9 +18,9 @@ CAD_EXT = ('.step', '.stp', '.brep', '.iges', '.igs')
 MESH_EXT = ('.msh', '.vtu', '.vtk', '.mesh', '.inp', '.med')
 
 
-def gen_args(field, mesh_size, n_modes=6, families=None):
+def gen_args(mesh_size, n_modes=6, families=None):
     """Set the generator's module-level ARGS (meshing helpers read them)."""
-    gen.ARGS = gen.parse_args(['--field', field, '--mesh_size', str(mesh_size), '--n_eigen_modes', str(n_modes),
+    gen.ARGS = gen.parse_args(['--mesh_size', str(mesh_size), '--n_eigen_modes', str(n_modes),
                                *(['--families', *families] if families else [])])
     return gen.ARGS
 
@@ -61,20 +61,20 @@ def mesh_file(path, unit):
     return np.asarray(m.points[used, :3], np.float64) * UNITS[unit], remap[tets]
 
 
-def mesh_upload(path, unit='mm', mesh_size=0.10, vol_div=1.0, h_abs=None, field='E'):
+def mesh_upload(path, unit='mm', mesh_size=0.10, vol_div=1.0, h_abs=None):
     """Any supported upload (by extension) → (nodes [m], tets)."""
     ext = os.path.splitext(path)[1].lower()
     if ext in CAD_EXT:
-        gen_args(field, mesh_size)
+        gen_args(mesh_size)
         return mesh_step(path, unit, mesh_size, vol_div, h_abs)
     if ext in MESH_EXT:
         return mesh_file(path, unit)
     raise ValueError(f"unsupported file type {ext!r} (CAD: {', '.join(CAD_EXT)}; mesh: {', '.join(MESH_EXT)})")
 
 
-def mesh_family(family, s_id, field='E', mesh_size=0.10):
+def mesh_family(family, s_id, mesh_size=0.10):
     """Generator geometry (family, id) → (nodes [m], tets, params): the same shape as in the dataset."""
-    gen_args(field, mesh_size, families=[family])
+    gen_args(mesh_size, families=[family])
     g = gen.mesh_sample(int(s_id))
     return g['nodes'], g['tets'], {k: float(v) for k, v in g['params'].items()}
 
@@ -86,15 +86,16 @@ def from_h5(path, sample):
         keys = sorted(k for k in f if k.startswith('sample_'))
         key = keys[int(sample)] if str(sample).isdigit() and str(sample) not in keys else str(sample)
         g = f[key]
-        ds = 'e_edges' if 'e_edges' in g else 'h_edges'
-        return (g['nodes'][()], g['tets'][()], {'edges': g['edges'][()], 'vecs': g[ds][()],
-                                                 'freqs': g['freqs'][()], 'field': 'E' if ds == 'e_edges' else 'H',
+        if 'e_edges' not in g:
+            raise ValueError(f"{key}: no E-field DOFs (data of the removed H formulation?)")
+        return (g['nodes'][()], g['tets'][()], {'edges': g['edges'][()], 'vecs': g['e_edges'][()],
+                                                 'freqs': g['freqs'][()],
                                                  'shape_type': str(g.attrs.get('shape_type', '')), 'key': key})
 
 
 # ─────────────────────────── checks + display surface ──────────────────
 
-def check(nodes, tets, field='E'):
+def check(nodes, tets):
     """Mesh facts and the formulation's validity certificate (no exception: 'ok' + 'problems')."""
     nodes = np.asarray(nodes, np.float64)
     tets = np.asarray(tets, np.int64)
@@ -108,8 +109,6 @@ def check(nodes, tets, field='E'):
         problems.append(f"{topo['n_components']} disconnected pieces (one cavity volume expected)")
     if not topo['manifold']:
         problems.append("non-manifold mesh")
-    if field == 'H' and not gen.is_topological_ball(topo):
-        problems.append("the H-field model needs a topological ball (no handles / holes)")
     vol, _ = tet_geometry(nodes, tets)
     lo, hi = nodes.min(0), nodes.max(0)
     return {'ok': not problems, 'problems': problems, 'n_nodes': int(len(nodes)), 'n_tets': int(len(tets)),

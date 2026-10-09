@@ -34,7 +34,7 @@ QOI_KEYS = {'Y_qoi', 'QoI_S', 'QoI_Az', 'QoI_zeta', 'QoI_q', 'QoI_Esurf', 'QoI_H
 
 # ── fake src.qoi (contract shapes, amplitude / sign invariant functionals) ─────
 
-def _fake_build(X, tets, edges, scale, center, field, M=None, n_axis=13, axis_xy=(0.0, 0.0)):
+def _fake_build(X, tets, edges, scale, center, M=None, n_axis=13, axis_xy=(0.0, 0.0)):
     X = np.asarray(X, np.float64)
     edges = np.asarray(edges, np.int64)
     ne = len(edges)
@@ -54,10 +54,10 @@ def _fake_build(X, tets, edges, scale, center, field, M=None, n_axis=13, axis_xy
     q[0] = 0.0
     tri = X[bf]
     area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
-    _fake_build.calls.append(dict(M=sp.csr_matrix(M), n_edges=ne, field=field))
+    _fake_build.calls.append(dict(M=sp.csr_matrix(M), n_edges=ne))
     if _fake_build.fail_if is not None and _fake_build.fail_if(ne):
         raise RuntimeError("fake failure")
-    return {'field': field, 'scale': float(scale), 'M': sp.csr_matrix(M), 'S': S, 'Az': Az,
+    return {'scale': float(scale), 'M': sp.csr_matrix(M), 'S': S, 'Az': Az,
             'zeta': zeta, 'q': q, 'L_axis': float(q.sum()), 'Esurf': Es, 'Hsurf': Hs, 'face_area': area}
 
 
@@ -115,25 +115,25 @@ def _write_pkl(path, data):
     return str(path)
 
 
-@pytest.fixture(scope='module', params=['H', 'E'])
-def synth(request, tmp_path_factory):
-    """(field, PKL path) of 3 synthetic boxes of different sizes, no QoI labels."""
-    d = make_dataset(n_geoms=3, n=4, n_modes=4, seed=2, field=request.param)
-    return request.param, _write_pkl(tmp_path_factory.mktemp('q' + request.param) / 's.pkl', d)
+@pytest.fixture(scope='module')
+def synth(tmp_path_factory):
+    """PKL path of 3 synthetic boxes of different sizes, no QoI labels."""
+    d = make_dataset(n_geoms=3, n=4, n_modes=4, seed=2)
+    return _write_pkl(tmp_path_factory.mktemp('q') / 's.pkl', d)
 
 
 def _all(path, **kw):
     return Maxwell3DDataset(path, split='test', train_ratio=0.0, val_ratio=0.0, **kw)
 
 
-def _write_h5(path, field='H', n_geoms=2, start=0, n_modes=4, seed=0):
+def _write_h5(path, n_geoms=2, start=0, n_modes=4, seed=0):
     """Generator-format H5 (sample_XXXX groups) of synthetic PEC boxes, physical size 'a'."""
     rng = np.random.default_rng(seed)
     with h5py.File(path, 'w') as f:
         f.attrs['metadata'] = '{"synthetic": true}'
         for i in range(n_geoms):
             dims = np.sort(rng.uniform(0.5, 1.0, 3))[::-1]
-            geom, lam, vec = box_geometry(dims, 4, n_modes=n_modes, field=field)
+            geom, lam, vec = box_geometry(dims, 4, n_modes=n_modes)
             a = float(rng.uniform(0.05, 0.2))                    # metres per synth unit
             freqs = C0 * np.sqrt(lam) / (2 * np.pi * a) / 1e9      # GHz
             g = f.create_group(f'sample_{start + i:04d}')
@@ -141,9 +141,9 @@ def _write_h5(path, field='H', n_geoms=2, start=0, n_modes=4, seed=0):
             g.create_dataset('tets', data=geom['tets'])
             g.create_dataset('edges', data=geom['edges'])
             g.create_dataset('freqs', data=freqs[::-1].copy())  # converter sorts
-            g.create_dataset('e_edges' if field == 'E' else 'h_edges', data=vec[:, ::-1].copy())
+            g.create_dataset('e_edges', data=vec[:, ::-1].copy())
             g.attrs['shape_type'] = 'box'
-            g.attrs['field'] = field
+            g.attrs['field'] = 'E'
     return str(path)
 
 
@@ -155,7 +155,7 @@ def _load(path):
 # ── dataset: Y_qoi, qoi_names, qoi_ops ──────────────────────────────────────
 
 def test_y_qoi_nan_without_labels(synth):
-    _, path = synth
+    path = synth
     ds = _all(path)
     it = ds[0]
     K = it['Y_freq'].shape[0]
@@ -183,7 +183,7 @@ def test_y_qoi_follows_frequency_order(tmp_path):
 
 
 def test_qoi_ops_lazy_and_cached(synth, fake_qoi):
-    field, path = synth
+    path = synth
     ds = _all(path)
     ds[0]
     assert _fake_build.calls == []                                   # off by default
@@ -191,7 +191,6 @@ def test_qoi_ops_lazy_and_cached(synth, fake_qoi):
     a, b = ds[0]['qoi_ops'], ds[0]['qoi_ops']
     assert a is b and len(_fake_build.calls) == 1
     c = _fake_build.calls[0]
-    assert c['field'] == field
     M = ds.operators(ds.active_geoms[0])[0]
     assert abs(c['M'] - M).max() == 0                                # the dataset's M is passed
     ds_nc = _all(path, qoi_ops=True, cache_operators=False)
@@ -200,7 +199,7 @@ def test_qoi_ops_lazy_and_cached(synth, fake_qoi):
 
 
 def test_qoi_ops_lean_pkl_rebuilds_m(synth, fake_qoi, tmp_path):
-    field, path = synth
+    path = synth
     d = _load(path)
     full = _all(path)
     M_full = full.operators(full.active_geoms[0])[0]
@@ -221,7 +220,7 @@ def _dense(A):
 
 
 def test_collate_qoi_keys_and_block_layout(synth, fake_qoi):
-    field, path = synth
+    path = synth
     ds = _all(path, qoi_ops=True)
     items = [ds[i] for i in range(len(ds))]
     batch = maxwell3d_collate(items)
@@ -275,7 +274,7 @@ def test_collate_qoi_keys_and_block_layout(synth, fake_qoi):
 
 
 def test_collate_y_qoi_padding_and_partial_ops(synth, fake_qoi):
-    field, path = synth
+    path = synth
     ds = _all(path)
     items = [ds[0], ds[1]]
     batch = maxwell3d_collate(items)
@@ -294,7 +293,7 @@ def test_collate_y_qoi_padding_and_partial_ops(synth, fake_qoi):
 
 
 def test_item_from_geometry_qoi_ops(synth, fake_qoi):
-    field, path = synth
+    path = synth
     g = _load(path)['geometry_pool'][0]
     it = item_from_geometry(g, qoi_ops=True)
     assert 'qoi_ops' in it and 'Y_qoi' not in it
@@ -305,10 +304,9 @@ def test_item_from_geometry_qoi_ops(synth, fake_qoi):
 
 # ── converter ─────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize('field', ['H', 'E'])
-def test_converter_stores_qoi_labels(tmp_path, fake_qoi, field):
-    h5a = _write_h5(tmp_path / 'a.h5', field, n_geoms=2, start=0, seed=1)
-    h5b = _write_h5(tmp_path / 'b.h5', field, n_geoms=1, start=10, seed=2)       # second shard
+def test_converter_stores_qoi_labels(tmp_path, fake_qoi):
+    h5a = _write_h5(tmp_path / 'a.h5', n_geoms=2, start=0, seed=1)
+    h5b = _write_h5(tmp_path / 'b.h5', n_geoms=1, start=10, seed=2)              # second shard
     out = conv.RFCavity3DConverter([h5a, h5b]).convert_dataset(str(tmp_path / 'o.pkl'))
     d = _load(out)
     meta = d['metadata']['qoi']
@@ -321,7 +319,7 @@ def test_converter_stores_qoi_labels(tmp_path, fake_qoi, field):
         ss = [s for s in d['samples'] if s['geom_id'] == gid]
         Y = np.stack([s['Y'] for s in ss], 1).astype(np.float64)
         ne = len(g['edges'])
-        ops = _fake_build(g['X'], g['tets'], g['edges'], g['scale'], g['center'], field,
+        ops = _fake_build(g['X'], g['tets'], g['edges'], g['scale'], g['center'],
                           M=conv.from_csr_tuple(g['M'], (ne, ne)))
         want = _fake_qoi_from_dofs(ops, Y, np.array([s['Theta'][1] for s in ss], np.float64) * 1e9)
         for k, s in enumerate(ss):
@@ -335,7 +333,7 @@ def test_converter_stores_qoi_labels(tmp_path, fake_qoi, field):
 
 def test_convert_cli_no_qoi_and_lean(tmp_path, fake_qoi):
     import convert_3d
-    h5 = _write_h5(tmp_path / 'a.h5', 'E', n_geoms=2)
+    h5 = _write_h5(tmp_path / 'a.h5', n_geoms=2)
     convert_3d.main(['--h5_filepath', h5, '--output_path', str(tmp_path / 'n.pkl'), '--no_qoi'])
     d = _load(tmp_path / 'n.pkl')
     assert 'qoi' not in d['metadata'] and all('qoi' not in s for s in d['samples'])
@@ -356,7 +354,7 @@ def test_convert_cli_no_qoi_and_lean(tmp_path, fake_qoi):
 
 
 def test_attach_qoi_lean_pkl(synth, fake_qoi):
-    field, path = synth
+    path = synth
     d = _load(path)
     for g in d['geometry_pool'].values():
         for k in ('M', 'K', 'G', 'Kp'):
@@ -367,7 +365,7 @@ def test_attach_qoi_lean_pkl(synth, fake_qoi):
 
 
 def test_converter_qoi_failure_is_nan(tmp_path, fake_qoi):
-    h5 = _write_h5(tmp_path / 'a.h5', 'H', n_geoms=2, seed=4)
+    h5 = _write_h5(tmp_path / 'a.h5', n_geoms=2, seed=4)
     first = []
     _fake_build.fail_if = lambda ne: (not first and not first.append(ne))       # fail the 1st geometry
     with warnings.catch_warnings(record=True) as w:
@@ -402,7 +400,7 @@ def test_rel_gap_clusters():
 def test_regroup_uses_raw_ritz_for_released_modes(synth, fake_qoi):
     ev = importlib.import_module('scripts.eval_qoi')
     from src.viz.predict import predict
-    field, path = synth
+    path = synth
     ds = _all(path)
     lm = _tiny_lm(ds[0]['Input_funcs'].shape[-1], ds.stats)
     out = predict(lm, ds, 0)
@@ -424,7 +422,7 @@ def _fake_out(ds, idx, pred=None, f_scale=1.0):
     fs = ds.stats
     f = it['Y_freq'].double().numpy() * fs['std'] + fs['mean']
     T = it['Y_field'].double().numpy()
-    return {'field': ds.field, 'geom_id': ds.active_geoms[idx], 'shape_type': it['shape_type'],
+    return {'field': 'E', 'geom_id': ds.active_geoms[idx], 'shape_type': it['shape_type'],
             'X': it['X'].double().numpy(), 'tets': g['tets'], 'edges': g['edges'], 'scale': g['scale'],
             'center': g['center'], 'true': T, 'pred': T if pred is None else pred, 'f_true': f,
             'f_pred': f * f_scale, 'rel_l2': np.zeros(K), 'split': np.zeros(K, bool),
@@ -433,7 +431,7 @@ def _fake_out(ds, idx, pred=None, f_scale=1.0):
 
 def test_geometry_rows_exact_and_degenerate(synth, fake_qoi):
     ev = importlib.import_module('scripts.eval_qoi')
-    field, path = synth
+    path = synth
     ds = _all(path, qoi_ops=True)
     out = _fake_out(ds, 0, pred=-3.0 * _fake_out(ds, 0)['true'])               # amplitude / sign free
     rows = ev.geometry_rows(ds[0]['qoi_ops'], out)
@@ -457,11 +455,10 @@ def test_geometry_rows_exact_and_degenerate(synth, fake_qoi):
 
 
 def _tiny_lm(val_dim, stats):
-    from src.training.lightning_module import GNOTLightning
+    from src.training.lightning_module import CavityLightning
     torch.manual_seed(0)
-    lm = GNOTLightning(val_dim=val_dim, grid_dim=3, hidden_dim=16, n_heads=2, n_basis=10, num_field_modes=4,
-                       rff_dim=8, model_type="eigenspace3d", physics_freq=True,
-                       eigenspace_kwargs={"n_layers": 1}, near_deg_rel_threshold=0.02)
+    lm = CavityLightning(val_dim=val_dim, hidden_dim=16, n_heads=2, n_basis=10, num_field_modes=4, rff_dim=8,
+                         eigenspace_kwargs={"n_layers": 1}, near_deg_rel_threshold=0.02)
     lm.freq_stats = dict(stats)
     return lm.eval()
 
@@ -481,7 +478,7 @@ def _checkpoint(ds, tmp_path):
 
 def test_eval_qoi_main_fake(synth, fake_qoi, tmp_path):
     ev = importlib.import_module('scripts.eval_qoi')
-    field, path = synth
+    path = synth
     d = _load(path)
     conv.attach_qoi_labels(d, verbose=False)
     lab = _write_pkl(tmp_path / 'lab.pkl', d)
@@ -501,10 +498,9 @@ def test_eval_qoi_main_fake(synth, fake_qoi, tmp_path):
 
 # ── with the reference src/qoi/operators.py ───────────────────────────────────
 
-@pytest.mark.parametrize('field', ['H', 'E'])
-def test_real_converter_labels_and_eval(tmp_path, field):
+def test_real_converter_labels_and_eval(tmp_path):
     q = _real_qoi()
-    h5 = _write_h5(tmp_path / 'a.h5', field, n_geoms=3, seed=5)
+    h5 = _write_h5(tmp_path / 'a.h5', n_geoms=3, seed=5)
     out = conv.RFCavity3DConverter(h5).convert_dataset(str(tmp_path / 'o.pkl'))
     d = _load(out)
     assert d['metadata']['qoi']['n_failed'] == 0
@@ -528,8 +524,7 @@ def test_real_converter_labels_and_eval(tmp_path, field):
     assert all(r['t_ops_s'] > 0 for r in rows)
 
 
-@pytest.mark.parametrize('field', ['H', 'E'])
-def test_real_collate_matches_numpy_qoi(synth, field, tmp_path):
+def test_real_collate_matches_numpy_qoi(synth, tmp_path):
     """Batched QoI from the collated QoI_* keys (src/qoi/torch_qoi.py, if present) equals the
     per-geometry numpy qoi_from_dofs — checks the block layout with the real operators."""
     q = _real_qoi()
@@ -537,7 +532,7 @@ def test_real_collate_matches_numpy_qoi(synth, field, tmp_path):
         tq = importlib.import_module('src.qoi.torch_qoi')
     except ImportError as e:
         pytest.skip(f"src.qoi.torch_qoi not available ({e})")
-    d = make_dataset(n_geoms=3, n=4, n_modes=4, seed=2, field=field)
+    d = make_dataset(n_geoms=3, n=4, n_modes=4, seed=2)
     ds = _all(_write_pkl(tmp_path / 's.pkl', d), qoi_ops=True)
     items = [ds[i] for i in range(len(ds))]
     batch = maxwell3d_collate(items)

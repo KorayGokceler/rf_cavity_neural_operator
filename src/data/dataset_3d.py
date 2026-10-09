@@ -1,4 +1,4 @@
-"""3D Maxwell (Whitney N0) eigenmode dataset for model_type='eigenspace3d'.
+"""3D Maxwell (Whitney N0, E field) eigenmode dataset of EigenspaceOperator3D.
 
 Reads the PKL written by convert_3d.py (contract: docs/20_3D_MODEL.md):
 geometry_pool[g] = {X [Nv,3], Input_funcs [Nv,F], edges [Ne,2] (low→high),
@@ -6,17 +6,12 @@ tets, M, K [Ne×Ne], G [Ne×Nv], Kp [Nv×Nv] (CSR), scale, center, shape_type,
 torsion_max}; samples = [{geom_id, Y [Ne] (N0 DOFs, unit M-norm),
 Theta = [mode_idx, freq_GHz, sample_id]}].
 
-Field (metadata['field']):
-  'H' (or missing): H-field DOFs on all edges, G = full discrete gradient,
-      Kp = GᵀMG singular on constants → batch['KpNull'] = 'const'.
-  'E': E-field DOFs, PEC wall edges (geometry 'bnd_edge') are essential
-      zeros; G = interior-vertex (+ boundary-component) potentials, zero
-      columns after n_pot; Kp SPD on its valid block → batch['KpNull'] =
-      'none', and batch['BndEdge'] [B, Ne] (padding False) masks the basis.
-  A batch never mixes fields (maxwell3d_collate raises).
+E-field DOFs: PEC wall edges (geometry 'bnd_edge') are essential zeros; G = interior-vertex
+(+ boundary-component) potentials, zero columns after n_pot; Kp SPD on its valid block;
+batch['BndEdge'] [B, Ne] (padding False) masks the basis.
 
 One item = one geometry with ALL its stored modes (sorted by frequency).
-The split is by geometry with the same seeded permutation as GNOTDataset.
+The split is by geometry (seeded permutation of the geometry ids).
 No node subsampling (the sparse operators need the full mesh).
 
 Batching (maxwell3d_collate): vertex tensors padded to Nv_max, edge tensors
@@ -33,7 +28,6 @@ valid under augment; the beam axis moves with the cavity.  The collate adds
 Y_qoi and, when every item has qoi_ops, the QoI_* operator keys.
 """
 import collections
-import inspect
 import pickle
 
 import numpy as np
@@ -43,7 +37,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
 # Converter layout (used when the PKL has no metadata['feature_names']).
-from src.data.dataset_converter_3d import FEATURE_NAMES_3D, geometry_operators, qoi_operators_of
+from src.data.dataset_converter_3d import FEATURE_NAMES_3D, geometry_operators, qoi_operators_of, require_e_field
 
 # docs/24 §0.3 src.qoi.QOI_LABELS — fallback only when src.qoi cannot be imported (the dataset
 # must load without it); a PKL's metadata['qoi']['labels'] takes precedence.
@@ -84,43 +78,15 @@ def _feature_columns(names):
     return (coords if len(coords) == 3 else None), (dirs if len(dirs) == 3 else None), vol
 
 
-FIELDS = ('H', 'E')
-KP_NULL = {'H': 'const', 'E': 'none'}     # null space of Kp handled by hcurl._pcg
-
-
-def field_of(meta):
-    """'H' | 'E' from PKL metadata (missing / None → 'H', the old behaviour)."""
-    f = str((meta or {}).get('field', None) or 'H').upper()
-    if f not in FIELDS:
-        raise ValueError(f"metadata['field'] must be one of {FIELDS}, got {f!r}")
-    return f
-
-
-def rebuild_operators(X, tets, field='H'):
+def rebuild_operators(X, tets):
     """Contract operators of one mesh from (X, tets) (lean PKLs): the converter's
-    geometry_operators(X, tets, field=...) dict (M, K, G, Kp, edges[, bnd_edge])."""
-    X, tets = np.asarray(X, np.float64), np.asarray(tets, np.int64)
-    params = inspect.signature(geometry_operators).parameters
-    if 'field' in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
-        res = geometry_operators(X, tets, field=field)
-    elif field == 'H':
-        res = geometry_operators(X, tets)                   # pre-E converter: always H
-    else:
-        raise ValueError("this PKL (field='E') has no stored operators and "
-                         "dataset_converter_3d.geometry_operators has no `field` argument: "
-                         "update the converter or store the operators in the PKL.")
-    ops = res[0] if isinstance(res, tuple) else res
-    if field == 'E' and 'bnd_edge' not in ops:
-        raise ValueError("geometry_operators(X, tets, field='E') returned no 'bnd_edge' "
-                         "(PEC wall-edge mask), required by the E formulation.")
-    return ops
+    geometry_operators dict (M, K, G, Kp, edges, bnd_edge, ...)."""
+    return geometry_operators(np.asarray(X, np.float64), np.asarray(tets, np.int64))[0]
 
 
 def random_orthogonal(rng):
-    """Haar-random 3×3 orthogonal matrix (rotation or rotoreflection).  N0 DOFs
-    ∫_e F·t of a polar field (E) are invariant under any orthogonal map of mesh
-    + field; an axial field (H) flips all of them under a reflection, which the
-    sign-agnostic losses ignore.  (The operators are invariant either way.)"""
+    """Haar-random 3×3 orthogonal matrix (rotation or rotoreflection). N0 DOFs ∫_e E·t of the polar
+    E field and the operators are invariant under any orthogonal map of mesh + field."""
     Q, R = np.linalg.qr(rng.standard_normal((3, 3)))
     return (Q * np.sign(np.diag(R))).astype(np.float32)
 
@@ -128,8 +94,8 @@ def random_orthogonal(rng):
 class Maxwell3DDataset(Dataset):
     """Items: X [Nv,3], Input_funcs [Nv,F], Area [Nv] (node volume), Edges
     [Ne,2], Y_field [Ne,K], Y_freq [K] (z-scored, ascending), Scale,
-    TorsionMax, geom_id, shape_type, field ('H' | 'E'), the scipy CSR
-    operators M, K, G, Kp, for field 'E' BndEdge [Ne] bool (PEC wall edges)
+    TorsionMax, geom_id, shape_type, the scipy CSR operators M, K, G, Kp, BndEdge [Ne] bool
+    (PEC wall edges)
     and, when the PKL has it, FreqNext (z-scored frequency of mode K+1: flags
     a degenerate pair split by the last stored mode).  Y_qoi float32 [K, n_qoi]:
     the stored cavity QoI labels (ds.qoi_names; NaN where the PKL has none) and,
@@ -151,10 +117,7 @@ class Maxwell3DDataset(Dataset):
         self.samples_metadata = data['samples']
         meta = data.get('metadata', {}) or {}
         self.metadata = meta
-        self.field = field_of(meta)
-        g_fields = {str(g['field']).upper() for g in self.geometry_pool.values() if g.get('field', None)}
-        if g_fields - {self.field}:
-            raise ValueError(f"metadata field {self.field!r} but geometry_pool fields {sorted(g_fields)}")
+        require_e_field(meta)
         self.stats = meta.get('freq_stats', None)
         self.feature_names = list(meta.get('feature_names', None) or FEATURE_NAMES_3D)
         self.feature_indices = feature_indices
@@ -188,8 +151,7 @@ class Maxwell3DDataset(Dataset):
         self.coord_cols, self.dir_cols, self.vol_col = _feature_columns(self.feature_names)
         if self.augment and (self.coord_cols is None or self.dir_cols is None):
             raise ValueError(f"augment needs x,y,z and 3 dir_* feature columns, got {self.feature_names}")
-        print(f"Maxwell3DDataset {split}: {len(self.active_geoms)} geometries × {n_modes} modes"
-              f" (field {self.field})")
+        print(f"Maxwell3DDataset {split}: {len(self.active_geoms)} geometries × {n_modes} modes")
 
     def data_dims(self):
         """(val_dim, n_modes) of the items."""
@@ -205,7 +167,7 @@ class Maxwell3DDataset(Dataset):
         g = self.geometry_pool[g_id]
         ops = g if 'M' in g else self._ops_cache.get(g_id)
         if ops is None:
-            ops = rebuild_operators(g['X'], g['tets'], self.field)
+            ops = rebuild_operators(g['X'], g['tets'])
             if not np.array_equal(ops['edges'], np.asarray(g['edges'])):
                 raise ValueError(f"geometry {g_id}: rebuilt edges differ from the stored ones")
             if self.cache_operators:
@@ -221,12 +183,12 @@ class Maxwell3DDataset(Dataset):
         return tuple(to_csr(ops[k], shapes[k]) for k in ('M', 'K', 'G', 'Kp'))
 
     def bnd_edge(self, g_id):
-        """bool [Ne] PEC wall-edge mask of an E geometry (stored, else rebuilt)."""
+        """bool [Ne] PEC wall-edge mask (stored, else rebuilt)."""
         g = self.geometry_pool[g_id]
         b = g.get('bnd_edge', None)
         if b is None:
             if 'M' in g:
-                raise ValueError(f"geometry {g_id}: field 'E' PKL without 'bnd_edge'")
+                raise ValueError(f"geometry {g_id}: PKL without 'bnd_edge'")
             b = self._ops(g_id)['bnd_edge']
         b = np.asarray(b, dtype=bool).reshape(-1)
         if len(b) != len(g['edges']):
@@ -238,7 +200,7 @@ class Maxwell3DDataset(Dataset):
         cached when cache_operators is set."""
         ops = self._qoi_cache.get(g_id)
         if ops is None:
-            ops = qoi_operators_of(self.geometry_pool[g_id], self.field, M=self.operators(g_id)[0])
+            ops = qoi_operators_of(self.geometry_pool[g_id], M=self.operators(g_id)[0])
             if self.cache_operators:
                 self._qoi_cache[g_id] = ops
         return ops
@@ -268,7 +230,7 @@ class Maxwell3DDataset(Dataset):
             f = (f - self.stats['mean']) / self.stats['std']
             f_next = (f_next - self.stats['mean']) / self.stats['std']
         if self.augment:
-            Q = random_orthogonal(np.random)   # worker-seeded global RNG, as GNOTDataset
+            Q = random_orthogonal(np.random)   # worker-seeded global RNG
             X = X @ Q.T
             F[:, self.coord_cols] = F[:, self.coord_cols] @ Q.T
             F[:, self.dir_cols] = F[:, self.dir_cols] @ Q.T
@@ -290,17 +252,15 @@ class Maxwell3DDataset(Dataset):
             'Y_qoi': torch.from_numpy(self.qoi_labels(s_idx)),
         }
         item['M'], item['K'], item['G'], item['Kp'] = self.operators(g_key)
-        item['field'] = self.field
         if self.qoi_ops:
             item['qoi_ops'] = self.qoi_operators(g_key)
-        if self.field == 'E':
-            bnd = self.bnd_edge(g_key)
-            wall = np.abs(Y[bnd]).max(initial=0.0)
-            if wall > 1e-6 * max(np.abs(Y).max(initial=0.0), 1e-30):
-                raise ValueError(f"geometry {g_key}: E targets are nonzero on PEC wall edges "
-                                 f"(max {wall:.3g}); contract: wall rows exactly 0")
-            item['Y_field'][torch.from_numpy(bnd)] = 0.0
-            item['BndEdge'] = torch.from_numpy(bnd)
+        bnd = self.bnd_edge(g_key)
+        wall = np.abs(Y[bnd]).max(initial=0.0)
+        if wall > 1e-6 * max(np.abs(Y).max(initial=0.0), 1e-30):
+            raise ValueError(f"geometry {g_key}: E targets are nonzero on PEC wall edges "
+                             f"(max {wall:.3g}); contract: wall rows exactly 0")
+        item['Y_field'][torch.from_numpy(bnd)] = 0.0
+        item['BndEdge'] = torch.from_numpy(bnd)
         return item
 
 
@@ -342,13 +302,10 @@ def _pad_rows(arrays, n, fill=0.0, dtype=torch.float64):
     return out
 
 
-def _collate_qoi(batch, out, field, Ne):
+def _collate_qoi(batch, out, Ne):
     """QoI operator keys of docs/24 §0.4 (every item has 'qoi_ops'): block-diagonal COO
     float64 on the padded edge space, padded per-point arrays (float64), masks."""
     ops = [it['qoi_ops'] for it in batch]
-    for o in ops:
-        if str(o.get('field', field)).upper() != field:
-            raise ValueError(f"maxwell3d_collate: qoi_ops field {o.get('field')!r} != batch field {field!r}")
     P = max(int(o['Az'].shape[0]) for o in ops)
     nf = [len(np.asarray(o['face_area']).reshape(-1)) for o in ops]
     Nf = max(nf)
@@ -369,22 +326,16 @@ def maxwell3d_collate(batch):
     (see module docstring).  Keys: X, Input_funcs, Area, Mask [B,Nv]; Edges
     [B,Ne,2] (padding (0,0)), EdgeMask, Y_field [B,Ne,K]; Y_freq [B,K], Scale,
     TorsionMax, FreqNext [B]; geom_id [B,1]; shape_type list[str]; M, K, G, Gt, Kp
-    (sparse CSR float64) and Kp_diag [B,Nv] (Jacobi preconditioner); field
-    ('H' | 'E', one per batch), KpNull ('const' for H, 'none' for E) and, for
-    E, BndEdge [B,Ne] bool (PEC wall edges, padding False).
+    (sparse CSR float64) and Kp_diag [B,Nv] (Jacobi preconditioner), BndEdge [B,Ne] bool (PEC
+    wall edges, padding False).
     Cavity QoI (docs/24 §0.4): Y_qoi [B, K_max, n_qoi] float32 (NaN padding) when
     any item has it; when EVERY item has 'qoi_ops' also QoI_S [B·Ne × B·Ne],
     QoI_Az [B·P × B·Ne], QoI_Esurf / QoI_Hsurf [B·3Nf × B·Ne] (block-diagonal
     COO float64, same edge layout as M), QoI_zeta, QoI_q [B, P] (0 padding),
     QoI_area [B, Nf] (0 padding), QoI_SurfMask [B, Nf] bool, QoI_scale,
     QoI_Laxis [B] (float64; P, Nf = max over the batch)."""
-    fields = {it.get('field', 'H') for it in batch}
-    if len(fields) != 1:
-        raise ValueError(f"maxwell3d_collate: a batch mixes fields {sorted(fields)}; "
-                         "H and E items need separate datasets / loaders.")
-    field = fields.pop()
-    if field not in KP_NULL:
-        raise ValueError(f"unknown field {field!r}, expected one of {FIELDS}")
+    if any(it.get('BndEdge', None) is None for it in batch):
+        raise ValueError("maxwell3d_collate: item without 'BndEdge' (PEC wall-edge mask)")
     pad = lambda k: pad_sequence([it[k] for it in batch], batch_first=True)   # noqa: E731
     nv = [it['X'].shape[0] for it in batch]
     ne = [it['Edges'].shape[0] for it in batch]
@@ -401,11 +352,7 @@ def maxwell3d_collate(batch):
     out['Kp'] = _block_diag([it['Kp'] for it in batch], Nv, Nv)
     out['Kp_diag'] = pad_sequence([torch.from_numpy(it['Kp'].diagonal().astype(np.float64))
                                    for it in batch], batch_first=True)
-    out['field'], out['KpNull'] = field, KP_NULL[field]
-    if field == 'E':
-        if any(it.get('BndEdge', None) is None for it in batch):
-            raise ValueError("maxwell3d_collate: field 'E' item without 'BndEdge'")
-        out['BndEdge'] = pad('BndEdge').bool()                                 # padding False
+    out['BndEdge'] = pad('BndEdge').bool()                                     # padding False
     if any(it.get('Y_qoi', None) is not None for it in batch):
         yq = [it.get('Y_qoi', None) for it in batch]
         nq = next(y.shape[-1] for y in yq if y is not None)
@@ -415,19 +362,17 @@ def maxwell3d_collate(batch):
             if y is not None:
                 out['Y_qoi'][b, :y.shape[0]] = torch.as_tensor(y, dtype=torch.float32)
     if all(it.get('qoi_ops', None) is not None for it in batch):
-        _collate_qoi(batch, out, field, Ne)
+        _collate_qoi(batch, out, Ne)
     return out
 
 
 def item_from_geometry(g, feature_names=None, feature_indices=None, g_id=0, qoi_ops=False):
     """Model input for one converter geometry dict (dataset_converter_3d.extract_geometry_3d)
     without labels (Y_field / Y_freq dummies): label-free inference, e.g. active sampling.
-    The field comes from g['field'] (default 'H'); an 'E' geometry needs g['bnd_edge'].
     qoi_ops=True adds 'qoi_ops' (src.qoi.build_qoi_operators; needs g['center'], else 0)
     so that the collated batch carries the QoI_* keys (no Y_qoi: no labels)."""
-    field = str(g.get('field', None) or 'H').upper()
-    if field not in KP_NULL:
-        raise ValueError(f"geometry field must be one of {FIELDS}, got {field!r}")
+    if g.get('bnd_edge', None) is None:
+        raise ValueError("item_from_geometry: geometry without 'bnd_edge' (PEC wall-edge mask)")
     names = list(feature_names or FEATURE_NAMES_3D)
     _, _, vol_col = _feature_columns(names)
     F = np.asarray(g['Input_funcs'], dtype=np.float32)
@@ -443,16 +388,13 @@ def item_from_geometry(g, feature_names=None, feature_indices=None, g_id=0, qoi_
             'Scale': torch.tensor(float(g['scale']), dtype=torch.float32),
             'TorsionMax': torch.tensor(float(g.get('torsion_max', 0.0) or 0.0), dtype=torch.float32),
             'geom_id': torch.tensor([g_id], dtype=torch.long), 'FreqNext': torch.tensor(float('nan')),
-            'shape_type': str(g.get('shape_type', '')), 'field': field}
+            'shape_type': str(g.get('shape_type', ''))}
     for k in ('M', 'K', 'G', 'Kp'):
         item[k] = to_csr(g[k], shapes[k])
-    if field == 'E':
-        if g.get('bnd_edge', None) is None:
-            raise ValueError("item_from_geometry: field 'E' geometry without 'bnd_edge'")
-        bnd = np.asarray(g['bnd_edge'], dtype=bool).reshape(-1)
-        if len(bnd) != ne:
-            raise ValueError(f"bnd_edge has {len(bnd)} entries, {ne} edges")
-        item['BndEdge'] = torch.from_numpy(bnd)
+    bnd = np.asarray(g['bnd_edge'], dtype=bool).reshape(-1)
+    if len(bnd) != ne:
+        raise ValueError(f"bnd_edge has {len(bnd)} entries, {ne} edges")
+    item['BndEdge'] = torch.from_numpy(bnd)
     if qoi_ops:
-        item['qoi_ops'] = qoi_operators_of(g, field, M=item['M'])
+        item['qoi_ops'] = qoi_operators_of(g, M=item['M'])
     return item

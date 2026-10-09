@@ -64,7 +64,7 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
             {fams.map((f) => <option key={f.label} value={f.label}>{f.label}</option>)}
           </select>
         </label>
-        {stats && <span className="muted">{int(stats.total)} {t(lang, 'geometries')} · {stats.fields.join(', ')}-field · {stats.n_modes} {t(lang, 'modesStored')}</span>}
+        {stats && <span className="muted">{int(stats.total)} {t(lang, 'geometries')} · {stats.n_modes} {t(lang, 'modesStored')}</span>}
       </div>
 
       <div className="overview">

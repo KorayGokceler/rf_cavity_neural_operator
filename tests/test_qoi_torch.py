@@ -1,5 +1,5 @@
 """Differentiable cavity QoI (src/qoi/torch_qoi.py, docs/24 §0.5) and the
-QoI loss / metrics of GNOTLightning (model_type='eigenspace3d').
+QoI loss / metrics of CavityLightning.
 
 The formula tests use random per-geometry operators of the §0.3 shapes and an
 independent dense numpy transcription of §0.2 (so they do not depend on the
@@ -20,7 +20,7 @@ from src.qoi.torch_qoi import (C0, EPS0, MU0, QOI_KEYS, QOI_LABELS, has_qoi_ops,
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def random_ops(ne, n_axis, n_surf, field, seed, scale=0.1):
+def random_ops(ne, n_axis, n_surf, seed, scale=0.1):
     """§0.3-shaped operator dict with random sparse entries (S, M SPD-ish)."""
     rng = np.random.default_rng(seed)
     rs = lambda r, c, d: sp.random(r, c, density=d, random_state=rng, format='csr')   # noqa: E731
@@ -34,7 +34,7 @@ def random_ops(ne, n_axis, n_surf, field, seed, scale=0.1):
     zeta = np.linspace(-0.5, 0.5, n_axis)
     Es = (rs(3 * n_surf, ne, 0.3) - rs(3 * n_surf, ne, 0.3)).tocsr()
     Hs = (rs(3 * n_surf, ne, 0.3) - rs(3 * n_surf, ne, 0.3)).tocsr()
-    return {'field': field, 'scale': float(scale), 'M': M, 'S': S, 'Az': Az, 'zeta': zeta,
+    return {'scale': float(scale), 'M': M, 'S': S, 'Az': Az, 'zeta': zeta,
             'q': q, 'L_axis': float(q.sum()), 'Esurf': Es, 'Hsurf': Hs,
             'face_area': rng.uniform(0.5, 1.0, n_surf)}
 
@@ -65,10 +65,9 @@ def _qoi_keys(ops_list, ne_max):
 
 
 def make_batch(ops_list):
-    """Minimal batch: M + the QoI keys + field, for qoi_torch only."""
+    """Minimal batch: M + the QoI keys, for qoi_torch only."""
     ne_max = max(o['M'].shape[0] for o in ops_list)
     batch = {'M': _block_diag([o['M'] for o in ops_list], ne_max, ne_max),
-             'field': ops_list[0]['field'],
              'Scale': torch.tensor([o['scale'] for o in ops_list], dtype=torch.float32)}
     batch.update(_qoi_keys(ops_list, ne_max))
     return batch, ne_max
@@ -85,12 +84,8 @@ def ref_qoi(o, U, f_hz, Rs=None, sigma=5.8e7, beta=1.0, convention='linac', L_ac
     vt = np.abs((o['q'][:, None] * a * ph).sum(0))
     T = vt / (o['q'][:, None] * np.abs(a)).sum(0)
     pk = lambda A: np.sqrt(((A @ U).reshape(-1, 3, U.shape[1]) ** 2).sum(1)).max(0)   # noqa: E731
-    if o['field'] == 'E':
-        Uj, P = 0.5 * EPS0 * s ** 3 * uMu, 0.5 * Rs / (w * MU0) ** 2 * uSu
-        V, Epk, Bpk = s * vt, pk(o['Esurf']), pk(o['Hsurf']) / (w * s)
-    else:
-        Uj, P = 0.5 * MU0 * s ** 3 * uMu, 0.5 * Rs * s ** 2 * uSu
-        V, Epk, Bpk = vt / (w * EPS0), pk(o['Esurf']) / (w * EPS0 * s), MU0 * pk(o['Hsurf'])
+    Uj, P = 0.5 * EPS0 * s ** 3 * uMu, 0.5 * Rs / (w * MU0) ** 2 * uSu
+    V, Epk, Bpk = s * vt, pk(o['Esurf']), pk(o['Hsurf']) / (w * s)
     V, P, Epk, Bpk = V / np.sqrt(Uj), P / Uj, Epk / np.sqrt(Uj), Bpk / np.sqrt(Uj)
     h = 0.5 if convention == 'circuit' else 1.0
     L = s * o['L_axis'] if L_acc is None else L_acc
@@ -103,8 +98,8 @@ def ref_qoi(o, U, f_hz, Rs=None, sigma=5.8e7, beta=1.0, convention='linac', L_ac
             'Bpk_Eacc_mT_per_MVm': Bpk * 1e3 / (Eacc * 1e-6)}
 
 
-def _setup(field, K=3, sizes=((30, 11, 7), (22, 9, 5), (35, 13, 8)), seed=0):
-    ops = [random_ops(ne, p, nf, field, seed + i, scale=0.05 + 0.05 * i)
+def _setup(K=3, sizes=((30, 11, 7), (22, 9, 5), (35, 13, 8)), seed=0):
+    ops = [random_ops(ne, p, nf, seed + i, scale=0.05 + 0.05 * i)
            for i, (ne, p, nf) in enumerate(sizes)]
     batch, ne_max = make_batch(ops)
     rng = np.random.default_rng(seed + 100)
@@ -118,10 +113,9 @@ def _setup(field, K=3, sizes=((30, 11, 7), (22, 9, 5), (35, 13, 8)), seed=0):
 
 # ── formulas, batching, invariances ──────────────────────────────────────────
 
-@pytest.mark.parametrize("field", ["E", "H"])
 @pytest.mark.parametrize("convention,Rs,L_acc", [("linac", None, None), ("circuit", 0.01, 0.2)])
-def test_matches_dense_reference(field, convention, Rs, L_acc):
-    ops, batch, F, f_ghz, Us = _setup(field)
+def test_matches_dense_reference(convention, Rs, L_acc):
+    ops, batch, F, f_ghz, Us = _setup()
     assert has_qoi_ops(batch)
     out = qoi_torch(batch, F, f_ghz, Rs=Rs, convention=convention, beta=0.8, L_acc=L_acc)
     assert set(out) == set(QOI_KEYS)
@@ -129,11 +123,11 @@ def test_matches_dense_reference(field, convention, Rs, L_acc):
         ref = ref_qoi(o, U, f_ghz[b].numpy() * 1e9, Rs=Rs, convention=convention, beta=0.8, L_acc=L_acc)
         for k in QOI_KEYS:
             assert out[k].shape == f_ghz.shape and out[k].dtype == torch.float64
-            np.testing.assert_allclose(out[k][b].numpy(), ref[k], rtol=1e-10, err_msg=f"{field} {k}")
+            np.testing.assert_allclose(out[k][b].numpy(), ref[k], rtol=1e-10, err_msg=k)
 
 
 def test_amplitude_sign_and_dtype_invariance():
-    ops, batch, F, f_ghz, _ = _setup("H")
+    ops, batch, F, f_ghz, _ = _setup()
     ref = qoi_torch(batch, F, f_ghz)
     c = torch.tensor([-3.0, 0.01, 7.0], dtype=torch.float64)
     out = qoi_torch(batch, F * c, f_ghz)
@@ -146,7 +140,7 @@ def test_amplitude_sign_and_dtype_invariance():
 
 def test_padding_invariance():
     """A geometry alone == the same geometry inside a padded batch (larger neighbours)."""
-    ops, batch, F, f_ghz, Us = _setup("E")
+    ops, batch, F, f_ghz, Us = _setup()
     alone, _ = make_batch([ops[1]])
     out1 = qoi_torch(alone, F[1:2, :len(Us[1])], f_ghz[1:2])
     outB = qoi_torch(batch, F, f_ghz)
@@ -160,7 +154,7 @@ def test_padding_invariance():
 
 
 def test_frequency_broadcast_and_fixed_rs():
-    ops, batch, F, f_ghz, _ = _setup("H")
+    ops, batch, F, f_ghz, _ = _setup()
     f1 = f_ghz[:, :1]
     a = qoi_torch(batch, F, f1.squeeze(-1))                         # [B] → every mode
     b = qoi_torch(batch, F, f1.expand_as(f_ghz))
@@ -173,7 +167,7 @@ def test_frequency_broadcast_and_fixed_rs():
 
 
 def test_peak_p_norm():
-    ops, batch, F, f_ghz, Us = _setup("H")
+    ops, batch, F, f_ghz, Us = _setup()
     ex = qoi_torch(batch, F, f_ghz)['B_pk_T']
     p8 = qoi_torch(batch, F, f_ghz, peak_p=8)['B_pk_T']
     p200 = qoi_torch(batch, F, f_ghz, peak_p=200)['B_pk_T']
@@ -183,15 +177,16 @@ def test_peak_p_norm():
     o, U, b = ops[0], Us[0], 0
     mag = np.sqrt(((o['Hsurf'] @ U).reshape(-1, 3, U.shape[1]) ** 2).sum(1))
     uMu = np.einsum('ek,ek->k', U, o['M'] @ U)
-    ref = MU0 * (mag ** 8).sum(0) ** (1 / 8) / np.sqrt(0.5 * MU0 * o['scale'] ** 3 * uMu)
+    w = 2 * np.pi * f_ghz[b].numpy() * 1e9
+    ref = (mag ** 8).sum(0) ** (1 / 8) / (w * o['scale']) / np.sqrt(0.5 * EPS0 * o['scale'] ** 3 * uMu)
     np.testing.assert_allclose(p8[b].numpy(), ref, rtol=1e-10)
     with pytest.raises(ValueError):
         qoi_torch(batch, F, f_ghz, peak_p=0.5)
 
 
-@pytest.mark.parametrize("field,peak_p", [("E", None), ("H", None), ("H", 6.0), ("E", 6.0)])
-def test_gradcheck(field, peak_p):
-    ops, batch, F, f_ghz, _ = _setup(field, K=2, sizes=((12, 6, 4), (9, 5, 3)), seed=3)
+@pytest.mark.parametrize("peak_p", [None, 6.0])
+def test_gradcheck(peak_p):
+    ops, batch, F, f_ghz, _ = _setup(K=2, sizes=((12, 6, 4), (9, 5, 3)), seed=3)
     F = F.clone().requires_grad_(True)
     f = f_ghz.clone().requires_grad_(True)
     keys = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
@@ -204,7 +199,7 @@ def test_gradcheck(field, peak_p):
 
 def test_zero_voltage_gradient_is_finite():
     """A mode with A_z u = 0 (V = 0): finite values and gradients (√(x² + tiny))."""
-    ops, batch, F, f_ghz, _ = _setup("E", K=2)
+    ops, batch, F, f_ghz, _ = _setup(K=2)
     batch = dict(batch)
     batch['QoI_q'] = torch.zeros_like(batch['QoI_q'])
     F = F.clone().requires_grad_(True)
@@ -216,27 +211,27 @@ def test_zero_voltage_gradient_is_finite():
 
 
 def test_missing_ops_raise():
-    ops, batch, F, f_ghz, _ = _setup("H")
+    ops, batch, F, f_ghz, _ = _setup()
     del batch['QoI_Az']
     assert not has_qoi_ops(batch)
     with pytest.raises(ValueError, match="qoi_ops=True"):
         qoi_torch(batch, F, f_ghz)
 
 
-# ── GNOTLightning: loss / metrics wiring ─────────────────────────────────────
+# ── CavityLightning: loss / metrics wiring ─────────────────────────────────────
 
 skfem = pytest.importorskip("skfem")
 
 
-@pytest.fixture(scope="module", params=["H", "E"])
-def ds3d(request, tmp_path_factory):
+@pytest.fixture(scope="module")
+def ds3d(tmp_path_factory):
     import pickle
 
     from src.data.dataset_3d import Maxwell3DDataset
     from tests.maxwell3d_synth import make_dataset
-    path = tmp_path_factory.mktemp("qoi3d") / f"synth_{request.param}.pkl"
+    path = tmp_path_factory.mktemp("qoi3d") / "synth.pkl"
     with open(path, "wb") as f:
-        pickle.dump(make_dataset(n_geoms=3, n=3, n_modes=6, seed=0, field=request.param), f)
+        pickle.dump(make_dataset(n_geoms=3, n=3, n_modes=6, seed=0), f)
     return Maxwell3DDataset(str(path), split="test", train_ratio=0.0, val_ratio=0.0)
 
 
@@ -248,7 +243,7 @@ def _qoi_batch(ds, idx=(0, 1), seed=0):
     ne_max = batch['Edges'].shape[1]
     ops = []
     for b, it in enumerate(items):
-        o = random_ops(it['Edges'].shape[0], 9, 6, batch['field'], seed + b, float(it['Scale']))
+        o = random_ops(it['Edges'].shape[0], 9, 6, seed + b, float(it['Scale']))
         o['M'] = it['M']
         ops.append(o)
     batch.update(_qoi_keys(ops, ne_max))
@@ -256,12 +251,11 @@ def _qoi_batch(ds, idx=(0, 1), seed=0):
 
 
 def _module(ds, **kw):
-    from src.training.lightning_module import GNOTLightning
+    from src.training.lightning_module import CavityLightning
     torch.manual_seed(0)
-    lm = GNOTLightning(val_dim=ds[0]['Input_funcs'].shape[-1], grid_dim=3, hidden_dim=16, n_heads=2,
-                       n_basis=10, num_field_modes=4, rff_dim=8, model_type="eigenspace3d",
-                       physics_freq=True, eigenspace_kwargs={"n_layers": 1},
-                       near_deg_rel_threshold=0.02, **kw)
+    lm = CavityLightning(val_dim=ds[0]['Input_funcs'].shape[-1], hidden_dim=16, n_heads=2, n_basis=10,
+                         num_field_modes=4, rff_dim=8, eigenspace_kwargs={"n_layers": 1},
+                         near_deg_rel_threshold=0.02, **kw)
     lm.freq_stats = dict(ds.stats)
     return lm
 
@@ -271,7 +265,7 @@ def _logged(lm, batch, prefix="val", grad=False):
     lm.log = lambda name, value, **kw: logs.__setitem__(name, (float(torch.as_tensor(value).detach()),
                                                                kw.get("batch_size")))
     with torch.set_grad_enabled(grad):
-        loss, _, _ = lm._compute_loss(batch, prefix)
+        loss, _, _ = lm._compute_loss_3d(batch, prefix)
     return loss, logs
 
 
@@ -373,13 +367,13 @@ def test_train_py_cli_flags(monkeypatch):
 
 # ── consistency with the numpy reference + the dataset collate (docs/24 §0.3/§0.4) ──
 
-def _qoi_ds(tmp_path_factory, field, n_geoms=3):
+def _qoi_ds(tmp_path_factory, n_geoms=3):
     import pickle
 
     from src.data.dataset_3d import Maxwell3DDataset
     from tests.maxwell3d_synth import make_dataset
-    path = tmp_path_factory.mktemp("qoiops") / f"synth_{field}.pkl"
-    data = make_dataset(n_geoms=n_geoms, n=4, n_modes=6, seed=1, field=field)
+    path = tmp_path_factory.mktemp("qoiops") / "synth.pkl"
+    data = make_dataset(n_geoms=n_geoms, n=4, n_modes=6, seed=1)
     try:                                         # stored labels (converter back-fill), if available
         from src.data.dataset_converter_3d import attach_qoi_labels
         attach_qoi_labels(data, verbose=False)
@@ -394,12 +388,11 @@ def _qoi_ds(tmp_path_factory, field, n_geoms=3):
         pytest.skip("Maxwell3DDataset has no qoi_ops flag yet")
 
 
-@pytest.mark.parametrize("field", ["H", "E"])
-def test_torch_matches_numpy_on_collated_batch(field, tmp_path_factory):
+def test_torch_matches_numpy_on_collated_batch(tmp_path_factory):
     """qoi_torch on a maxwell3d_collate batch == src.qoi.qoi_from_dofs per geometry (float64)."""
     qoi_np = pytest.importorskip("src.qoi.operators")
     from src.data.dataset_3d import maxwell3d_collate
-    _, ds = _qoi_ds(tmp_path_factory, field)
+    _, ds = _qoi_ds(tmp_path_factory)
     items = [ds[i] for i in range(len(ds))]
     batch = maxwell3d_collate(items)
     assert has_qoi_ops(batch)
@@ -410,7 +403,7 @@ def test_torch_matches_numpy_on_collated_batch(field, tmp_path_factory):
             ref = qoi_np.qoi_from_dofs(it['qoi_ops'], it['Y_field'].double().numpy(),
                                        f_ghz[b].numpy() * 1e9, **kw)
             for k in QOI_KEYS:
-                np.testing.assert_allclose(out[k][b].numpy(), ref[k], rtol=1e-6, err_msg=f"{field} {k} {kw}")
+                np.testing.assert_allclose(out[k][b].numpy(), ref[k], rtol=1e-6, err_msg=f"{k} {kw}")
     # the stored labels (when the PKL has them) agree too (float32 targets)
     yq = batch.get('Y_qoi', None)
     assert yq is not None and yq.shape == (len(items), 6, len(ds.qoi_names))
@@ -421,12 +414,11 @@ def test_torch_matches_numpy_on_collated_batch(field, tmp_path_factory):
             assert torch.allclose(out[name][ok].float(), yq[..., j][ok], rtol=1e-3), name
 
 
-@pytest.mark.parametrize("field", ["H", "E"])
-def test_training_smoke_step_with_qoi_loss(field, tmp_path_factory):
-    """End to end: dataset(qoi_ops=True) → collate → GNOTLightning(qoi_weight > 0) → a few
+def test_training_smoke_step_with_qoi_loss(tmp_path_factory):
+    """End to end: dataset(qoi_ops=True) → collate → CavityLightning(qoi_weight > 0) → a few
     optimizer steps with finite loss / gradients and the QoI metrics logged."""
     from src.data.dataset_3d import maxwell3d_collate
-    _, ds = _qoi_ds(tmp_path_factory, field)
+    _, ds = _qoi_ds(tmp_path_factory)
     batch = maxwell3d_collate([ds[0], ds[1]])
     lm = _module(ds, qoi_weight=0.1, qoi_peak_p=8)
     opt = torch.optim.Adam(lm.parameters(), lr=1e-3)
@@ -446,7 +438,7 @@ def test_fast_dev_run_train_py_with_qoi(tmp_path_factory, tmp_path, monkeypatch)
     import sys
 
     import train
-    path, _ = _qoi_ds(tmp_path_factory, "H", n_geoms=5)
+    path, _ = _qoi_ds(tmp_path_factory, n_geoms=5)
     monkeypatch.setattr(sys, "argv", [
         "train.py", "--config", "configs/eigenspace_3d.yaml", "--fast_dev_run",
         "--qoi_weight", "0.1", "--qoi_terms", "Q0,G_ohm,R_over_Q_ohm", "--override",

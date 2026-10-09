@@ -6,13 +6,10 @@ Fields are nodal-averaged (nedelec.vertex_field); colour limits are fixed per
 (mode, field, component) by the true field over the whole volume, so moving
 the phase / the cut shows the real variation.
 
-The primary field is the one the DOFs are (pred['field']: 'H' default, 'E'
-for E-formulation PKLs); the other one is the curl of the primary.  A
-lossless eigenmode is a standing wave, E and H 90° apart:
-    H primary:  H(t) = H·cos φ,  E(t) ∝ +curl H·sin φ   (Ampère, 1/(jωε))
-    E primary:  E(t) = E·cos φ,  H(t) ∝ −curl E·sin φ   (Faraday, −1/(jωμ))
-So the pattern does not travel; 0° = primary maximal / secondary zero,
-90° = secondary maximal / primary zero, 180° = primary with the opposite sign.
+The DOFs are E; H is its curl. A lossless eigenmode is a standing wave, E and H 90° apart:
+    E(t) = E·cos φ,  H(t) ∝ −curl E·sin φ   (Faraday, −1/(jωμ))
+So the pattern does not travel; 0° = E maximal / H zero, 90° = H maximal / E zero,
+180° = E with the opposite sign.
 (Amplitude constants are dropped: each field has its own colour limit.)
 
     from src.viz.predict import load, predict
@@ -36,13 +33,9 @@ class ModeViewer:
         self.tets = np.asarray(pred['tets'], np.int64)
         self.scale, self.center = float(pred['scale']), np.asarray(pred['center'], np.float64)
         self.K = pred['true'].shape[1]
-        self.primary = str(pred.get('field', 'H') or 'H').upper()
-        if self.primary not in ('H', 'E'):
-            raise ValueError(f"pred['field'] must be 'H' or 'E', got {self.primary!r}")
-        self.secondary = 'E' if self.primary == 'H' else 'H'
+        self.primary, self.secondary = 'E', 'H'
         self.fields = (self.primary, self.secondary)
-        # secondary(t) ∝ sign · curl(primary) · sin φ  (see module docstring)
-        self._sign = {self.primary: 1.0, self.secondary: 1.0 if self.primary == 'H' else -1.0}
+        self._sign = {'E': 1.0, 'H': -1.0}          # H(t) ∝ −curl E · sin φ (module docstring)
         self.nodal = {(f, w): vertex_field(self.X, self.tets, pred['edges'], pred[w], curl=(f != self.primary))
                       for f in self.fields for w in ('true', 'pred')}      # [Nv,3,K]
         self._planes = {}

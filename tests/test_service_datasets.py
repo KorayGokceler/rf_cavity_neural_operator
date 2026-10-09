@@ -50,7 +50,7 @@ def test_h5_and_pkl_items_agree(data_dir):
     rh, rp = h5.rows(), pk.rows()
     assert sorted(r["id"] for r in rh) == sorted(r["id"] for r in rp) == [1000, 1001, 1002]
     a, b = h5.open(1001), pk.open(1001)
-    assert a["family"] == b["family"] == "pillbox_pipes" and a["field"] == b["field"] == "E"
+    assert a["family"] == b["family"] == "pillbox_pipes"
     np.testing.assert_allclose(a["f_GHz"], b["f_GHz"], rtol=1e-6)
     np.testing.assert_allclose(a["nodes"], b["nodes"], atol=1e-6)             # PKL: X·scale + center
     np.testing.assert_allclose(a["geom"]["Input_funcs"], b["geom"]["Input_funcs"], atol=1e-6)
@@ -99,7 +99,7 @@ def test_dataset_endpoints_and_comparison(client):
     assert client.get(f"/api/datasets/{did}/items", params={"sort": "nope"}).status_code == 422
 
     o = client.post(f"/api/datasets/{did}/items/{it['items'][0]['id']}/open").json()
-    assert o["predictable"] and o["truth"]["source"] == "fe" and len(o["truth"]["modes"]) == 4
+    assert o["truth"]["source"] == "fe" and len(o["truth"]["modes"]) == 4
     assert o["truth"]["labels"] is not None
     q_fe, q_lab = o["truth"]["modes"][0]["Q0"], o["truth"]["labels"][0]["Q0"]
     assert q_fe == pytest.approx(q_lab, rel=1e-4)                              # recomputed = stored label

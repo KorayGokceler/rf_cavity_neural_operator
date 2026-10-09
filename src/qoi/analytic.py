@@ -133,21 +133,21 @@ def reference_mesh(shape, dims, h):
             gmsh.finalize()
 
 
-def fe_modes(nodes, tets, field, k=1):
-    """Generator eigensolve (solve_e_modes / solve_h_modes) on the converter-normalised mesh, mapped
-    to the PKL conventions.  Returns (geom dict {X, tets, edges, scale, center, M, field},
+def fe_modes(nodes, tets, k=1):
+    """Generator eigensolve (solve_e_modes) on the converter-normalised mesh, mapped to the PKL
+    conventions.  Returns (geom dict {X, tets, edges, scale, center, M},
     Y [Ne,k] unit M-norm in sorted-edge order, f_hz [k])."""
     from src.data.dataset_converter_3d import (assemble_n0, edges_from_tets, h5_edges_to_canonical,
                                                tet_geometry)
-    from src.data_gen.dataset_generator_3d import assemble_h_n0, solve_modes
+    from src.data_gen.dataset_generator_3d import assemble_n0 as assemble_skfem, solve_e_modes
     nodes = np.asarray(nodes, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     vol, _ = tet_geometry(nodes, tets)
     center = (vol[:, None] * nodes[tets].mean(1)).sum(0) / vol.sum()
     scale = float(np.max(np.abs(nodes - center)))
     X = (nodes - center) / scale
-    A = assemble_h_n0(X, tets)
-    vals, vecs, _ = solve_modes(A, k, field)
+    A = assemble_skfem(X, tets)
+    vals, vecs, _ = solve_e_modes(A, k)
     edges = edges_from_tets(tets)
     rows, sign = h5_edges_to_canonical(A["edges"], len(X), edges)
     Y = np.zeros_like(vecs)
@@ -155,13 +155,13 @@ def fe_modes(nodes, tets, field, k=1):
     M = assemble_n0(X, tets, edges)[0]
     Y /= np.sqrt(np.einsum("ij,ij->j", Y, M @ Y))[None]
     f = C0 * np.sqrt(vals) / (2 * np.pi * scale)
-    geom = {"X": X, "tets": tets, "edges": edges, "scale": scale, "center": center, "M": M, "field": field}
+    geom = {"X": X, "tets": tets, "edges": edges, "scale": scale, "center": center, "M": M}
     return geom, Y, f
 
 
-def reference_case(shape, dims, h, field, k=1):
+def reference_case(shape, dims, h, k=1):
     """(geom, Y [Ne,k], f_hz [k], analytic dict) of a reference cavity at mesh size h [m]."""
     nodes, tets = reference_mesh(shape, dims, h)
-    geom, Y, f = fe_modes(nodes, tets, field, k)
+    geom, Y, f = fe_modes(nodes, tets, k)
     ref = pillbox_tm010(*dims) if shape == "pillbox" else box_te101(*dims)
     return geom, Y, f, ref

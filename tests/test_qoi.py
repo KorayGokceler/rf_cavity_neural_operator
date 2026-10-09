@@ -60,7 +60,7 @@ def test_box_closed_form_matches_pozar():
 def jittered_box():
     """Small skfem tensor box, interior vertices jittered, edges in skfem (unsorted) order."""
     from tests.maxwell3d_synth import box_geometry
-    geom, lam, vec = box_geometry((1.0, 0.8, 0.6), n=4, jitter=0.2, scale=0.1, n_modes=3, field="H")
+    geom, lam, vec = box_geometry((1.0, 0.8, 0.6), n=4, jitter=0.2, scale=0.1, n_modes=3)
     return geom
 
 
@@ -84,15 +84,11 @@ def test_wall_loss_exact_for_constant_and_rotational_fields(jittered_box):
     X, t, e = jittered_box["X"].astype(float), jittered_box["tets"], jittered_box["edges"]
     bf = boundary_face_data(X, t)
     c = np.array([0.3, -1.2, 0.7])
-    u = _interp(X, e, lambda x: np.broadcast_to(c, x.shape))       # H = c (in N0 exactly)
-    exact = (bf["area"] * (np.cross(bf["normal"], c) ** 2).sum(1)).sum()
-    S_H = wall_loss_matrix(X, t, e, "H")
-    assert u @ S_H @ u == pytest.approx(exact, rel=1e-12)
-    assert abs(S_H - S_H.T).max() < 1e-14
     u2 = _interp(X, e, lambda x: np.cross(c, x))                    # curl(c × x) = 2c
-    S_E = wall_loss_matrix(X, t, e, "E")
+    S = wall_loss_matrix(X, t, e)
+    assert abs(S - S.T).max() < 1e-12 * abs(S).max()
     exact2 = (bf["area"] * (np.cross(bf["normal"], 2 * c) ** 2).sum(1)).sum()
-    assert u2 @ S_E @ u2 == pytest.approx(exact2, rel=1e-12)
+    assert u2 @ S @ u2 == pytest.approx(exact2, rel=1e-12)
 
 
 def test_axis_and_surface_operators_exact_for_constants(jittered_box):
@@ -103,23 +99,16 @@ def test_axis_and_surface_operators_exact_for_constants(jittered_box):
     u_r = _interp(X, e, lambda x: np.cross(c, x))
     bf = boundary_face_data(X, t)
     n = bf["normal"]
-    for field in ("E", "H"):
-        ops = build_qoi_operators(X, t, e, g["scale"], g["center"], field, n_axis=50)
-        assert ops["L_axis"] == pytest.approx(0.6, rel=1e-6)        # chord of the box along z (float32 X)
-        assert ops["q"].sum() == pytest.approx(ops["L_axis"]) and np.all(ops["q"] > 0)
-        # Az: E primary → value_z of the constant field (c_z); H primary → curl_z of c × x (2 c_z)
-        target = c[2] if field == "E" else 2 * c[2]
-        np.testing.assert_allclose(ops["Az"] @ (u_c if field == "E" else u_r), target, rtol=1e-10)
-        for method in ("centroid", "recovered"):
-            Es, Hs = surface_operators(X, t, e, field, method)
-            if field == "E":   # E = c: normal part; H ∝ curl(c × x) = 2c: tangential part
-                Ev, Hv = (Es @ u_c).reshape(-1, 3), (Hs @ u_r).reshape(-1, 3)
-                np.testing.assert_allclose(Ev, (n @ c)[:, None] * n, atol=1e-10)
-                np.testing.assert_allclose(Hv, 2 * (c - (n @ c)[:, None] * n), atol=1e-10)
-            else:              # H = c: tangential; E ∝ curl(c × x) = 2c: normal
-                Ev, Hv = (Es @ u_r).reshape(-1, 3), (Hs @ u_c).reshape(-1, 3)
-                np.testing.assert_allclose(Ev, 2 * (n @ c)[:, None] * n, atol=1e-10)
-                np.testing.assert_allclose(Hv, c - (n @ c)[:, None] * n, atol=1e-10)
+    ops = build_qoi_operators(X, t, e, g["scale"], g["center"], n_axis=50)
+    assert ops["L_axis"] == pytest.approx(0.6, rel=1e-6)            # chord of the box along z (float32 X)
+    assert ops["q"].sum() == pytest.approx(ops["L_axis"]) and np.all(ops["q"] > 0)
+    np.testing.assert_allclose(ops["Az"] @ u_c, c[2], rtol=1e-10)   # Az: value_z of the constant field
+    for method in ("centroid", "recovered"):
+        Es, Hs = surface_operators(X, t, e, method)
+        # E = c: normal part; H ∝ curl(c × x) = 2c: tangential part
+        Ev, Hv = (Es @ u_c).reshape(-1, 3), (Hs @ u_r).reshape(-1, 3)
+        np.testing.assert_allclose(Ev, (n @ c)[:, None] * n, atol=1e-10)
+        np.testing.assert_allclose(Hv, 2 * (c - (n @ c)[:, None] * n), atol=1e-10)
 
 
 def test_build_operators_shapes_and_mass(jittered_box):
@@ -127,13 +116,13 @@ def test_build_operators_shapes_and_mass(jittered_box):
     X, t, e = g["X"].astype(float), g["tets"], g["edges"]
     ne = len(e)
     M_ref = sp.csr_matrix((g["M"][2], g["M"][1], g["M"][0]), shape=(ne, ne))
-    ops = build_qoi_operators(X, t, e, g["scale"], g["center"], "H")     # M assembled, unsorted edges
+    ops = build_qoi_operators(X, t, e, g["scale"], g["center"])         # M assembled, unsorted edges
     assert abs(ops["M"] - M_ref).max() < 1e-6 * abs(M_ref).max()       # skfem M from the float64 mesh
     nf = len(ops["face_area"])
     assert ops["Esurf"].shape == ops["Hsurf"].shape == (3 * nf, ne)
     assert ops["Az"].shape == (401, ne) and ops["zeta"].shape == ops["q"].shape == (401,)
     assert ops["S"].shape == (ne, ne) and isinstance(ops["S"], sp.csr_matrix)
-    assert set(ops) == {"field", "scale", "M", "S", "Az", "zeta", "q", "L_axis", "Esurf", "Hsurf", "face_area"}
+    assert set(ops) == {"scale", "M", "S", "Az", "zeta", "q", "L_axis", "Esurf", "Hsurf", "face_area"}
 
 
 # ─────────────────────────── FE vs analytic (gmsh) ─────────────
@@ -146,8 +135,7 @@ def cases():
         pytest.skip("gmsh not available")
     out = {}
     for shape, dims, h in (("pillbox", PILLBOX, 0.02), ("box", BOX, 0.01)):
-        for field in ("E", "H"):
-            out[shape, field] = an.reference_case(shape, dims, h, field, k=3)
+        out[shape] = an.reference_case(shape, dims, h, k=3)
     return out
 
 
@@ -159,12 +147,11 @@ TOL = {"f_Hz": 0.012, "Q0": 0.02, "G_ohm": 0.02, "R_over_Q_ohm": 0.03, "R_sh_ohm
 
 @pytest.mark.gmsh
 @pytest.mark.parametrize("shape", ["pillbox", "box"])
-@pytest.mark.parametrize("field", ["E", "H"])
-def test_fe_matches_analytic(cases, shape, field):
-    geom, Y, f, ref = cases[shape, field]
+def test_fe_matches_analytic(cases, shape):
+    geom, Y, f, ref = cases[shape]
     q = cavity_qoi(geom, Y[:, 0], f[0] / 1e9)
     for k, tol in TOL.items():
-        if shape == "pillbox" and field == "E" and k in ("Q0", "G_ohm", "R_sh_ohm"):
+        if shape == "pillbox" and k in ("Q0", "G_ohm", "R_sh_ohm"):
             tol = 0.10
         assert q[k][0] == pytest.approx(ref[k], rel=tol), (k, q[k][0], ref[k])
     assert q["L_acc_m"][0] == pytest.approx(ref["L_acc_m"], rel=1e-9)
@@ -172,22 +159,9 @@ def test_fe_matches_analytic(cases, shape, field):
 
 
 @pytest.mark.gmsh
-@pytest.mark.parametrize("shape", ["pillbox", "box"])
-def test_e_and_h_formulation_agree(cases, shape):
-    qs = {}
-    for field in ("E", "H"):
-        geom, Y, f, _ = cases[shape, field]
-        qs[field] = cavity_qoi(geom, Y[:, 0], f[0] / 1e9)
-    for k in ("R_over_Q_ohm", "T_transit", "Epk_Eacc", "Bpk_Eacc_mT_per_MVm"):
-        assert qs["E"][k][0] == pytest.approx(qs["H"][k][0], rel=0.035), k
-    assert qs["E"]["Q0"][0] == pytest.approx(qs["H"]["Q0"][0], rel=0.08 if shape == "pillbox" else 0.02)
-
-
-@pytest.mark.gmsh
-@pytest.mark.parametrize("field", ["E", "H"])
-def test_invariance_normalisation_and_conventions(cases, field):
-    geom, Y, f, ref = cases["box", field]
-    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"], field,
+def test_invariance_normalisation_and_conventions(cases):
+    geom, Y, f, ref = cases["box"]
+    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"],
                               M=to_csr_tuple(geom["M"]))
     u = Y[:, 0]
     q = qoi_from_dofs(ops, u, f[0])
@@ -195,17 +169,14 @@ def test_invariance_normalisation_and_conventions(cases, field):
         np.testing.assert_allclose(v, q[k], rtol=1e-12, err_msg=k)
     # U = 1 J by hand: scale u to 1 J, evaluate V and E_pk directly
     s, w = geom["scale"], 2 * np.pi * f[0]
-    cU = EPS0 if field == "E" else MU0
-    a = 1.0 / np.sqrt(0.5 * cU * s ** 3 * (u @ (ops["M"] @ u)))
-    if field == "E":   # independent axis integral of the Whitney E_z (nedelec.eval_field, trapezoid)
-        from src.viz.nedelec import eval_field
-        zeta = np.linspace(ops["zeta"][0], ops["zeta"][-1], 4001)
-        pts = np.column_stack([np.zeros_like(zeta), np.zeros_like(zeta), zeta])
-        ez = np.nan_to_num(s * eval_field(geom["X"], geom["tets"], geom["edges"], a * u, pts)[:, 2])
-        V = abs(np.trapezoid(ez * np.exp(1j * w * zeta * s / an.C0), zeta))
-        assert q["V_acc_V"][0] == pytest.approx(V, rel=2e-3)
+    a = 1.0 / np.sqrt(0.5 * EPS0 * s ** 3 * (u @ (ops["M"] @ u)))
+    from src.viz.nedelec import eval_field        # independent axis integral of the Whitney E_z (trapezoid)
+    zeta = np.linspace(ops["zeta"][0], ops["zeta"][-1], 4001)
+    pts = np.column_stack([np.zeros_like(zeta), np.zeros_like(zeta), zeta])
+    ez = np.nan_to_num(s * eval_field(geom["X"], geom["tets"], geom["edges"], a * u, pts)[:, 2])
+    V = abs(np.trapezoid(ez * np.exp(1j * w * zeta * s / an.C0), zeta))
+    assert q["V_acc_V"][0] == pytest.approx(V, rel=2e-3)
     Epk = np.linalg.norm((ops["Esurf"] @ (a * u)).reshape(-1, 3), axis=1).max()
-    Epk *= 1.0 if field == "E" else 1.0 / (w * EPS0 * s)
     assert q["E_pk_Vm"][0] == pytest.approx(Epk, rel=1e-12)
     assert q["P_c_W"][0] * q["Q0"][0] == pytest.approx(w)                # ωU/P_c with U = 1 J
     assert q["R_over_Q_ohm"][0] == pytest.approx(q["V_acc_V"][0] ** 2 / w)
@@ -229,10 +200,9 @@ def test_invariance_normalisation_and_conventions(cases, field):
 
 
 @pytest.mark.gmsh
-@pytest.mark.parametrize("field", ["E", "H"])
-def test_vectorised_equals_loop(cases, field):
-    geom, Y, f, _ = cases["pillbox", field]
-    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"], field,
+def test_vectorised_equals_loop(cases):
+    geom, Y, f, _ = cases["pillbox"]
+    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"],
                               M=geom["M"])
     sgn = np.array([1.0, -2.0, 0.5])
     qv = qoi_from_dofs(ops, Y * sgn, f)
@@ -253,11 +223,11 @@ def test_vectorised_equals_loop(cases, field):
 @pytest.mark.gmsh
 def test_sorted_and_skfem_edge_order_agree(cases):
     """Operators built on the canonical sorted edges and on a permuted DOF order give the same QoI."""
-    geom, Y, f, _ = cases["box", "H"]
+    geom, Y, f, _ = cases["box"]
     perm = np.random.default_rng(0).permutation(len(geom["edges"]))
     e2 = geom["edges"][perm]
     q1 = cavity_qoi(geom, Y[:, 0], f[0] / 1e9)
-    g2 = {**{k: geom[k] for k in ("X", "tets", "scale", "center", "field")}, "edges": e2}
+    g2 = {**{k: geom[k] for k in ("X", "tets", "scale", "center")}, "edges": e2}
     q2 = cavity_qoi(g2, Y[perm, 0], f[0] / 1e9)
     for k in QOI_KEYS:
         np.testing.assert_allclose(q2[k], q1[k], rtol=1e-10, err_msg=k)

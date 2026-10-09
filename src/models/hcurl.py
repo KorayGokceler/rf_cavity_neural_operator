@@ -1,49 +1,32 @@
-"""H(curl) / Whitney-N0 linear algebra for the 3D Maxwell eigenspace operator
-(docs/18 §3.4, docs/20).
+"""H(curl) / Whitney-N0 linear algebra for the 3D Maxwell eigenspace operator (E field).
 
-Batching convention (maxwell3d_collate): every sparse matrix of a batch is ONE
-block-diagonal torch COO tensor laid out on the PADDED index space, so sample b's
-edge e is row b·Ne + e and its vertex v is column b·Nv + v:
+Batching convention (maxwell3d_collate): every sparse matrix of a batch is ONE block-diagonal
+torch COO tensor on the PADDED index space, so sample b's edge e is row b·Ne + e and its vertex v
+is column b·Nv + v:
 
     M, K : [B·Ne, B·Ne]   N0 mass / curl–curl
-    G    : [B·Ne, B·Nv]   discrete gradient (G·1 = 0, K·G = 0),  Gt = Gᵀ
-    Kp   : [B·Nv, B·Nv]   GᵀMG (P1 Neumann Laplacian, singular: constants)
+    G    : [B·Ne, B·Nv]   discrete gradient of the H0(curl) kernel potentials, Gt = Gᵀ
+    Kp   : [B·Nv, B·Nv]   GᵀMG
 
-That is the H formulation (batch['KpNull'] = 'const', the default).  In the E
-formulation (batch['KpNull'] = 'none', dataset_3d docstring) the wall-edge
-rows of V are 0, G's columns are the interior-vertex (+ boundary-component)
-potentials followed by zero columns, and Kp = GᵀMG is SPD on its valid block
-(nonzero diagonal) and zero elsewhere: the same algebra below holds with the
-Kp solve restricted to that block and no mean-free step.
+The wall-edge rows of V are 0; G's columns are the interior-vertex (+ boundary-component)
+potentials followed by zero columns, and Kp is SPD on its valid block (nonzero diagonal) and zero
+elsewhere. Padded edges / vertices are empty rows and columns, so a padded X [B, N, m] multiplies
+as spmm(A, X) = (A @ X.reshape(B·N, m)).view(B, ·, m), one sparse product for the whole batch.
 
-Padded edges / vertices are empty rows and columns, so a padded tensor
-X [B, N, m] multiplies as spmm(A, X) = (A @ X.reshape(B·N, m)).view(B, ·, m),
-one sparse product for the whole batch.
-
-The kernel of K is ∇P1.  A basis V is replaced by its M-orthogonal projection
-onto discrete divergence-free fields,
+The kernel of K is span(G). A basis V is replaced by its M-orthogonal projection onto discrete
+divergence-free fields,
 
     PV = V − G Z,   Z = Kp⁻¹ B,   B = GᵀMV,
 
-without ever forming PV's Grams from scratch (K G = 0):
+without forming PV's Grams from scratch (K G = 0):
 
     (PV)ᵀK(PV) = VᵀKV,      (PV)ᵀM(PV) = VᵀMV − BᵀZ =: M_div   (Schur complement).
-
-Kp's null space (constants on each connected mesh) needs no pinning and no
-ridge: 1ᵀB = (G1)ᵀMV = 0, so Kp z = B is consistent, CG on it converges in
-range(Kp), and whatever constant a solution carries is annihilated by both
-uses of Z (G·const = 0 and Bᵀconst = 0); numerically Z is kept mean-free
-(see _pcg) so that the rounding of those two zeros is not amplified by a
-drifting constant.  (Assumes a connected mesh; a mesh with several
-components would need one mean per component.)  The singular Neumann system is
-also better conditioned than a pinned one (λ_min = the Fiedler value instead
-of a point-constraint value O(h·λ₂)).
 """
 import warnings
 
 import torch
 
-from src.models.spectral_no import _BroadenedEigh
+from src.models.layers import BroadenedEigh
 
 SPARSE_KEYS = ('M', 'K', 'G', 'Gt', 'Kp')
 
@@ -59,32 +42,12 @@ def bgram(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
     return torch.einsum('bnp,bnq->bpq', X, Y)
 
 
-def _mean_free(x, valid):
-    """Remove each (sample, column)'s mean over the valid vertices."""
-    n = valid.sum(1, keepdim=True).clamp(min=1)
-    return (x - (x * valid).sum(1, keepdim=True) / n) * valid
-
-
-KP_NULLS = ('const', 'none')
-
-
-def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10, null='const'):
-    """Jacobi-preconditioned CG for Kp X = rhs, rhs [B, Nv, m]; every
-    (sample, column) has its own step sizes.  Only the valid block (dinv > 0)
-    is solved: rhs is restricted to it and X is 0 outside it (padding; in E
-    the zero columns of G).
-    null='const' (H, Neumann Kp): rhs and X are kept mean-free over the valid
-    vertices: the Jacobi-preconditioned iterates otherwise drift along the
-    null space (constants), which is harmless in exact arithmetic but
-    multiplies the rounding of 1ᵀGᵀ(·) ≈ 0 in later products.
-    null='none' (E, Kp SPD on the valid block): plain PCG, no mean-free step.
-    Returns (X, iterations)."""
-    if null not in KP_NULLS:
-        raise ValueError(f"KpNull must be one of {KP_NULLS}, got {null!r}")
-    const = null == 'const'
+def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10):
+    """Jacobi-preconditioned CG for Kp X = rhs, rhs [B, Nv, m]; every (sample, column) has its own
+    step sizes. Only the valid block (dinv > 0) is solved: rhs is restricted to it and X is 0
+    outside it (padding and the zero columns of G). Returns (X, iterations)."""
     tiny = torch.finfo(rhs.dtype).tiny
-    valid = (dinv > 0).to(rhs.dtype)
-    rhs = _mean_free(rhs, valid) if const else rhs * valid
+    rhs = rhs * (dinv > 0).to(rhs.dtype)
     x = torch.zeros_like(rhs)
     r = rhs.clone()
     z = dinv * r
@@ -109,29 +72,26 @@ def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10, null='const'):
     if not converged:
         warnings.warn(f"KpSolve: CG stopped at maxiter={maxiter} before reaching tol={tol:g}; "
                       "the kernel projection (M_div) may be inaccurate.")
-    return (_mean_free(x, valid) if const else x), it
+    return x, it
 
 
 class KpSolve(torch.autograd.Function):
-    """Z = Kp⁻¹ B by batched PCG (float64, works on CPU and GPU).  Kp is
-    constant and symmetric, so the backward pass is one more solve with the
-    same operator: B̄ = Kp⁻¹ Z̄.  The forward map is the symmetric linear
-    operator S = P Kp_v⁻¹ P (P: restriction to the valid block, and for
-    null='const' also the mean-free projector, Kp_v⁻¹ then the pseudo-inverse),
-    so the backward applies the same S to Z̄ — exactly what _pcg does with the
-    same (dinv, null).  KpSolve.last_iters holds the latest forward count."""
+    """Z = Kp⁻¹ B by batched PCG (float64, CPU and GPU). Kp is constant and symmetric, so the
+    backward pass is one more solve with the same operator: B̄ = Kp⁻¹ Z̄ (the forward map
+    S = P Kp_v⁻¹ P, P the restriction to the valid block, is symmetric). KpSolve.last_iters holds
+    the latest forward iteration count."""
     last_iters = 0
 
     @staticmethod
-    def forward(ctx, rhs, Kp, dinv, tol, maxiter, null='const'):
-        Z, KpSolve.last_iters = _pcg(Kp, dinv, rhs, tol, maxiter, null=null)
-        ctx.Kp, ctx.dinv, ctx.tol, ctx.maxiter, ctx.null = Kp, dinv, tol, maxiter, null
+    def forward(ctx, rhs, Kp, dinv, tol, maxiter):
+        Z, KpSolve.last_iters = _pcg(Kp, dinv, rhs, tol, maxiter)
+        ctx.Kp, ctx.dinv, ctx.tol, ctx.maxiter = Kp, dinv, tol, maxiter
         return Z
 
     @staticmethod
     def backward(ctx, gZ):
-        gB, _ = _pcg(ctx.Kp, ctx.dinv, gZ.contiguous(), ctx.tol, ctx.maxiter, null=ctx.null)
-        return gB, None, None, None, None, None
+        gB, _ = _pcg(ctx.Kp, ctx.dinv, gZ.contiguous(), ctx.tol, ctx.maxiter)
+        return gB, None, None, None, None
 
 
 def _sparse(batch, key, dtype):
@@ -147,7 +107,6 @@ def project_basis(V, batch, tol=1e-8, maxiter=2000):
         M_V   [B, m, m]  VᵀMV                     (unprojected mass Gram)
         M_div [B, m, m]  VᵀMV − BᵀKp⁻¹B = (PV)ᵀM(PV)
         Z     [B, Nv, m] Kp⁻¹GᵀMV  (PV = V − G Z)
-    batch['KpNull'] ('const' default = H, 'none' = E) selects the Kp solve.
     """
     V = V.double()          # float32 CG does not converge (M_div off by ~79%, docs/21 B3)
     dt = V.dtype
@@ -156,7 +115,7 @@ def project_basis(V, batch, tol=1e-8, maxiter=2000):
     dinv = torch.where(diag > 0, 1.0 / diag.clamp(min=1e-300), torch.zeros_like(diag)).unsqueeze(-1)
     MV = spmm(M, V)
     Bm = spmm(Gt, MV)                                        # GᵀMV [B, Nv, m]
-    Z = KpSolve.apply(Bm, Kp, dinv, tol, maxiter, batch.get('KpNull', None) or 'const')
+    Z = KpSolve.apply(Bm, Kp, dinv, tol, maxiter)
     M_V = bgram(V, MV)
     M_div = M_V - bgram(Bm, Z)
     A_V = bgram(V, spmm(K, V))
@@ -174,8 +133,7 @@ def projected_eigh(M_V, M_div, A_V, K, mass_ridge=1e-8, drop_tol=1e-6, eig_broad
 
     M_div is singular exactly on the directions c with PVc = 0 (span(V) ∩ ∇P1),
     where A_V vanishes too: 0/0.  A ridge would give them θ = ridge_A/ridge_M,
-    an arbitrary value inside the spectrum (_ritz: the mean Rayleigh quotient),
-    and the span/compliance losses never see gradient content, so nothing
+    an arbitrary value inside the spectrum, and the span/compliance losses never see gradient content, so nothing
     would keep training away from it.  Instead (rank-revealing):
       1. whiten by the UNPROJECTED mass: D M_V D + ridge·I = C Cᵀ (D Jacobi);
       2. μ, Q = eig(C⁻¹ D M_div D C⁻ᵀ): μ ∈ [0, 1] is the divergence-free mass
@@ -194,7 +152,7 @@ def projected_eigh(M_V, M_div, A_V, K, mass_ridge=1e-8, drop_tol=1e-6, eig_broad
     C = torch.linalg.cholesky(Dm(M_V) + mass_ridge * eye)
     Ci = torch.linalg.solve_triangular(C, eye.expand_as(C), upper=False)       # C⁻¹
     S = Ci @ Dm(M_div) @ Ci.transpose(-1, -2)
-    mu, Q = _BroadenedEigh.apply(0.5 * (S + S.transpose(-1, -2)), eig_broadening)
+    mu, Q = BroadenedEigh.apply(0.5 * (S + S.transpose(-1, -2)), eig_broadening)
     keep = mu > drop_tol
     W = Ci.transpose(-1, -2) @ Q * torch.where(keep, mu.clamp(min=drop_tol).rsqrt(), torch.zeros_like(mu)
                                               ).unsqueeze(-2)
@@ -206,7 +164,7 @@ def projected_eigh(M_V, M_div, A_V, K, mass_ridge=1e-8, drop_tol=1e-6, eig_broad
     # (was 1.0, below the physical spectrum; docs/21 B1).  No gradient flows.
     big = (1e3 * torch.diagonal(Aw, dim1=-2, dim2=-1).abs().amax(-1, keepdim=True) + 1e12).detach()
     Aw = Aw + torch.diag_embed(torch.where(keep, torch.zeros_like(mu), big))
-    theta, y = _BroadenedEigh.apply(Aw, eig_broadening)
+    theta, y = BroadenedEigh.apply(Aw, eig_broadening)
     return theta[:, :K], d.unsqueeze(-1) * (W @ y[:, :, :K])
 
 

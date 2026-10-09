@@ -2,9 +2,8 @@
 
 Contract: scratchpad/viz3d_contract.md §A1. Conventions follow
 src/data/dataset_converter_3d.py: DOF e = (a, b), a < b (global vertex index),
-w_e = λ_a∇λ_b − λ_b∇λ_a, F = Σ_e u_e w_e.  F is whatever field the DOFs are
-(H for H-formulation PKLs, E for E ones, pred['field']); the functions are
-field-agnostic and keep the historical 'H' names / dict keys. `edges` here is only assumed to
+w_e = λ_a∇λ_b − λ_b∇λ_a, F = Σ_e u_e w_e.  F is the field of the DOFs (E); the
+functions are field-agnostic and keep the historical 'H' names / dict keys. `edges` here is only assumed to
 contain the (low, high) pair of every tet edge exactly once — NOT to be sorted
 (skfem's mesh.edges, used by tests/maxwell3d_synth.py, is not lexicographically
 sorted) — so DOF lookup sorts its own key copy rather than assuming order.

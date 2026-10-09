@@ -24,7 +24,7 @@ modes (incl. the π mode) are a few 0.1 % apart and fall inside the training thr
     python scripts/eval_qoi.py --checkpoint ckpt_or_dir --data_path data/maxwell3d.pkl \\
         [--split test|val|train|all] [--csv qoi.csv] [--summary_csv qoi_summary.csv] [--max_geoms N]
 
-CSV: one row per (geometry, output mode) — geom_id, shape_type, field, n_edges, mode, f_true_GHz,
+CSV: one row per (geometry, output mode) — geom_id, shape_type, n_edges, mode, f_true_GHz,
 f_pred_GHz, f_rel_err, rel_l2, degenerate, accel, accel_all (argmax true R/Q over ALL outputs,
 degenerate or not), rq_frac, for each QoI q: q_true, q_pred, q_rel
 (signed (pred − true)/|true|, NaN if degenerate) and q_label (stored, NaN if none), label_rel_diff,
@@ -91,7 +91,7 @@ def geometry_rows(ops, out, labels=None, settings=None, ops_time=float('nan')):
     ft, fp = np.asarray(out['f_true'], np.float64), np.asarray(out['f_pred'], np.float64)
     rows = []
     for k in range(K):
-        r = {'geom_id': int(out['geom_id']), 'shape_type': str(out['shape_type']), 'field': out['field'],
+        r = {'geom_id': int(out['geom_id']), 'shape_type': str(out['shape_type']),
              'n_edges': int(len(out['edges'])), 'mode': k, 'f_true_GHz': float(ft[k]),
              'f_pred_GHz': float(fp[k]), 'f_rel_err': float((fp[k] - ft[k]) / abs(ft[k])),
              'rel_l2': float(out['rel_l2'][k]), 'degenerate': bool(deg[k]), 'accel': k == accel,
@@ -181,7 +181,7 @@ def evaluate_qoi(lm, ds, device='cpu', max_geoms=None, settings=None, n_axis=Non
         geom = _geom_of(ds, g_id)
         g_key = ds.samples_metadata[ds.geom_to_samples[g_id][0]]['geom_id']
         t0 = time.perf_counter()
-        ops = qoi_operators_of(geom, out['field'], M=ds.operators(g_key)[0], **ext)
+        ops = qoi_operators_of(geom, M=ds.operators(g_key)[0], **ext)
         t_ops = time.perf_counter() - t0
         labels = stored_labels(ds, g_id, names) if same and not ext else None
         r = geometry_rows(ops, out, labels, settings, t_ops)
@@ -216,8 +216,7 @@ def summarize_qoi(rows, rq_floor=0.01):
 def print_summary(rows, summary):
     df = pd.DataFrame(rows)
     g = df.groupby('geom_id').first()
-    print(f"{len(g)} geometries, {len(df)} output modes ({int(df['degenerate'].sum())} degenerate / split → NaN), "
-          f"field {df['field'].iloc[0]}")
+    print(f"{len(g)} geometries, {len(df)} output modes ({int(df['degenerate'].sum())} degenerate / split → NaN)")
     print(f"QoI post-processing per geometry: operators {g['t_ops_s'].median():.3f} s (median, once per mesh), "
           f"QoI of K={df['mode'].max() + 1} predicted modes {g['t_qoi_s'].median() * 1e3:.2f} ms")
     lab = df['label_rel_diff'].dropna()

@@ -252,6 +252,6 @@ def test_figure_modes_field_label_from_info():
     labels = " ".join(ax.get_ylabel() for ax in fig.axes)
     assert "True |E|" in titles and "|H|" not in titles and "|E|" in labels
     plt.close(fig)
-    fig = vs.figure_modes(st, sp, info)                                  # default H
-    assert "True |H|" in " ".join(ax.get_title() for ax in fig.axes)
+    fig = vs.figure_modes(st, sp, info)                                  # default E
+    assert "True |E|" in " ".join(ax.get_title() for ax in fig.axes)
     plt.close(fig)

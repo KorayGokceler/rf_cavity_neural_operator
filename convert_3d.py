@@ -1,6 +1,5 @@
 """CLI: 3D H5 (src/data_gen/dataset_generator_3d.py) → PKL for the 3D Maxwell model.
-The field (E: 'e_edges', default of the generator; H: 'h_edges') is read from the H5 and stored as
-metadata['field'].  Contract: src/data/dataset_converter_3d.py, docs/19_3D_DATA_PIPELINE.md.
+E-field N0 DOFs ('e_edges'); metadata['field'] = 'E'.  Contract: src/data/dataset_converter_3d.py, docs/19_3D_DATA_PIPELINE.md.
 Cavity QoI labels (Q0, G, R/Q, R_sh, T, Epk/Eacc, Bpk/Eacc; docs/24_CAVITY_QOI.md) are stored per
 sample unless --no_qoi; `--add_qoi IN.pkl` back-fills them into an existing PKL."""
 import argparse

@@ -184,7 +184,7 @@ export default function App() {
           <button role="tab" aria-selected={page === 'train'} className={page === 'train' ? 'on' : ''} onClick={() => setPage('train')}>{t(lang, 'trainTab')}</button>
         </nav>
         <div className="header-right">
-          {info && <span className="badge">{info.model.run ? `${info.model.run} · ` : ''}{info.model.field}-field · {(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}</span>}
+          {info && <span className="badge">{info.model.run ? `${info.model.run} · ` : ''}{(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}</span>}
           <button className="ghost" onClick={() => setLang(lang === 'tr' ? 'en' : 'tr')}>{lang === 'tr' ? 'EN' : 'TR'}</button>
           <button className="ghost" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label="theme">{theme === 'light' ? '☾' : '☀'}</button>
         </div>

@@ -16,7 +16,7 @@ $DATA_ROOT/$TAG/                         (varsayılan /arf/scratch/$USER/rfcav3d
 
 | dosya | ne yapar |
 |---|---|
-| `config.sh` | **tek ayar dosyası**: yollar, kuyruk, çekirdek, süre, fizik (FIELD, MESH_SIZE, N_STORE, …), TAG |
+| `config.sh` | **tek ayar dosyası**: yollar, kuyruk, çekirdek, süre, fizik (MESH_SIZE, N_STORE, …), TAG |
 | `families.tsv` | aile → blok numarası, istenen geometri sayısı, parça boyu, grup (train / ood) |
 | `setup_env.sh` | bir kere: Miniforge + `rfcav` ortamı (conda-forge gmsh), kısa kontrol üretimi |
 | `submit_family.sh <aile>` | ailenin **eksik** parçalarını bir SLURM iş dizisi olarak gönderir, ardından dönüştürmeyi gönderir |
@@ -68,7 +68,7 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
 - **Yeni aile:** `families.tsv`'ye yeni bir satır ekle. Blok numarası **yeni** olmalı (≤ 31).
   Aile, `src/data_gen/cavity_shapes.py` ile `dataset_generator_3d.BUILDERS`'ta tanımlı olmalı.
 - **Asla** bir ailenin `block` ya da `shard_size` değerini sonradan değiştirme: geometri kimlikleri
-  bunlardan hesaplanıyor. Fizik ayarlarını (FIELD, MESH_SIZE, N_STORE, deformasyon) değiştirdiğinde
+  bunlardan hesaplanıyor. Fizik ayarlarını (MESH_SIZE, N_STORE, deformasyon) değiştirdiğinde
   yeni bir `TAG` kullan; farklı ayarlar aynı klasöre karışmasın.
 
 ## Kimlikler ve tekrarlanabilirlik

@@ -1,8 +1,7 @@
-"""3D field visualisation of an eigenspace3d checkpoint (pure model prediction).
+"""3D field visualisation of an EigenspaceOperator3D checkpoint (pure model prediction).
 
 Per selected geometry: the N0 edge DOFs (target and aligned prediction, see
-src/viz/predict.py) are turned back into field vectors — H for H-formulation
-PKLs, E for E ones (metadata['field']) — cut by axis-aligned planes
+src/viz/predict.py) are turned back into E field vectors, cut by axis-aligned planes
 through the centroid and plotted true | predicted | |error| per mode (PNG), and
 the whole field is written to a ParaView .vtu (cell + point vectors, mm).
 Fields are nodal-averaged for display (--raw: the per-tet N0 field, faceted).
@@ -39,7 +38,7 @@ def render(lm, ds, idx, out_dir, axes=('y', 'z'), modes=None, res=121, png=True,
     """PNG / VTU files written for dataset item idx (list of paths)."""
     p = predict(lm, ds, idx, device)
     name = f"geom{p['geom_id']}_{p['shape_type'] or 'shape'}"
-    fld = p.get('field', 'H')
+    fld = p.get('field', 'E')
     to_mm = (p['scale'], p['center'])
     paths = []
     if png:
@@ -70,7 +69,7 @@ def main():
     ap.add_argument('--no_vtu', action='store_true')
     ap.add_argument('--no_png', action='store_true')
     ap.add_argument('--raw', action='store_true', help='raw per-tet N0 field (no nodal averaging)')
-    ap.add_argument('--arrows', action='store_true', help='in-plane field arrows (H or E, as the PKL)')
+    ap.add_argument('--arrows', action='store_true', help='in-plane field arrows')
     ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = ap.parse_args()
 

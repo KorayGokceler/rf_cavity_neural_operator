@@ -1,61 +1,17 @@
+"""Lightning module of the 3D cavity eigenmode model (EigenspaceOperator3D, E field, Whitney N0).
+
+Loss (docs/20): NEO span / self-supervised compliance / basis-orthogonality terms on the raw trial
+space, + freq_weight · z-MSE of the Ritz frequencies, + qoi_weight · cavity figure-of-merit loss
+(docs/24 §5). Metrics: per-mode M-norm rel-L2 (subspace error inside near-degenerate clusters),
+frequency MAE / relative error, QoI relative errors.
+"""
+import math
+
+import numpy as np
+import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-import pytorch_lightning as pl
 import torchmetrics
-import math
-import numpy as np
-from scipy.optimize import linear_sum_assignment
-from src.models.gnot import GNOTModel
-
-
-# ════════════════════════════════════════════════════════════════════════════
-#  Set-prediction loss helpers (OT matching + soft-Grassmannian subspace)
-# ════════════════════════════════════════════════════════════════════════════
-
-def ot_match(f_pred, f_true, E_hat, E_tgt, mask, freq_w):
-    """Optimal (Hungarian) assignment of predicted slots to target modes.
-
-    The cost combines normalized-frequency distance and a sign-agnostic
-    relative field L2.  Near-degenerate modes therefore get matched within
-    their own subspace automatically — no cluster threshold, no assumption
-    about which modes are degenerate.  Matching is solved on *detached*
-    tensors (no gradient through the argmin, as in DETR); the returned
-    permutation only re-orders the differentiable field/freq tensors.
-
-    Args:
-        f_pred, f_true: [K] frequencies (any order).
-        E_hat, E_tgt:   [N, K] predicted / target mode fields.
-        mask:           [N] boolean (True = valid node) or None.
-        freq_w:         scalar weight of the frequency term in the cost.
-    Returns:
-        perm: LongTensor [K] — predicted slot index for each target mode j,
-              i.e. ``E_hat[:, perm]`` is aligned column-wise to ``E_tgt``.
-    """
-    K = f_true.shape[-1]
-    with torch.no_grad():
-        if mask is not None:
-            m = mask.to(E_hat.dtype).unsqueeze(-1)         # [N, 1]
-            Eh = E_hat * m
-            Et = E_tgt * m
-        else:
-            Eh, Et = E_hat, E_tgt
-
-        df = f_pred.view(-1, 1) - f_true.view(1, -1)        # [Kp, Kt]
-        cost_f = df ** 2
-
-        eh2 = (Eh ** 2).sum(0).view(-1, 1)                  # [Kp, 1]
-        et2 = (Et ** 2).sum(0).view(1, -1)                  # [1, Kt]
-        cross = Eh.transpose(-2, -1) @ Et                   # [Kp, Kt]  <eh_i, et_j>
-        num_p = eh2 + et2 - 2.0 * cross                     # ||eh - et||^2
-        num_n = eh2 + et2 + 2.0 * cross                     # ||eh + et||^2
-        num = torch.minimum(num_p, num_n)                   # sign-agnostic
-        cost_field = num / (et2 + 1e-8)                     # [Kp, Kt] rel L2^2
-
-        C = (freq_w * cost_f + cost_field).detach().cpu().numpy()
-        row, col = linear_sum_assignment(C)                 # row sorted 0..K-1
-        perm = np.empty(K, dtype=np.int64)
-        perm[col] = row                                     # perm[true j] = pred slot
-    return torch.as_tensor(perm, device=E_hat.device)
 
 
 def detect_clusters(f_true_matched, threshold, rel_threshold=None, freq_stats=None):
@@ -101,10 +57,8 @@ def detect_clusters(f_true_matched, threshold, rel_threshold=None, freq_stats=No
 def count_near_degenerate(dataset, threshold, rel_threshold=None):
     """How many train geometries contain a near-degenerate mode cluster.
 
-    Mirrors exactly what training sees: same per-geometry normalized,
-    ascending-sorted frequencies as GNOTDataset.__getitem__ and the same
-    detect_clusters threshold used by the loss/metric.  Cheap — reads only
-    per-mode Theta[1] (raw freq), never node fields.
+    Same per-geometry normalized, ascending-sorted frequencies and the same detect_clusters
+    threshold as the metric. Cheap: reads only per-mode Theta[1] (raw freq), never fields.
 
     Returns (n_deg_geoms, n_deg_modes, total_geoms).
     """
@@ -135,188 +89,10 @@ def count_near_degenerate(dataset, threshold, rel_threshold=None):
     return n_deg_geo, n_deg_modes, len(geoms)
 
 
-def _masked_orthonormalize(E, mask=None):
-    """Return an orthonormal basis (over the masked rows) for the column span
-    of E using a numerically stable reduced QR.
-
-    Args:
-        E: [N, n] matrix whose columns span the subspace.
-        mask: [N] boolean (True = valid node) or None.
-    Returns:
-        Q: [N, n] with masked rows zeroed and Q^T Q = I over valid rows.
-    """
-    if mask is not None:
-        m = mask.to(E.dtype).unsqueeze(-1)  # [N, 1]
-        E = E * m
-    # Reduced QR; add tiny ridge for stability when columns are near-collinear
-    # (degenerate/near-degenerate eigenvectors).
-    Q, R = torch.linalg.qr(E, mode='reduced')
-    # Fix sign ambiguity of QR (not required for Grassmannian but keeps R* sane)
-    diag = torch.diagonal(R, dim1=-2, dim2=-1)
-    sign = torch.sign(diag)
-    sign = torch.where(sign == 0, torch.ones_like(sign), sign)
-    Q = Q * sign.unsqueeze(-2)
-    if mask is not None:
-        Q = Q * mask.to(Q.dtype).unsqueeze(-1)
-    return Q
-
-
-def grassmannian_loss(E_hat, E_tgt, mask=None):
-    """Grassmannian subspace distance:  n - ||Q_hat^T Q_tgt||_F^2.
-
-    Equals 0 when the two subspaces coincide and n when fully orthogonal.
-    For n == 1 this reduces exactly to 1 - cos^2(theta) between the two
-    vectors, i.e. the standard sign-invariant field similarity.
-
-    Args:
-        E_hat, E_tgt: [N, n] predicted / target subspace bases.
-        mask: [N] boolean or None.
-    """
-    n = E_hat.shape[-1]
-    Qh = _masked_orthonormalize(E_hat, mask)
-    Qt = _masked_orthonormalize(E_tgt, mask)
-    M = Qh.transpose(-2, -1) @ Qt          # [n, n]
-    return n - (M ** 2).sum()
-
-
-def soft_procrustes_loss(E_hat, E_tgt, f_matched, sigma, mask=None):
-    """Frequency-weighted soft-subspace alignment loss.
-
-    Only near-degenerate modes (small |f_i - f_j| relative to ``sigma``) are
-    allowed to mix through an orthogonal Procrustes rotation; well-separated
-    modes fall back to a per-mode sign-invariant relative L2.
-
-    The previous formulation built ``M = (E_hat^T E_tgt) * W`` and took its
-    SVD.  Element-wise masking of a Gram matrix does NOT yield a valid
-    Procrustes rotation once three or more modes are involved (the off-block
-    couplings of a 3-way degeneracy are silently dropped), so the recovered
-    ``R`` was not orthogonal-optimal.  Instead we now:
-
-        1. compute the *un-weighted* orthogonal Procrustes rotation ``R`` from
-           the full Gram matrix and **detach** it — it is an alignment
-           *target*, not a differentiable shortcut that could collapse the
-           prediction onto a rotated copy of the target;
-        2. gate rotation freedom per-mode by how strongly that mode couples to
-           any other one:  ``alpha_j = max_{i != j} W[i, j]``;
-        3. blend the rotated target (degenerate limit, alpha→1) with the
-           sign-aligned raw target (separated limit, alpha→0).
-
-    For well-separated modes this is exactly the standard sign-invariant
-    relative L2; for a degenerate block it is the Grassmannian subspace
-    distance realised through the optimal within-block rotation.
-
-    Args:
-        E_hat, E_tgt: [N, K] columns are the (mask-applied) mode fields.
-        f_matched: [K] target frequencies (prediction-aligned order).
-        sigma: scalar coupling bandwidth (ABSOLUTE, on the z-scored freq axis).
-        mask: [N] boolean or None.
-    """
-    K = f_matched.shape[-1]
-    if mask is not None:
-        m = mask.to(E_hat.dtype).unsqueeze(-1)  # [N, 1]
-        E_hat = E_hat * m
-        E_tgt = E_tgt * m
-
-    fi = f_matched.view(-1, 1)
-    fj = f_matched.view(1, -1)
-    sigma2 = (sigma ** 2) + 1e-12
-    W = torch.exp(-((fi - fj) ** 2) / sigma2)  # [K, K], diag == 1
-
-    with torch.no_grad():
-        # Un-weighted orthogonal Procrustes:  argmin_R ||E_hat - E_tgt R||_F.
-        C = E_hat.transpose(-2, -1) @ E_tgt          # [K, K]
-        U, _, Vh = torch.linalg.svd(C)
-        R = Vh.transpose(-2, -1) @ U.transpose(-2, -1)   # [K, K], R = V U^T
-
-        # Per-mode mixing gate: strongest coupling of mode j to any other mode.
-        eye = torch.eye(K, device=W.device, dtype=W.dtype)
-        alpha = (W * (1.0 - eye)).max(dim=0).values  # [K] in [0, 1]
-
-        # Sign-aligned raw target (sign-invariant for well-separated modes).
-        s = torch.sign((E_hat * E_tgt).sum(dim=0, keepdim=True))  # [1, K]
-        s = torch.where(s == 0, torch.ones_like(s), s)
-
-    E_tgt_rot = E_tgt @ R                            # [N, K] subspace-aligned
-    E_tgt_sgn = E_tgt * s                            # [N, K] sign-aligned
-    E_eff = alpha * E_tgt_rot + (1.0 - alpha) * E_tgt_sgn
-
-    num = ((E_hat - E_eff) ** 2).sum()
-    den = (E_eff ** 2).sum() + 1e-8
-    return num / den
-
-def _boundary_distance(batch):
-    """[B, N] distance-to-boundary used by the boundary PINN term.
-
-    Prefers the dedicated 'Dist_bnd' key (always taken from the full feature
-    layout by the dataset), so feature-ablation runs whose Input_funcs lack
-    column 2 (e.g. feature_indices=[0, 1]) no longer crash / read a wrong
-    column.  Falls back to Input_funcs[..., 2]; +inf (= no boundary nodes)
-    when neither is available.
-    """
-    if batch.get('Dist_bnd') is not None:
-        return batch['Dist_bnd']
-    Y = batch['Input_funcs']
-    if Y.shape[-1] > 2:
-        return Y[:, :, 2]
-    return torch.full(Y.shape[:2], float('inf'), device=Y.device, dtype=Y.dtype)
-
-
-def _unit_columns(E, mask=None, eps=1e-6):
-    """Normalize every mode column of E [B, N, K] to unit L2 norm over the
-    valid (masked) nodes.  Padded nodes are zeroed.
-
-    Used for scale-invariant field losses: an eigenfunction is defined only up
-    to a scalar factor, and SpectralNO's output amplitude is *structurally
-    fixed* by M-orthonormality (Σ_i w_i φ_k(x_i)^2 = 1) while the targets are
-    max-normalized (max|Y| = 1).  Without this, even a perfectly shaped
-    prediction has a sign-agnostic rel-L2 floor of |1/‖t‖_w − 1| ≈ 1.1–1.4.
-    """
-    if mask is not None:
-        E = E * mask.to(E.dtype).unsqueeze(-1)
-    nrm = torch.sqrt((E ** 2).sum(dim=1, keepdim=True)).clamp(min=eps)  # [B, 1, K]
-    return E / nrm
-
-
-def _sqrt_area_weights(batch, valid_mask):
-    """[B, N, 1] √w with w = node area / mean area over the valid nodes.
-
-    Multiplying pred/target by √w turns every L2 inner product of the field
-    loss into the lumped-mass (area-weighted) one ≈ ∫_Ω.  Without it the
-    boundary-graded meshes over-weight the wall band (~50 % of the nodes
-    cover ~22 % of the area).  None when the batch has no 'Area'.
-    """
-    area = batch.get('Area', None)
-    if area is None:
-        return None
-    m = valid_mask.to(area.dtype)
-    w = area.clamp(min=0.0) * m
-    w = w / (w.sum(dim=1, keepdim=True) / m.sum(dim=1, keepdim=True).clamp(min=1.0)).clamp(min=1e-12)
-    return torch.sqrt(w).unsqueeze(-1)
-
-
 def _basis_conditioning_loss(M_mat: torch.Tensor) -> torch.Tensor:
-    """Basis-conditioning regularizer for the physical-Galerkin SpectralNO.
-
-    Replaces the old Rayleigh-quotient "consistency" term, which was
-    structurally ≈ 0 (the generalized eigh output is M-orthonormal by
-    construction, so u^T L u / u^T M u == λ exactly) and therefore provided no
-    useful gradient.
-
-    Instead we penalize collinearity of the learned basis functions, measured
-    as the off-diagonal mass (L2-Gram) correlations:
-
-        corr_mn = M_mn / sqrt(M_mm M_nn)   (the cosine between ψ_m and ψ_n)
-
-    Driving the off-diagonal of ``corr`` toward zero keeps the reduced basis
-    informative (well-spread), so the K eigenmodes span distinct spatial
-    directions instead of the basis collapsing onto a low-rank set. This is a
-    genuine, non-trivial penalty since M is now the physical mass matrix.
-
-    Args:
-        M_mat: [B, M, M] physical mass / L2-Gram matrix.
-    Returns:
-        scalar loss in [0, 1].
-    """
+    """Collinearity penalty of the learned basis: mean squared off-diagonal mass correlation
+    corr_mn = M_mn / √(M_mm M_nn) (the cosine between ψ_m and ψ_n) of the Gram M_mat [B, m, m];
+    keeps the trial space well spread. Scalar in [0, 1]."""
     Msz = M_mat.shape[-1]
     d = torch.diagonal(M_mat, dim1=-2, dim2=-1).clamp(min=1e-8).rsqrt()  # [B, M]
     corr = M_mat * d.unsqueeze(-1) * d.unsqueeze(-2)                     # [B, M, M]
@@ -324,27 +100,6 @@ def _basis_conditioning_loss(M_mat: torch.Tensor) -> torch.Tensor:
     off = corr * (1.0 - eye)
     denom = max(Msz * (Msz - 1), 1)
     return (off ** 2).sum(dim=(-1, -2)).mean() / denom
-
-
-# ════════════════════════════════════════════════════════════════════════════
-#  NEO-style eigenspace losses (model_type='eigenspace')
-#  All on the RAW basis V (before Rayleigh–Ritz): no eigh in the gradient path.
-# ════════════════════════════════════════════════════════════════════════════
-
-def eigenspace_grams(basis, targets, X, elems, mask=None):
-    """Exact P1 mass / stiffness Grams of [V | T] in one assembly, float64.
-
-    basis [B, N, m] (Dirichlet-gated raw basis), targets [B, N, n] (all stored
-    modes).  Returns G_M, G_A [B, m+n, m+n]; the blocks are VᵀMV, VᵀMT, TᵀMT
-    (resp. with the P1 stiffness A).  Padded nodes are zeroed, padded
-    triangles have zero area.
-    """
-    from src.models.spectral_no import _p1_galerkin
-    with torch.autocast(device_type=basis.device.type, enabled=False):
-        W = torch.cat([basis.to(torch.float64), targets.to(torch.float64)], dim=-1)
-        if mask is not None:
-            W = W * mask.unsqueeze(-1).to(W.dtype)
-        return _p1_galerkin(W, X.to(torch.float64), elems)
 
 
 def _jacobi_cholesky(G, ridge):
@@ -380,7 +135,7 @@ def span_residual(G, m, ridge=1e-9):
     relative ridge (the ridge only lowers the captured energy → r ≥ 0).
 
     Args:
-        G: [B, m+n, m+n] Gram of [V | T] (eigenspace_grams).
+        G: [B, m+n, m+n] Gram of [V | T] (hcurl_grams).
         m: number of basis columns.
     Returns:
         r [B, n] in [0, 1];  sqrt(r_k) is the best-approximation rel-L2 error
@@ -449,240 +204,76 @@ def _qoi_term_tuple(terms):
     return terms
 
 
-class GNOTLightning(pl.LightningModule):
-    def __init__(self, val_dim=6, grid_dim=2, hidden_dim=256,
-                 n_shared_layers=2, n_mode_layers=2, n_field_head_layers=2,
-                 n_heads=4, num_experts=4, num_field_modes=3,
-                 lr=1e-3, freq_weight=0.5, smoothness_weight=0.0,
-                 mode_loss_weights=None,
-                 lr_mode_specific=None, lr_freq_heads=None,
-                 scheduler='onecycle', weight_decay=1e-4, use_checkpoint=False,
-                 reducelr_patience=10, reducelr_factor=0.5,
-                 predict_frequency=True,
+class CavityLightning(pl.LightningModule):
+    """Training wrapper of EigenspaceOperator3D. Argument names follow the checkpoints written so far
+    (hidden_dim = embed_dim, eigenspace_kwargs = model.eigenspace); arguments of the removed 2D models
+    in older checkpoints are accepted and ignored."""
+
+    def __init__(self, val_dim, num_field_modes=6, hidden_dim=128, n_heads=4, n_basis=24,
+                 rff_dim=64, rff_length_scale=0.1, dropout=0.0, eigenspace_kwargs=None,
+                 lr=2e-4, weight_decay=1e-4, scheduler='custom_cosine', cosine_eta_min=1e-6,
                  onecycle_pct_start=0.3, onecycle_div_factor=25, onecycle_final_div_factor=1e4,
-                 cosine_eta_min=1e-6,
-                 gradient_clip_val=None,
-                 dropout=0.0,
-                 rff_dim=64, rff_length_scale=0.1,
-                 n_basis=16,
-                 degeneracy_mode='soft',
-                 near_deg_threshold=0.05,
-                 near_deg_rel_threshold=None,
-                 deg_sigma_rel=0.5,
-                 deg_sigma_abs=0.3,
-                 slot_ortho_weight=0.1,
-                 freq_match_weight=0.5,
-                 # SpectralNO-specific params
-                 model_type='gnot',
-                 bc_scale=0.02,
-                 rayleigh_weight=0.1,
-                 orthonormalize_output=False,
-                 scale_invariant_field=None,
-                 data_cfg=None,
-                 spectral_kwargs=None,
-                 area_weighted_field=False,
-                 physics_freq=False,
-                 ritz_basis=0,
-                 # EigenspaceOperator (model_type='eigenspace')
-                 eigenspace_kwargs=None,
-                 span_weight=1.0,
-                 selfsup_weight=0.01,
-                 ortho_weight=0.01,
-                 ritz_field_weight=0.0,
-                 span_loss=None,
-                 span_norm='both',
-                 span_root=True,
-                 span_ridge=1e-9,
-                 selfsup_form='compliance',
-                 # Cavity figures of merit (model_type='eigenspace3d', docs/24 §5)
-                 qoi_weight=0.0,
-                 qoi_terms=('Q0', 'R_over_Q_ohm', 'G_ohm'),
-                 qoi_peak_p=None,
-                 qoi_rq_floor=1e-2):
+                 reducelr_patience=10, reducelr_factor=0.5, gradient_clip_val=None,
+                 freq_weight=0.1, span_weight=1.0, selfsup_weight=0.01, ortho_weight=0.01,
+                 span_norm='both', span_root=True, span_ridge=1e-9, selfsup_form='compliance',
+                 near_deg_threshold=0.05, near_deg_rel_threshold=None,
+                 qoi_weight=0.0, qoi_terms=('Q0', 'R_over_Q_ohm', 'G_ohm'), qoi_peak_p=None,
+                 qoi_rq_floor=1e-2, data_cfg=None, **legacy):
         """
-        scale_invariant_field: compare unit-norm pred/target mode columns in
-            the field loss + rel-L2 metric.  None → auto: True for
-            'spectral_no' (M-normalized output) or when orthonormalize_output
-            is on (Gram-Schmidt unit-norm output); False for plain GNOT.
-        data_cfg: dataset settings used at train time (split ratios, seed,
-            feature_indices, zero_gauge_features ...).  Only stored in hparams
-            so infer.py can rebuild the exact same split / input features.
-        spectral_kwargs: extra SpectralNO kwargs (config `model.spectral`),
-            forwarded verbatim; ignored for GNOT.
-        area_weighted_field: weight the field loss / rel-L2 metric by node
-            area (lumped mass ≈ ∫_Ω) instead of counting nodes.
-        physics_freq: frequency via f = c·√λ/(2π·scale) (both models; needs
-            batch['Scale']).  SpectralNO takes √λ from its eigenvalues, GNOT
-            predicts log √λ.
-        ritz_basis: GNOT only — r basis functions per slot + P1 Rayleigh–Ritz
-            (eigen-ordered output → SpectralNO loss path, no OT).
-        eigenspace_kwargs: extra EigenspaceOperator kwargs (config
-            `model.eigenspace`: n_layers, torsion_feature_idx, ridges ...).
-        span_loss: use the NEO span/self-sup/ortho terms on outputs['basis']
-            instead of the post-Ritz field loss.  None → only for 'eigenspace';
-            True also works for 'spectral_no' (ablation).
-        span_weight / selfsup_weight / ortho_weight / ritz_field_weight
-            (eigenspace only): NEO span loss on the raw basis vs ALL stored
-            target modes, label-free Ritz compliance, basis orthogonality, and
-            the post-Ritz field loss of the spectral path (freq_weight scales
-            the frequency MSE as usual).  See _eigenspace_terms.
-        span_norm: 'mass' (L²), 'energy' (stiffness / H¹₀, controls the Ritz
-            eigenvalue error) or 'both' (mean of the two).
-        span_root: use sqrt(residual) = best-approximation rel-L2 (the
-            metric) instead of its square.
+        span_norm: 'mass' (L²), 'energy' (curl–curl, controls the Ritz eigenvalue error) or 'both'.
+        span_root: use √residual (= best-approximation rel-L2, the metric) instead of the residual.
         span_ridge: relative ridge of the Jacobi-scaled Gram solves.
         selfsup_form: 'compliance' (−log Σ 1/θ_i, NEO) or 'logdet' (mean log θ_i).
-        qoi_weight (eigenspace3d): weight of the cavity figure-of-merit loss
-            (docs/24 §5): mean squared log-ratio of the QoI of the Ritz fields at
-            the predicted frequency vs the QoI of the FE targets at the FE
-            frequency (same per-geometry operators, src/qoi/torch_qoi.py), over
-            isolated modes.  0 = off (no behaviour change); the qoi_<name>_rel_err
-            metrics are logged whenever the batch carries the QoI operators.
-            Needs Maxwell3DDataset(..., qoi_ops=True) when > 0.
-        qoi_terms: qoi_torch keys in the loss (list/tuple or 'a,b,c' string).
-        qoi_peak_p: None = exact surface peaks (E_pk, B_pk) in the loss, else a
-            p-norm soft max (metrics always use the exact max).
-        qoi_rq_floor: voltage-based quantities (R/Q, R_sh, T, Epk/Eacc,
-            Bpk/Eacc, V, E_acc) only count for modes whose FE R/Q exceeds
-            qoi_rq_floor · max_k R/Q of the same geometry (and _QOI_RQ_ABS Ω):
-            non-accelerating modes have V ≈ 0 and an ill-conditioned log R/Q.
+        qoi_weight: weight of the cavity figure-of-merit loss (docs/24 §5): mean squared log-ratio
+            of the QoI of the Ritz fields at the predicted frequency vs the QoI of the FE targets
+            (same per-geometry operators, src/qoi/torch_qoi.py), over isolated modes. 0 = off; the
+            qoi_<name>_rel_err metrics are logged whenever the batch carries the QoI operators.
+        qoi_terms: qoi_torch keys in the loss (list/tuple or 'a,b,c').
+        qoi_peak_p: None = exact surface peaks in the loss, else a p-norm soft max.
+        qoi_rq_floor: voltage-based quantities only count for modes whose FE R/Q exceeds
+            qoi_rq_floor · max_k R/Q of the same geometry (non-accelerating modes: V ≈ 0).
+        data_cfg: dataset settings at train time (split, seed, feature_indices, field ...), stored in
+            the checkpoint so evaluation rebuilds the same split and inputs.
         """
         super().__init__()
-        if scale_invariant_field is None:
-            scale_invariant_field = ((model_type in ('spectral_no', 'eigenspace'))
-                                     or bool(orthonormalize_output) or bool(ritz_basis))
-        self.scale_invariant_field = bool(scale_invariant_field)
-        self.area_weighted_field = bool(area_weighted_field)
-        # Suppress harmless DDP + gradient checkpointing stream mismatch warning
-        torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
-        self.lr_mode_specific = lr_mode_specific
-        self.lr_freq_heads = lr_freq_heads
-        self.gradient_clip_val = gradient_clip_val
-        self.model_type = model_type
-
-        self.save_hyperparameters()
-        # Persist the resolved value (not None) so checkpoints are explicit.
-        self.hparams.scale_invariant_field = self.scale_invariant_field
-
-        if model_type == 'spectral_no':
-            from src.models.spectral_no import SpectralNO
-            self.model = SpectralNO(
-                val_dim=val_dim,
-                grid_dim=grid_dim,
-                embed_dim=hidden_dim,
-                n_basis=n_basis,
-                num_field_modes=num_field_modes,
-                rff_dim=rff_dim,
-                rff_length_scale=rff_length_scale,
-                n_heads=n_heads,
-                dropout=dropout,
-                use_checkpoint=use_checkpoint,
-                bc_scale=bc_scale,
-                **{'physics_freq': physics_freq,
-                   **(spectral_kwargs or {})},   # e.g. mass_ridge, area_feature_idx ...
-            )
-        elif model_type == 'eigenspace':
-            from src.models.eigenspace_operator import EigenspaceOperator
-            self.model = EigenspaceOperator(
-                val_dim=val_dim,
-                grid_dim=grid_dim,
-                embed_dim=hidden_dim,
-                n_heads=n_heads,
-                n_basis=n_basis,
-                num_field_modes=num_field_modes,
-                rff_dim=rff_dim,
-                rff_length_scale=rff_length_scale,
-                dropout=dropout,
-                bc_scale=bc_scale,
-                **{'physics_freq': physics_freq,
-                   **(eigenspace_kwargs or {})},  # n_layers, torsion_feature_idx, ridges ...
-            )
-        elif model_type == 'eigenspace3d':
-            from src.models.eigenspace_operator_3d import EigenspaceOperator3D
-            self.model = EigenspaceOperator3D(
-                val_dim=val_dim,
-                embed_dim=hidden_dim,
-                n_heads=n_heads,
-                n_basis=n_basis,
-                num_field_modes=num_field_modes,
-                rff_dim=rff_dim,
-                rff_length_scale=rff_length_scale,
-                dropout=dropout,
-                **{'physics_freq': physics_freq,
-                   **(eigenspace_kwargs or {})},  # n_layers, edge_rff, kp_tol, drop_tol ...
-            )
-        else:
-            self.model = GNOTModel(
-                val_dim=val_dim,
-                grid_dim=grid_dim,
-                embed_dim=hidden_dim,
-                n_shared_layers=n_shared_layers,
-                n_mode_layers=n_mode_layers,
-                n_field_head_layers=n_field_head_layers,
-                n_heads=n_heads,
-                num_experts=num_experts,
-                num_field_modes=num_field_modes,
-                use_checkpoint=use_checkpoint,
-                predict_frequency=predict_frequency,
-                dropout=dropout,
-                rff_dim=rff_dim,
-                rff_length_scale=rff_length_scale,
-                n_basis=n_basis,
-                orthonormalize_output=orthonormalize_output,
-                physics_freq=physics_freq,
-                ritz_basis=ritz_basis,
-            )
-
-        self.freq_weight = freq_weight
-        self.smoothness_weight = smoothness_weight
-        self.rayleigh_weight = rayleigh_weight
-        self.predict_frequency = predict_frequency
-        self.num_field_modes = num_field_modes
-        self.freq_stats = None
-        # Set-prediction / degeneracy handling
-        assert degeneracy_mode in ('soft', 'hard'), \
-            f"degeneracy_mode must be 'soft' or 'hard', got {degeneracy_mode}"
-        self.degeneracy_mode = degeneracy_mode
-        self.near_deg_threshold = near_deg_threshold
-        self.near_deg_rel_threshold = near_deg_rel_threshold
-        # deg_sigma_rel kept only for checkpoint/back-compat; the soft loss now
-        # uses the absolute deg_sigma_abs (see _compute_loss for the rationale).
-        self.deg_sigma_rel = deg_sigma_rel
-        self.deg_sigma_abs = deg_sigma_abs
-        self.slot_ortho_weight = slot_ortho_weight
-        self.freq_match_weight = freq_match_weight
-        # NEO-style eigenspace losses (model_type='eigenspace')
+        model_type = legacy.pop('model_type', 'eigenspace3d')
+        if model_type != 'eigenspace3d':
+            raise ValueError(f"checkpoint of the removed 2D model '{model_type}' (tag legacy-2d)")
+        field = str((data_cfg or {}).get('field') or 'E').upper()
+        if field != 'E':
+            raise ValueError("checkpoint of the removed H formulation (field 'H', tag legacy-2d): "
+                             "only E-field models are supported")
         assert span_norm in ('mass', 'energy', 'both'), f"span_norm: {span_norm!r}"
         assert selfsup_form in ('compliance', 'logdet'), f"selfsup_form: {selfsup_form!r}"
-        self.span_weight = span_weight
-        self.selfsup_weight = selfsup_weight
-        self.ortho_weight = ortho_weight
-        self.ritz_field_weight = ritz_field_weight
-        self.span_loss = (model_type in ('eigenspace', 'eigenspace3d')) if span_loss is None else bool(span_loss)
-        self.span_norm = span_norm
-        self.span_root = bool(span_root)
-        self.span_ridge = span_ridge
+        hp = {k: v for k, v in locals().items()
+              if k not in ('self', 'legacy', 'model_type', 'field', '__class__')}
+        self.save_hyperparameters(hp)
+
+        from src.models.eigenspace_operator_3d import EigenspaceOperator3D
+        self.model = EigenspaceOperator3D(val_dim=val_dim, embed_dim=hidden_dim, n_heads=n_heads,
+                                          n_basis=n_basis, num_field_modes=num_field_modes,
+                                          rff_dim=rff_dim, rff_length_scale=rff_length_scale,
+                                          dropout=dropout, **(eigenspace_kwargs or {}))
+        self.num_field_modes = num_field_modes
+        self.gradient_clip_val = gradient_clip_val
+        self.freq_weight = freq_weight
+        self.span_weight, self.selfsup_weight, self.ortho_weight = span_weight, selfsup_weight, ortho_weight
+        self.span_norm, self.span_root, self.span_ridge = span_norm, bool(span_root), span_ridge
         self.selfsup_form = selfsup_form
+        self.near_deg_threshold, self.near_deg_rel_threshold = near_deg_threshold, near_deg_rel_threshold
         self.qoi_weight = float(qoi_weight or 0.0)
         self.qoi_terms = _qoi_term_tuple(qoi_terms)
         self.qoi_peak_p = None if qoi_peak_p in (None, 0) else float(qoi_peak_p)
         self.qoi_rq_floor = float(qoi_rq_floor)
-        if self.qoi_weight > 0 and model_type != 'eigenspace3d':
-            raise ValueError("qoi_weight > 0 needs model_type='eigenspace3d'")
         if self.qoi_weight > 0 and not self.qoi_terms:
             raise ValueError("qoi_weight > 0 but qoi_terms is empty")
+        self.freq_stats = None
 
-        # Optional: Metrics to evaluate and measure model's success
-        self.train_r2 = torchmetrics.R2Score()
-        self.val_r2 = torchmetrics.R2Score()
-        self.test_r2 = torchmetrics.R2Score()
-        
-        self.val_mae = torchmetrics.MeanAbsoluteError()
-        self.test_mae = torchmetrics.MeanAbsoluteError()
+        self.train_r2, self.val_r2, self.test_r2 = (torchmetrics.R2Score() for _ in range(3))
+        self.val_mae, self.test_mae = torchmetrics.MeanAbsoluteError(), torchmetrics.MeanAbsoluteError()
         self._val_rl2_buffer: list = []   # per-geometry per-mode rel L2, for histograms
 
-    # freq_stats is also handed to the wrapped model (SpectralNO physics_freq
-    # converts λ → z-scored GHz with it).
+    # freq_stats is handed to the wrapped model (λ → z-scored GHz)
     @property
     def freq_stats(self):
         return self.__dict__.get('_freq_stats')
@@ -697,249 +288,19 @@ class GNOTLightning(pl.LightningModule):
         return self.model(batch)
 
     def _clusters(self, f_true):
-        """Near-degenerate mode groups of one sample (loss, metric, infer)."""
-        return detect_clusters(f_true, self.near_deg_threshold,
-                               self.near_deg_rel_threshold, self.freq_stats)
-
-    def _field_loss_inputs(self, batch, pred_field, true_field, valid_mask):
-        """(loss_pred, loss_true, metric_pred): tensors the field loss compares
-        (optionally area-weighted, unit-norm when scale-invariant) and the
-        unweighted prediction used for R2/MAE bookkeeping."""
-        metric_pred = (_unit_columns(pred_field, valid_mask)
-                       if self.scale_invariant_field else pred_field)
-        sw = _sqrt_area_weights(batch, valid_mask) if self.area_weighted_field else None
-        if sw is not None:
-            pred_field, true_field = pred_field * sw, true_field * sw
-        if self.scale_invariant_field:
-            return (_unit_columns(pred_field, valid_mask),
-                    _unit_columns(true_field, valid_mask), metric_pred)
-        return pred_field, true_field, metric_pred
-
-    def _compute_loss(self, batch, prefix):
-        """Dispatch to model-specific loss computation."""
-        if self.model_type == 'eigenspace3d':
-            return self._compute_loss_3d(batch, prefix)
-        if (self.model_type in ('spectral_no', 'eigenspace')
-                or getattr(self.model, 'ritz_basis', 0)):
-            return self._compute_loss_spectral(batch, prefix)   # eigen-ordered output
-        return self._compute_loss_gnot(batch, prefix)
-
-    def _compute_loss_spectral(self, batch, prefix):
-        """Loss for SpectralNO (no OT matching — ordering guaranteed by eigh).
-
-        Handles:
-        1. Sign-agnostic field relative L2 for non-degenerate modes.
-        2. Grassmannian subspace loss for near-degenerate mode clusters.
-        3. Frequency MSE.
-        4. PINN boundary constraint (φ = 0 on ∂Ω).
-        5. Rayleigh quotient consistency (Galerkin matrix consistency).
-        """
-        outputs = self.model(batch)
-        mask = batch.get('Mask', None)
-
-        pred_field  = outputs['field']       # [B, N, K]
-        B, N, K     = pred_field.shape
-        # The data may store more modes than the model outputs (eigenspace:
-        # the span loss uses all of them); the K Ritz modes are compared
-        # with the K lowest targets only.  No-op when data modes == K.
-        true_field  = batch['Y_field'][..., :K]   # [B, N, K]
-        f_pred      = outputs['freq']        # [B, K] sorted ascending
-        f_true      = batch['Y_freq'][:, :K]  # [B, K] sorted ascending
-        eps = 1e-8
-        device = pred_field.device
-
-        valid_mask = (
-            mask if mask is not None
-            else torch.ones(B, N, dtype=torch.bool, device=device)
-        )
-
-        # ── 1. Boundary PINN constraint ───────────────────────────────────────
-        dist_bnd = _boundary_distance(batch)     # [B, N]
-        bnd_mask   = (dist_bnd < 1e-4) & valid_mask  # [B, N]
-        bnd_mask_f = bnd_mask.unsqueeze(-1).float()  # [B, N, 1]
-        if bnd_mask.any():
-            loss_bnd = ((pred_field ** 2) * bnd_mask_f).sum() / (
-                bnd_mask_f.sum() * K).clamp(min=1.0)
-        else:
-            loss_bnd = torch.zeros((), device=device)
-        self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=False, batch_size=B, sync_dist=True)
-
-        # Scale gauge: eigenfunction amplitude is arbitrary (and fixed by
-        # M-orthonormality here) → compare unit-norm columns.
-        loss_pred, loss_true, metric_pred = self._field_loss_inputs(
-            batch, pred_field, true_field, valid_mask)
-
-        # ── 2. Field + frequency loss (per-sample) ────────────────────────────
-        loss_freq  = torch.zeros((), device=device)
-        loss_field = torch.zeros((), device=device)
-        rel_l2_per_mode = torch.zeros(K, device=device)
-        rel_l2_count    = torch.zeros(K, device=device)
-        aligned_pred_field = metric_pred.detach().clone()
-
-        for b in range(B):
-            fp_b   = f_pred[b]         # [K]  sorted by eigenvalue order
-            ft_b   = f_true[b]         # [K]  sorted ascending
-            E_hat  = loss_pred[b]      # [N, K]
-            E_tgt  = loss_true[b]      # [N, K]
-            m_b    = valid_mask[b]     # [N]
-            m_f    = m_b.float().unsqueeze(-1)   # [N, 1]
-
-            # Frequency MSE (ordering guaranteed by eigh → already matched)
-            loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
-
-            # Field loss: cluster-based Grassmannian / sign-agnostic
-            clusters = self._clusters(ft_b)
-            fl_b = torch.zeros((), device=device)
-            for cl in clusters:
-                cl_t = torch.tensor(cl, device=device, dtype=torch.long)
-                if len(cl) == 1:
-                    # Sign-agnostic relative L2
-                    k = cl[0]
-                    eh = E_hat[:, k:k + 1]
-                    et = E_tgt[:, k:k + 1]
-                    denom = ((et ** 2) * m_f).sum().clamp(min=eps)
-                    num_p = (((eh - et) ** 2) * m_f).sum()
-                    num_n = (((eh + et) ** 2) * m_f).sum()
-                    fl_b = fl_b + torch.minimum(num_p, num_n) / denom
-                else:
-                    # Degenerate subspace: Grassmannian distance
-                    fl_b = fl_b + grassmannian_loss(
-                        E_hat[:, cl_t], E_tgt[:, cl_t], m_b)
-            loss_field = loss_field + fl_b
-
-            # Relative L2 reporting (mirrors GNOT logic)
-            with torch.no_grad():
-                sample_rl = torch.zeros(K, device=device)
-                for cl in clusters:
-                    if len(cl) == 1:
-                        k = cl[0]
-                        eh = E_hat[:, k:k + 1]
-                        et = E_tgt[:, k:k + 1]
-                        num_p = (((eh - et) ** 2) * m_f).sum()
-                        num_n = (((eh + et) ** 2) * m_f).sum()
-                        den   = ((et ** 2) * m_f).sum() + eps
-                        rl = torch.sqrt(torch.minimum(num_p, num_n) / den)
-                        rel_l2_per_mode[k] += rl
-                        rel_l2_count[k] += 1.0
-                        sample_rl[k] = rl
-                    else:
-                        cl_t = torch.tensor(cl, device=device, dtype=torch.long)
-                        Q = _masked_orthonormalize(E_hat[:, cl_t], m_b)
-                        for k in cl:
-                            et = E_tgt[:, k:k + 1] * m_f
-                            coeff = Q.transpose(-2, -1) @ et
-                            et_proj = Q @ coeff
-                            num = ((et - et_proj) ** 2).sum()
-                            den = (et ** 2).sum() + eps
-                            rl = torch.sqrt(num / den)
-                            rel_l2_per_mode[k] += rl
-                            rel_l2_count[k] += 1.0
-                            sample_rl[k] = rl
-                if prefix == 'val':
-                    self._val_rl2_buffer.append(sample_rl.cpu())
-
-        loss_freq  = loss_freq  / max(B, 1)
-        loss_field = loss_field / max(B, 1)
-        if not self.predict_frequency:   # same contract as the GNOT path
-            loss_freq = torch.zeros((), device=device)
-
-        # ── 3. Basis-conditioning regularizer (replaces useless Rayleigh) ─────
-        # (eigenspace: replaced by ortho_weight on the exact P1 Gram.)
-        if (self.rayleigh_weight > 0.0 and not self.span_loss
-                and outputs.get('M_mat') is not None):
-            loss_basis = _basis_conditioning_loss(outputs['M_mat'])
-        else:
-            loss_basis = torch.zeros((), device=device)
-        self.log(f'{prefix}/basis_cond_loss', loss_basis, prog_bar=False,
-                 batch_size=B, sync_dist=True)
-
-        # ── 4. Total loss ─────────────────────────────────────────────────────
-        if self.span_loss:
-            # Post-Ritz field / freq terms enter only with a positive weight
-            # (0·NaN = NaN, and skipping them skips the eigh backward).
-            total_loss = self._eigenspace_terms(batch, outputs, prefix)
-            for w, term in ((self.ritz_field_weight, loss_field),
-                            (self.freq_weight, loss_freq),
-                            (self.smoothness_weight, loss_bnd)):
-                if w > 0.0:
-                    total_loss = total_loss + w * term
-        else:
-            total_loss = (
-                loss_field
-                + self.freq_weight      * loss_freq
-                + self.smoothness_weight * loss_bnd
-                + self.rayleigh_weight  * loss_basis
-            )
-
-        # ── Logging ───────────────────────────────────────────────────────────
-        self.log(f'{prefix}/loss',       total_loss, on_step=True, on_epoch=True,
-                 prog_bar=True, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True,
-                 prog_bar=False, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/freq_loss',  loss_freq,  on_step=False, on_epoch=True,
-                 prog_bar=False, batch_size=B, sync_dist=True)
-
-        rel_l2_count = rel_l2_count.clamp(min=1.0)
-        rel_l2_mean  = (rel_l2_per_mode / rel_l2_count).mean()
-        self.log(f'{prefix}/field_rel_l2', rel_l2_mean, on_step=True, on_epoch=True,
-                 prog_bar=True, batch_size=B, sync_dist=True)
-        for k in range(K):
-            self.log(f'{prefix}/mode_{k}_rel_l2',
-                     rel_l2_per_mode[k] / rel_l2_count[k],
-                     on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-
-        if self.predict_frequency and self.freq_stats:
-            with torch.no_grad():
-                fp_ghz = f_pred * self.freq_stats['std'] + self.freq_stats['mean']
-                ft_ghz = f_true * self.freq_stats['std'] + self.freq_stats['mean']
-                self.log(f'{prefix}/freq_mae_ghz', F.l1_loss(fp_ghz, ft_ghz),
-                         on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-
-        # Sign-aligned for R2/MAE metrics
-        with torch.no_grad():
-            sign_aligned = self._rescale_to_target(aligned_pred_field, true_field, valid_mask)
-            m_exp = valid_mask.float().unsqueeze(-1)
-            pos_err = ((sign_aligned - true_field) ** 2 * m_exp).sum(dim=1)
-            neg_err = ((sign_aligned + true_field) ** 2 * m_exp).sum(dim=1)
-            flip = (neg_err < pos_err).float().unsqueeze(1)
-            sign_aligned = sign_aligned * (1.0 - 2.0 * flip)
-            mask_km = valid_mask.unsqueeze(-1).expand_as(sign_aligned)
-            preds_valid   = sign_aligned[mask_km].contiguous()
-            targets_valid = true_field[mask_km].contiguous()
-
-        return total_loss, preds_valid, targets_valid
-
-    def _eigenspace_terms(self, batch, outputs, prefix):
-        """NEO-style losses on the raw basis V = outputs['basis'] (before
-        Rayleigh–Ritz; no eigh in their gradient path).  One exact P1 assembly
-        of [V | T] (T = ALL stored target modes, may be > K) gives every Gram:
-
-          span    mean_k r_k,  r_k = 1 − ‖P_V t_k‖²/‖t_k‖²  in the mass and/or
-                  stiffness norm (span_residual; sqrt(r_k) if span_root)
-          selfsup −log tr(G_A⁻¹ G_M) = −log Σ_i 1/θ_i  (label-free expected
-                  compliance, ritz_compliance), or (1/m) Σ_i log θ_i
-                  (selfsup_form='logdet', ritz_logdet).  The log makes it scale-free:
-                  λ(sΩ) = λ(Ω)/s² only shifts it by a constant, and its
-                  gradient is relative (dθ_i/θ_i), O(1) like the span loss.
-          ortho   off-diagonal mass correlations of V (_basis_conditioning_loss)
-        Returns span_weight·span + selfsup_weight·selfsup + ortho_weight·ortho.
-        """
-        basis = outputs['basis']                               # [B, N, m]
-        m = basis.shape[-1]
-        elems = batch.get('Elements', None)
-        if elems is None:
-            raise ValueError(
-                "model_type='eigenspace' needs batch['Elements'] (mesh triangles) for the "
-                "exact P1 Grams: use a PKL/H5 from the current converter and "
-                "dataset.max_nodes: null.")
-        G_M, G_A = eigenspace_grams(basis, batch['Y_field'], batch['X'], elems,
-                                    batch.get('Mask', None))
-        return self._span_terms(G_M, G_A, m, prefix).to(outputs['field'].dtype)
+        """Near-degenerate mode groups of one sample (metric, evaluation)."""
+        return detect_clusters(f_true, self.near_deg_threshold, self.near_deg_rel_threshold, self.freq_stats)
 
     def _span_terms(self, G_M, G_A, m, prefix):
-        """span / selfsup / ortho terms (see _eigenspace_terms) from the mass
-        and stiffness Grams G_M, G_A [B, m+n, m+n] of [V | T] (2D: exact P1;
-        3D: G_M's VV block is the kernel-projected M_div, hcurl_grams)."""
+        """NEO-style terms on the raw basis V (before Rayleigh–Ritz) from the mass / curl–curl
+        Grams G_M, G_A [B, m+n, m+n] of [PV | T] (hcurl_grams; T = ALL stored target modes):
+
+          span    mean_k r_k, r_k = 1 − ‖P_V t_k‖²/‖t_k‖² in the mass and/or energy norm
+                  (span_residual; √r_k if span_root)
+          selfsup −log tr(G_A⁻¹ G_M) = −log Σ 1/θ_i (label-free expected compliance) or
+                  (1/m) Σ log θ_i ('logdet')
+          ortho   off-diagonal mass correlations of V (_basis_conditioning_loss)
+        Returns span_weight·span + selfsup_weight·selfsup + ortho_weight·ortho."""
         B = G_M.shape[0]
         r_M = span_residual(G_M, m, self.span_ridge)            # [B, n]
         r_A = span_residual(G_A, m, self.span_ridge)
@@ -976,9 +337,9 @@ class GNOTLightning(pl.LightningModule):
         return total
 
     def _compute_loss_3d(self, batch, prefix):
-        """model_type='eigenspace3d' (EigenspaceOperator3D, H-field N0 edge DOFs).
+        """Loss of EigenspaceOperator3D (E-field N0 edge DOFs).
 
-        Loss = the 2D span / selfsup / ortho terms (_span_terms) on the Grams
+        Loss = the span / selfsup / ortho terms (_span_terms) on the Grams
         of [PV | T] from hcurl_grams: mass block VV = M_div (kernel-projected,
         so gradient content neither helps nor hurts), curl–curl blocks
         unchanged (K G = 0), T = ALL stored modes; + freq_weight · z-MSE of
@@ -1162,228 +523,15 @@ class GNOTLightning(pl.LightningModule):
         split = [k for c in clusters if c[0] < K <= c[-1] for k in c if k < K]
         return inside, split
 
-    def _rescale_to_target(self, aligned_pred, true_field, valid_mask):
-        """For R2/MAE only: with a scale-invariant loss the (unit-norm) aligned
-        prediction is brought back to each target column's norm."""
-        if not self.scale_invariant_field:
-            return aligned_pred.clone()
-        m = valid_mask.to(true_field.dtype).unsqueeze(-1)
-        t_norm = torch.sqrt(((true_field * m) ** 2).sum(dim=1, keepdim=True))  # [B,1,K]
-        return aligned_pred * t_norm
-
-    def _compute_loss_gnot(self, batch, prefix):
-        outputs = self.model(batch)
-        mask = batch.get('Mask', None)               # [B, N] boolean
-
-        pred_field = outputs['field']                # [B, N, K]
-        true_field = batch['Y_field']                # [B, N, K]
-        f_pred = outputs['freq']                     # [B, K] (model-sorted)
-        f_true = batch['Y_freq']                     # [B, K] (dataset-sorted)
-        B, N, K = pred_field.shape
-        eps = 1e-8
-
-        # --- PINN BOUNDARY CONSTRAINT (applied to every mode column) -------
-        dist_bnd = _boundary_distance(batch)     # [B, N]
-        valid_mask = mask if mask is not None else torch.ones(B, N, dtype=torch.bool, device=pred_field.device)
-        bnd_mask = (dist_bnd < 1e-4) & valid_mask    # [B, N]
-        bnd_mask_f = bnd_mask.unsqueeze(-1).float()  # [B, N, 1]
-
-        if bnd_mask.any():
-            sq_diff = (pred_field ** 2) * bnd_mask_f                  # [B, N, K]
-            loss_bnd = sq_diff.sum() / (bnd_mask_f.sum() * K).clamp(min=1.0)
-        else:
-            loss_bnd = torch.tensor(0.0, device=pred_field.device)
-        self.log(f'{prefix}/loss_bnd', loss_bnd, prog_bar=True, batch_size=B, sync_dist=True)
-        # NOTE: no hard zeroing of pred_field at boundary nodes.  The FEM target
-        # field is NOT identically zero on the detected boundary band
-        # (mean|Y_bnd| ~= 0.5), so multiplying predictions by (1 - bnd_mask)
-        # forced the network toward a physically wrong field and produced a
-        # systematically corrupted gradient.  Boundary behaviour is instead a
-        # *soft* penalty (loss_bnd, weighted by smoothness_weight).
-
-        # --- PER-SAMPLE LOSS ------------------------------------------------
-        # Predicted slots are assigned to target modes per-sample by an optimal
-        # (Hungarian) transport on a frequency + sign-agnostic-field cost.  This
-        # behaves like a numerical solver: the network just emits K (freq,
-        # field) pairs and the loss discovers the correspondence — no ascending-
-        # sort assumption, no cluster threshold, scales to any K.
-        device = pred_field.device
-        # Scale-invariant variant (e.g. orthonormalize_output=True → unit-norm
-        # Gram-Schmidt columns can never match max-normalized targets).
-        loss_pred, loss_true, metric_pred = self._field_loss_inputs(
-            batch, pred_field, true_field, valid_mask)
-        loss_freq = torch.zeros((), device=device)
-        loss_field = torch.zeros((), device=device)
-        loss_ortho = torch.zeros((), device=device)
-        rel_l2_per_mode = torch.zeros(K, device=device)
-        rel_l2_count = torch.zeros(K, device=device)
-        # Detach for metric bookkeeping — no gradient needed past this point.
-        aligned_pred_field = metric_pred.detach().clone()    # [B, N, K] — for R2/MAE
-        f_matched = f_pred.detach().clone()                  # [B, K] — OT order, for freq MAE
-
-        for b in range(B):
-            fp_b = f_pred[b]                          # [K]
-            ft_b = f_true[b]                          # [K]
-            E_hat = loss_pred[b]                      # [N, K]
-            E_tgt = loss_true[b]                      # [N, K]
-            m_b   = valid_mask[b]                     # [N]
-
-            # OT (Hungarian) assignment: predicted slot -> target mode j.
-            # perm/index_select is differentiable w.r.t. the field/freq values;
-            # only the assignment itself is detached.
-            perm = ot_match(fp_b, ft_b, E_hat, E_tgt, m_b, self.freq_match_weight)
-            E_hat = E_hat[:, perm]                    # align predicted columns
-            fp_b = fp_b[perm]
-            aligned_pred_field[b] = aligned_pred_field[b][:, perm]  # R2/MAE consistent
-            f_matched[b] = f_matched[b][perm]
-
-            # Frequency regression loss (OT-matched MSE)
-            loss_freq = loss_freq + F.mse_loss(fp_b, ft_b)
-
-            if self.degeneracy_mode == 'hard':
-                clusters = self._clusters(ft_b)
-                fl_b = torch.zeros((), device=device)
-                for cl in clusters:
-                    cl_t = torch.tensor(cl, device=device, dtype=torch.long)
-                    g = grassmannian_loss(E_hat[:, cl_t], E_tgt[:, cl_t], m_b)
-                    fl_b = fl_b + g
-                loss_field = loss_field + fl_b
-            else:  # 'soft'
-                # CRITICAL: sigma is an ABSOLUTE bandwidth on the z-scored
-                # frequency axis, NOT deg_sigma_rel * mean_gap.  The mean gap
-                # between standardized frequencies is ~O(1), so the old scaling
-                # pinned every off-diagonal coupling at exp(-1/deg_sigma_rel^2)
-                # regardless of the actual degeneracy — the soft subspace
-                # coupling never activated.  A fixed sigma (in normalized-freq
-                # units) makes W genuinely degeneracy-sensitive.
-                sigma = self.deg_sigma_abs
-                loss_field = loss_field + soft_procrustes_loss(
-                    E_hat, E_tgt, ft_b, sigma, m_b)
-
-                # Slot-collapse guard: the subspace loss is invariant to
-                # within-block rotations, so two near-degenerate slots could
-                # collapse onto the same direction (subspace loses a dimension).
-                # Penalize squared cosine between slot fields, weighted by how
-                # strongly the two modes couple (W).  Well-separated modes
-                # (W ~= 0) are left free; degenerate ones are pushed apart.
-                fi = ft_b.view(-1, 1)
-                fj = ft_b.view(1, -1)
-                W_b = torch.exp(-((fi - fj) ** 2) / (sigma ** 2 + 1e-12))  # [K,K]
-                m_col = m_b.to(E_hat.dtype).unsqueeze(-1)                  # [N,1]
-                Eh_n = F.normalize(E_hat * m_col, dim=0, eps=eps)          # [N,K]
-                G = Eh_n.transpose(-2, -1) @ Eh_n                          # [K,K]
-                eye_k = torch.eye(K, device=device, dtype=W_b.dtype)
-                # 0.5 * sum over all i!=j  ==  sum over i<j  (G, W symmetric)
-                loss_ortho = loss_ortho + 0.5 * (
-                    (W_b * (1.0 - eye_k)) * (G ** 2)).sum()
-
-            # --- relative L2 (reporting only) --------------------------------
-            # Singleton modes: per-mode sign-agnostic rel L2 (unchanged).
-            # Near-degenerate clusters: a fixed slot↔mode comparison is unfair
-            # because any within-block rotation is a physically equivalent
-            # eigenbasis, so it inflated the logged metric while the loss
-            # (Grassmannian/Procrustes) was already subspace-correct.  Mirror
-            # the evaluation convention (infer_val_all.py near_deg_subspace_relL2):
-            # project each target column onto the predicted cluster subspace and
-            # report the projection-residual rel L2.
-            with torch.no_grad():
-                m_f = m_b.float().unsqueeze(-1)       # [N, 1]
-                sample_rl = torch.zeros(K, device=device)
-                clusters = self._clusters(ft_b)
-                for cl in clusters:
-                    if len(cl) == 1:
-                        k = cl[0]
-                        eh = E_hat[:, k:k + 1]
-                        et = E_tgt[:, k:k + 1]
-                        num_p = (((eh - et) ** 2) * m_f).sum()
-                        num_n = (((eh + et) ** 2) * m_f).sum()
-                        den = ((et ** 2) * m_f).sum() + eps
-                        rl = torch.sqrt(torch.minimum(num_p, num_n) / den)
-                        rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
-                        rel_l2_count[k] = rel_l2_count[k] + 1.0
-                        sample_rl[k] = rl
-                    else:
-                        cl_t = torch.tensor(cl, device=device, dtype=torch.long)
-                        Q = _masked_orthonormalize(E_hat[:, cl_t], m_b)  # [N,|cl|]
-                        for k in cl:
-                            et = E_tgt[:, k:k + 1] * m_f          # [N, 1]
-                            coeff = Q.transpose(-2, -1) @ et       # [|cl|, 1]
-                            et_proj = Q @ coeff                    # [N, 1]
-                            num = ((et - et_proj) ** 2).sum()
-                            den = (et ** 2).sum() + eps
-                            rl = torch.sqrt(num / den)
-                            rel_l2_per_mode[k] = rel_l2_per_mode[k] + rl
-                            rel_l2_count[k] = rel_l2_count[k] + 1.0
-                            sample_rl[k] = rl
-                if prefix == 'val':
-                    self._val_rl2_buffer.append(sample_rl.cpu())
-
-        loss_freq = loss_freq / max(B, 1)
-        loss_field = loss_field / max(B, 1)
-        loss_ortho = loss_ortho / max(B, 1)
-
-        if not (self.predict_frequency and outputs.get('freq') is not None):
-            loss_freq = torch.zeros((), device=device)
-
-        total_loss = (loss_field
-                      + (self.freq_weight * loss_freq)
-                      + (self.smoothness_weight * loss_bnd)
-                      + (self.slot_ortho_weight * loss_ortho))
-
-        # --- logging -----------------------------------------------------
-        self.log(f'{prefix}/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/field_loss', loss_field, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/freq_loss', loss_freq, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-        self.log(f'{prefix}/ortho_loss', loss_ortho, on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-
-        rel_l2_count = rel_l2_count.clamp(min=1.0)
-        rel_l2_mean_per_mode = rel_l2_per_mode / rel_l2_count
-        rel_l2 = rel_l2_mean_per_mode.mean()
-        self.log(f'{prefix}/field_rel_l2', rel_l2, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-        for k in range(K):
-            self.log(f'{prefix}/mode_{k}_rel_l2', rel_l2_mean_per_mode[k],
-                     on_step=False, on_epoch=True, prog_bar=False, batch_size=B, sync_dist=True)
-
-        if self.predict_frequency and outputs.get('freq') is not None and self.freq_stats:
-            with torch.no_grad():
-                # Same slot↔mode pairing as the loss (OT), not a plain sort.
-                fp_ghz = f_matched * self.freq_stats['std'] + self.freq_stats['mean']
-                ft_ghz = f_true * self.freq_stats['std'] + self.freq_stats['mean']
-                mae_ghz = F.l1_loss(fp_ghz, ft_ghz)
-                self.log(f'{prefix}/freq_mae_ghz', mae_ghz, on_step=False, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-
-        # Tensors for torchmetrics (R2, MAE).
-        # Sign is physically arbitrary for eigenvectors (loss is sign-invariant),
-        # so flip each mode column to the sign that minimises squared error before
-        # handing off to R2/MAE — otherwise a valid -sign prediction gives R2≈-3.
-        with torch.no_grad():
-            sign_aligned = self._rescale_to_target(aligned_pred_field, true_field, valid_mask)
-            m_exp = valid_mask.float().unsqueeze(-1)          # [B, N, 1]
-            pos_err = ((sign_aligned - true_field) ** 2 * m_exp).sum(dim=1)   # [B, K]
-            neg_err = ((sign_aligned + true_field) ** 2 * m_exp).sum(dim=1)   # [B, K]
-            flip = (neg_err < pos_err).float().unsqueeze(1)   # [B, 1, K]  1=flip
-            sign_aligned = sign_aligned * (1.0 - 2.0 * flip)
-
-            mask_km = valid_mask.unsqueeze(-1).expand_as(sign_aligned)        # [B, N, K]
-            preds_valid = sign_aligned[mask_km].contiguous()
-            targets_valid = true_field[mask_km].contiguous()
-
-        return total_loss, preds_valid, targets_valid
-
     def training_step(self, batch, batch_idx):
-        loss, preds, targets = self._compute_loss(batch, "train")
+        loss, preds, targets = self._compute_loss_3d(batch, "train")
         self.train_r2(preds, targets)
         self.log('train/r2', self.train_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        
-        # Öğrenme oranını (learning rate) progress bar'a yansıt
-        opt = self.optimizers()
-        current_lr = opt.param_groups[0]['lr']
-        self.log('lr', current_lr, prog_bar=True, on_step=True, on_epoch=False)
-        
+        self.log('lr', self.optimizers().param_groups[0]['lr'], prog_bar=True, on_step=True, on_epoch=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        loss, preds, targets = self._compute_loss(batch, "val")
+        loss, preds, targets = self._compute_loss_3d(batch, "val")
         self.val_r2(preds, targets)
         self.val_mae(preds, targets)
         self.log('val/r2', self.val_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -1391,8 +539,6 @@ class GNOTLightning(pl.LightningModule):
         return loss
 
     def on_validation_epoch_start(self):
-        if hasattr(self.model, 'reset_expert_calls'):
-            self.model.reset_expert_calls()
         self._val_rl2_buffer = []
 
     def on_validation_epoch_end(self):
@@ -1405,18 +551,6 @@ class GNOTLightning(pl.LightningModule):
         exp = getattr(self.logger, 'experiment', None) if self.logger is not None else None
         tb = exp if hasattr(exp, 'add_histogram') else None
 
-        # Log Expert Load Balancing per block
-        if hasattr(self.model, 'get_expert_calls_per_block'):
-            calls_dict = self.model.get_expert_calls_per_block()
-            for block_name, calls in calls_dict.items():
-                calls = calls.float()
-                total_calls = calls.sum()
-                if total_calls > 0:
-                    percentages = (calls / total_calls) * 100
-                    for i, p in enumerate(percentages):
-                        if tb is not None:
-                            tb.add_scalar(f"Experts_{block_name}/E{i}", p, self.current_epoch)
-        
         metrics = self.trainer.logged_metrics
         epoch = self.trainer.current_epoch
 
@@ -1485,7 +619,7 @@ class GNOTLightning(pl.LightningModule):
                                      global_step=self.current_epoch)
 
     def test_step(self, batch, batch_idx):
-        loss, preds, targets = self._compute_loss(batch, "test")
+        loss, preds, targets = self._compute_loss_3d(batch, "test")
         self.test_r2(preds, targets)
         self.test_mae(preds, targets)
         self.log('test/r2', self.test_r2, on_step=False, on_epoch=True, sync_dist=True)
@@ -1493,54 +627,7 @@ class GNOTLightning(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        base_lr = self.hparams.lr
-        param_groups = []
-        handled_param_ids = set()
-
-        # Mode Specific LRs (GNOT only — SpectralNO has no mode_field_blocks)
-        if (self.lr_mode_specific is not None
-                and hasattr(self.model, 'mode_field_blocks')):
-            for mode_idx, mode_lr in enumerate(self.lr_mode_specific):
-                if mode_lr is not None and mode_idx < len(self.model.mode_field_blocks):
-                    # Gather parameters for this mode's blocks and field head
-                    mode_params = []
-                    # Mode Field Blocks
-                    for p in self.model.mode_field_blocks[mode_idx].parameters():
-                        mode_params.append(p)
-                        handled_param_ids.add(id(p))
-                    # Mode branch heads (only if present)
-                    if hasattr(self.model, 'branch_net'):
-                        for p in self.model.branch_net[mode_idx].parameters():
-                            mode_params.append(p)
-                            handled_param_ids.add(id(p))
-
-                    if len(mode_params) > 0:
-                        param_groups.append({"params": mode_params, "lr": mode_lr})
-                        print(f"Optimizer: Mode {mode_idx} branch trained with lr={mode_lr}")
-
-        # Freq Head LR (GNOT only — SpectralNO uses freq_transform)
-        if (self.lr_freq_heads is not None
-                and self.predict_frequency
-                and hasattr(self.model, 'freq_head_global')):
-            freq_params = []
-            for p in self.model.freq_head_global.parameters():
-                if id(p) not in handled_param_ids:
-                    freq_params.append(p)
-                    handled_param_ids.add(id(p))
-            if len(freq_params) > 0:
-                param_groups.append({"params": freq_params, "lr": self.lr_freq_heads})
-                print(f"Optimizer: Frequency head trained with lr={self.lr_freq_heads}")
-
-        # Base param group (General trunk, embeddings, unhandled parts)
-        base_params = []
-        for p in self.parameters():
-            if id(p) not in handled_param_ids:
-                base_params.append(p)
-        
-        if len(base_params) > 0:
-            param_groups.append({"params": base_params, "lr": base_lr})
-            print(f"Optimizer: Shared trunk & remaining params trained with lr={base_lr}")
-
+        param_groups = [{"params": list(self.parameters()), "lr": self.hparams.lr}]
         optimizer = torch.optim.AdamW(param_groups, weight_decay=self.hparams.weight_decay)
         
         if self.hparams.scheduler == 'onecycle':
@@ -1621,3 +708,6 @@ class GNOTLightning(pl.LightningModule):
             }
         else:
             return optimizer
+
+
+GNOTLightning = CavityLightning      # name used by older checkpoints, scripts and notebooks

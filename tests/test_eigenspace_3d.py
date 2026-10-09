@@ -1,8 +1,6 @@
-"""3D Maxwell eigenspace operator (Whitney N0, H and E formulations): kernel
-projection, Ritz exactness, orientation / padding invariance, dataset, training
-wiring.  The PKL-based tests run for field ∈ {H, E} (the `pkl` fixture is
-parametrized); E-only tests (wall mask, SPD Kp solve, lean rebuild, mixed
-batches) follow at the end."""
+"""3D Maxwell eigenspace operator (Whitney N0, E field): kernel projection, Ritz exactness,
+orientation / padding invariance, PEC wall mask, SPD Kp solve, dataset, lean PKL rebuild,
+training wiring."""
 import math
 import sys
 
@@ -17,39 +15,33 @@ from src.data.dataset_3d import (Maxwell3DDataset, item_from_geometry,      # no
 from src.models.eigenspace_operator_3d import EigenspaceOperator3D            # noqa: E402
 from src.models.hcurl import (hcurl_grams, hcurl_ritz, mode_rel_l2,           # noqa: E402
                               project_basis, spmm)
-from src.models.spectral_no import _generalized_eigh                          # noqa: E402
-from src.training.lightning_module import (GNOTLightning, ritz_compliance,    # noqa: E402
+from src.training.lightning_module import (CavityLightning, ritz_compliance,  # noqa: E402
                                            span_residual)
 from tests.maxwell3d_synth import C0, box_geometry, edge_dofs, make_dataset   # noqa: E402
 
 K_MODES = 6
 
 
-@pytest.fixture(scope="module", params=["H", "E"])
-def pkl(request, tmp_path_factory):
+@pytest.fixture(scope="module")
+def pkl(tmp_path_factory):
     import pickle
-    path = tmp_path_factory.mktemp("m3d") / f"synth3d_{request.param}.pkl"
+    path = tmp_path_factory.mktemp("m3d") / "synth3d.pkl"
     with open(path, "wb") as f:
-        pickle.dump(make_dataset(n_geoms=5, n=4, n_modes=K_MODES, seed=0, field=request.param), f)
+        pickle.dump(make_dataset(n_geoms=5, n=4, n_modes=K_MODES, seed=0), f)
     return str(path)
-
-
-STATS = {}   # field -> freq z-score stats of the synthetic PKL (set by the ds fixture)
 
 
 @pytest.fixture(scope="module")
 def ds(pkl):
-    d = Maxwell3DDataset(pkl, split="test", train_ratio=0.0, val_ratio=0.0)   # all geometries
-    STATS[d.field] = dict(d.stats)
-    return d
+    return Maxwell3DDataset(pkl, split="test", train_ratio=0.0, val_ratio=0.0)   # all geometries
 
 
-def _lam(item, stats=None):
+def _lam(item, stats):
     """Discrete λ_h (normalised mesh): Rayleigh quotients of the stored eigenvectors
     (float32 DOFs → error O(eps32²)); consistent with the stored GHz, f = c√λ/(2π·scale)."""
     T = item["Y_field"].double().numpy()
     lam = (T * (item["K"] @ T)).sum(0) / (T * (item["M"] @ T)).sum(0)
-    st = stats or STATS[item["field"]]
+    st = stats
     f = item["Y_freq"].double().numpy() * st["std"] + st["mean"]
     assert np.allclose(C0 * np.sqrt(lam) / (2 * math.pi * float(item["Scale"])) / 1e9, f, rtol=1e-5)
     return torch.from_numpy(lam)
@@ -61,13 +53,15 @@ def box(ds):
     batch = maxwell3d_collate([item])
     G = to_csr(ds.geometry_pool[ds.active_geoms[0]]["G"])
     phi = np.random.default_rng(0).standard_normal((G.shape[1], 4))
-    return item, batch, torch.from_numpy(G @ phi)[None], _lam(item)
+    return item, batch, torch.from_numpy(G @ phi)[None], _lam(item, ds.stats)
 
 
 def _plain_ritz(V, batch, K):
-    """Ritz with the UNPROJECTED mass Gram VᵀMV (the 2D code, applied as is)."""
+    """Ritz with the UNPROJECTED mass Gram VᵀMV (no kernel projection)."""
     p = project_basis(V, batch, 1e-12)
-    vals, _ = _generalized_eigh(p["A_V"], p["M_V"], 1e-4)
+    L = torch.linalg.cholesky(p["M_V"])
+    Li = torch.linalg.inv(L)
+    vals = torch.linalg.eigvalsh(Li @ p["A_V"] @ Li.transpose(-1, -2))
     return vals[:, :K]
 
 
@@ -165,8 +159,8 @@ def test_edge_orientation_equivariance(ds, box):
     field = lambda x: np.stack([np.sin(x[:, 1]), x[:, 0] * x[:, 2], np.cos(x[:, 0])], -1)   # noqa: E731
     assert np.allclose(edge_dofs(X, item_f["Edges"].numpy(), field), s.numpy() * edge_dofs(X, item["Edges"].numpy(), field))
     y = item_f["Y_field"][:, 0].double().numpy()
-    lam0 = float(_lam(item)[0])
-    free = ~item["BndEdge"].numpy() if "BndEdge" in item else slice(None)   # E: wall rows are constraints
+    lam0 = float(_lam(item, ds.stats)[0])
+    free = ~item["BndEdge"].numpy()                                     # wall rows are constraints
     res = (item_f["K"] @ y - lam0 * (item_f["M"] @ y))[free]
     assert np.abs(res).max() < 1e-4 * np.abs(item_f["K"] @ y).max()
     # model: raw basis and Ritz fields flip exactly, eigenvalues unchanged
@@ -193,17 +187,15 @@ def test_padding_invariance(ds):
     assert torch.allclose(o2["eigenvalues"][1], o1["eigenvalues"][0], rtol=1e-6)
     F1, F2 = o1["field"][0], o2["field"][1, :ne]
     assert torch.allclose(F2 * torch.sign((F1 * F2).sum(0)), F1, atol=1e-5)
-    if ds.field == "E":                                                 # wall rows exactly 0, padded too
-        bnd = a["BndEdge"]
-        assert bnd.any() and (o1["field"][0, bnd] == 0).all() and (o2["field"][1, :ne][bnd] == 0).all()
-        assert (o2["field"][1, ne:] == 0).all()
+    bnd = a["BndEdge"]                                                  # wall rows exactly 0, padded too
+    assert bnd.any() and (o1["field"][0, bnd] == 0).all() and (o2["field"][1, :ne][bnd] == 0).all()
+    assert (o2["field"][1, ne:] == 0).all()
 
 
 def _module(val_dim, stats=None, **kw):
     torch.manual_seed(0)
-    lm = GNOTLightning(val_dim=val_dim, grid_dim=3, hidden_dim=16, n_heads=2, n_basis=10,
-                       num_field_modes=4, rff_dim=8, model_type="eigenspace3d", physics_freq=True,
-                       eigenspace_kwargs={"n_layers": 1}, near_deg_rel_threshold=0.02, **kw)
+    lm = CavityLightning(val_dim=val_dim, hidden_dim=16, n_heads=2, n_basis=10, num_field_modes=4, rff_dim=8,
+                         eigenspace_kwargs={"n_layers": 1}, near_deg_rel_threshold=0.02, **kw)
     lm.freq_stats = dict(stats or {"mean": 0.0, "std": 1.0})
     return lm
 
@@ -211,7 +203,7 @@ def _module(val_dim, stats=None, **kw):
 def test_loss_and_finite_gradients(ds):
     batch = maxwell3d_collate([ds[0], ds[1]])
     lm = _module(ds[0]["Input_funcs"].shape[-1], ds.stats, freq_weight=0.1)
-    loss, preds, targets = lm._compute_loss(batch, "train")
+    loss, preds, targets = lm._compute_loss_3d(batch, "train")
     assert torch.isfinite(loss) and preds.shape == targets.shape
     loss.backward()
     grads = [p.grad for p in lm.parameters() if p.requires_grad]
@@ -234,15 +226,11 @@ def test_dataset_and_collate(pkl, ds):
     assert b["X"].shape == (B, Nv, 3) and b["Y_field"].shape == (B, Ne, K_MODES)
     assert b["Edges"].shape == (B, Ne, 2) and b["EdgeMask"].sum() == sum(i["Edges"].shape[0] for i in items)
     assert b["M"].shape == (B * Ne, B * Ne) and b["G"].shape == (B * Ne, B * Nv) and b["Kp"].shape == (B * Nv, B * Nv)
-    assert b["field"] == ds.field and b["KpNull"] == {"H": "const", "E": "none"}[ds.field]
-    if ds.field == "E":
-        assert b["BndEdge"].shape == (B, Ne) and b["BndEdge"].dtype == torch.bool
-        assert not (b["BndEdge"] & ~b["EdgeMask"]).any()                       # padding False
-        for k, i in enumerate(items):
-            assert torch.equal(b["BndEdge"][k, :i["Edges"].shape[0]], i["BndEdge"])
-            assert (i["Y_field"][i["BndEdge"]] == 0).all()                     # wall rows exactly 0
-    else:
-        assert "BndEdge" not in b
+    assert b["BndEdge"].shape == (B, Ne) and b["BndEdge"].dtype == torch.bool
+    assert not (b["BndEdge"] & ~b["EdgeMask"]).any()                           # padding False
+    for k, i in enumerate(items):
+        assert torch.equal(b["BndEdge"][k, :i["Edges"].shape[0]], i["BndEdge"])
+        assert (i["Y_field"][i["BndEdge"]] == 0).all()                         # wall rows exactly 0
     MY = spmm(b["M"], b["Y_field"].double())
     for k, i in enumerate(items):
         ne = i["Edges"].shape[0]
@@ -272,8 +260,6 @@ def test_operators_rebuilt_when_missing(pkl, tmp_path):
     import pickle
     with open(pkl, "rb") as f:
         data = pickle.load(f)
-    if data["metadata"]["field"] == "E" and not _converter_has_field():
-        pytest.skip("dataset_converter_3d.geometry_operators has no field argument yet")
     full = Maxwell3DDataset(pkl, split="test", train_ratio=0.0, val_ratio=0.0)
     for g in data["geometry_pool"].values():
         for k in ("M", "K", "G", "Kp"):
@@ -307,7 +293,7 @@ def _logged(lm, batch, prefix="val"):
     logs = {}
     lm.log = lambda name, value, **kw: logs.__setitem__(name, (float(value), kw.get("batch_size")))
     with torch.no_grad():
-        lm._compute_loss(batch, prefix)
+        lm._compute_loss_3d(batch, prefix)
     return logs
 
 
@@ -358,37 +344,30 @@ def test_projection_forces_float64_and_warns_at_maxiter(box):
         project_basis(V.double() + 0.1 * torch.randn_like(V.double()), batch, 1e-14, maxiter=2)
 
 
-# ── E formulation (PEC wall edges essential, Kp SPD on its valid block) ─────────
-
-def _converter_has_field():
-    import inspect
-
-    from src.data.dataset_converter_3d import geometry_operators
-    return "field" in inspect.signature(geometry_operators).parameters
-
+# ── PEC wall edges essential, Kp SPD on its valid block ─────────
 
 @pytest.fixture(scope="module")
 def e_ds(tmp_path_factory):
     import pickle
-    path = tmp_path_factory.mktemp("m3dE") / "synth3d_E_only.pkl"
+    path = tmp_path_factory.mktemp("m3dE") / "synth3d_b.pkl"
     with open(path, "wb") as f:
-        pickle.dump(make_dataset(n_geoms=3, n=4, n_modes=K_MODES, seed=2, field="E"), f)
+        pickle.dump(make_dataset(n_geoms=3, n=4, n_modes=K_MODES, seed=2), f)
     return Maxwell3DDataset(str(path), split="test", train_ratio=0.0, val_ratio=0.0)
 
 
 def test_e_box_spectrum_and_contract():
-    """Synthetic E box: frequencies → the analytic PEC box spectrum (same set as H),
-    wall rows 0, G/Kp as in the contract (zero wall rows / zero columns after n_pot,
-    SPD valid block), eigenvectors M-orthogonal to span(G)."""
+    """Synthetic box: frequencies → the analytic PEC box spectrum, wall rows 0, G/Kp as in the
+    contract (zero wall rows / zero columns after n_pot, SPD valid block), eigenvectors M-orthogonal
+    to span(G)."""
     import scipy.sparse as sp
 
     from src.data_gen.dataset_generator_3d import box_spectrum
     dims = (1.0, 0.8, 0.6)
     ref = box_spectrum(*dims)[:6]
-    geom, lam, Y = box_geometry(dims, n=6, n_modes=6, field="E")
+    geom, lam, Y = box_geometry(dims, n=6, n_modes=6)
     assert np.abs(lam / ref - 1).max() < 0.03
     bnd, n_pot = geom["bnd_edge"], geom["n_pot"]
-    assert geom["field"] == "E" and geom["n_bnd_components"] == 1 and geom["betti1"] == 0
+    assert geom["n_bnd_components"] == 1 and geom["betti1"] == 0
     assert (Y[bnd] == 0).all() and bnd.sum() > 0
     ne, nv = len(geom["edges"]), len(geom["X"])
     M, G, Kp = (to_csr(geom[k], s) for k, s in (("M", (ne, ne)), ("G", (ne, nv)), ("Kp", (nv, nv))))
@@ -399,11 +378,9 @@ def test_e_box_spectrum_and_contract():
 
 
 def test_e_kp_solve_is_plain_spd_pcg(e_ds):
-    """KpNull='none': Kp Z = GᵀMV on the valid block (no mean-free step, which would
-    be wrong for the SPD E system), Z = 0 on the zero columns; 'const' is not."""
+    """Kp Z = GᵀMV on the valid block, Z = 0 on the zero columns."""
     from src.models.hcurl import _pcg
     batch = maxwell3d_collate([e_ds[0]])
-    assert batch["KpNull"] == "none"
     V = torch.randn(1, batch["Edges"].shape[1], 3, dtype=torch.float64, generator=torch.Generator().manual_seed(0))
     V = V * (~batch["BndEdge"]).unsqueeze(-1)
     Bm = spmm(batch["Gt"], spmm(batch["M"], V))
@@ -411,16 +388,14 @@ def test_e_kp_solve_is_plain_spd_pcg(e_ds):
     dinv = torch.where(diag > 0, 1.0 / diag.clamp(min=1e-300), torch.zeros_like(diag)).unsqueeze(-1)
     valid = diag[0] > 0
     assert 0 < valid.sum() < diag.shape[1]
-    Z, _ = _pcg(batch["Kp"], dinv, Bm, 1e-12, 2000, null="none")
+    Z, _ = _pcg(batch["Kp"], dinv, Bm, 1e-12, 2000)
     assert (Z[0, ~valid] == 0).all()
     assert (spmm(batch["Kp"], Z) - Bm).abs().max() < 1e-9 * Bm.abs().max()
-    Zc, _ = _pcg(batch["Kp"], dinv, Bm, 1e-12, 2000, null="const")
-    assert (spmm(batch["Kp"], Zc) - Bm).abs().max() > 1e-3 * Bm.abs().max()
 
 
 def test_e_model_zero_on_wall_and_losses(e_ds):
-    """E: raw basis and Ritz fields exactly 0 on PEC wall edges; the Ritz values are
-    ≥ λ_h (min–max on the E space); train loss finite with finite gradients."""
+    """Raw basis and Ritz fields exactly 0 on PEC wall edges; the Ritz values are ≥ λ_h (min–max
+    on the E space); a batch without the wall mask is rejected."""
     batch = maxwell3d_collate([e_ds[0], e_ds[1]])
     model = _model(e_ds[0]["Input_funcs"].shape[-1], e_ds.stats)
     with torch.no_grad():
@@ -435,94 +410,59 @@ def test_e_model_zero_on_wall_and_losses(e_ds):
         model(nob)
 
 
-def test_mixed_field_batch_rejected(ds, e_ds):
-    item_h = ds[0] if ds.field == "H" else None
-    if item_h is None:
-        pytest.skip("runs once, with the H dataset")
-    with pytest.raises(ValueError, match="mixes fields"):
-        maxwell3d_collate([item_h, e_ds[0]])
-
-
 def test_e_item_from_geometry_matches_dataset(e_ds):
-    """Active sampling path: a converter-style E geometry dict (field key, bnd_edge)
-    gives the same model input as the dataset item."""
+    """Active sampling path: a converter-style geometry dict (bnd_edge) gives the same model input
+    as the dataset item; a geometry without the wall mask is rejected."""
     g = e_ds.geometry_pool[e_ds.active_geoms[0]]
     it = item_from_geometry(g, feature_names=e_ds.feature_names, g_id=0)
     ref = e_ds[0]
-    assert it["field"] == "E" and torch.equal(it["BndEdge"], ref["BndEdge"])
+    assert torch.equal(it["BndEdge"], ref["BndEdge"])
     b = maxwell3d_collate([it])
-    assert b["KpNull"] == "none" and b["BndEdge"].shape == (1, ref["Edges"].shape[0])
-    g_h = {k: v for k, v in g.items() if k not in ("field", "bnd_edge")}
-    assert "BndEdge" not in item_from_geometry(g_h) and maxwell3d_collate([item_from_geometry(g_h)])["KpNull"] == "const"
+    assert b["BndEdge"].shape == (1, ref["Edges"].shape[0])
     with pytest.raises(ValueError, match="bnd_edge"):
-        item_from_geometry(dict(g_h, field="E"))
+        item_from_geometry({k: v for k, v in g.items() if k != "bnd_edge"})
 
 
-def _synth_e_operators(X, tets, field="H"):
-    """Stand-in for geometry_operators(X, tets, field=...) built from the synthetic
-    skfem operators (same mesh ⇒ same edges)."""
+def _synth_operators(X, tets):
+    """Stand-in for geometry_operators(X, tets) built from the synthetic skfem operators (same mesh
+    ⇒ same edges)."""
     from skfem import MeshTet
 
     from src.data.dataset_converter_3d import to_csr_tuple
-    from tests.maxwell3d_synth import e_operators, n0_operators
+    from tests.maxwell3d_synth import e_operators
     mesh = MeshTet(np.ascontiguousarray(np.asarray(X, np.float64).T), np.ascontiguousarray(np.asarray(tets).T))
-    if field == "E":
-        K, M, G, Kp, edges, bnd, n_pot, n_comp = e_operators(mesh)
-        extra = {"bnd_edge": bnd, "n_pot": n_pot, "n_bnd_components": n_comp, "field": "E"}
-    else:
-        K, M, G, Kp, edges = n0_operators(mesh)
-        extra = {}
+    K, M, G, Kp, edges, bnd, n_pot, n_comp = e_operators(mesh)
     return {"edges": edges, "M": to_csr_tuple(M), "K": to_csr_tuple(K), "G": to_csr_tuple(G),
-            "Kp": to_csr_tuple(Kp), **extra}, M
-
-
-def _lean(e_ds, tmp_path, drop_bnd=False):
-    import copy
-    import pickle
-    data = {"geometry_pool": copy.deepcopy(e_ds.geometry_pool), "samples": e_ds.samples_metadata,
-            "metadata": e_ds.metadata}
-    for g in data["geometry_pool"].values():
-        for k in ("M", "K", "G", "Kp") + (("bnd_edge",) if drop_bnd else ()):
-            del g[k]
-    path = tmp_path / "lean_E.pkl"
-    with open(path, "wb") as f:
-        pickle.dump(data, f)
-    return str(path)
+            "Kp": to_csr_tuple(Kp), "bnd_edge": bnd, "n_pot": n_pot, "n_bnd_components": n_comp}, M
 
 
 def test_e_lean_pkl_rebuild(e_ds, tmp_path, monkeypatch):
-    """Lean E PKL: operators AND bnd_edge come from geometry_operators(X, tets, field='E');
-    a converter without the field argument, or a rebuilt dict without 'bnd_edge',
-    fails with a clear error."""
+    """Lean PKL: operators AND bnd_edge come from geometry_operators(X, tets)."""
+    import copy
+    import pickle
+
     import src.data.dataset_3d as d3
-    path = _lean(e_ds, tmp_path, drop_bnd=True)
-    monkeypatch.setattr(d3, "geometry_operators", _synth_e_operators)
-    lean = Maxwell3DDataset(path, split="test", train_ratio=0.0, val_ratio=0.0)
+    data = {"geometry_pool": copy.deepcopy(e_ds.geometry_pool), "samples": e_ds.samples_metadata,
+            "metadata": e_ds.metadata}
+    for g in data["geometry_pool"].values():
+        for k in ("M", "K", "G", "Kp", "bnd_edge"):
+            del g[k]
+    path = tmp_path / "lean.pkl"
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+    monkeypatch.setattr(d3, "geometry_operators", _synth_operators)
+    lean = Maxwell3DDataset(str(path), split="test", train_ratio=0.0, val_ratio=0.0)
     a, b = e_ds[0], lean[0]
     for k in ("M", "K", "G", "Kp"):
         assert abs(a[k] - b[k]).max() < 1e-5 * abs(a[k]).max()
     assert torch.equal(a["BndEdge"], b["BndEdge"])
 
-    def no_bnd(X, tets, field="H"):
-        ops, M = _synth_e_operators(X, tets, field)
-        ops.pop("bnd_edge", None)
-        return ops, M
-    monkeypatch.setattr(d3, "geometry_operators", no_bnd)
-    with pytest.raises(ValueError, match="bnd_edge"):
-        Maxwell3DDataset(path, split="test", train_ratio=0.0, val_ratio=0.0)[0]
-    monkeypatch.setattr(d3, "geometry_operators", lambda X, tets: _synth_e_operators(X, tets, "H"))
-    with pytest.raises(ValueError, match="field"):
-        Maxwell3DDataset(path, split="test", train_ratio=0.0, val_ratio=0.0)[0]
-
 
 def test_e_converter_operators_match_contract(e_ds):
-    """Integration check of the other side: the converter's E operators on a synthetic
-    box equal the synthetic contract operators (skipped until field= exists)."""
-    if not _converter_has_field():
-        pytest.skip("dataset_converter_3d.geometry_operators has no field argument yet")
+    """The converter's operators on a synthetic box equal the synthetic contract operators."""
     from src.data.dataset_converter_3d import geometry_operators
     g = e_ds.geometry_pool[e_ds.active_geoms[0]]
-    ops, _ = geometry_operators(np.asarray(g["X"], np.float64), np.asarray(g["tets"]), field="E")
+    ops, _ = geometry_operators(np.asarray(g["X"], np.float64), np.asarray(g["tets"]))
     ne, nv = len(g["edges"]), len(g["X"])
     assert np.array_equal(ops["edges"], g["edges"])
     assert np.array_equal(np.asarray(ops["bnd_edge"], bool), g["bnd_edge"])
@@ -530,4 +470,14 @@ def test_e_converter_operators_match_contract(e_ds):
     for k in ("M", "K", "G", "Kp"):
         A, B = to_csr(ops[k], shapes[k]), to_csr(g[k], shapes[k])
         assert abs(A - B).max() < 1e-5 * max(abs(B).max(), 1e-12), k
-    assert int(ops.get("n_pot", g["n_pot"])) == g["n_pot"]
+    assert int(ops["n_pot"]) == g["n_pot"]
+
+
+def test_old_h_or_2d_checkpoints_are_rejected_with_a_clear_error():
+    with pytest.raises(ValueError, match="removed H formulation"):
+        CavityLightning(val_dim=9, data_cfg={"field": "H"})
+    with pytest.raises(ValueError, match="removed 2D model"):
+        CavityLightning(val_dim=9, model_type="gnot")
+    lm = CavityLightning(val_dim=9, hidden_dim=16, n_heads=2, n_basis=10, num_field_modes=4, rff_dim=8,
+                         eigenspace_kwargs={"n_layers": 1}, grid_dim=3, physics_freq=True, degeneracy_mode="hard")
+    assert "grid_dim" not in lm.hparams and lm.hparams.hidden_dim == 16          # legacy arguments ignored

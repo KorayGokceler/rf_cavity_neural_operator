@@ -1,8 +1,7 @@
 """Matplotlib figures comparing true vs predicted field cross sections.
 
-The field letter (titles, colour-bar labels) is info['field'] ('H' default,
-'E' for E-formulation PKLs) or the explicit `field=` argument; the sample
-dicts keep the historical key 'H' for the field array whatever it is.
+The field letter (titles, colour-bar labels) is info['field'] ('E') or the explicit `field=`
+argument; the sample dicts keep the historical key 'H' for the field array.
 
 Consumes the plane-sample dicts produced by ``src/viz/nedelec.py`` (A1) and
 the per-geometry prediction dicts produced by ``src/viz/predict.py`` (A2),
@@ -38,7 +37,7 @@ ERROR_CMAP = "magma"
 _AXIS_IDX = {"x": 0, "y": 1, "z": 2}
 
 
-def _col_titles(field="H"):
+def _col_titles(field="E"):
     return (f"True |{field}|", f"Predicted |{field}|", rf"|${field}_{{pred}}-{field}_{{true}}$|")
 
 
@@ -46,7 +45,7 @@ _COL_TITLES = _col_titles("H")
 
 
 def _field_of(info, field=None):
-    f = field if field is not None else (info or {}).get("field", "H")
+    f = field if field is not None else (info or {}).get("field", "E")
     return str(f or "H")
 
 
@@ -175,7 +174,7 @@ def _quiver(ax, Ug, Vg, H, inside, in_plane, vmax, n_per_side=15, color="white",
 # ── public API ───────────────────────────────────────────────────────────────
 
 def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
-                     to_mm=None, arrows=True, field="H"):
+                     to_mm=None, arrows=True, field="E"):
     """Draw one mode's true | pred | |error| on 3 given Axes.
 
     Uses `sample_true`'s grid ('U','V','inside') for all three panels — the
@@ -239,7 +238,7 @@ def plot_mode_slice(axes, sample_true, sample_pred, k, title="", vmax=None,
     return tuple(ims)
 
 
-def _add_row_colorbars(fig, axes_row, ims, field="H"):
+def _add_row_colorbars(fig, axes_row, ims, field="E"):
     """One colorbar for the (shared-scale) field panels + one for the error
     panel (different colormap, same vmin/vmax so magnitudes stay comparable).
     """
@@ -266,7 +265,7 @@ def _row_height(sample, width=13.5):
 def figure_modes(samples_true, samples_pred, info, modes=None, suptitle="",
                   to_mm=None, arrows=True, field=None):
     """One row per mode: True |F| | Predicted |F| | |F_pred - F_true|, F = field
-    (default info.get('field', 'H')).
+    (default info.get('field', 'E')).
 
     samples_true / samples_pred: single A1 ``plane_sample`` dicts holding all
     K modes for one geometry (['H'] has shape [nv,nu,3,K]).

@@ -182,7 +182,7 @@ def _make_pred(seed=0, split_second_mode=True):
 
 def test_export_prediction_writes_expected_names_and_shapes(tmp_path):
     path = tmp_path / "geom_3.vtu"
-    pred = _make_pred()
+    pred = dict(_make_pred(), field="H")                     # explicit letter: H_* array names
     base = np.array([1.0, 0.0, 0.0])
     stub = _stub_cell_H_fn(base)
 

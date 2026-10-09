@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader                                # noqa: E
 
 from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate    # noqa: E402
 from src.models.hcurl import mode_rel_l2                               # noqa: E402
-from src.training.lightning_module import GNOTLightning                # noqa: E402
+from src.training.lightning_module import CavityLightning                # noqa: E402
 from src.viz.predict import _align_modes, load, pick, predict          # noqa: E402
 from tests.maxwell3d_synth import make_dataset                         # noqa: E402
 
@@ -38,9 +38,8 @@ def ds(pkl):
 
 def _module(val_dim, **kw):
     torch.manual_seed(0)
-    return GNOTLightning(val_dim=val_dim, grid_dim=3, hidden_dim=16, n_heads=2, n_basis=10,
-                         num_field_modes=4, rff_dim=8, model_type="eigenspace3d", physics_freq=True,
-                         eigenspace_kwargs={"n_layers": 1}, near_deg_rel_threshold=0.02, **kw)
+    return CavityLightning(val_dim=val_dim, hidden_dim=16, n_heads=2, n_basis=10, num_field_modes=4, rff_dim=8,
+                           eigenspace_kwargs={"n_layers": 1}, near_deg_rel_threshold=0.02, **kw)
 
 
 @pytest.fixture(scope="module")
@@ -246,12 +245,12 @@ def test_load_roundtrip(pkl, ds, tmp_path):
     assert set(out) == ALL_KEYS
 
 
-# ── E-formulation PKL: field label, wall rows, eval_3d parity ──────────────
+# ── field label, wall rows, eval_3d parity ──────────────
 
 def test_predict_e_field(tmp_path):
-    path = tmp_path / "synth3d_E.pkl"
+    path = tmp_path / "synth3d_b.pkl"
     with open(path, "wb") as f:
-        pickle.dump(make_dataset(n_geoms=2, n=4, n_modes=K_MODES, seed=1, field="E"), f)
+        pickle.dump(make_dataset(n_geoms=2, n=4, n_modes=K_MODES, seed=1), f)
     dsE = Maxwell3DDataset(str(path), split="test", train_ratio=0.0, val_ratio=0.0)
     lmE = _module(dsE[0]["Input_funcs"].shape[-1])
     lmE.freq_stats = dict(dsE.stats)
@@ -264,6 +263,5 @@ def test_predict_e_field(tmp_path):
         wall = np.asarray(_geom(dsE, out["geom_id"])["bnd_edge"], bool)
         assert (out["true"][wall] == 0).all() and (out["pred"][wall] == 0).all()
         row = rows[out["geom_id"]]
-        assert row["field"] == "E"
         np.testing.assert_allclose(out["rel_l2"], [row[f"rel_l2_{k}"] for k in range(len(out["rel_l2"]))],
                                    rtol=1e-8, atol=1e-10, equal_nan=True)

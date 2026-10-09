@@ -1,7 +1,7 @@
 // Typed client of src/service/api.py. Large arrays arrive as base64 little-endian float32 / uint32.
 
 export interface ModelInfo {
-  field: 'E' | 'H'; n_modes: number; n_params: number; device: string; untrained: boolean; checkpoint: string | null;
+  n_modes: number; n_params: number; device: string; untrained: boolean; checkpoint: string | null;
   load_error?: string | null; run?: string | null;
 }
 export interface Info {
@@ -15,13 +15,13 @@ export interface Check {
 }
 export interface Surface { points: Float32Array; triangles: Uint32Array }
 export interface Solution {
-  id: string; source: 'model' | 'fe' | 'diff'; field: 'E' | 'H'; n_edges: number; modes: ModeRow[];
+  id: string; source: 'model' | 'fe' | 'diff'; n_edges: number; modes: ModeRow[];
   axis_length_mm: number; f_next?: number | null; labels?: Record<string, number>[] | null;
 }
 export interface Geometry {
   id: string; source: Record<string, unknown>; check: Check; family?: string;
   params?: Record<string, number>; surface: Surface;
-  truth?: Solution | null; field?: 'E' | 'H'; predictable?: boolean;
+  truth?: Solution | null;
 }
 export interface QoiCmp { fe: number | null; model: number | null; rel_err: number | null }
 export interface CmpRow {
@@ -39,7 +39,7 @@ export interface FeatureView {
   range: [number, number]; signed: boolean; neutral: boolean; legend: string;
 }
 export interface JobsConfig {
-  enabled: boolean; gen_root: string | null; field: string; cpu_count: number; max_total: number;
+  enabled: boolean; gen_root: string | null; cpu_count: number; max_total: number;
   families: { train: string[]; ood: string[] }; blocks: Record<string, number | null>; tag_example: string;
 }
 export interface GenParams {
@@ -49,7 +49,7 @@ export interface GenParams {
 }
 export interface Job {
   id: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-  params: GenParams & { family: string; tag: string; block: number; field: string };
+  params: GenParams & { family: string; tag: string; block: number };
   stage: string; progress: { done: number; total: number; ok: number; failed: number };
   created: number; started: number | null; finished: number | null; error: string | null;
   outputs: string[]; log: string[];
@@ -79,10 +79,10 @@ export interface RunDetail extends RunSummary {
 export interface DatasetRef { id: string; name: string; kind: 'h5' | 'pkl' }
 export interface DatasetRow {
   id: number; family: string; n_nodes: number; n_edges: number; n_tets: number; betti1: number;
-  deformed: boolean | null; f_GHz: number[]; field: string;
+  deformed: boolean | null; f_GHz: number[];
 }
 export interface DatasetStats {
-  total: number; fields: string[]; n_modes: number;
+  total: number; n_modes: number;
   families: Record<string, { count: number; f0: number[]; n_edges: number[] }>;
 }
 export interface ModeRow {
@@ -91,7 +91,7 @@ export interface ModeRow {
   T_transit: number | null; Epk_Eacc: number | null; Bpk_Eacc_mT_per_MVm: number | null;
 }
 export interface Prediction {
-  id: string; geometry_id: string; source: 'model'; field: 'E' | 'H'; n_edges: number; modes: ModeRow[];
+  id: string; geometry_id: string; source: 'model'; n_edges: number; modes: ModeRow[];
   axis_length_mm: number; time_s: Record<string, number>; warnings: string[]; model: ModelInfo;
   comparison?: { rows: CmpRow[]; diff_id: string; truth_id: string };
 }

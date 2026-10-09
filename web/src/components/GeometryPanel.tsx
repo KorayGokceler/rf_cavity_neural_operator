@@ -93,8 +93,7 @@ export default function GeometryPanel({ lang, info, geometry, busy, onUpload, on
             {geometry?.source && 'ood' in geometry.source && geometry.source.ood === true &&
               <li className="warning"><span className="icon">!</span>OOD</li>}
           </ul>
-          {geometry?.predictable === false && <div className="note warning-text">{t(lang, 'wrongField')}</div>}
-          <button className="primary" disabled={busy || !chk.ok || geometry?.predictable === false} onClick={onPredict}>
+          <button className="primary" disabled={busy || !chk.ok} onClick={onPredict}>
             {busy ? t(lang, 'working') : geometry?.truth ? t(lang, 'compare') : t(lang, 'predict')}
           </button>
         </section>

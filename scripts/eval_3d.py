@@ -1,7 +1,5 @@
-"""Evaluate an eigenspace3d checkpoint (EigenspaceOperator3D) on a 3D Maxwell PKL.
+"""Evaluate an EigenspaceOperator3D checkpoint on a 3D Maxwell (E-field) PKL.
 
-Works for H and E PKLs alike (metadata['field']; the batch carries BndEdge /
-KpNull, the model and metrics need nothing else).
 Per geometry: per-mode M-norm rel-L2 of the projected Ritz fields (sign-agnostic,
 subspace error inside near-degenerate clusters, NaN for a cluster split by the
 last output), predicted / true frequency [GHz] and relative error, span rel-L2 of
@@ -29,8 +27,8 @@ if _ROOT not in sys.path:
 
 from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate   # noqa: E402
 from src.models.hcurl import hcurl_grams, mode_rel_l2                  # noqa: E402
-from src.training.lightning_module import GNOTLightning, span_residual  # noqa: E402
-from infer import resolve_checkpoint                                      # noqa: E402
+from src.training.lightning_module import CavityLightning, span_residual  # noqa: E402
+from src.training.checkpoint import resolve_checkpoint                                      # noqa: E402
 
 
 def _to(batch, device):
@@ -60,7 +58,6 @@ def evaluate(lm, dataset, device='cpu', batch_size=2):
             rl = mode_rel_l2(out['field'][b].double(), T[b, :, :K].double(), MT[b, :, :K], inside)
             rl[split] = float('nan')
             row = {'geom_id': int(batch['geom_id'][b]), 'shape_type': batch['shape_type'][b],
-                   'field': batch.get('field', 'H'),
                    'n_vertices': int(batch['Mask'][b].sum()), 'n_edges': int(batch['EdgeMask'][b].sum()),
                    'grad_frac': float(gfrac[b].mean())}
             for k in range(K):
@@ -103,7 +100,7 @@ def main():
 
     ckpt = resolve_checkpoint(args.checkpoint)   # .ckpt or a training dir (best / last)
     print(f"Checkpoint: {ckpt}")
-    lm = GNOTLightning.load_from_checkpoint(ckpt, map_location=args.device)
+    lm = CavityLightning.load_from_checkpoint(ckpt, map_location=args.device)
     dc = dict(lm.hparams.get('data_cfg') or {})
     kw = dict(random_seed=dc.get('random_seed', 42), feature_indices=dc.get('feature_indices'))
     if args.split == 'all':
@@ -111,11 +108,7 @@ def main():
     else:
         ds = Maxwell3DDataset(args.data_path, split=args.split, train_ratio=dc.get('train_ratio', 0.8),
                               val_ratio=dc.get('val_ratio', 0.1), **kw)
-    trained = (lm.hparams.get('data_cfg') or {}).get('field')     # recorded since the E switch
-    if trained and getattr(ds, 'field', trained) != trained:
-        raise ValueError(f"checkpoint trained on field {trained!r}, data is {ds.field!r}")
     lm.freq_stats = ds.stats
-    print(f"field: {ds.field} ({'E: PEC wall edges masked, SPD Kp' if ds.field == 'E' else 'H: all edges'})")
     rows, t = evaluate(lm, ds, args.device, args.batch_size)
     if args.csv:
         with open(args.csv, 'w', newline='') as f:

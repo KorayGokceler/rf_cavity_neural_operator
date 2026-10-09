@@ -20,8 +20,8 @@ if _ROOT not in sys.path:
 
 from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate   # noqa: E402
 from src.models.hcurl import mode_rel_l2                              # noqa: E402
-from src.training.lightning_module import GNOTLightning                # noqa: E402
-from infer import resolve_checkpoint                                    # noqa: E402
+from src.training.lightning_module import CavityLightning                # noqa: E402
+from src.training.checkpoint import resolve_checkpoint                                    # noqa: E402
 
 
 def load(checkpoint, data_path, split='test', device='cpu'):
@@ -29,7 +29,7 @@ def load(checkpoint, data_path, split='test', device='cpu'):
     hparams['data_cfg'] for the split ratios / seed / feature_indices, ds.stats
     handed to lm.freq_stats, lm.eval()."""
     ckpt = resolve_checkpoint(checkpoint)
-    lm = GNOTLightning.load_from_checkpoint(ckpt, map_location=device)
+    lm = CavityLightning.load_from_checkpoint(ckpt, map_location=device)
     dc = dict(lm.hparams.get('data_cfg') or {})
     kw = dict(random_seed=dc.get('random_seed', 42), feature_indices=dc.get('feature_indices'))
     if split == 'all':
@@ -37,9 +37,6 @@ def load(checkpoint, data_path, split='test', device='cpu'):
     else:
         ds = Maxwell3DDataset(data_path, split=split, train_ratio=dc.get('train_ratio', 0.8),
                               val_ratio=dc.get('val_ratio', 0.1), **kw)
-    trained = (lm.hparams.get('data_cfg') or {}).get('field')     # recorded since the E switch
-    if trained and getattr(ds, 'field', trained) != trained:
-        raise ValueError(f"checkpoint trained on field {trained!r}, data is {ds.field!r}")
     lm.freq_stats = ds.stats
     lm.eval().to(device)
     return lm, ds
@@ -91,8 +88,8 @@ def _align_modes(F, T, MT, clusters):
 def predict(lm, ds, idx, device='cpu'):
     """One geometry's aligned prediction (A2 output dict, numpy float64
     unless noted). See docs/viz3d_contract.md section A2 for the exact keys
-    and the alignment rule; plus 'field' ('H' | 'E', from the PKL metadata):
-    the physical field whose N0 DOFs 'true' / 'pred' / 'err' are."""
+    and the alignment rule; 'field' = 'E' labels the physical field of the N0 DOFs
+    'true' / 'pred' / 'err' (the plot / export helpers read it)."""
     lm.eval().to(device)
     item = ds[idx]
     batch = _to(maxwell3d_collate([item]), device)
@@ -126,7 +123,7 @@ def predict(lm, ds, idx, device='cpu'):
 
     true_np, pred_np = T.numpy(), pred.numpy()
     return {
-        'field': str(getattr(ds, 'field', 'H')),              # 'H' | 'E': what the DOFs are
+        'field': 'E',                                          # what the DOFs are
         'geom_id': int(g_id),
         'shape_type': str(item['shape_type']),
         'X': np.asarray(item['X'].numpy(), dtype=np.float64),

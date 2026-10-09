@@ -10,7 +10,7 @@ per-geometry sparse operators the collate stacks block-diagonally on the padded
 index space (§0.4; sample b's edge e ↔ column b·Ne_max + e, exactly like M):
 
     QoI_S      [B·Ne × B·Ne]     wall-loss quadratic form S
-    QoI_Az     [B·P  × B·Ne]     axis evaluation (E: Ẽ_z, H: (curl H̃)_z)
+    QoI_Az     [B·P  × B·Ne]     axis evaluation (Ẽ along the beam axis)
     QoI_zeta, QoI_q [B, P]       axial coordinate / quadrature weight (q = 0 pad)
     QoI_Esurf, QoI_Hsurf [B·3Nf × B·Ne]   Cartesian rows 3i..3i+2 of surface point i
     QoI_SurfMask [B, Nf] bool,   QoI_scale [B] (s [m]),  QoI_Laxis [B] (normalised)
@@ -19,12 +19,11 @@ index space (§0.4; sample b's edge e ↔ column b·Ne_max + e, exactly like M):
 Formulas (§0.2, peak-amplitude convention, every value normalised to U = 1 J;
 u = F[b, :, k] any amplitude / sign, ω = 2π f, φ_p = ω s ζ_p/(βc)):
 
-                 E primary ('E')                    H primary ('H')
-    U        ½ ε0 s³ uᵀMu                       ½ μ0 s³ uᵀMu
-    P_c      ½ R_s/(ωμ0)² · uᵀSu                ½ R_s s² · uᵀSu
-    V        s·|Σ q a e^{jφ}|,  a = A_z u        |Σ q a e^{jφ}|/(ωε0)
-    E_pk     max|E_surf u|                      max|E_surf u|/(ωε0 s)
-    B_pk     max|H_surf u|/(ω s)                μ0 max|H_surf u|
+    U        ½ ε0 s³ uᵀMu
+    P_c      ½ R_s/(ωμ0)² · uᵀSu
+    V        s·|Σ q a e^{jφ}|,  a = A_z u
+    E_pk     max|E_surf u|
+    B_pk     max|H_surf u|/(ω s)
   then (amplitude 1/√U):  Q0 = ωU/P_c,  G = Q0·R_s,  R/Q = V²/(ωU),
   R_sh = V²/P_c ('circuit': both halved),  T = |Σ q a e^{jφ}| / Σ q|a|,
   E_acc = V/L_acc (L_acc given, else s·L_axis),  Epk/Eacc,  Bpk/Eacc [mT/(MV/m)].
@@ -103,8 +102,7 @@ def qoi_torch(batch, F, f_ghz, Rs=None, sigma=5.8e7, beta=1.0, convention='linac
               peak_p=None, L_acc=None):
     """CST-style figures of merit of the fields F [B, Ne_max, K] (N0 DOFs on the
     normalised meshes, any amplitude / sign) at frequencies f_ghz [B, K] (or
-    [B] / scalar, broadcast).  batch['field'] ('E' | 'H', default 'H') selects
-    the primary field.  Rs: fixed surface resistance [Ω] (scalar or [B, K]),
+    [B] / scalar, broadcast).  Rs: fixed surface resistance [Ω] (scalar or [B, K]),
     default copper R_s(f) = √(π f μ0/σ) at each mode's own frequency.
     L_acc: accelerating length [m] (scalar or [B]); default s·L_axis.
     Returns {key: float64 [B, K]} for QOI_KEYS (see module docstring)."""
@@ -114,9 +112,6 @@ def qoi_torch(batch, F, f_ghz, Rs=None, sigma=5.8e7, beta=1.0, convention='linac
     if missing:
         raise ValueError(f"qoi_torch needs batch keys {missing}: build the dataset with "
                          "Maxwell3DDataset(..., qoi_ops=True).")
-    field = str(batch.get('field', None) or 'H').upper()
-    if field not in ('E', 'H'):
-        raise ValueError(f"batch['field'] must be 'E' or 'H', got {field!r}")
     dt = torch.float64
     F = F.to(dt)
     dev = F.device
@@ -139,14 +134,8 @@ def qoi_torch(batch, F, f_ghz, Rs=None, sigma=5.8e7, beta=1.0, convention='linac
     # quadratic forms
     uMu = (F * spmm(sp('M'), F)).sum(1)                              # [B, K]
     uSu = (F * spmm(sp('QoI_S'), F)).sum(1)
-    if field == 'E':
-        U = 0.5 * EPS0 * s ** 3 * uMu
-        P = 0.5 * Rs / (omega * MU0) ** 2 * uSu
-    else:
-        U = 0.5 * MU0 * s ** 3 * uMu
-        P = 0.5 * Rs * s ** 2 * uSu
-    U = U.clamp(min=_TINY)
-    P = P.clamp(min=_TINY)
+    U = (0.5 * EPS0 * s ** 3 * uMu).clamp(min=_TINY)
+    P = (0.5 * Rs / (omega * MU0) ** 2 * uSu).clamp(min=_TINY)
 
     # on-axis voltage: complex sum via cos / sin
     a = spmm(sp('QoI_Az'), F)                                        # [B, P, K]
@@ -157,16 +146,13 @@ def qoi_torch(batch, F, f_ghz, Rs=None, sigma=5.8e7, beta=1.0, convention='linac
     re, im = (qa * torch.cos(phase)).sum(1), (qa * torch.sin(phase)).sum(1)
     vabs = torch.sqrt(re * re + im * im + _TINY)                     # |Σ q a e^{jφ}|
     T = vabs / (q * a.abs()).sum(1).clamp(min=_TINY)
-    V = s * vabs if field == 'E' else vabs / (omega * EPS0)
+    V = s * vabs
 
     # surface peaks
     mask = batch['QoI_SurfMask'].to(dev).bool()
     e_pk = _peak(sp('QoI_Esurf'), F, mask, peak_p)
     h_pk = _peak(sp('QoI_Hsurf'), F, mask, peak_p)
-    if field == 'E':
-        E_pk, B_pk = e_pk, h_pk / (omega * s)
-    else:
-        E_pk, B_pk = e_pk / (omega * EPS0 * s), MU0 * h_pk
+    E_pk, B_pk = e_pk, h_pk / (omega * s)
 
     # U = 1 J normalisation (field amplitude 1/√U)
     rU = torch.sqrt(U)

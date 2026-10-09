@@ -13,10 +13,10 @@ import time
 import numpy as np
 import torch
 
-from infer import resolve_checkpoint
+from src.training.checkpoint import resolve_checkpoint
 from src.data.dataset_3d import item_from_geometry, maxwell3d_collate
 from src.data.dataset_converter_3d import extract_geometry_3d, qoi_operators_of
-from src.training.lightning_module import GNOTLightning
+from src.training.lightning_module import CavityLightning
 
 EPS0, MU0 = 8.8541878128e-12, 4e-7 * math.pi
 QOI_SHOW = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
@@ -24,27 +24,18 @@ VOLTAGE_QOI = ('R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT
 RQ_FLOOR_OHM = 1e-6        # below: no accelerating field on the axis → voltage figures undefined (shown '—')
 
 
-def load_model(checkpoint, device='cpu', field=None):
-    """(lm, field, feature_indices). The field is the checkpoint's training field (data_cfg, recorded
-    by train.py); `field` overrides it and is required for checkpoints that do not record one."""
-    lm = GNOTLightning.load_from_checkpoint(resolve_checkpoint(checkpoint), map_location=device).eval()
-    lm.freq_stats = {'mean': 0.0, 'std': 1.0}            # physics_freq: out['freq'] is then f in GHz
-    dc = dict(lm.hparams.get('data_cfg') or {})
-    trained = dc.get('field')
-    if field and trained and field.upper() != str(trained).upper():
-        raise ValueError(f"checkpoint was trained on field {trained}, requested field {field}")
-    field = field or trained
-    if not field:
-        raise ValueError("checkpoint does not record its training field: pass field='E'|'H'")
-    return lm, str(field).upper(), dc.get('feature_indices')
+def load_model(checkpoint, device='cpu'):
+    """(lm, feature_indices) of a .ckpt or training dir (the best checkpoint there)."""
+    lm = CavityLightning.load_from_checkpoint(resolve_checkpoint(checkpoint), map_location=device).eval()
+    lm.freq_stats = {'mean': 0.0, 'std': 1.0}            # out['freq'] is then f in GHz
+    return lm, dict(lm.hparams.get('data_cfg') or {}).get('feature_indices')
 
 
-def untrained_model(field='E', n_modes=6, seed=0):
+def untrained_model(n_modes=6, seed=0):
     """A small randomly initialised model — for UI / API development without a checkpoint only."""
     torch.manual_seed(seed)
-    lm = GNOTLightning(val_dim=9, grid_dim=3, hidden_dim=32, n_heads=2, n_basis=16, num_field_modes=n_modes,
-                       rff_dim=16, model_type='eigenspace3d', physics_freq=True,
-                       eigenspace_kwargs={'n_layers': 2}, data_cfg={'field': field}).eval()
+    lm = CavityLightning(val_dim=9, hidden_dim=32, n_heads=2, n_basis=16, num_field_modes=n_modes, rff_dim=16,
+                         eigenspace_kwargs={'n_layers': 2}).eval()
     lm.freq_stats = {'mean': 0.0, 'std': 1.0}
     return lm
 
@@ -89,56 +80,50 @@ def forward(lm, geom, feature_indices=None, device='cpu', warmup=True):
             out['eigenvalues'][0].double().cpu().numpy(), t)
 
 
-def qoi(geom, M, U, f_ghz, field, n_axis=401, axis=None, Rs=None, sigma=5.8e7, beta=1.0, L_acc=None,
+def qoi(geom, M, U, f_ghz, n_axis=401, axis=None, Rs=None, sigma=5.8e7, beta=1.0, L_acc=None,
         convention='linac', return_ops=False):
     """Figures of merit of DOFs U at f_ghz (U = 1 J; family beam axis unless axis = dict of
     axis_xy / axis_dir / axis_point)."""
     from src.qoi import qoi_from_dofs
-    ops = qoi_operators_of(geom, field, M=M, n_axis=n_axis, **(axis or {}))
+    ops = qoi_operators_of(geom, M=M, n_axis=n_axis, **(axis or {}))
     q = qoi_from_dofs(ops, U, np.asarray(f_ghz) * 1e9, Rs=Rs, sigma=sigma, beta=beta, L_acc=L_acc,
                       convention=convention)
     return (q, ops) if return_ops else q
 
 
-def physical_fields(geom, M, U, f_ghz, field):
+def physical_fields(geom, M, U, f_ghz):
     """Nodal (vertex-averaged) display fields at U = 1 J, [Nv,3,K] each: (E [V/m], H [A/m]) with
     E(t) = E cos φ and H(t) = H sin φ."""
     from src.viz.nedelec import vertex_field
     X, tets, edges, s = geom['X'], geom['tets'], geom['edges'], float(geom['scale'])
     w = 2 * np.pi * np.asarray(f_ghz, float) * 1e9                                    # [K]
     m = np.einsum('ek,ek->k', U, M @ U)
-    P = vertex_field(X, tets, edges, U)                                               # primary
-    C = vertex_field(X, tets, edges, U, curl=True)                                    # its curl (normalised)
-    if field == 'E':
-        a = np.sqrt(1.0 / (0.5 * EPS0 * s ** 3 * m))                                  # → V/m
-        return a * P, -(a / (w * MU0 * s)) * C                                        # Faraday
-    a = np.sqrt(1.0 / (0.5 * MU0 * s ** 3 * m))                                       # → A/m
-    return (a / (w * EPS0 * s)) * C, a * P                                            # Ampère
+    E = vertex_field(X, tets, edges, U)
+    C = vertex_field(X, tets, edges, U, curl=True)                                    # curl E (normalised)
+    a = np.sqrt(1.0 / (0.5 * EPS0 * s ** 3 * m))                                      # → V/m
+    return a * E, -(a / (w * MU0 * s)) * C                                            # Faraday
 
 
 # ─────────────────────────── solutions (model, FE, difference) ────────
 
-def axis_values(geom, M, U, f_ghz, field, ops):
+def axis_values(geom, M, U, f_ghz, ops):
     """Field component along the beam axis at U = 1 J for every mode: [K, P] V/m (NaN outside Ω)."""
     s = float(geom['scale'])
     m = np.einsum('ek,ek->k', U, M @ U)
     v = np.asarray(ops['Az'] @ U)                                                    # [P, K]
-    if field == 'E':
-        a = np.sqrt(1.0 / (0.5 * EPS0 * s ** 3 * m))
-    else:
-        a = np.sqrt(1.0 / (0.5 * MU0 * s ** 3 * m)) / (2 * np.pi * np.asarray(f_ghz) * 1e9 * EPS0 * s)
+    a = np.sqrt(1.0 / (0.5 * EPS0 * s ** 3 * m))
     out = (v * a[None, :]).T
     out[:, np.asarray(ops['q']) <= 0] = np.nan
     return out
 
 
-def build_solution(geom, M, U, f_ghz, field, source, eta=None, qoi_kw=None, ops=None):
+def build_solution(geom, M, U, f_ghz, source, eta=None, qoi_kw=None, ops=None):
     """Everything the UI shows for one set of modes U [Ne,K] at f_ghz [K] (source 'model' | 'fe'):
     public 'modes' rows + private display arrays (_E, _H [Nv,3,K], _axis [K,P])."""
     U = np.asarray(U, float)
     f = np.asarray(f_ghz, float)
     if ops is None:
-        q, ops = qoi(geom, M, U, f, field, return_ops=True, **(qoi_kw or {}))
+        q, ops = qoi(geom, M, U, f, return_ops=True, **(qoi_kw or {}))
     else:
         from src.qoi import qoi_from_dofs
         q = qoi_from_dofs(ops, U, f * 1e9, **{k: v for k, v in (qoi_kw or {}).items() if k != 'axis'})
@@ -156,11 +141,11 @@ def build_solution(geom, M, U, f_ghz, field, source, eta=None, qoi_kw=None, ops=
                'eta': None if eta is None else float(eta[k])}
         row.update({n: _num(q[n][k]) for n in QOI_SHOW})
         modes.append(row)
-    E, H = physical_fields(geom, M, U, f, field)
-    return {'source': source, 'field': field, 'n_edges': int(len(geom['edges'])), 'modes': modes,
+    E, H = physical_fields(geom, M, U, f)
+    return {'source': source, 'n_edges': int(len(geom['edges'])), 'modes': modes,
             'axis_length_mm': float(ops['L_axis'] * geom['scale'] * 1e3),
             '_geom': geom, '_M': M, '_U': U, '_f': f, '_E': E, '_H': H, '_ops': ops,
-            '_axis': axis_values(geom, M, U, f, field, ops),
+            '_axis': axis_values(geom, M, U, f, ops),
             '_zeta_mm': np.asarray(ops['zeta']) * geom['scale'] * 1e3}
 
 
@@ -195,10 +180,10 @@ def align(Up, Ut, M, f_true, rel=1e-3):
 
 def compare(pred, true, rel=1e-3):
     """(rows, difference solution) for a model solution vs the FE one on the same mesh."""
-    geom, M, field = true['_geom'], true['_M'], true['field']
+    geom, M = true['_geom'], true['_M']
     Ua, rl = align(pred['_U'], true['_U'], M, true['_f'], rel)
     K = Ua.shape[1]
-    pa = build_solution(geom, M, Ua, pred['_f'][:K], field, 'model', ops=true['_ops'])
+    pa = build_solution(geom, M, Ua, pred['_f'][:K], 'model', ops=true['_ops'])
     rows = []
     for k in range(K):
         tr, pr = true['modes'][k], pa['modes'][k]
@@ -221,22 +206,21 @@ def compare(pred, true, rel=1e-3):
 class ModelService:
     """One loaded model + per-mesh prediction. Thread-safe (one forward at a time)."""
 
-    def __init__(self, checkpoint=None, device=None, field=None, optional=False):
+    def __init__(self, checkpoint=None, device=None, optional=False):
         """optional: a checkpoint that does not load falls back to the untrained model (load_error says why)
         instead of failing — for launchers that pick a checkpoint automatically."""
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         self.load_error = None
         if checkpoint:
             try:
-                self.lm, self.field, self.feature_indices = load_model(checkpoint, self.device, field)
+                self.lm, self.feature_indices = load_model(checkpoint, self.device)
                 self.untrained = False
             except Exception as e:                           # noqa: BLE001 — reported in info()
                 if not optional:
                     raise
                 self.load_error, checkpoint = f"{type(e).__name__}: {e}", None
         if not checkpoint:
-            self.field = (field or 'E').upper()
-            self.lm, self.feature_indices, self.untrained = untrained_model(self.field), None, True
+            self.lm, self.feature_indices, self.untrained = untrained_model(), None, True
         self.lm.to(self.device)
         self.checkpoint = str(checkpoint) if checkpoint else None
         self.n_modes = int(self.lm.hparams.get('num_field_modes', 6))
@@ -247,25 +231,25 @@ class ModelService:
         """Switch to another checkpoint (e.g. a run just trained from the UI); on failure the current
         model stays."""
         path = resolve_checkpoint(checkpoint)
-        lm, field, fi = load_model(path, self.device)
+        lm, fi = load_model(path, self.device)
         lm.to(self.device)
         with self._lock:
-            self.lm, self.field, self.feature_indices = lm, field, fi
+            self.lm, self.feature_indices = lm, fi
             self.untrained, self.load_error, self.checkpoint = False, None, str(path)
             self.n_modes = int(lm.hparams.get('num_field_modes', 6))
             self.n_params = int(sum(p.numel() for p in lm.parameters()))
         return self.info()
 
     def info(self):
-        return {'field': self.field, 'n_modes': self.n_modes, 'n_params': self.n_params, 'device': self.device,
+        return {'n_modes': self.n_modes, 'n_params': self.n_params, 'device': self.device,
                 'untrained': self.untrained, 'checkpoint': self.checkpoint and self.checkpoint.split('/')[-1],
                 'load_error': self.load_error,
                 'run': self.checkpoint and os.path.basename(os.path.dirname(os.path.abspath(self.checkpoint)))}
 
     def geometry(self, nodes, tets, family=''):
         """(converter geometry dict with features + operators, CSR mass) of a mesh [m]."""
-        geom, M = extract_geometry_3d(nodes, tets, self.field)
-        geom.update(field=self.field, shape_type=family or '')
+        geom, M = extract_geometry_3d(nodes, tets)
+        geom.update(shape_type=family or '')
         return geom, (M.tocsr() if hasattr(M, 'tocsr') else M)
 
     def predict(self, nodes, tets, family='', qoi_kw=None, warmup=False, geom=None, M=None):
@@ -281,11 +265,11 @@ class ModelService:
         t0 = time.perf_counter()
         ne = len(geom['edges'])
         Mmat = to_csr(M, (ne, ne))
-        free = ~np.asarray(geom['bnd_edge'], bool) if self.field == 'E' else None
+        free = ~np.asarray(geom['bnd_edge'], bool)
         Kmat = to_csr(geom['K'], (ne, ne)) if 'K' in geom else None
         eta = (residual(Kmat, Mmat, U / np.sqrt(np.einsum('ek,ek->k', U, Mmat @ U)), lam, free)
                if Kmat is not None else None)
-        sol = build_solution(geom, Mmat, U, f, self.field, 'model', eta=eta, qoi_kw=qoi_kw)
+        sol = build_solution(geom, Mmat, U, f, 'model', eta=eta, qoi_kw=qoi_kw)
         sol['time_s'] = {'operators': t_ops, 'model': t_model, 'qoi': time.perf_counter() - t0}
         return sol
 

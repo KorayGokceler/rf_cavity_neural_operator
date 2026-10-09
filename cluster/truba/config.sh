@@ -19,7 +19,6 @@ CONVERT_CPUS=${CONVERT_CPUS:-$CPUS}    # conversion is single-process; the cores
 CONVERT_TIME=${CONVERT_TIME:-0-12:00:00}
 
 # ── physics / generator (one TAG = one consistent dataset; change TAG when you change these) ─
-FIELD=${FIELD:-E}                      # E: every closed PEC cavity (incl. handles); H: balls only
 MESH_SIZE=${MESH_SIZE:-0.10}           # tet size relative to the (per-cell) characteristic length
 N_STORE=${N_STORE:-10}                 # eigenmodes stored per geometry
 SAMPLING=${SAMPLING:-sobol}
@@ -27,7 +26,7 @@ DEFORM_PROB=${DEFORM_PROB:-0.5}
 DEFORM_MAX=${DEFORM_MAX:-0.5}
 SEED=${SEED:-0}
 SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-900}  # s; a stuck mesh/solve is skipped
-TAG=${TAG:-${FIELD}_ms${MESH_SIZE}_k${N_STORE}_v1}
+TAG=${TAG:-E_ms${MESH_SIZE}_k${N_STORE}_v1}
 # TEST=1: a small trial run (TEST_N geometries per family, one shard) under <TAG>_test
 TEST=${TEST:-0}
 TEST_N=${TEST_N:-112}

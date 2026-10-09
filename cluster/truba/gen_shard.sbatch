@@ -24,7 +24,7 @@ if [ -f "$OUT" ]; then echo "exists, skipped: $OUT"; exit 0; fi
 echo "$(date -Is) $FAMILY shard $SHARD: ids $START_ID … $((START_ID + N - 1)) on $(hostname), ${SLURM_CPUS_PER_TASK:-$CPUS} workers"
 cd "$REPO_DIR"
 python src/data_gen/dataset_generator_3d.py \
-  --families "$FAMILY" --field "$FIELD" --n_total "$N" --start_id "$START_ID" --seed "$SEED" \
+  --families "$FAMILY" --n_total "$N" --start_id "$START_ID" --seed "$SEED" \
   --n_eigen_modes "$N_STORE" --mesh_size "$MESH_SIZE" --sampling "$SAMPLING" \
   --deform_prob "$DEFORM_PROB" --deform_max "$DEFORM_MAX" \
   --n_workers "${SLURM_CPUS_PER_TASK:-$CPUS}" --sample_timeout "$SAMPLE_TIMEOUT" \

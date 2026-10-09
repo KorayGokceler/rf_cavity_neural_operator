@@ -17,8 +17,8 @@ Conventions
   point-averaged '_pt' versions) are left in normalised-mesh DOF units — they are only ever
   compared to each other / used for relative display (glyph length, colour-by-|H|), so no
   rescaling is applied to them. This is intentional, not an oversight.
-- Array names carry the field letter of the prediction (pred['field'], 'H' default): an
-  E-formulation PKL gives E_true_k / absE_true_k / E_true_k_pt; the docs below say H for short.
+- Array names carry the field letter of the prediction (pred['field'] = 'E'): E_true_k /
+  absE_true_k / E_true_k_pt; the docs below say H for short.
 - `field_data` (run-level scalars/arrays such as f_true_GHz, f_pred_GHz, rel_l2, geom_id,
   shape_type) is NOT written into the .vtu itself. meshio 5.3.5's VTU writer does not round-trip
   `meshio.Mesh(..., field_data=...)` for the 'vtu' format — writing it and reading it back gives
@@ -188,7 +188,7 @@ def export_prediction(path, pred, cell_H_fn=None):
     err = np.asarray(pred.get("err", predicted - true), dtype=np.float64)
     K = true.shape[1]
     n_nodes = X.shape[0]
-    F = str(pred.get("field", "H") or "H")
+    F = str(pred.get("field", "E") or "H")
 
     H_true = np.asarray(cell_H_fn(X, tets, edges, true))   # [Nt,3,K]
     H_pred = np.asarray(cell_H_fn(X, tets, edges, predicted))
