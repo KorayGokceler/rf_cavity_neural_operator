@@ -483,7 +483,39 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
     P = np.linalg.solve(A, np.einsum("tqi,tq->tiq", Phi, W))                                  # [Nt, nl, nq]
     bary = np.column_stack([ref, 1.0 - ref.sum(1)])
     # NGSolve's reference tet: vertices (1,0,0), (0,1,0), (0,0,1), (0,0,0) ↔ the element's vertices
+    qxn = (qx - center) / s
+    feats = point_features(mesh, mips, qxn, W / s ** 3, center, s, order)
     return {"K": Ks, "M": Ms, "G": G, "Kp": Kp, "C": C, "P": P, "bnd": bnd,
-            "qx": (qx - center) / s, "bary": bary, "X": (Xv - center) / s, "tets": tets,
+            "qx": qxn, "qw": W / s ** 3, "qfeat": feats.reshape(nt, nq, -1), "bary": bary,
+            "X": (Xv - center) / s, "tets": tets,
             "scale": s, "center": np.asarray(center, dtype=np.float64), "order": int(order),
             "n_dof": int(fes.ndof), "n_pot": int(G.shape[1])}
+
+
+def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8):
+    """Features of the quadrature points (normalised geometry), FEATURE_NAMES_3D order:
+    x, y, z, dist_to_boundary, dir_bnd_x/y/z (unit vector to the nearest wall point), point volume
+    (quadrature weight / max) and the torsion function (−Δw = 1, w = 0 on the wall, H1(order + 1)
+    on the curved mesh, / max) — exact on coarse curved meshes, where the vertex features of the
+    straight mesh degenerate (no interior vertices).  Returns [Nt·nq, 9] float32."""
+    from scipy.spatial import cKDTree
+    from ngsolve import (BND, CF, H1, TRIG, BilinearForm, GridFunction, IntegrationRule, LinearForm,
+                         TaskManager, grad, x, y, z)
+    bm = mesh.MapToAllElements(IntegrationRule(TRIG, wall_order), BND)
+    on = np.asarray(mesh.BoundaryCF({"wall": 1.0}, default=0.0)(bm)).reshape(-1) > 0.5
+    wp = (np.asarray(CF((x, y, z))(bm)).reshape(-1, 3)[on] - center) / scale
+    P = qxn.reshape(-1, 3)
+    dist, idx = cKDTree(wp).query(P)
+    d = wp[idx] - P
+    direc = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-30)
+    fes = H1(mesh, order=int(order) + 1, dirichlet="wall")
+    u, v = fes.TnT()
+    dx = volume_measure(order + 1)
+    with TaskManager():
+        a = BilinearForm(grad(u) * grad(v) * dx, symmetric=True).Assemble()
+        f = LinearForm(1.0 * v * dx).Assemble()
+        w = GridFunction(fes)
+        w.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
+    tw = np.asarray(w(mips)).reshape(-1)
+    qv = np.asarray(qw, dtype=np.float64).reshape(-1)
+    return np.column_stack([P, dist, direc, qv / qv.max(), tw / max(tw.max(), 1e-30)]).astype(np.float32)

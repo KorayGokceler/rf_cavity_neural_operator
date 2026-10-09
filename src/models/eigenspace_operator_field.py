@@ -10,9 +10,10 @@ linear map (src.data_gen.highorder.field_operators):
     ψ_j(x_q)  →  per element: L2(p) coefficients  c = P_t ψ      (|J|-weighted least squares)
               →  HCurl(p) DOFs  V = C · c                         (projection-based interpolation)
 
-ψ is a geometric field (the trunk embedding interpolated barycentrically to x_q ‖ RFF(x_q) → MLP),
-so the DOFs transform correctly under any mesh renumbering; wall DOFs and padding are zeroed
-(n × E = 0).  The Rayleigh–Ritz with the kernel projection (hcurl_ritz) is unchanged: it only needs
+The trunk's tokens are the quadrature points themselves (features from highorder.point_features,
+mass weights = quadrature weights: the attention integrals are the element quadrature), and
+ψ(x_q) = head(h_q ‖ RFF(x_q)) — a geometric field, so the DOFs transform correctly under any mesh
+renumbering; wall DOFs and padding are zeroed (n × E = 0).  The Rayleigh–Ritz with the kernel projection (hcurl_ritz) is unchanged: it only needs
 the space's K, M, G, Kp.
 """
 import torch
@@ -21,7 +22,7 @@ from src.models.eigenspace_operator_3d import EigenspaceOperator3D
 from src.models.hcurl import hcurl_ritz, spmm
 from src.models.layers import physics_freq_z
 
-REQUIRED_KEYS = ('QTet', 'QBary', 'QX', 'QP', 'C', 'DofMask', 'BndDof', 'M', 'K', 'G', 'Gt', 'Kp',
+REQUIRED_KEYS = ('X', 'Input_funcs', 'QX', 'QP', 'C', 'DofMask', 'BndDof', 'M', 'K', 'G', 'Gt', 'Kp',
                  'Kp_diag', 'Scale')
 
 
@@ -32,19 +33,15 @@ class EigenspaceOperatorField(EigenspaceOperator3D):
     vectors [B, Ndof, ·] of the batch's HCurl(p) space."""
 
     def field_basis(self, batch: dict) -> torch.Tensor:
-        """V [B, Ndof, m]: ψ at the quadrature points → HCurl DOFs, 0 on the wall and padding."""
-        h = self.embed(batch)                                            # [B, Nv, D]
-        tet = batch['QTet'].long()                                       # [B, Nt, 4]
-        B, Nt, _ = tet.shape
-        b = torch.arange(B, device=h.device)[:, None, None]
-        hv = h[b, tet]                                                   # [B, Nt, 4, D]
-        bary = batch['QBary'].to(h.dtype)                                # [B, nq, 4]
-        z = torch.einsum('bqi,btid->btqd', bary, hv)                     # [B, Nt, nq, D]
-        qx = batch['QX'].to(h.dtype)                                     # [B, Nt, nq, 3]
+        """V [B, Ndof, m]: ψ at the quadrature points → HCurl DOFs, 0 on the wall and padding.  The
+        trunk's tokens ARE the quadrature points (batch X / Input_funcs / Area = weights)."""
+        qx = batch['QX']                                                 # [B, Nt, nq, 3]
+        B, Nt, nq, _ = qx.shape
+        z = self.embed(batch).view(B, Nt, nq, -1)                        # [B, Nt, nq, D]
         if self.edge_rff:
-            z = torch.cat([z, self.rff(qx)], dim=-1)
-        psi = self.edge_head(z).view(B, Nt, qx.shape[2], self.n_basis, 3)
-        coef = torch.einsum('btlq,btqmc->btclm', batch['QP'].to(h.dtype), psi)   # [B, Nt, 3, nl, m]
+            z = torch.cat([z, self.rff(qx.to(z.dtype))], dim=-1)
+        psi = self.edge_head(z).view(B, Nt, nq, self.n_basis, 3)
+        coef = torch.einsum('btlq,btqmc->btclm', batch['QP'].to(z.dtype), psi)   # [B, Nt, 3, nl, m]
         V = spmm(batch['C'], coef.reshape(B, -1, self.n_basis).double())
         keep = batch['DofMask'] & ~batch['BndDof'].bool()
         return V * keep.unsqueeze(-1).to(V.dtype)
