@@ -21,6 +21,7 @@ The built frontend (web/dist) is served at / when present.
 """
 import base64
 import collections
+import hmac
 import os
 import random
 import tempfile
@@ -30,7 +31,7 @@ import uuid
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -110,6 +111,37 @@ class PredictReq(BaseModel):
     compare_to: str | None = None          # FE solution id of the same geometry (dataset item)
 
 
+TOKEN_COOKIE = 'rfcav_token'
+
+
+def _access_token(app, token):
+    """Optional shared-secret access (RFCAV_TOKEN) for a server reachable from outside (tunnel, LAN):
+    open the page once as /?token=<token> — the token is then kept in an HttpOnly cookie; API calls
+    without it get 401. No token configured → open access (local development)."""
+    if not token:
+        return
+
+    def ok(v):
+        return bool(v) and hmac.compare_digest(str(v), token)
+
+    @app.middleware('http')
+    async def guard(request, call_next):
+        q = request.query_params.get('token')
+        if ok(q) or ok(request.cookies.get(TOKEN_COOKIE)) or ok(request.headers.get('x-rfcav-token')):
+            resp = await call_next(request)
+            if ok(q):
+                resp.set_cookie(TOKEN_COOKIE, token, httponly=True, samesite='lax',
+                                secure=request.url.scheme == 'https', max_age=7 * 24 * 3600)
+            return resp
+        if request.url.path.startswith('/api/'):
+            return JSONResponse({'detail': 'access token required'}, status_code=401)
+        return HTMLResponse('<!doctype html><meta name="viewport" content="width=device-width">'
+                            '<body style="font-family:system-ui;padding:24px">'
+                            '<h3>RF Cavity Neural Solver</h3><p>Erişim anahtarı gerekli: sunucunun verdiği '
+                            'bağlantıyı (…/?token=…) açın. · Access token required: open the link with '
+                            '?token=… printed by the server.</p></body>', status_code=401)
+
+
 def create_app(service=None, datasets=None):
     """FastAPI app around a ModelService (built from RFCAV_CHECKPOINT / RFCAV_DEVICE when None) and
     a dataset registry ({name: dataset}; RFCAV_DATA when None)."""
@@ -124,6 +156,7 @@ def create_app(service=None, datasets=None):
     geoms, preds = Store(lim.max_items, lim.ttl_s), Store(lim.max_items, lim.ttl_s)
     app = FastAPI(title='RF Cavity Neural Solver', version=VERSION)
     app.state.service = service
+    _access_token(app, os.environ.get('RFCAV_TOKEN') or None)
 
     def _geometry_response(nodes, tets, source, extra=None, prepared=None):
         if len(tets) > lim.max_tets:

@@ -179,3 +179,29 @@ dl.facts dd { text-align: right; overflow-wrap: anywhere; }
 dl.facts.params { margin-top: 6px; max-height: 260px; overflow: auto; }
 button.small { font-size: 12px; padding: 4px 6px; margin-top: 8px; }
 table.qoi-cmp td:first-child { cursor: default; }
+
+/* ── phone ─────────────────────────────────────────────────────────── */
+@media (max-width: 760px) {
+  html, body { overflow-x: hidden; }
+  header { flex-wrap: wrap; gap: 8px; padding: 10px 16px; }
+  header h1 { font-size: 16px; }
+  header .sub, header .badge { display: none; }
+  header nav.seg { order: 3; width: 100%; }
+  header nav.seg button { flex: 1; }
+  main { display: flex; flex-direction: column; gap: 12px; }
+  .leftcol { display: contents; }
+  .leftcol > .panel { order: 1; }
+  .center { order: 2; }
+  .panel.right { order: 3; }
+  .leftcol > .card { order: 4; }
+  .viewer-card { height: 58vh; min-height: 300px; }
+  .legend { left: 8px; right: 8px; bottom: 8px; flex-wrap: wrap; }
+  .legend-bar { width: 110px; }
+  .controls { gap: 10px; }
+  .controls label { min-width: 0; flex: 1 1 40%; }
+  .controls .grow { flex: 1 1 100%; }
+  .page { padding: 10px 16px; }
+  .filters label { min-width: 0; flex: 1 1 100%; }
+  table.data { display: block; overflow-x: auto; white-space: nowrap; }
+  button, select, input { min-height: 36px; }
+}

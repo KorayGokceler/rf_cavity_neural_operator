@@ -120,6 +120,28 @@ docker compose up --build                                                 # http
 - örnek geometri ~2 s,
 - tahmin toplam ~1.7 s: operatörler 0.7 s, model 0.4 s, QoI 0.2 s.
 
+## 4b. Telefondan kullanım
+
+`scripts/serve_web.py` arayüzü telefondan açılacak şekilde başlatır:
+1. Gerekirse arayüzü derler.
+2. API'yi bir **erişim anahtarıyla** başlatır (`RFCAV_TOKEN`).
+3. Bağlantıyı ve telefon kamerasıyla okutulacak **QR kodu** yazar.
+
+| nerede | komut | telefondaki bağlantı |
+|---|---|---|
+| **Colab** (en kolayı) | `Colab_Maxwell3D.ipynb` hücre 15 | `https://….trycloudflare.com/?token=…` (her yerden) |
+| kendi bilgisayarın, aynı Wi-Fi | `python scripts/serve_web.py --checkpoint runs/large --data <dataset kökü>` | `http://<bilgisayarın IP'si>:8000/?token=…` |
+| kendi bilgisayarın, her yerden | aynı komut + `--tunnel` | `https://….trycloudflare.com/?token=…` |
+
+- **Tünel:** `--tunnel` bir Cloudflare quick tunnel açar. Hesap gerekmez; `cloudflared` yoksa script indirir. Bağlantı, script çalıştığı sürece geçerlidir.
+- **Erişim anahtarı:**
+  - Bağlantı ilk açıldığında anahtar HttpOnly bir çereze yazılır.
+  - Anahtarsız istekler 401 alır. Anahtar her başlatmada yeniden üretilir.
+  - Bağlantıyı bir parola gibi paylaş.
+  - `--no_token` yalnız güvenilir bir ağda kullanılmalı.
+- **Telefon arayüzü:** 760 px altında tek sütun. Sıra: geometri → 3D görünüm → kontroller → modlar → ayrıntılar → geometri bilgisi. 3D görünüm dokunmatik: tek parmakla döndür, iki parmakla yakınlaştır.
+- **TRUBA:** hesaplama düğümleri internete kapalı, dolayısıyla telefondan doğrudan erişilemez. Ya Colab'ı kullan, ya da checkpoint'i ve datasetleri kendi bilgisayarına kopyalayıp orada çalıştır.
+
 ## 5. Güvenlik notları (dışarıya açık)
 
 - Yüklenen dosya güvenilmez veri sayılır:
@@ -127,6 +149,7 @@ docker compose up --build                                                 # http
   - uzantı beyaz listesi, boyut sınırı;
   - OCC/gmsh/meshio ayrı bir süreçte çalışır: süre sınırı, adres alanı sınırı (`RLIMIT_AS`), çökerse yalnız o süreç ölür.
 - Mesh boyu ≥ 0.05 ve tet sayısı sınırı var: hesap ve bellek patlamasına karşı.
+- Dışarı açılan sunucuda (`serve_web.py`) paylaşılan erişim anahtarı (`RFCAV_TOKEN`) zorunlu; anahtar HttpOnly çerezde tutulur.
 - **v0.4'te gelecek:** giriş (davetli e-posta / OAuth), kullanıcı başına kota ve hız sınırı, HTTPS'i ters vekil (Caddy/nginx) sağlayacak.
 - **Gizlilik:** tasarımlar diske yazılmaz, 1 saatte bellekten düşer.
 - **Lisans:** gmsh GPL'dir. Servis olarak çalıştırmak dağıtım sayılmaz, ama masaüstü dağıtımda GPL geçerli olur. vtk.js BSD, OCC LGPL.

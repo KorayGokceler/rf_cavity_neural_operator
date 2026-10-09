@@ -129,3 +129,23 @@ def test_physical_fields_energy_normalisation(pillbox_msh):
     U_J = 0.5 * 8.8541878128e-12 * (vol * e2).sum()
     assert 0.2 < U_J < 1.5                                                  # nodal averaging smooths a random field
     assert np.all(np.isfinite(H))
+
+
+def test_access_token(monkeypatch):
+    """RFCAV_TOKEN: 401 without it; ?token= sets an HttpOnly cookie that authorises the API."""
+    monkeypatch.setenv("RFCAV_TOKEN", "s3cret")
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    assert c.get("/api/info").status_code == 401
+    assert c.get("/api/info", params={"token": "wrong"}).status_code == 401
+    r = c.get("/api/info", params={"token": "s3cret"})
+    assert r.status_code == 200 and "rfcav_token" in r.headers.get("set-cookie", "")
+    assert "httponly" in r.headers["set-cookie"].lower()
+    assert c.get("/api/info").status_code == 200                              # cookie kept by the client
+    assert TestClient(c.app).get("/api/info", headers={"X-RFCAV-Token": "s3cret"}).status_code == 200
+
+
+def test_serve_web_helpers():
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import serve_web
+    ip = serve_web.lan_ip()
+    assert ip.count(".") == 3

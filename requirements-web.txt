@@ -3,3 +3,4 @@ fastapi>=0.110          # [0.143]
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9 # multipart uploads
 httpx>=0.27             # tests (fastapi.testclient)
+qrcode>=7.4             # scripts/serve_web.py: QR code of the phone link
