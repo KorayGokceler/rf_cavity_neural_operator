@@ -79,3 +79,24 @@ def test_field_model_ritz_is_an_upper_bound_and_learns(sample):
         opt.step()
         losses.append(float(loss))
     assert losses[-1] < 0.5 * losses[0]
+
+
+def test_ritz_of_the_labels_returns_their_eigenvalues_and_mismatch_is_caught(sample):
+    """The Ritz layer and the labels live in the same space: the labels as basis give back exactly
+    their eigenvalues; labels from a differently curved mesh (same DOF count) are rejected."""
+    from src.data.field_dataset import check_labels
+    from src.models.hcurl import hcurl_ritz
+    mesh, ops, r, Y = sample
+    batch = field_collate([field_item(ops, Y, r["f_hz"] / 1e9)])
+    lam, _, _ = hcurl_ritz(torch.as_tensor(Y)[None].double(), batch, K, mass_ridge=1e-14, drop_tol=1e-9,
+                           tol=1e-12, maxiter=5000)
+    np.testing.assert_allclose(lam[0].numpy(), r["lam"] * ops["scale"] ** 2, rtol=1e-10)
+    geo = Cylinder(Axes((0, 0, 0), Z), r=0.1, h=0.1)
+    geo.faces.name = "wall"
+    m3 = Mesh(OCCGeometry(geo).GenerateMesh(maxh=0.05))
+    m3.Curve(3)                                                    # the sample mesh is curved to order 2
+    r3 = ho.solve_modes(m3, K, order=2)
+    Y3 = np.column_stack([g.vec.FV().NumPy() for g in r3["gfs"]])
+    assert Y3.shape == Y.shape
+    with pytest.raises(ValueError, match="not eigenvectors"):
+        check_labels(ops, Y3, r3["f_hz"] / 1e9)
