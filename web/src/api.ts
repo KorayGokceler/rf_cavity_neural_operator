@@ -54,6 +54,25 @@ export interface Job {
   created: number; started: number | null; finished: number | null; error: string | null;
   outputs: string[]; log: string[];
 }
+// TRUBA page (src/service/truba.py): the form, the one-line command built from it
+export interface TrubaForm {
+  action: 'all' | 'dataset' | 'train' | 'status' | 'setup'; labels: 'field' | 'n0'; families: string[];
+  n_per_family: number | ''; mesh_size: number; n_modes: number; label_order: number; model_order: number;
+  min_fillet: number | ''; threads: number; max_elements: number; maxh_factor: number; deform_prob: number;
+  deform_max: number; sampling: 'sobol' | 'random'; seed: number; tag: string; partition: string; cpus: number;
+  time: string; account: string; max_parallel: number; test: boolean; gpu_partition: string; gpus: number;
+  gpu_cpus: number; gpu_time: string; exp: string; model: string; epochs: number; batch: number | '';
+  lr: number; num_workers: number | ''; cache_dir: string; train_extra: string[]; dry_run: boolean;
+  repo: string; branch: string; repo_dir: string;
+}
+export interface TrubaConfig {
+  repo: string; branch: string; families: { train: string[]; ood: string[] }; models: string[];
+  actions: string[]; form: TrubaForm;
+}
+export interface TrubaResult {
+  command: string; run_args: string; tag: string; families: string[]; group: string; notes: string[];
+  estimate: { geometries: number; core_hours: number; disk_gb: number; workers_per_job: number };
+}
 export interface Preset { embed_dim: number; n_heads: number; n_layers: number; n_basis: number; params_m: number }
 export interface TrainConfig {
   enabled: boolean; runs_root: string | null; gpu: string | null; cpu_count: number;
@@ -207,4 +226,6 @@ export const api = {
     return { points: f32(j.points_b64), triangles: u32(j.triangles_b64), E: f32(j.E_b64), H: f32(j.H_b64) };
   },
   exportUrl: (pid: string) => `/api/predictions/${pid}/export`,
+  trubaConfig: () => call<TrubaConfig>('/api/truba/config'),
+  trubaCommand: (f: TrubaForm) => call<TrubaResult>('/api/truba/command', json(f)),
 };

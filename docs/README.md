@@ -10,7 +10,8 @@ Güncel çalışma belgeleri (kod bunlara göre yazılır):
 | [25_PIPELINE](25_PIPELINE.md) | uçtan uca akış: üretim → birleştirme → eğitim → değerlendirme → tahmin |
 | [26_WEB_UI](26_WEB_UI.md) | web arayüzü: API, dataset gezgini, üretim, eğitim, Colab / telefon |
 | [27_LABEL_BENCHMARK](27_LABEL_BENCHMARK.md) | etiket kalitesi: N0 ve NGSolve p2/p3 eğri eleman etiketleri, frekans + alan + QoI |
-| [28_FIELD_MODEL](28_FIELD_MODEL.md) | seçenek B: yüksek mertebe H(curl) uzayında öğrenilen alan modeli (prototip) |
+| [28_FIELD_MODEL](28_FIELD_MODEL.md) | seçenek B: yüksek mertebe H(curl) uzayında öğrenilen alan modeli |
+| [29_FIELD_LABELS](29_FIELD_LABELS.md) | alan etiketleri: eğri mesh + p3 etiket → p2 model uzayı, maliyet, TRUBA tek satır komut ve arayüz sayfası |
 | [23_ROADMAP](23_ROADMAP.md) | yol haritası |
 | [../cluster/truba/README.md](../cluster/truba/README.md) | TRUBA (SLURM) betikleri |
 

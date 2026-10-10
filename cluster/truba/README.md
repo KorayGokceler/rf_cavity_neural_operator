@@ -30,6 +30,33 @@ $DATA_ROOT/$TAG/                         (varsayılan /arf/scratch/$USER/rfcav3d
 
 Uçtan uca akış (veri → eğitim → değerlendirme → tahmin): **docs/25_PIPELINE.md**.
 
+## Tek satır: `run.sh` (arayüzün TRUBA sekmesi bu komutları üretir)
+
+```bash
+bash cluster/truba/run.sh all LABELS=field FAMILIES=train N_PER_FAMILY=1024 EXP=field_base --dry-run   # önce bak
+bash cluster/truba/run.sh all LABELS=field FAMILIES=train N_PER_FAMILY=1024 EXP=field_base             # gönder
+bash cluster/truba/run.sh status LABELS=field
+```
+
+- İşlemler:
+  - `setup`: conda ortamı; CUDA torch ve NGSolve dahil.
+  - `dataset`: ailelerin eksik parçaları.
+  - `train`: GPU eğitimi.
+  - `all`: veri, ardından eğitim; eğitim `--dependency=afterany` ile veri işlerini bekler.
+  - `status`: aile başına ilerleme tablosu.
+- `KEY=VALUE`: `config.sh`'deki her değişken (PARTITION, CPUS, TIME, ACCOUNT, MESH_SIZE, MODEL, EPOCHS, …), ayrıca:
+  - `FAMILIES`: `train` | `ood` | `all` | virgüllü liste;
+  - `N_PER_FAMILY`;
+  - `TRAIN_FAMILIES`.
+- `--dry-run`: her `sbatch` komutunu bağımlılıklarıyla yazdırır, hiçbir iş göndermez.
+- Ortam yoksa ilk çağrı `setup_env.sh`'yi çalıştırır (~10 dk).
+- `LABELS=field` (docs/29):
+  - NGSolve p3 etiketleri eğri mesh üzerinde üretilir, p2 model uzayına izdüşürülür; dönüştürme adımı yoktur.
+  - Eğitim, train grubundaki ailelerin H5 parça klasörlerinden yapılır (OOD aileleri eğitime girmez).
+  - Ayrı TAG kullanılır: `F_p3p2_ms0.10_k10_mf0.05_v1`.
+  - İş başına `CPUS / THREADS` örnek aynı anda çalışır (`THREADS=8` → 7 örnek, örnek başına ~5 GB).
+- `LABELS=n0` (varsayılan): aşağıdaki akışın aynısıdır: üretim → aile PKL'i → `merge.sh` → eğitim.
+
 ## Adımlar
 
 ```bash

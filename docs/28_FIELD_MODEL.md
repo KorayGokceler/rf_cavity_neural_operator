@@ -1,8 +1,8 @@
 # 28 — Option B: learned-field model on a high-order H(curl) space
 
-> Status: prototype (`claude/field-model`). The model, the operators and the batches work, and
-> single-sample overfit converges. Missing: the data pipeline (generator labels, storage, dataset,
-> Lightning) and size-controlled curved meshing (see §4).
+> Status: implemented (`claude/field-model`). The model, the operators and the batches work, and
+> single-sample overfit converges. The data pipeline (generator labels, storage, dataset, Lightning
+> `field3d`, TRUBA) and the curved-mesh size control are in docs/29.
 
 ## 1. Why
 

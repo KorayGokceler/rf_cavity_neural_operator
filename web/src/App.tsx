@@ -8,6 +8,7 @@ import AxisPlot from './components/AxisPlot';
 import DatasetPage from './components/DatasetPage';
 import GeneratePage from './components/GeneratePage';
 import TrainPage from './components/TrainPage';
+import TrubaPage from './components/TrubaPage';
 import Viewer3D, { fieldScalars, type Comp, type SurfaceMode } from './components/Viewer3D';
 import { cssGradient, divergingStops, sequentialStops, type Theme } from './colors';
 import { t, type Key, type Lang } from './i18n';
@@ -27,7 +28,7 @@ function initialTheme(): Theme {
 export default function App() {
   const [lang, setLang] = useState<Lang>(navigator.language?.startsWith('tr') ? 'tr' : 'en');
   const [theme, setTheme] = useState<Theme>(initialTheme);
-  const [page, setPage] = useState<'work' | 'data' | 'gen' | 'train'>('work');
+  const [page, setPage] = useState<'work' | 'data' | 'gen' | 'train' | 'truba'>('work');
   const [info, setInfo] = useState<Info | null>(null);
   const [geom, setGeom] = useState<Geometry | null>(null);
   const [pred, setPred] = useState<Prediction | null>(null);
@@ -182,6 +183,7 @@ export default function App() {
           <button role="tab" aria-selected={page === 'data'} className={page === 'data' ? 'on' : ''} onClick={() => setPage('data')}>{t(lang, 'datasetTab')}</button>
           <button role="tab" aria-selected={page === 'gen'} className={page === 'gen' ? 'on' : ''} onClick={() => setPage('gen')}>{t(lang, 'generateTab')}</button>
           <button role="tab" aria-selected={page === 'train'} className={page === 'train' ? 'on' : ''} onClick={() => setPage('train')}>{t(lang, 'trainTab')}</button>
+          <button role="tab" aria-selected={page === 'truba'} className={page === 'truba' ? 'on' : ''} onClick={() => setPage('truba')}>{t(lang, 'trubaTab')}</button>
         </nav>
         <div className="header-right">
           {info && <span className="badge">{info.model.run ? `${info.model.run} · ` : ''}{(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}</span>}
@@ -195,7 +197,8 @@ export default function App() {
         <div key={w} className="banner warning"><span className="icon">!</span>{w}</div>)}
       {error && <div className="banner critical"><span className="icon">✕</span>{error}</div>}
 
-      {page === 'train' ? <TrainPage lang={lang} model={info?.model ?? null} onModel={() => { api.info().then(setInfo).catch(() => undefined); setPred(null); }} /> :
+      {page === 'truba' ? <TrubaPage lang={lang} /> :
+       page === 'train' ? <TrainPage lang={lang} model={info?.model ?? null} onModel={() => { api.info().then(setInfo).catch(() => undefined); setPred(null); }} /> :
        page === 'gen' ? <GeneratePage lang={lang} onShowDatasets={() => setPage('data')} /> :
        page === 'data' ? <DatasetPage lang={lang} onOpen={openItem} busy={busy} /> : (
         <main>

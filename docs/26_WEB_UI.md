@@ -147,6 +147,32 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 - `POST /api/train/stop`
 - `POST /api/model/load`
 
+## 3e. TRUBA sekmesi: tek satır komut üretici
+
+**"TRUBA" sayfası** (`src/service/truba.py`, `web/src/components/TrubaPage.tsx`): form, TRUBA login düğümüne yapıştırılacak **tek satıra** dönüşür (docs/29 §5):
+
+`[ -d ~/rf_cavity_neural_operator ] || git clone <repo> …; cd … && git checkout <dal> && git pull && bash cluster/truba/run.sh <işlem> KEY=VALUE …`
+
+- **Bölümler:**
+  - İşlem: veri + eğitim, yalnız veri, yalnız eğitim, durum, kurulum.
+  - Etiket türü: yüksek mertebe alan (field3d) ya da N0.
+  - Aileler: eğitim ve OOD grupları.
+  - Veri ayarları: geometri sayısı, mesh boyu, mod, p3/p2, fillet tabanı, thread, eleman bütçesi.
+  - SLURM: kuyruk, çekirdek, süre, hesap.
+  - Eğitim: EXP, model boyu, epoch, batch, öğrenme hızı, GPU, önbellek, ek `train.py` ayarları.
+  - Depo: adres, dal, klasör.
+- **Çıktı:**
+  - Komut ve **Kopyala** düğmesi.
+  - TAG ve çıktı klasörü.
+  - Kaba tahmin: geometri, çekirdek-saat, disk.
+  - Uyarılar: model mertebesi 1, ridged_box maliyeti, operatör önbelleği yok.
+- **Güvenlik:**
+  - Komut sunucuda üretilir ve doğrulanır: sayılar aralıkla; adlar, süreler, dal, adres ve yollar desenle (yolda yalnız `$USER` / `$HOME`).
+  - Değerler kabuk için tırnaklanır. Yalnız `config.sh` varsayılanından farklı olanlar yazılır.
+  - Komut parola ya da token içermez; özel depo için TRUBA'da SSH anahtarı ve `git@github.com:…` adresi kullanılır.
+  - Arayüz kümeye hiçbir şey göndermez.
+- **Uç noktalar:** `GET /api/truba/config`, `POST /api/truba/command` (geçersiz değer → 422).
+
 ## 4. Çalıştırma
 
 ```bash

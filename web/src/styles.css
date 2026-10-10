@@ -279,3 +279,17 @@ label.inline { display: flex; flex-direction: row; align-items: center; gap: 6px
 .path-note { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; margin-top: -6px; }
 @media (max-width: 760px) { .curves { grid-template-columns: minmax(0, 1fr); } }
 .actions button.primary { margin-top: 0; }
+
+/* TRUBA page: the generated one-line command */
+.truba-out { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.truba-out .card-title { display: flex; justify-content: space-between; align-items: center; }
+pre.cmd { font-size: 12px; line-height: 1.5; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  user-select: all; }
+.truba-out .card-title button { width: auto; flex: 0 0 auto; margin-top: 0; padding: 6px 14px; }
+/* narrow screens: cards and form grids shrink instead of overflowing (TRUBA + generation pages) */
+.gen > .card { min-width: 0; }
+.gen .seg { flex-wrap: wrap; }
+.grid2 > label { min-width: 0; }
+.grid2 input, .grid2 select, .gen .card > label:not(.check) > input { width: 100%; min-width: 0; box-sizing: border-box; }
+@media (max-width: 480px) { .grid2 { grid-template-columns: 1fr; } }

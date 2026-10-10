@@ -20,6 +20,7 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     GET  /api/jobs/config · POST /api/jobs/generate · GET /api/jobs[/{id}] · POST /api/jobs/{id}/cancel
     GET  /api/train/config · GET /api/train/runs[/{name}] · POST /api/train/start · /runs/{name}/resume
     POST /api/train/stop · POST /api/model/load {run}   training from the UI (RFCAV_RUNS_ROOT)
+    GET  /api/truba/config · POST /api/truba/command {form}   one-line TRUBA command (src/service/truba.py)
 The built frontend (web/dist) is served at / when present.
 """
 import base64
@@ -36,7 +37,7 @@ import time
 import uuid
 
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -44,6 +45,7 @@ from pydantic import BaseModel, Field
 from src.data.dataset_converter_3d import FEATURE_NAMES_3D
 from src.service import geometry as G
 from src.service import training as T
+from src.service import truba as TR
 
 VERSION = '0.1.0'
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -597,6 +599,18 @@ def create_app(service=None, datasets=None):
             return torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
         except Exception:                                    # noqa: BLE001
             return None
+
+    # ── TRUBA one-line commands (src/service/truba.py; nothing is sent to the cluster) ──
+    @app.get('/api/truba/config')
+    def truba_config():
+        return TR.defaults(ROOT)
+
+    @app.post('/api/truba/command')
+    def truba_command(form: dict = Body(...)):
+        try:
+            return TR.build_command(form)
+        except TR.CommandError as e:
+            raise HTTPException(422, str(e)) from None
 
     @app.get('/api/train/config')
     def train_config():
