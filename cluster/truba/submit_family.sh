@@ -16,7 +16,7 @@ FAMILY=${1:?usage: submit_family.sh <family> [--no-convert|--convert-only]}
 MODE=${2:-}
 export FAMILY
 family_row "$FAMILY"
-mkdir -p "$LOG_DIR" "$H5_DIR/$FAMILY"
+[ "${DRY_RUN:-0}" = 1 ] || mkdir -p "$LOG_DIR" "$H5_DIR/$FAMILY"
 
 N_SHARDS=$(( (FAM_N + FAM_SHARD - 1) / FAM_SHARD ))
 MISSING=()
@@ -27,14 +27,20 @@ echo "$FAMILY  (block $FAM_BLOCK, ${FAM_N} geometries, ${N_SHARDS} shards of $FA
 echo "  TAG $TAG → $OUT_DIR"
 echo "  shards missing: ${#MISSING[@]}"
 
+# field labels (LABELS=field) are trained from the H5 shards directly: nothing to convert
+if [ "$LABELS" = field ]; then
+  [ "$MODE" = --convert-only ] && { echo "  LABELS=field: no conversion step"; exit 0; }
+  MODE=--no-convert
+fi
 DEP=()
 if [ "$MODE" != --convert-only ] && [ ${#MISSING[@]} -gt 0 ]; then
   ARRAY=$(IFS=,; echo "${MISSING[*]}")
-  JID=$(sbatch --parsable $(sbatch_common "$PARTITION") -c "$CPUS" -t "$TIME" \
+  JID=$($SBATCH_CMD --parsable $(sbatch_common "$PARTITION") -c "$CPUS" -t "$TIME" \
         --array="${ARRAY}%${MAX_PARALLEL}" --job-name="gen_$FAMILY" \
         -o "$LOG_DIR/gen_${FAMILY}_%a_%A.out" --export=ALL "$TRUBA_DIR/gen_shard.sbatch")
   echo "  generation: job $JID (array $ARRAY, ≤ $MAX_PARALLEL at a time)"
   DEP=(--dependency="afterany:$JID")
+  [ -n "${JOBID_FILE:-}" ] && echo "$JID" >> "$JOBID_FILE"     # run.sh: later steps wait for these
 fi
 PKL=$PKL_DIR/$FAMILY.pkl
 if [ "$MODE" = "" ] && [ ${#MISSING[@]} -eq 0 ] && [ -f "$PKL" ] && \
@@ -43,8 +49,9 @@ if [ "$MODE" = "" ] && [ ${#MISSING[@]} -eq 0 ] && [ -f "$PKL" ] && \
   exit 0
 fi
 if [ "$MODE" != --no-convert ]; then
-  CJ=$(sbatch --parsable $(sbatch_common "$CONVERT_PARTITION") -c "$CONVERT_CPUS" -t "$CONVERT_TIME" \
+  CJ=$($SBATCH_CMD --parsable $(sbatch_common "$CONVERT_PARTITION") -c "$CONVERT_CPUS" -t "$CONVERT_TIME" \
        ${DEP[@]+"${DEP[@]}"} --job-name="conv_$FAMILY" -o "$LOG_DIR/conv_${FAMILY}_%j.out" \
        --export=ALL "$TRUBA_DIR/convert_family.sbatch")
   echo "  conversion: job $CJ → $PKL"
+  [ -n "${JOBID_FILE:-}" ] && echo "$CJ" >> "$JOBID_FILE"
 fi

@@ -1,6 +1,7 @@
 #!/bin/bash
 # One-time setup on a TRUBA login node (needs internet): Miniforge + env "rfcav" (CPU torch by
-# default — enough for data generation / conversion; TORCH_INDEX=… for a CUDA build), gmsh from conda-forge (brings its own GL/X libs, the
+# default — enough for data generation / conversion; TORCH_INDEX=… for a CUDA build; run.sh setup
+# passes a CUDA 12.4 build), NGSolve from PyPI, gmsh from conda-forge (brings its own GL/X libs, the
 # PyPI wheel needs system libGLU / libXrender …), the rest from requirements.txt. Ends with a
 # 2-geometry generation check (a few seconds, fine on the login node).
 #   bash cluster/truba/setup_env.sh
@@ -21,11 +22,15 @@ conda activate rfcav
 pip install --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}" torch
 grep -v '^gmsh' "$REPO_DIR/requirements.txt" > "/tmp/req_rfcav_$USER.txt"
 pip install -r "/tmp/req_rfcav_$USER.txt"
-python -c "import gmsh, skfem, h5py, scipy, torch; print('gmsh', gmsh.__version__, '| torch', torch.__version__, '| CUDA build', torch.version.cuda)"
+python -c "import gmsh, skfem, h5py, scipy, torch, ngsolve; print('gmsh', gmsh.__version__, '| ngsolve', ngsolve.__version__, '| torch', torch.__version__, '| CUDA build', torch.version.cuda)"
 cd "$REPO_DIR"
 TMP=$(mktemp -d)
 OMP_NUM_THREADS=1 python src/data_gen/dataset_generator_3d.py --families elliptical --n_total 2 \
   --n_workers 1 --mesh_size 0.2 --h5_filename "$TMP/check.h5"
 python convert_3d.py --h5_filepath "$TMP/check.h5" --output_path "$TMP/check.pkl"
+# field labels (docs/29): gmsh CAD → netgen curved mesh → NGSolve p3 → p2 projection, read back
+OMP_NUM_THREADS=1 python src/data_gen/dataset_generator_3d.py --labels field --mode calibration --n_total 2 \
+  --n_workers 1 --mesh_size 0.2 --n_eigen_modes 4 --h5_filename "$TMP/field.h5"
+python -c "from src.data.field_dataset import FieldDataset; d = FieldDataset('$TMP/field.h5', train_ratio=1.0, val_ratio=0.0); d[0]; print('field data OK')"
 rm -rf "$TMP"
 echo "Environment OK. Activate with: $ENV_ACTIVATE"

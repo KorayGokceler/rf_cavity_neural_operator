@@ -61,7 +61,10 @@ def count_near_degenerate(dataset, threshold, rel_threshold=None):
     n_deg_geo = n_deg_modes = 0
     stats = dataset.stats
     for g_id in dataset.active_geoms:
-        raw = [float(dataset.samples_metadata[j]['Theta'][1]) for j in dataset.geom_to_samples[g_id]]
+        if hasattr(dataset, 'raw_freqs'):                      # FieldDataset
+            raw = [float(v) for v in dataset.raw_freqs(g_id)]
+        else:
+            raw = [float(dataset.samples_metadata[j]['Theta'][1]) for j in dataset.geom_to_samples[g_id]]
         fn = sorted((r - stats['mean']) / stats['std'] for r in raw) if stats else sorted(raw)
         deg = [c for c in detect_clusters(torch.tensor(fn, dtype=torch.float32), threshold, rel_threshold, stats)
                if len(c) > 1]
@@ -200,7 +203,7 @@ class CavityLightning(pl.LightningModule):
                  span_norm='both', span_root=True, span_ridge=1e-9, selfsup_form='compliance',
                  near_deg_threshold=0.05, near_deg_rel_threshold=None,
                  qoi_weight=0.0, qoi_terms=('Q0', 'R_over_Q_ohm', 'G_ohm'), qoi_peak_p=None,
-                 qoi_rq_floor=1e-2, data_cfg=None, **legacy):
+                 qoi_rq_floor=1e-2, data_cfg=None, model_type='eigenspace3d', **legacy):
         """
         span_norm: 'mass' (L²), 'energy' (curl–curl, controls the Ritz eigenvalue error) or 'both'.
         span_root: use √residual (= best-approximation rel-L2, the metric) instead of the residual.
@@ -216,11 +219,16 @@ class CavityLightning(pl.LightningModule):
             qoi_rq_floor · max_k R/Q of the same geometry (non-accelerating modes: V ≈ 0).
         data_cfg: dataset settings at train time (split, seed, feature_indices, field ...), stored in
             the checkpoint so evaluation rebuilds the same split and inputs.
+        model_type: 'eigenspace3d' (Whitney N0 edge model, Maxwell3DDataset) or 'field3d' (learned
+            field in HCurl(p) on a curved mesh, EigenspaceOperatorField + FieldDataset, docs/28–29).
         """
         super().__init__()
-        model_type = legacy.pop('model_type', 'eigenspace3d')
-        if model_type != 'eigenspace3d':
-            raise ValueError(f"checkpoint of the removed 2D model '{model_type}' (branch legacy-2d)")
+        if model_type not in ('eigenspace3d', 'field3d'):
+            raise ValueError(f"model_type {model_type!r}: 'eigenspace3d' or 'field3d' "
+                             "(checkpoints of the removed 2D models: branch legacy-2d)")
+        if model_type == 'field3d' and float(qoi_weight or 0.0) > 0:
+            raise ValueError("qoi_weight > 0 is not available for field3d (the QoI operators are N0); "
+                             "the p3 QoI labels are stored in the data (Y_qoi)")
         field = str((data_cfg or {}).get('field') or 'E').upper()
         if field != 'E':
             raise ValueError("checkpoint of the removed H formulation (field 'H', branch legacy-h): "
@@ -228,14 +236,18 @@ class CavityLightning(pl.LightningModule):
         assert span_norm in ('mass', 'energy', 'both'), f"span_norm: {span_norm!r}"
         assert selfsup_form in ('compliance', 'logdet'), f"selfsup_form: {selfsup_form!r}"
         hp = {k: v for k, v in locals().items()
-              if k not in ('self', 'legacy', 'model_type', 'field', '__class__')}
+              if k not in ('self', 'legacy', 'field', '__class__')}
         self.save_hyperparameters(hp)
+        self.model_type = model_type
 
-        from src.models.eigenspace_operator_3d import EigenspaceOperator3D
-        self.model = EigenspaceOperator3D(val_dim=val_dim, embed_dim=hidden_dim, n_heads=n_heads,
-                                          n_basis=n_basis, num_field_modes=num_field_modes,
-                                          rff_dim=rff_dim, rff_length_scale=rff_length_scale,
-                                          dropout=dropout, **(eigenspace_kwargs or {}))
+        if model_type == 'field3d':
+            from src.models.eigenspace_operator_field import EigenspaceOperatorField as Model
+        else:
+            from src.models.eigenspace_operator_3d import EigenspaceOperator3D as Model
+        self.model = Model(val_dim=val_dim, embed_dim=hidden_dim, n_heads=n_heads,
+                           n_basis=n_basis, num_field_modes=num_field_modes,
+                           rff_dim=rff_dim, rff_length_scale=rff_length_scale,
+                           dropout=dropout, **(eigenspace_kwargs or {}))
         self.num_field_modes = num_field_modes
         self.gradient_clip_val = gradient_clip_val
         self.freq_weight = freq_weight
@@ -390,7 +402,8 @@ class CavityLightning(pl.LightningModule):
             # R2 bookkeeping: unit-M-norm targets vs sign-aligned predictions
             t_unit = Tk / (Tk * MTk).sum(1, keepdim=True).clamp(min=1e-300).sqrt()
             sgn = torch.sign(torch.einsum('bek,bek->bk', Fd, MTk)).unsqueeze(1)
-            emask = batch['EdgeMask'].unsqueeze(-1).expand_as(Fd)
+            dof_mask = batch['EdgeMask'] if 'EdgeMask' in batch else batch['DofMask']     # N0 / field3d
+            emask = dof_mask.unsqueeze(-1).expand_as(Fd)
             preds, targets = (Fd * sgn)[emask].float(), t_unit[emask].float()
         self.log(f'{prefix}/loss', total, on_step=True, on_epoch=True, prog_bar=True,
                  batch_size=B, sync_dist=True)

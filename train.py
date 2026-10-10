@@ -1,7 +1,11 @@
-"""Train the 3D cavity eigenmode model (EigenspaceOperator3D, E field).
+"""Train the 3D cavity eigenmode model (E field).
 
     python train.py --config configs/eigenspace_3d.yaml --override dataset.data_path=data/x.pkl
+    python train.py --config configs/field_3d.yaml --override "dataset.data_path=data/field/*.h5"
     python train.py ... --resume training_logs/<exp>/last.ckpt          # continue a run
+
+model.type: eigenspace3d (Whitney N0 edge model, PKL from convert_3d.py) or field3d (learned field in
+HCurl(p) on curved meshes, field-label H5 files of dataset_generator_3d --labels field, docs/29).
 """
 import argparse
 import os
@@ -14,6 +18,7 @@ from torch.utils.data import DataLoader
 
 from src.config import config_to_flat_dict, load_config
 from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate
+from src.data.field_dataset import FieldDataset, field_collate
 from src.training.lightning_module import CavityLightning, count_near_degenerate
 from src.training.progress import ProgressFile
 
@@ -96,6 +101,14 @@ def _datasets_3d(dc, random_seed, augment, feature_indices, qoi_ops=False):
                  for s in ('train', 'val', 'test'))
 
 
+def _datasets_field(dc, random_seed, feature_indices):
+    """train / val / test FieldDataset (field-label H5 files: a path, glob, directory or list)."""
+    kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
+              feature_indices=feature_indices, cache_dir=getattr(dc, 'cache_dir', None),
+              n_modes=getattr(dc, 'n_modes', None))
+    return tuple(FieldDataset(dc.data_path, split=s, **kw) for s in ('train', 'val', 'test'))
+
+
 def main():
     args = parse_args()
     overrides = parse_overrides(args.override)
@@ -121,9 +134,21 @@ def main():
     augment = getattr(tc, 'augment', False)
     random_seed = getattr(dc, 'random_seed', 42)
     pl.seed_everything(random_seed, workers=True)       # model init / shuffle / augmentation
+    model_type = str(getattr(mc, 'type', None) or 'eigenspace3d')
+    if model_type not in ('eigenspace3d', 'field3d'):
+        raise ValueError(f"model.type {model_type!r}: eigenspace3d or field3d")
+    field3d = model_type == 'field3d'
     qoi_ops = _qoi_enabled(tc)
-    train_dataset, val_dataset, test_dataset = _datasets_3d(dc, random_seed, augment, feature_indices,
-                                                            qoi_ops=qoi_ops)
+    if field3d:
+        if qoi_ops:
+            raise ValueError("field3d: training.qoi_weight / qoi_metrics need the N0 QoI operators; set them to 0 / "
+                             "false (the p3 QoI labels are in the data)")
+        if augment:
+            raise ValueError("field3d: training.augment is not supported")
+        train_dataset, val_dataset, test_dataset = _datasets_field(dc, random_seed, feature_indices)
+    else:
+        train_dataset, val_dataset, test_dataset = _datasets_3d(dc, random_seed, augment, feature_indices,
+                                                                qoi_ops=qoi_ops)
     for name, ds in (('train', train_dataset), ('val', val_dataset), ('test', test_dataset)):
         if len(ds) == 0:     # an empty split never logs the monitored metric: fail early instead
             raise ValueError(f"'{name}' split is empty ({len(train_dataset.geom_to_samples)} geometries, "
@@ -139,7 +164,7 @@ def main():
         raise ValueError(f"model.num_field_modes={mc.num_field_modes} but the dataset stores only "
                          f"{data_n_modes} modes per geometry.")
 
-    loader_kw = dict(collate_fn=maxwell3d_collate, num_workers=tc.num_workers,
+    loader_kw = dict(collate_fn=field_collate if field3d else maxwell3d_collate, num_workers=tc.num_workers,
                      pin_memory=False,                   # sparse COO batches cannot be pinned
                      persistent_workers=tc.num_workers > 0,
                      prefetch_factor=2 if tc.num_workers > 0 else None)
@@ -171,7 +196,9 @@ def main():
         qoi_peak_p=getattr(tc, 'qoi_peak_p', None), qoi_rq_floor=getattr(tc, 'qoi_rq_floor', 1e-2),
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
                       feature_indices=feature_indices, augment=augment, zero_gauge_features=bool(augment),
-                      field=getattr(train_dataset, 'field', 'E'), qoi_ops=qoi_ops),
+                      field=getattr(train_dataset, 'field', 'E'), qoi_ops=qoi_ops,
+                      data_path=dc.data_path if field3d else None),
+        model_type=model_type,
     )
     if train_dataset.stats:              # z-scored frequency targets ↔ GHz
         model.freq_stats = train_dataset.stats

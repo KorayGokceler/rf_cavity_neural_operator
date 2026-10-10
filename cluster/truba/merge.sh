@@ -10,6 +10,10 @@ MIX_NAME=${1:?usage: merge.sh <name> fam[:n_shards] …}
 shift
 [ $# -gt 0 ] || { echo "give at least one fam[:n_shards]"; exit 1; }
 export MIX_NAME MIX_SPEC="$*"
-mkdir -p "$LOG_DIR"
-sbatch $(sbatch_common "$CONVERT_PARTITION") -c "$CONVERT_CPUS" -t "$CONVERT_TIME" \
-  --job-name="merge_$MIX_NAME" -o "$LOG_DIR/merge_${MIX_NAME}_%j.out" --export=ALL "$TRUBA_DIR/merge.sbatch"
+[ "${DRY_RUN:-0}" = 1 ] || mkdir -p "$LOG_DIR"
+D=(); [ -n "${DEP:-}" ] && D=(--dependency="$DEP")       # e.g. afterany:<conversion jobs> (run.sh all)
+MJ=$($SBATCH_CMD --parsable $(sbatch_common "$CONVERT_PARTITION") -c "$CONVERT_CPUS" -t "$CONVERT_TIME" ${D[@]+"${D[@]}"} \
+  --job-name="merge_$MIX_NAME" -o "$LOG_DIR/merge_${MIX_NAME}_%j.out" --export=ALL "$TRUBA_DIR/merge.sbatch")
+echo "merge $MIX_NAME ($MIX_SPEC): job $MJ → $PKL_DIR/mix_$MIX_NAME.pkl"
+[ -n "${JOBID_FILE:-}" ] && echo "$MJ" >> "$JOBID_FILE"
+exit 0

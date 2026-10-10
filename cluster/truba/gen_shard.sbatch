@@ -21,12 +21,22 @@ OUT=$(printf "%s/%s/%s_s%05d.h5" "$H5_DIR" "$FAMILY" "$FAMILY" "$SHARD")
 mkdir -p "$(dirname "$OUT")"
 if [ -f "$OUT" ]; then echo "exists, skipped: $OUT"; exit 0; fi
 
-echo "$(date -Is) $FAMILY shard $SHARD: ids $START_ID … $((START_ID + N - 1)) on $(hostname), ${SLURM_CPUS_PER_TASK:-$CPUS} workers"
+CORES=${SLURM_CPUS_PER_TASK:-$CPUS}
+WORKERS=$CORES
+LAB=(--labels "$LABELS")
+if [ "$LABELS" = field ]; then          # docs/29: NGSolve threads per sample, CORES / THREADS samples at a time
+  WORKERS=$(( CORES / THREADS )); [ "$WORKERS" -ge 1 ] || WORKERS=1
+  LAB+=(--label_order "$LABEL_ORDER" --model_order "$MODEL_ORDER" --threads "$THREADS"
+        --field_max_elements "$FIELD_MAX_ELEMENTS" --maxh_factor "$MAXH_FACTOR")
+fi
+[ -n "$MIN_FILLET" ] && LAB+=(--min_fillet "$MIN_FILLET")
+
+echo "$(date -Is) $FAMILY shard $SHARD: ids $START_ID … $((START_ID + N - 1)) on $(hostname), $WORKERS workers, labels $LABELS"
 cd "$REPO_DIR"
 python src/data_gen/dataset_generator_3d.py \
   --families "$FAMILY" --n_total "$N" --start_id "$START_ID" --seed "$SEED" \
   --n_eigen_modes "$N_STORE" --mesh_size "$MESH_SIZE" --sampling "$SAMPLING" \
   --deform_prob "$DEFORM_PROB" --deform_max "$DEFORM_MAX" \
-  --n_workers "${SLURM_CPUS_PER_TASK:-$CPUS}" --sample_timeout "$SAMPLE_TIMEOUT" \
+  --n_workers "$WORKERS" --sample_timeout "$SAMPLE_TIMEOUT" "${LAB[@]}" \
   --h5_filename "$OUT" --resume
 echo "$(date -Is) done: $OUT"

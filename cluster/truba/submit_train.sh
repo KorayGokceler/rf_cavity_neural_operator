@@ -11,11 +11,24 @@ TRUBA_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export TRUBA_DIR
 source "$TRUBA_DIR/config.sh"
 model_overrides "$MODEL" > /dev/null
-mkdir -p "$LOG_DIR" "$RUN_DIR"
-JID=$(sbatch --parsable $(sbatch_common "$GPU_PARTITION") --gres=gpu:"$GPUS" --ntasks-per-node="$GPUS" \
-      -c "$GPU_CPUS" -t "$GPU_TIME" --job-name="train_$EXP" -o "$LOG_DIR/train_${EXP}_%j.out" \
+[ "${DRY_RUN:-0}" = 1 ] || mkdir -p "$LOG_DIR" "$RUN_DIR"
+D=(); [ -n "${DEP:-}" ] && D=(--dependency="$DEP")       # run.sh all: wait for the data jobs
+if [ "$LABELS" = field ]; then        # train.sbatch reads the H5 shard directories of these families
+  TRAIN_FAMILIES=$(family_list "${TRAIN_FAMILIES:-train}")
+  export TRAIN_FAMILIES
+  DATA_DESC="field H5 of: $TRAIN_FAMILIES"
+else
+  DATA_DESC=$TRAIN_PKL
+fi
+JID=$($SBATCH_CMD --parsable $(sbatch_common "$GPU_PARTITION") --gres=gpu:"$GPUS" --ntasks-per-node="$GPUS" \
+      -c "$GPU_CPUS" -t "$GPU_TIME" ${D[@]+"${D[@]}"} --job-name="train_$EXP" -o "$LOG_DIR/train_${EXP}_%j.out" \
       --export=ALL "$TRUBA_DIR/train.sbatch")
-echo "training $EXP (MODEL=$MODEL, $GPUS GPU, data $TRAIN_PKL): job $JID → $RUN_DIR/$EXP"
+echo "training $EXP (LABELS=$LABELS, MODEL=$MODEL, $GPUS GPU, data $DATA_DESC): job $JID → $RUN_DIR/$EXP"
+[ -n "${JOBID_FILE:-}" ] && echo "$JID" >> "$JOBID_FILE"
 if [ "${1:-}" = --then-eval ]; then
-  DEP="afterok:$JID" "$TRUBA_DIR/submit_eval.sh"
+  if [ "$LABELS" = field ]; then
+    echo "  --then-eval: scripts/eval_3d.py evaluates N0 (eigenspace3d) runs only; skipped for field3d"
+  else
+    DEP="afterok:$JID" "$TRUBA_DIR/submit_eval.sh"
+  fi
 fi

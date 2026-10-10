@@ -93,13 +93,49 @@ def parse_args(argv=None):
     p.add_argument("--resume", action="store_true",
                    help="Continue an interrupted run: append to <h5_filename>.partial and skip the ids already in "
                         "it (cluster jobs killed by the wall-time limit lose nothing).")
-    p.add_argument("--n_workers", type=int, default=None, help="Worker processes (default: min(cpu_count, 4)).")
-    p.add_argument("--sample_timeout", type=float, default=300.0, help="Seconds before a sample is skipped.")
+    p.add_argument("--n_workers", type=int, default=None,
+                   help="Worker processes (default: min(cpu_count, 4); field labels: cpu_count // threads).")
+    p.add_argument("--sample_timeout", type=float, default=None,
+                   help="Seconds before a sample is skipped (default 300; field labels 3600).")
     p.add_argument("--max_geom_tries", type=int, default=6,
-                   help="Re-draws when a random geometry fails the boolean/topology checks.")
+                   help="Re-draws when a random geometry fails the boolean/topology checks "
+                        "(field labels: also the curved-mesh / element-budget checks).")
+    # high-order field labels (docs/29): NGSolve p3 on a curved mesh, projected onto the model's p2 space
+    p.add_argument("--labels", type=str, default="n0", choices=["n0", "field"],
+                   help="n0: Whitney N0 labels on the gmsh mesh (default); field: curved-mesh HCurl labels "
+                        "(src/data_gen/field_labels.py) for the learned-field model (model.type field3d).")
+    p.add_argument("--min_fillet", type=float, default=None,
+                   help="Fillet radius floor as a fraction of the cavity size (cavity_shapes.MIN_FILLET; "
+                        "default 0 for n0 labels — the v2 geometries — and 0.05 for field labels).")
+    p.add_argument("--label_order", type=int, default=3, help="field labels: HCurl order of the labels.")
+    p.add_argument("--model_order", type=int, default=2,
+                   help="field labels: HCurl order of the model space the labels are projected onto "
+                        "(2: field floor ~0.2 %%, frequency ~1e-4; 1: ~6x cheaper training, ~1 %% frequency floor).")
+    p.add_argument("--curve", type=int, default=3, help="field labels: geometry order of the curved mesh.")
+    p.add_argument("--maxh_factor", type=float, default=3.0,
+                   help="field labels: netgen maxh = maxh_factor × the N0 mesh size h (curvature sets the "
+                        "element size on curved faces).")
+    p.add_argument("--field_max_elements", type=int, default=30000,
+                   help="field labels: curved meshes with more tets are re-drawn (training cost bound).")
+    p.add_argument("--max_ndof", type=int, default=900000, help="field labels: label-space DOF guard (memory).")
+    p.add_argument("--threads", type=int, default=1, help="field labels: NGSolve threads per worker.")
+    p.add_argument("--no_heal", action="store_true",
+                   help="field labels: skip the OCC shape healing (small edges / faces, sewing) before meshing.")
     args = p.parse_args(argv)
     if args.families is None:
         args.families = list(FAMILIES)
+    if args.min_fillet is None:
+        args.min_fillet = 0.05 if args.labels == "field" else 0.0
+    if args.sample_timeout is None:
+        args.sample_timeout = 3600.0 if args.labels == "field" else 300.0
+    args.heal = args.labels == "field" and not args.no_heal
+    if args.labels == "field":
+        dropped = [f for f in args.families if f in DISCRETE_BUILDERS]
+        args.families = [f for f in args.families if f not in DISCRETE_BUILDERS]
+        if dropped:
+            print(f"field labels need a CAD solid: dropping the discrete families {dropped}")
+        if not args.families and args.mode != "calibration":
+            p.error("--labels field: no CAD family left in --families")
     return args
 
 
@@ -107,6 +143,9 @@ def _init_worker(args):
     global ARGS
     ARGS = args
     os.environ.setdefault("OMP_NUM_THREADS", "1")
+    if getattr(args, "labels", "n0") == "field":
+        import ngsolve
+        ngsolve.SetNumThreads(max(1, int(args.threads)))
 
 
 def eigenvalues_to_ghz(vals):
@@ -282,6 +321,9 @@ BUILDERS = {"pillbox": build_pillbox, "axisym_cell": build_axisym_cell, "blob": 
             # handle families (b1 > 0; E formulation only)
             "hwr": cs.build_hwr, "spoke": cs.build_spoke, "dtl": cs.build_dtl}
 DISCRETE_BUILDERS = {"freeform": cs.freeform_surface}   # closed triangulated surface → gmsh remesh
+# field labels: OCC healing (small edges / sliver faces of the box booleans) before writing the CAD;
+# it breaks the 1D mesh of the composite cells, so only where netgen needs it (docs/29 §2)
+HEAL_FAMILIES = ("ridged_box", "dtl")
 
 
 def _discrete_model(P, F):
@@ -554,14 +596,27 @@ def smooth_deform(nodes, rng, lip_max=0.5, return_map=False):
     return (Y, params, (om, a, ph)) if return_map else (Y, params)
 
 
-def mesh_sample(s_id, cad_path=None):
+def _draw_deform(s_id, nodes):
+    """(nodes, params, map) of the sample's smooth deformation (own stream: the same δ at any mesh
+    size and in every geometry re-draw), or (nodes, {}, None)."""
+    rng_d = np.random.default_rng([int(ARGS.seed), int(s_id), 1])
+    if ARGS.mode != "calibration" and rng_d.uniform() < getattr(ARGS, "deform_prob", 0.0):
+        return smooth_deform(nodes, rng_d, getattr(ARGS, "deform_max", 0.5), return_map=True)
+    return nodes, {}, None
+
+
+def mesh_sample(s_id, cad_path=None, post=None):
     """Geometry + mesh of sample s_id (no eigen-solve): dict(nodes [m], tets, shape_type, params,
     h, volume, t_mesh, topo, deform).  The mesh is certified a connected manifold.  deform: the
     smooth map (om, a, ph) applied to the nodes, or None.  cad_path: also write the OCC solid there
     (BREP / STEP by extension; None for the discrete freeform family) — src.data_gen.highorder.
+    post(cad_path, h, deform, shape_type): called once the geometry passed the checks; an exception
+    re-draws the geometry like a failed check (field labels: curved mesh + element budget); its
+    return value is the result's 'post'.
     Used by generate_sample_data, scripts/active_sampling.py and scripts/label_benchmark.py."""
     import gmsh
     _gmsh_start()
+    cs.MIN_FILLET = float(getattr(ARGS, "min_fillet", 0.0) or 0.0)
     rng = _sample_rng(s_id)
     t0 = time.perf_counter()
     fam = "calibration" if ARGS.mode == "calibration" else \
@@ -579,6 +634,9 @@ def mesh_sample(s_id, cad_path=None):
                 shape_type, params = build_calibration(occ, s_id) if fam == "calibration" \
                     else BUILDERS[fam](occ, rng)
                 occ.synchronize()
+                if getattr(ARGS, "heal", False) and fam in HEAL_FAMILIES:
+                    occ.healShapes(sewFaces=False, makeSolids=False)   # sew / makeSolids drop revolved solids
+                    occ.synchronize()
                 vols = gmsh.model.getEntities(3)
                 if len(vols) != 1:
                     raise RuntimeError(f"{len(vols)} volumes")
@@ -593,6 +651,9 @@ def mesh_sample(s_id, cad_path=None):
             nodes, tets = _mesh_current_model(h)
             topo = mesh_topology(tets, len(nodes))
             certify(topo)
+            t_mesh = time.perf_counter() - t0
+            nodes, dp, dmap = _draw_deform(s_id, nodes)
+            extra = post(cad_path, h, dmap, shape_type) if post is not None else None
             break
         except Exception as e:  # re-draw the geometry (random mode only)
             _gmsh_start(restart=True)
@@ -600,18 +661,51 @@ def mesh_sample(s_id, cad_path=None):
                 raise
             print(f"sample {s_id}: geometry attempt {attempt} rejected ({e}); re-drawing")
     params = {k: float(v) for k, v in params.items()}
-    dmap = None
-    rng_d = np.random.default_rng([int(ARGS.seed), int(s_id), 1])   # own stream: same δ at any mesh size
-    if ARGS.mode != "calibration" and rng_d.uniform() < getattr(ARGS, "deform_prob", 0.0):
-        nodes, dp, dmap = smooth_deform(nodes, rng_d, getattr(ARGS, "deform_max", 0.5), return_map=True)
-        params.update(dp)
+    params.update(dp)
     return {"nodes": nodes, "tets": tets, "shape_type": shape_type, "params": params, "h": float(h),
-            "volume": float(volume), "t_mesh": time.perf_counter() - t0, "topo": topo, "deform": dmap,
-            "cad_path": None if fam in DISCRETE_BUILDERS else cad_path}
+            "volume": float(volume), "t_mesh": t_mesh, "topo": topo, "deform": dmap,
+            "cad_path": None if fam in DISCRETE_BUILDERS else cad_path, "post": extra}
+
+
+def field_settings(args):
+    """src.data_gen.field_labels settings from the generator args."""
+    return {"label_order": int(args.label_order), "model_order": int(args.model_order), "curve": int(args.curve),
+            "maxh_factor": float(args.maxh_factor), "max_elements": int(args.field_max_elements),
+            "max_ndof": int(args.max_ndof)}
+
+
+def generate_field_sample(s_id):
+    """Field-label sample (docs/29): the generator geometry, its curved netgen mesh and the HCurl
+    labels (field_labels.label_sample) — a failed curved mesh / element budget re-draws."""
+    import tempfile
+
+    from src.data_gen import field_labels as fl
+    with tempfile.TemporaryDirectory() as tmp:
+        cad = os.path.join(tmp, "solid.brep")
+        post = lambda path, h, dmap, st: fl.label_sample(path, h, st, ARGS.n_eigen_modes, deform=dmap,  # noqa: E731
+                                                         settings=field_settings(ARGS))
+        g = mesh_sample(s_id, cad_path=cad, post=post)
+    lab = g["post"]
+    return {"id": s_id, "labels": "field", "field": lab, "freqs": lab["freqs"], "freq_next": lab["freq_next"],
+            "shape_type": g["shape_type"], "geom_params": g["params"], "mesh_h": float(g["h"]),
+            "volume": float(g["volume"]), "t_mesh": g["t_mesh"] + lab["attrs"]["t_curved_mesh"],
+            "t_solve": lab["attrs"]["t_labels"], "n_bnd_components": int(g["topo"]["n_bnd_components"]),
+            "betti1": int(g["topo"]["betti1"]), "size": (lab["attrs"]["n_tets"], lab["attrs"]["n_dof_model"])}
 
 
 def generate_sample_data(s_id):
     import gmsh
+    if getattr(ARGS, "labels", "n0") == "field":
+        try:
+            return generate_field_sample(s_id)
+        except Exception as e:
+            print(f"Error generating sample {s_id}: {e}")
+            return None
+        finally:
+            try:
+                gmsh.clear()
+            except Exception:
+                pass
     try:
         g = mesh_sample(s_id)
         nodes, tets, shape_type, params, h, volume, t_mesh = (
@@ -628,7 +722,7 @@ def generate_sample_data(s_id):
             "freq_next": float(eigenvalues_to_ghz(vals[k])), "shape_type": shape_type, "geom_params": params,
             "div_residual": info["div_residual"], "mesh_h": float(h), "volume": float(volume),
             "t_mesh": t_mesh, "t_solve": t_solve, "n_bnd_components": int(g["topo"]["n_bnd_components"]),
-            "betti1": int(g["topo"]["betti1"]),
+            "betti1": int(g["topo"]["betti1"]), "size": (len(A["mesh"].p.T), len(A["edges"])),
         }
     except Exception as e:
         print(f"Error generating sample {s_id}: {e}")
@@ -640,8 +734,30 @@ def generate_sample_data(s_id):
             pass
 
 
+def _write_common_attrs(g, res):
+    g.attrs["shape_type"] = res["shape_type"]
+    g.attrs["geom_params"] = json.dumps({k: float(v) for k, v in res["geom_params"].items()})
+    for k_, v_ in res["geom_params"].items():
+        g.attrs[k_] = float(v_)
+    g.attrs["field"] = "E"
+    for k_ in ("freq_next", "mesh_h", "volume", "t_mesh", "t_solve"):
+        g.attrs[k_] = float(res[k_])
+    for k_ in ("n_bnd_components", "betti1"):
+        g.attrs[k_] = int(res.get(k_, 1 if k_ == "n_bnd_components" else 0))
+    if res["shape_type"].startswith("calib_"):
+        g.attrs["freqs_analytic"] = eigenvalues_to_ghz(analytic_k2(res["shape_type"], res["geom_params"],
+                                                                   len(res["freqs"])))
+
+
 def write_sample(f_h5, res):
     g = f_h5.create_group(f"sample_{res['id']:04d}")
+    if res.get("labels") == "field":
+        from src.data_gen.field_labels import write_field_group
+        write_field_group(g, res["field"])
+        _write_common_attrs(g, res)
+        a = res["field"]["attrs"]
+        g.attrs["fem_element"] = f"HCurl p{a['model_order']} (labels p{a['label_order']}, curve {a['curve']})"
+        return g
     z = dict(compression="gzip", compression_opts=4)
     g.create_dataset("nodes", data=res["nodes"], **z)
     g.create_dataset("tets", data=res["tets"].astype(np.int64), **z)
@@ -680,6 +796,15 @@ def _run_chunk(pool, chunk_range, timeout):
 
 
 def file_metadata(args):
+    if getattr(args, "labels", "n0") == "field":
+        return {"generator_args": vars(args), "field": "E", "labels": "field",
+                "fem_element": f"HCurl p{args.model_order} on a curved mesh (curve {args.curve}); "
+                               f"labels HCurl p{args.label_order} on the same mesh, M-projected",
+                "dataset": "u_model",
+                "formulation": "curl-curl E = k^2 E in H0(curl), PEC wall 'wall' (NGSolve dirichlet)",
+                "storage": "per sample: netgen .vol + BREP of the meshed shape (+ deformation map); "
+                           "src.data_gen.field_labels.read_field_group rebuilds the curved mesh",
+                "freq_unit": "GHz", "length_unit": "m", "c0": C0, "docs": "docs/29_FIELD_LABELS.md"}
     return {"generator_args": vars(args), "field": "E", "fem_element": "N0 (skfem ElementTetN0, all edges)",
             "dataset": "e_edges",
             "formulation": "curl-curl E = k^2 E in H0(curl): n x E = 0 essential (PEC wall edge DOFs removed)",
@@ -695,10 +820,13 @@ def file_metadata(args):
 def main(argv=None):
     global ARGS
     ARGS = parse_args(argv)
-    n_workers = ARGS.n_workers or min(cpu_count(), 4)
+    field = ARGS.labels == "field"
+    n_workers = ARGS.n_workers or (max(1, cpu_count() // max(1, ARGS.threads)) if field else min(cpu_count(), 4))
     print(f"Generating {'ids from ' + ARGS.ids_file if ARGS.ids_file else ARGS.n_total} 3D samples "
           f"({ARGS.mode}, "
-          f"families={ARGS.families}, sampling={ARGS.sampling}, deform_prob={ARGS.deform_prob}) with {n_workers} workers")
+          f"families={ARGS.families}, sampling={ARGS.sampling}, deform_prob={ARGS.deform_prob}, labels={ARGS.labels}"
+          f"{f', p{ARGS.label_order}->p{ARGS.model_order}, min_fillet={ARGS.min_fillet}' if field else ''}) "
+          f"with {n_workers} workers")
     tmp_path = ARGS.h5_filename + ".partial"
     n_ok, n_fail, times, calib = 0, 0, [], []
     # maxtasksperchild: recycle workers (fresh gmsh / OCC state and memory) every 50 samples
@@ -731,7 +859,7 @@ def main(argv=None):
                         continue
                     g = write_sample(f_h5, res)
                     n_ok += 1
-                    times.append((res["t_mesh"], res["t_solve"], len(res["nodes"]), len(res["edges"])))
+                    times.append((res["t_mesh"], res["t_solve"]) + tuple(res["size"]))
                     if "freqs_analytic" in g.attrs:
                         calib.append((res["shape_type"], res["freqs"], g.attrs["freqs_analytic"]))
                 f_h5.flush()
@@ -747,7 +875,8 @@ def main(argv=None):
     os.replace(tmp_path, ARGS.h5_filename)
     t = np.array(times) if times else np.zeros((1, 4))
     print(f"\nDone: {n_ok} samples ({n_fail} failed) -> {ARGS.h5_filename}")
-    print(f"  Nv {t[:, 2].min():.0f}-{t[:, 2].max():.0f}, Ne {t[:, 3].min():.0f}-{t[:, 3].max():.0f}; "
+    a, b = ("tets", "model DOF") if field else ("Nv", "Ne")
+    print(f"  {a} {t[:, 2].min():.0f}-{t[:, 2].max():.0f}, {b} {t[:, 3].min():.0f}-{t[:, 3].max():.0f}; "
           f"mean t_mesh {t[:, 0].mean():.2f}s, t_solve {t[:, 1].mean():.2f}s per sample (one worker)")
     for st, f, ref in calib:
         print(f"  {st}: rel err f/f_exact-1 = {np.array2string(f / ref - 1, precision=2)}")

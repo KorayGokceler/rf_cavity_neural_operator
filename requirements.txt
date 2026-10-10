@@ -10,6 +10,7 @@ tensorboard>=2.12           # required by TensorBoardLogger in train.py [2.21]
 # --- FEM data generation ---
 gmsh>=4.11                  # needs system libs: libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1 [4.15.2]
 scikit-fem[all]>=8.0        # Basis, utils.condense(expand=), utils.solve_eigen (7.x and older break) [12.0.2]
+ngsolve>=6.2.2404           # high-order field labels + field3d model operators (netgen OCC, curved meshes) [6.2.2607]
 
 # --- Numerics / IO ---
 numpy>=1.24                 # [2.4.6]

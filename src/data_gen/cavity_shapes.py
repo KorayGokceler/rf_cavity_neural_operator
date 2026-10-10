@@ -46,6 +46,23 @@ Out-of-distribution families (OOD_FAMILIES, never in the default training set):
 import numpy as np
 from scipy.optimize import least_squares
 
+# ─────────────────────────── fillet floor ──────────────────────
+
+# Smallest corner rounding as a fraction of the cavity's characteristic radius (the generator sets it
+# from --min_fillet; 0 = the drawn radii as they are).  A corner rounding far below the element size
+# forces a curved mesh to refine down to ~radius/2 there (10k+ tets for a 0.3 mm iris fillet on a
+# 5 cm cavity) or to fold its elements over the arc; physically such a fillet is a sharp edge for
+# the frequency and only moves the surface peaks.  The floor only raises radii (the random draws are
+# unchanged, so geometry ids stay reproducible) and never above the corner's own geometric cap.
+MIN_FILLET = 0.0
+
+
+def fillet_floor(rho, L, cap=None):
+    """max(rho, MIN_FILLET·L), limited to cap (the builder's own feasible maximum)."""
+    r = max(float(rho), MIN_FILLET * float(L))
+    return min(r, float(cap)) if cap is not None else r
+
+
 # ─────────────────────────── profile helpers ───────────────────
 
 def filleted(corners, radii):
@@ -291,9 +308,9 @@ def build_reentrant(occ, rng):
     else:
         raise RuntimeError("no valid re-entrant parameters")
     Lp = rp * rng.uniform(1.5, 4.0)
-    rho_tip = t_tip * rng.uniform(0.2, 0.5)
-    rho_root = min(R - rn, rn - rp) * rng.uniform(0.05, 0.3)
-    rho_out = min(R - rn, Lc / 2) * rng.uniform(0.05, 0.6)   # large → toroidal outer wall
+    rho_tip = fillet_floor(t_tip * rng.uniform(0.2, 0.5), R, cap=0.5 * t_tip)
+    rho_root = fillet_floor(min(R - rn, rn - rp) * rng.uniform(0.05, 0.3), R, cap=0.45 * min(R - rn, rn - rp))
+    rho_out = fillet_floor(min(R - rn, Lc / 2) * rng.uniform(0.05, 0.6), R)   # large → toroidal outer wall
     C = [(-Lp, 0), (-Lp, rp), (zt, rp), (zt, rt), (0, rn), (0, R), (Lc, R), (Lc, rn),
          (Lc - zt, rt), (Lc - zt, rp), (Lc + Lp, rp), (Lc + Lp, 0)]
     rad = [0, 0, rho_tip, rho_tip, rho_root, rho_out, rho_out, rho_root, rho_tip, rho_tip, 0, 0]
@@ -308,8 +325,8 @@ def build_pillbox_pipes(occ, rng):
     Lc = R * rng.uniform(0.4, 1.6)
     rp = R * rng.uniform(0.12, 0.35)
     Lp = rp * rng.uniform(1.5, 4.0)
-    rho_iris = rp * rng.uniform(0.05, 0.4)
-    rho_out = min(R - rp, Lc / 2) * rng.uniform(0.0, 0.5)
+    rho_iris = fillet_floor(rp * rng.uniform(0.05, 0.4), R, cap=0.45 * rp)
+    rho_out = fillet_floor(min(R - rp, Lc / 2) * rng.uniform(0.0, 0.5), R)
     C = [(-Lp, 0), (-Lp, rp), (0, rp), (0, R), (Lc, R), (Lc, rp), (Lc + Lp, rp), (Lc + Lp, 0)]
     revolve_segments(occ, filleted(C, [0, 0, rho_iris, rho_out, rho_out, rho_iris, 0, 0]))
     return "pillbox_pipes", {"R": R, "Lc": Lc, "rp": rp, "Lpipe": Lp, "rho_iris": rho_iris,
@@ -338,7 +355,7 @@ def build_ridged_box(occ, rng):
     gap = d - hr * (2 if double else 1)
     params = {"a": a, "b": b, "d": d, "ridge_w": w, "ridge_h": hr, "double": float(double), "gap": gap}
     occ.synchronize()
-    rho = min(hr, w, gap) * rng.uniform(0.08, 0.25)
+    rho = fillet_floor(min(hr, w, gap) * rng.uniform(0.08, 0.25), min(a, b, d), cap=0.3 * min(hr, w, gap))
     curves = [c for _, c in occ.getEntities(1)]
     out = occ.fillet([vol], curves, [rho])
     vol = next(t for dd, t in out if dd == 3)
@@ -647,8 +664,8 @@ def build_hwr(occ, rng):
     ri = Ro * rng.uniform(0.2, 0.5)
     taper = rng.uniform() < 0.5
     rm = float(np.clip(ri * rng.uniform(0.6, 1.5), 0.15 * Ro, 0.6 * Ro)) if taper else ri
-    rho_in = min(Ro - max(ri, rm), L / 4) * rng.uniform(0.0, 0.4)
-    rho_out = min(Ro - max(ri, rm), L / 4) * rng.uniform(0.0, 0.5)
+    rho_in = fillet_floor(min(Ro - max(ri, rm), L / 4) * rng.uniform(0.0, 0.4), Ro)
+    rho_out = fillet_floor(min(Ro - max(ri, rm), L / 4) * rng.uniform(0.0, 0.5), Ro)
     C = [(0, ri), (0, Ro), (L, Ro), (L, ri)] + ([(L / 2, rm)] if taper else [])
     rad = [rho_in, rho_out, rho_out, rho_in] + ([0.0] if taper else [])
     vol = revolve_segments(occ, filleted(C, rad))
@@ -730,8 +747,8 @@ def build_dtl(occ, rng):
     rb = Rd * rng.uniform(0.35, 0.5)
     ld = Lc * rng.uniform(0.35, 0.6)
     rs = min(ld / 2, Rd) * rng.uniform(0.35, 0.6)
-    rho_o = min(Rd - rb, ld) * rng.uniform(0.2, 0.45)             # outer nose radius
-    rho_i = min(Rd - rb, ld) * rng.uniform(0.05, 0.2)             # bore edge radius
+    rho_o = fillet_floor(min(Rd - rb, ld) * rng.uniform(0.2, 0.45), Rt, cap=0.45 * min(Rd - rb, ld))  # nose
+    rho_i = fillet_floor(min(Rd - rb, ld) * rng.uniform(0.05, 0.2), Rt, cap=0.45 * min(Rd - rb, ld))   # bore edge
     tank = _fuse_all(occ, [occ.addCylinder(0, 0, 0, 0, 0, Lt, Rt)]
                      + [occ.addCylinder(0, 0, -rb * 2.0, 0, 0, rb * 2.0 + 1e-4, rb * 1.15),
                         occ.addCylinder(0, 0, Lt - 1e-4, 0, 0, rb * 2.0 + 1e-4, rb * 1.15)])

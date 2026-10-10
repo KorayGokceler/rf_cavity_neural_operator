@@ -1,0 +1,86 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity 3D — EigenspaceOperatorField (E field, learned field in HCurl(p) on curved meshes)
+#  docs/28_FIELD_MODEL.md (model), docs/29_FIELD_LABELS.md (labels, cost)
+# ═══════════════════════════════════════════════════════════════
+#
+#  Data: dataset_generator_3d.py --labels field (one H5 per shard): per geometry a curved netgen
+#  mesh (.vol + BREP), NGSolve HCurl p3 labels (frequencies, QoI) and the label fields projected
+#  onto the model space HCurl(model_order) of the same mesh.  The dataset rebuilds the mesh and the
+#  model-order operators per geometry (~10 s at p2 for 16k tets: use num_workers ≥ 8 or cache_dir).
+#
+#  Model: the trunk of EigenspaceOperator3D on the quadrature points, ψ(x_q) → L2(p) → HCurl(p)
+#  DOFs, Rayleigh–Ritz with the kernel projection (same losses and metrics as eigenspace_3d.yaml).
+#
+#  Usage:
+#    python src/data_gen/dataset_generator_3d.py --labels field --n_total 100 --h5_filename data/field/s0.h5
+#    python train.py --config configs/field_3d.yaml --override "dataset.data_path=data/field/*.h5"
+#  TRUBA (one line): bash cluster/truba/run.sh train CONFIG=configs/field_3d.yaml DATA='data/field/*.h5'
+# ═══════════════════════════════════════════════════════════════
+
+dataset:
+  data_path: "data/field/*.h5"  # file, glob, directory or list of field-label H5 files
+  cache_dir: null               # e.g. /scratch/.../ops_cache: pickled operators per geometry (~0.5 GB at p2)
+  n_modes: null                 # null = min stored modes over the files
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  feature_indices: null         # null = all 9 point features (highorder.point_features)
+
+model:
+  type: field3d
+  val_dim: null
+  embed_dim: 128
+  n_heads: 4
+  n_basis: 24
+  num_field_modes: 6
+  rff_dim: 64
+  rff_length_scale: 0.1
+  dropout: 0.0
+
+  eigenspace:
+    n_layers: 4
+    edge_rff: true              # RFF(x_q) enters the field head
+    kp_tol: 1.0e-8
+    kp_maxiter: 3000            # p2 potential spaces are ~3× larger than the N0 vertex spaces
+    drop_tol: 1.0e-6
+    mass_ridge: 1.0e-8
+    eig_broadening: 1.0e-4
+
+training:
+  learning_rate: 2.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 2                 # p2 on ~16k tets: ~175k DOF per geometry
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  strategy: "auto"
+
+  span_weight: 1.0
+  span_norm: both
+  span_root: true
+  span_ridge: 1.0e-9
+  selfsup_weight: 0.01
+  selfsup_form: compliance
+  ortho_weight: 0.01
+  freq_weight: 0.1
+
+  qoi_weight: 0.0               # the QoI loss needs the N0 operators: not available for field3d
+  qoi_metrics: false
+
+  near_deg_threshold: 0.05
+  near_deg_rel_threshold: 0.02
+
+  augment: false                # not supported for field3d (C / QP are built for the stored orientation)
+
+  scheduler: "custom_cosine"
+  cosine_eta_min: 1.0e-6
+  patience: 40
+
+  num_workers: 8                # operator assembly runs in the loader workers
+  pin_memory: false
+
+  log_dir: "training_logs"
+  exp_name: "field3d_v1"
+  log_every_n_steps: 10
+  progress_bar_refresh_rate: 1
+  fast_dev_run: false

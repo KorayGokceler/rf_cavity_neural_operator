@@ -77,7 +77,7 @@ def _name_faces(shape):
 
 
 def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, min_jacobian_ratio=0.25,
-                **meshing):
+                return_shape=False, fix_passes=3, fix_below=0.3, **meshing):
     """NGSolve mesh of the solid in `cad_path` (BREP / STEP, metres), curved to order `curve`; the
     cavity surface is the boundary "wall" (internal cut faces: "interface").  deform: optional
     (om [n,3], a [n,3], ph [n]) of the generator's smooth map x → x + Σ_m a_m sin(om_m·x + ph_m)
@@ -87,8 +87,12 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
     ~ radius / curvaturesafety, whatever maxh is).  Curving coarse tets onto small fillets can fold
     them (det J < 0) or nearly so: surface fields and wall loss are then garbage (pillbox with pipes:
     Q0 off 10× at a ratio of 0.05, peaks 3× at 0.07, fine at ≥ 0.4) although the frequencies hardly
-    change.  Every curved mesh is checked (jacobian_ratio > min_jacobian_ratio); a failing one is
-    regenerated with curvaturesafety doubled, up to `retries` times."""
+    change.  Every curved mesh is checked (jacobian_ratio > min_jacobian_ratio).  The few distorted
+    elements (ratio < fix_below, typically a few dozen tets touching a small fillet) are bisected
+    and re-curved, up to `fix_passes` times (+5 % elements; doubling curvaturesafety instead costs 3×);
+    a mesh still failing is regenerated with curvaturesafety doubled, up to `retries` times.
+    return_shape: also return the named netgen.occ shape that was meshed (the solid, or the quartered
+    compound) — save it with shape.WriteBrep to rebuild the curved mesh later (load_curved_mesh)."""
     import os
     import tempfile
 
@@ -121,22 +125,63 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
     mesh.Curve(int(curve))
     if deform is not None:
         set_deformation(mesh, *deform, order=int(curve))
-    q = jacobian_ratio(mesh)
+    r = element_jacobian_ratio(mesh)
+    for _ in range(int(fix_passes)):
+        bad = r < max(fix_below, min_jacobian_ratio)
+        if not bad.any():
+            break
+        from ngsolve import VOL, ElementId
+        for e in range(mesh.ne):
+            mesh.SetRefinementFlag(ElementId(VOL, e), bool(bad[e]))
+        mesh.Refine()
+        mesh.Curve(int(curve))
+        if deform is not None:
+            set_deformation(mesh, *deform, order=int(curve))
+        r = element_jacobian_ratio(mesh)
+    q = float(r.min())
     if q <= min_jacobian_ratio:
         cs = float(meshing.get("curvaturesafety", 2.0))
         if retries > 0:                           # coarse tets bent onto small fillets fold: refine there
             return netgen_mesh(cad_path, maxh, curve, deform, split, retries=retries - 1,
-                               min_jacobian_ratio=min_jacobian_ratio, **{**meshing, "curvaturesafety": 2 * cs})
+                               min_jacobian_ratio=min_jacobian_ratio, return_shape=return_shape,
+                               fix_passes=fix_passes, fix_below=fix_below,
+                               **{**meshing, "curvaturesafety": 2 * cs})
         raise RuntimeError(f"curved mesh of {cad_path} has folded elements (min det J ratio {q:.2f})")
+    return (mesh, shape) if return_shape else mesh
+
+
+def load_curved_mesh(vol_path, brep_path, curve, deform=None):
+    """Rebuild a curved mesh saved as netgen .vol (straight tets + surface geometry info) plus the
+    BREP of the meshed shape (netgen_mesh(..., return_shape=True)): identical vertex / element
+    numbering, so the same HCurl DOF numbering (eigenvalues reproduce to 1e-14)."""
+    import netgen.meshing as nm
+    from netgen.occ import OCCGeometry
+    from ngsolve import Mesh
+    shape = OCCGeometry(str(brep_path)).shape
+    if len(shape.solids) == 1:
+        shape = shape.solids[0]
+    _name_faces(shape)
+    ng = nm.Mesh()
+    ng.Load(str(vol_path))
+    ng.SetGeometry(OCCGeometry(shape))
+    mesh = Mesh(ng)
+    mesh.Curve(int(curve))
+    if deform is not None:
+        set_deformation(mesh, *deform, order=int(curve))
     return mesh
+
+
+def element_jacobian_ratio(mesh, order=6):
+    """[ne] min/max det J of each element at the integration points (≤ 0: folded)."""
+    from ngsolve import TET, VOL, Det, IntegrationRule, specialcf
+    mips = mesh.MapToAllElements(IntegrationRule(TET, order), VOL)
+    J = np.asarray(Det(specialcf.JacobianMatrix(3))(mips)).reshape(mesh.ne, -1)
+    return J.min(1) / J.max(1)
 
 
 def jacobian_ratio(mesh, order=6):
     """min over elements of min/max det J at the integration points (≤ 0: a folded curved element)."""
-    from ngsolve import TET, VOL, Det, IntegrationRule, specialcf
-    mips = mesh.MapToAllElements(IntegrationRule(TET, order), VOL)
-    J = np.asarray(Det(specialcf.JacobianMatrix(3))(mips)).reshape(mesh.ne, -1)
-    return float((J.min(1) / J.max(1)).min())
+    return float(element_jacobian_ratio(mesh, order).min())
 
 
 def deformation_cf(om, a, ph):
