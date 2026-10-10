@@ -24,7 +24,8 @@ def field_h5(tmp_path_factory):
     path = tmp_path_factory.mktemp("field") / "calib.h5"
     old_args = gen.ARGS
     gen.ARGS = gen.parse_args(["--labels", "field", "--mode", "calibration", "--mesh_size", "0.2",
-                               "--n_eigen_modes", str(K)])
+                               "--n_eigen_modes", str(K), "--tol_f", "1e-4", "--tol_q", "3e-2",
+                               "--max_ndof", "40000", "--model_max_elements", "60"])
     gen._init_worker(gen.ARGS)
     try:
         with h5py.File(path, "w") as f:

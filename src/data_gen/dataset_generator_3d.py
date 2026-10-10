@@ -121,6 +121,19 @@ def parse_args(argv=None):
     p.add_argument("--threads", type=int, default=1, help="field labels: NGSolve threads per worker.")
     p.add_argument("--no_heal", action="store_true",
                    help="field labels: skip the OCC shape healing (small edges / faces, sewing) before meshing.")
+    p.add_argument("--no_adapt", action="store_true",
+                   help="field labels: one solve on the curvature-sized mesh instead of adaptive refinement.")
+    p.add_argument("--tol_f", type=float, default=1e-6,
+                   help="field labels: adaptive stop, relative frequency change between refinements.")
+    p.add_argument("--tol_q", type=float, default=1e-3,
+                   help="field labels: adaptive stop, relative change of Q0 / G / R/Q / surface peaks.")
+    p.add_argument("--model_max_elements", type=int, default=10000,
+                   help="field labels (adaptive): the model mesh is the finest refinement level with at most "
+                        "this many tets; the final-level labels are L2-projected onto it (training cost).")
+    p.add_argument("--no_round_edges", action="store_true",
+                   help="field labels: keep re-entrant edges sharp (by default they are filleted with radius "
+                        "min_fillet × equivalent-sphere radius: singular fields there make the surface peaks "
+                        "mesh-dependent).")
     args = p.parse_args(argv)
     if args.families is None:
         args.families = list(FAMILIES)
@@ -129,6 +142,7 @@ def parse_args(argv=None):
     if args.sample_timeout is None:
         args.sample_timeout = 3600.0 if args.labels == "field" else 300.0
     args.heal = args.labels == "field" and not args.no_heal
+    args.round_edges = args.labels == "field" and not args.no_round_edges
     if args.labels == "field":
         dropped = [f for f in args.families if f in DISCRETE_BUILDERS]
         args.families = [f for f in args.families if f not in DISCRETE_BUILDERS]
@@ -610,7 +624,7 @@ def mesh_sample(s_id, cad_path=None, post=None):
     h, volume, t_mesh, topo, deform).  The mesh is certified a connected manifold.  deform: the
     smooth map (om, a, ph) applied to the nodes, or None.  cad_path: also write the OCC solid there
     (BREP / STEP by extension; None for the discrete freeform family) — src.data_gen.highorder.
-    post(cad_path, h, deform, shape_type): called once the geometry passed the checks; an exception
+    post(cad_path, h, deform, shape_type, params): called once the geometry passed the checks; an exception
     re-draws the geometry like a failed check (field labels: curved mesh + element budget); its
     return value is the result's 'post'.
     Used by generate_sample_data, scripts/active_sampling.py and scripts/label_benchmark.py."""
@@ -634,12 +648,24 @@ def mesh_sample(s_id, cad_path=None, post=None):
                 shape_type, params = build_calibration(occ, s_id) if fam == "calibration" \
                     else BUILDERS[fam](occ, rng)
                 occ.synchronize()
-                if getattr(ARGS, "heal", False) and fam in HEAL_FAMILIES:
-                    occ.healShapes(sewFaces=False, makeSolids=False)   # sew / makeSolids drop revolved solids
-                    occ.synchronize()
                 vols = gmsh.model.getEntities(3)
                 if len(vols) != 1:
                     raise RuntimeError(f"{len(vols)} volumes")
+                if getattr(ARGS, "round_edges", False):          # field labels: no singular edges (docs/30 §3)
+                    v0 = gmsh.model.occ.getMass(3, vols[0][1])
+                    r_edge = cs.MIN_FILLET * (3 * v0 / (4 * np.pi)) ** (1 / 3)
+                    _, n_round, r_used, n_sharp = cs.round_reentrant_edges(occ, vols[0][1], r_edge)
+                    params.update(n_rounded_edges=float(n_round), r_rounded_edges=float(r_used),
+                                  n_sharp_edges=float(n_sharp))
+                    vols = gmsh.model.getEntities(3)
+                    if len(vols) != 1:
+                        raise RuntimeError(f"{len(vols)} volumes after rounding the re-entrant edges")
+                if getattr(ARGS, "heal", False) and fam in HEAL_FAMILIES:
+                    occ.healShapes(sewFaces=False, makeSolids=False)   # sew / makeSolids drop revolved solids
+                    occ.synchronize()
+                    vols = gmsh.model.getEntities(3)
+                    if len(vols) != 1:
+                        raise RuntimeError(f"{len(vols)} volumes after healing")
                 volume = gmsh.model.occ.getMass(3, vols[0][1])
                 if cad_path:
                     gmsh.write(str(cad_path))
@@ -653,7 +679,7 @@ def mesh_sample(s_id, cad_path=None, post=None):
             certify(topo)
             t_mesh = time.perf_counter() - t0
             nodes, dp, dmap = _draw_deform(s_id, nodes)
-            extra = post(cad_path, h, dmap, shape_type) if post is not None else None
+            extra = post(cad_path, h, dmap, shape_type, params) if post is not None else None
             break
         except Exception as e:  # re-draw the geometry (random mode only)
             _gmsh_start(restart=True)
@@ -671,7 +697,9 @@ def field_settings(args):
     """src.data_gen.field_labels settings from the generator args."""
     return {"label_order": int(args.label_order), "model_order": int(args.model_order), "curve": int(args.curve),
             "maxh_factor": float(args.maxh_factor), "max_elements": int(args.field_max_elements),
-            "max_ndof": int(args.max_ndof)}
+            "max_ndof": int(args.max_ndof), "adaptive": not getattr(args, "no_adapt", False),
+            "tol_f": float(getattr(args, "tol_f", 1e-6)), "tol_q": float(getattr(args, "tol_q", 1e-3)),
+            "model_max_elements": int(getattr(args, "model_max_elements", 10000))}
 
 
 def generate_field_sample(s_id):
@@ -682,8 +710,9 @@ def generate_field_sample(s_id):
     from src.data_gen import field_labels as fl
     with tempfile.TemporaryDirectory() as tmp:
         cad = os.path.join(tmp, "solid.brep")
-        post = lambda path, h, dmap, st: fl.label_sample(path, h, st, ARGS.n_eigen_modes, deform=dmap,  # noqa: E731
-                                                         settings=field_settings(ARGS))
+        post = lambda path, h, dmap, st, prm: fl.label_sample(  # noqa: E731
+            path, h, st, ARGS.n_eigen_modes, deform=dmap, settings=field_settings(ARGS),
+            sharp_edges=int(prm.get("n_sharp_edges", 0)))
         g = mesh_sample(s_id, cad_path=cad, post=post)
     lab = g["post"]
     return {"id": s_id, "labels": "field", "field": lab, "freqs": lab["freqs"], "freq_next": lab["freq_next"],
@@ -829,8 +858,10 @@ def main(argv=None):
           f"with {n_workers} workers")
     tmp_path = ARGS.h5_filename + ".partial"
     n_ok, n_fail, times, calib = 0, 0, [], []
-    # maxtasksperchild: recycle workers (fresh gmsh / OCC state and memory) every 50 samples
-    new_pool = lambda: Pool(n_workers, initializer=_init_worker, initargs=(ARGS,), maxtasksperchild=50)  # noqa: E731
+    # maxtasksperchild: recycle workers (fresh gmsh / OCC state and memory) every 50 samples; field labels:
+    # one sample per process (minutes each; gmsh + netgen OCC and NGSolve state never accumulate)
+    per_child = 1 if field else 50
+    new_pool = lambda: Pool(n_workers, initializer=_init_worker, initargs=(ARGS,), maxtasksperchild=per_child)  # noqa: E731
     ids = [int(x) for x in open(ARGS.ids_file).read().split()] if ARGS.ids_file else \
         list(range(ARGS.start_id, ARGS.start_id + ARGS.n_total))
     n_requested = len(ids)

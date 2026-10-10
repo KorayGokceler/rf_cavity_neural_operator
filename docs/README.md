@@ -12,6 +12,7 @@ Güncel çalışma belgeleri (kod bunlara göre yazılır):
 | [27_LABEL_BENCHMARK](27_LABEL_BENCHMARK.md) | etiket kalitesi: N0 ve NGSolve p2/p3 eğri eleman etiketleri, frekans + alan + QoI |
 | [28_FIELD_MODEL](28_FIELD_MODEL.md) | seçenek B: yüksek mertebe H(curl) uzayında öğrenilen alan modeli |
 | [29_FIELD_LABELS](29_FIELD_LABELS.md) | alan etiketleri: eğri mesh + p3 etiket → p2 model uzayı, maliyet, TRUBA tek satır komut ve arayüz sayfası |
+| [30_ADAPTIVE_LABELS](30_ADAPTIVE_LABELS.md) | adaptif etiketler: hata göstergesi (hacim + duvar), yeniden mesh'leme, keskin kenar yuvarlatma, etiket / model mesh ayrımı, ölçümler |
 | [23_ROADMAP](23_ROADMAP.md) | yol haritası |
 | [../cluster/truba/README.md](../cluster/truba/README.md) | TRUBA (SLURM) betikleri |
 

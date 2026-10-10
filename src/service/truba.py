@@ -27,13 +27,15 @@ DEFAULTS = {
     "LABELS": "n0", "PARTITION": "orfoz", "CPUS": 56, "TIME": "0-12:00:00", "ACCOUNT": "", "MAX_PARALLEL": 10,
     "MESH_SIZE": 0.10, "N_STORE": 10, "SAMPLING": "sobol", "DEFORM_PROB": 0.5, "DEFORM_MAX": 0.5, "SEED": 0,
     "LABEL_ORDER": 3, "MODEL_ORDER": 2, "MIN_FILLET": "", "THREADS": 8, "FIELD_MAX_ELEMENTS": 30000,
-    "MAXH_FACTOR": 3.0, "TAG": "", "TEST": 0,
+    "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 10000, "MAX_NDOF": 900000,
+    "TAG": "", "TEST": 0,
     "GPU_PARTITION": "palamut-cuda", "GPUS": 1, "GPU_CPUS": 16, "GPU_TIME": "3-00:00:00",
     "EXP": "base", "MODEL": "base", "EPOCHS": 150, "LR": 3.0e-4, "CACHE_DIR": "", "TRAIN_EXTRA": "",
 }
 DATASET_KEYS = ("LABELS", "PARTITION", "CPUS", "TIME", "ACCOUNT", "MAX_PARALLEL", "MESH_SIZE", "N_STORE",
                 "SAMPLING", "DEFORM_PROB", "DEFORM_MAX", "SEED", "TAG", "TEST")
-FIELD_KEYS = ("LABEL_ORDER", "MODEL_ORDER", "MIN_FILLET", "THREADS", "FIELD_MAX_ELEMENTS", "MAXH_FACTOR")
+FIELD_KEYS = ("LABEL_ORDER", "MODEL_ORDER", "MIN_FILLET", "THREADS", "FIELD_MAX_ELEMENTS", "MAXH_FACTOR", "ADAPT",
+              "TOL_F", "TOL_Q", "MODEL_MAX_ELEMENTS", "MAX_NDOF")
 TRAIN_KEYS = ("GPU_PARTITION", "GPUS", "GPU_CPUS", "GPU_TIME", "EXP", "MODEL", "EPOCHS", "BATCH", "LR",
               "NUM_WORKERS", "CACHE_DIR", "TRAIN_EXTRA", "TRAIN_FAMILIES")
 
@@ -47,8 +49,16 @@ _OVERRIDE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*=[A-Za-z0-9_.,:/\-\[\]\"']*$")
 
 # rough cost model (docs/29 §4; cluster/truba/README.md for N0): core-seconds per geometry, MB on disk
 FIELD_CORE_S = 560.0            # p3 label + p2 projection, ~18k curved tets (140 s on 4 threads)
+SHARD_SIZE = 1024               # families.tsv shard_size (every family); TEST: one shard of TEST_N = 112
 N0_CORE_S = {"elliptical": 2.2, "reentrant": 1.0, "pillbox_pipes": 1.2, "ridged_box": 1.0, "composite": 0.9,
              "freeform": 2.3, "hwr": 1.8, "spoke": 2.6, "dtl": 3.9}
+
+
+def _hours(t):
+    """SLURM [D-]HH:MM:SS → hours."""
+    d, _, hms = t.rpartition("-")
+    h, m, sec = (int(x) for x in hms.split(":"))
+    return 24 * int(d or 0) + h + m / 60 + sec / 3600
 
 
 class CommandError(ValueError):
@@ -152,6 +162,11 @@ def build_command(req):
             raise CommandError("threads per sample cannot exceed the cores per job")
         v["FIELD_MAX_ELEMENTS"] = _num(r.get("max_elements", 30000), 1000, 500000, "max_elements", True)
         v["MAXH_FACTOR"] = _num(r.get("maxh_factor", 3.0), 1.0, 10.0, "maxh_factor")
+        v["ADAPT"] = 1 if r.get("adapt", True) else 0
+        v["TOL_F"] = _num(r.get("tol_f", 1e-6), 1e-9, 1e-2, "tol_f")
+        v["TOL_Q"] = _num(r.get("tol_q", 1e-3), 1e-6, 0.2, "tol_q")
+        v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 10000), 100, 500000, "model_max_elements", True)
+        v["MAX_NDOF"] = _num(r.get("max_ndof", 900000), 10000, 20_000_000, "max_ndof", True)
     group, fams = _families(r.get("families") or list(TRAIN_FAMILIES), labels)
     n_per = r.get("n_per_family")
     n_per = None if n_per in (None, "") else _num(n_per, 1, 524288, "n_per_family", True)
@@ -225,7 +240,11 @@ def build_command(req):
     n_geo = (112 if v["TEST"] else (n_per or 10240)) * len(fams)
     if labels == "field":
         core_h = n_geo * FIELD_CORE_S * (v["N_STORE"] / 10) ** 0.3 * (v["LABEL_ORDER"] / 3) ** 3 / 3600
-        mb = n_geo * (1.0 + 0.8 * v["N_STORE"] * (1 if v["MODEL_ORDER"] == 2 else 0.27 if v["MODEL_ORDER"] == 1 else 2.2))
+        if v["ADAPT"]:
+            core_h *= 3.0                    # ~3 refinement levels of a growing mesh (docs/30 §6)
+        size = min(v["MODEL_MAX_ELEMENTS"], 20000) / 20000 if v["ADAPT"] else 1.0
+        mb = n_geo * (1.0 + 0.8 * v["N_STORE"] * size
+                      * (1 if v["MODEL_ORDER"] == 2 else 0.27 if v["MODEL_ORDER"] == 1 else 2.2))
     else:
         core_h = sum((112 if v["TEST"] else (n_per or 10240)) * N0_CORE_S.get(f, 1.5) for f in fams) \
             * (0.1 / v["MESH_SIZE"]) ** 2.5 / 3600
@@ -238,6 +257,10 @@ def build_command(req):
         notes.append("ridged_box_cost")
     if action in ("all", "train") and labels == "field" and not v["CACHE_DIR"]:
         notes.append("no_cache")
+    if action in ("dataset", "all") and labels == "field":
+        shard_h = core_h / n_geo * (112 if v["TEST"] else SHARD_SIZE) / (workers * v["THREADS"])
+        if shard_h > 0.8 * _hours(v["TIME"]):
+            notes.append("shard_time")     # a killed shard resumes on the next run, but training may start first
     return {"command": command, "run_args": run, "tag": tag, "families": fams, "group": group,
             "estimate": {"geometries": n_geo, "core_hours": round(core_h, 1), "disk_gb": round(mb / 1024, 1),
                          "workers_per_job": workers},
@@ -252,6 +275,7 @@ def defaults(root):
             "form": {"action": "all", "labels": "field", "families": [f for f in TRAIN_FAMILIES if f != "freeform"],
                      "n_per_family": 1024, "mesh_size": 0.10, "n_modes": 10, "label_order": 3, "model_order": 2,
                      "min_fillet": 0.05, "threads": 8, "max_elements": 30000, "maxh_factor": 3.0,
+                     "adapt": True, "tol_f": 1e-6, "tol_q": 1e-3, "model_max_elements": 10000, "max_ndof": 900000,
                      "deform_prob": 0.5, "deform_max": 0.5, "sampling": "sobol", "seed": 0, "tag": "",
                      "partition": "orfoz", "cpus": 56, "time": "0-12:00:00", "account": "", "max_parallel": 10,
                      "test": False, "gpu_partition": "palamut-cuda", "gpus": 1, "gpu_cpus": 16,

@@ -186,6 +186,11 @@ const S = {
   threads: { tr: 'Örnek başına thread', en: 'Threads per sample' },
   maxElements: { tr: 'Eleman bütçesi (tet)', en: 'Element budget (tets)' },
   maxhFactor: { tr: 'maxh çarpanı', en: 'maxh factor' },
+  adaptOn: { tr: 'uyarlamalı mesh inceltme (CST kalitesinde etiket; ~3× süre)', en: 'adaptive mesh refinement (CST-grade labels; ~3× time)' },
+  modelMaxElements: { tr: 'Model mesh bütçesi (tet)', en: 'Model mesh budget (tets)' },
+  tolF: { tr: 'Frekans toleransı', en: 'Frequency tolerance' },
+  tolQ: { tr: 'Q0/R/Q/peak toleransı', en: 'Q0/R/Q/peak tolerance' },
+  maxNdof: { tr: 'Etiket DOF bütçesi', en: 'Label DOF budget' },
   partition: { tr: 'Kuyruk', en: 'Partition' },
   cpus: { tr: 'İş başına çekirdek', en: 'Cores per job' },
   wallTime: { tr: 'Süre (G-SS:DD:ss)', en: 'Wall time (D-HH:MM:SS)' },
@@ -216,6 +221,7 @@ const S = {
   afterwards: { tr: 'Sonra', en: 'Afterwards' },
   note_model_order1: { tr: 'Model mertebesi 1: eğitim ~6× ucuz ama frekans tabanı ~%1 (p2: ~1e-4).', en: 'Model order 1: ~6× cheaper training, but a ~1 % frequency floor (p2: ~1e-4).' },
   note_ridged_box_cost: { tr: 'ridged_box: uzun kenar filletleri nedeniyle eğri mesh 40–90k tet; çoğu örnek eleman bütçesini aşıp yeniden çekilir.', en: 'ridged_box: long edge fillets give 40–90k curved tets; most draws exceed the element budget and are re-drawn.' },
+  note_shard_time: { tr: 'Tahmini shard süresi TIME sınırına yakın: öldürülen shard bir sonraki çalıştırmada kaldığı yerden devam eder, ama eğitim (afterany) eksik veriyle başlayabilir. TIME\'ı artırın veya önce TEST=1 ile ölçün.', en: 'Estimated shard time is close to the TIME limit: a killed shard resumes on the next run, but training (afterany) may start on incomplete data. Raise TIME or measure with TEST=1 first.' },
   note_no_cache: { tr: 'Önbellek yok: p2 operatörleri her epoch yeniden kurulur (~10 s/geometri, loader işçilerinde).', en: 'No cache: the p2 operators are rebuilt every epoch (~10 s per geometry, in the loader workers).' },
 } as const;
 

@@ -63,6 +63,80 @@ def fillet_floor(rho, L, cap=None):
     return min(r, float(cap)) if cap is not None else r
 
 
+def vacuum_angle_fraction(vol, curve, eps, n=24):
+    """Fraction of a small circle (radius eps, in the plane normal to the curve at its midpoint) that lies
+    inside the vacuum volume: ≈ interior angle / 2π (0.25 for a box corner edge, 0.5 for a smooth or
+    tangent edge, 0.75 for a re-entrant 270° edge).  gmsh model must be synchronized."""
+    import gmsh
+    t0, t1 = gmsh.model.getParametrizationBounds(1, curve)
+    t = 0.5 * (t0[0] + t1[0])
+    P = np.array(gmsh.model.getValue(1, curve, [t]))
+    tau = np.array(gmsh.model.getDerivative(1, curve, [t]))
+    nt = np.linalg.norm(tau)
+    if nt == 0:
+        return 0.5
+    tau /= nt
+    a = np.cross(tau, [1.0, 0.0, 0.0]) if abs(tau[0]) < 0.9 else np.cross(tau, [0.0, 1.0, 0.0])
+    a /= np.linalg.norm(a)
+    b = np.cross(tau, a)
+    phi = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    pts = P + eps * (np.cos(phi)[:, None] * a + np.sin(phi)[:, None] * b)
+    return float(np.mean([gmsh.model.isInside(3, vol, list(q)) > 0 for q in pts]))
+
+
+def reentrant_edges(vol, eps, threshold=0.55):
+    """Boundary curves of `vol` whose vacuum angle exceeds threshold·360° (vacuum_angle_fraction)."""
+    import gmsh
+    faces = gmsh.model.getBoundary([(3, vol)], combined=False, oriented=False)
+    edges = sorted({abs(t) for _, t in gmsh.model.getBoundary(faces, combined=False, oriented=False)})
+    return [e for e in edges if vacuum_angle_fraction(vol, e, eps) > threshold]
+
+
+def _try_fillet(occ, vol, edges, r):
+    import gmsh
+    try:
+        out = occ.fillet([vol], edges, [r], removeVolume=False)
+        occ.synchronize()
+    except Exception:
+        return None
+    new = [t for d, t in out if d == 3]
+    if len(new) == 1:
+        occ.remove([(3, vol)], recursive=True)
+        occ.synchronize()
+        return new[0]
+    occ.remove(list(out), recursive=True)
+    occ.synchronize()
+    gmsh.model.getEntities(3)
+    return None
+
+
+def round_reentrant_edges(occ, vol, radius, threshold=0.55, tries=3):
+    """Fillet the re-entrant edges (vacuum angle > 180°: pipe / port / bore junctions and unions left
+    sharp by the booleans) of the solid `vol`.  At such an edge E and H are singular, so the surface
+    peaks never converge and Q0 converges slowly (docs/30 §3: spoke without fillets, peaks 20–33 %
+    apart between refinement levels).  All edges in one fillet, the radius halved on an OCC failure up
+    to `tries` times; when OCC still fails (some BSpline–cylinder unions of the composite / hwr
+    families), the solid is kept as it is and its sharp edges are counted — the labels then drop the
+    surface peaks (field_labels.label_sample(sharp_edges=…)).  Edge-by-edge filleting was tried: it
+    leaves a broken topology with more sharp edges than before.
+    Returns (volume tag, edges rounded, radius used, edges left sharp)."""
+    import gmsh
+    occ.synchronize()
+    bb = gmsh.model.getBoundingBox(3, vol)
+    diag = float(np.linalg.norm(np.subtract(bb[3:], bb[:3])))
+    eps = min(1e-3 * diag, 0.1 * radius)
+    sharp = reentrant_edges(vol, eps, threshold)
+    if not sharp:
+        return vol, 0, 0.0, 0
+    r = float(radius)
+    for _ in range(tries):
+        new = _try_fillet(occ, vol, sharp, r)
+        if new is not None:
+            return new, len(sharp), r, 0
+        r *= 0.5
+    return vol, 0, 0.0, len(sharp)
+
+
 # ─────────────────────────── profile helpers ───────────────────
 
 def filleted(corners, radii):

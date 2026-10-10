@@ -27,7 +27,9 @@ LAB=(--labels "$LABELS")
 if [ "$LABELS" = field ]; then          # docs/29: NGSolve threads per sample, CORES / THREADS samples at a time
   WORKERS=$(( CORES / THREADS )); [ "$WORKERS" -ge 1 ] || WORKERS=1
   LAB+=(--label_order "$LABEL_ORDER" --model_order "$MODEL_ORDER" --threads "$THREADS"
-        --field_max_elements "$FIELD_MAX_ELEMENTS" --maxh_factor "$MAXH_FACTOR")
+        --field_max_elements "$FIELD_MAX_ELEMENTS" --maxh_factor "$MAXH_FACTOR"
+        --tol_f "$TOL_F" --tol_q "$TOL_Q" --model_max_elements "$MODEL_MAX_ELEMENTS" --max_ndof "$MAX_NDOF")
+  [ "$ADAPT" = 1 ] || LAB+=(--no_adapt)
 fi
 [ -n "$MIN_FILLET" ] && LAB+=(--min_fillet "$MIN_FILLET")
 

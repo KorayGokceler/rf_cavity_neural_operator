@@ -48,6 +48,20 @@ def test_values_are_written_only_when_they_differ_from_config_sh():
     assert TR.build_command(dict(FORM, dry_run=True))["run_args"].endswith(" --dry-run")
 
 
+def test_adaptive_label_settings_and_shard_time_note():
+    r = TR.build_command(FORM)
+    assert "shard_time" not in r["notes"]                          # ~8.5 h per 1024-geometry shard < 12 h
+    assert "ADAPT" not in r["run_args"] and "TOL_F" not in r["run_args"]
+    r = TR.build_command(dict(FORM, action="dataset", adapt=False, tol_f=1e-5, model_max_elements=6000,
+                              time="0-06:00:00"))
+    for s in ("ADAPT=0", "TOL_F=1e-05", "MODEL_MAX_ELEMENTS=6000", "TIME=0-06:00:00"):
+        assert s in r["run_args"], s
+    assert "shard_time" not in r["notes"]                          # one solve: a third of the time
+    assert "shard_time" in TR.build_command(dict(FORM, action="dataset", time="0-06:00:00"))["notes"]
+    assert "shard_time" not in TR.build_command(dict(FORM, action="train", time="0-06:00:00"))["notes"]
+    assert TR._hours("1-02:30:00") == 26.5 and TR._hours("12:00:00") == 12
+
+
 @pytest.mark.parametrize("bad", [
     {"partition": "orfoz; rm -rf ~"}, {"tag": "a b"}, {"time": "12h"}, {"branch": "main && id"},
     {"repo": "https://x/y; id"}, {"train_extra": ["x=$(id)"]}, {"cache_dir": "/a/`id`"}, {"cache_dir": "/a/${USER}"},

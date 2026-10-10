@@ -58,7 +58,8 @@ export interface Job {
 export interface TrubaForm {
   action: 'all' | 'dataset' | 'train' | 'status' | 'setup'; labels: 'field' | 'n0'; families: string[];
   n_per_family: number | ''; mesh_size: number; n_modes: number; label_order: number; model_order: number;
-  min_fillet: number | ''; threads: number; max_elements: number; maxh_factor: number; deform_prob: number;
+  min_fillet: number | ''; threads: number; max_elements: number; maxh_factor: number; adapt: boolean;
+  tol_f: number; tol_q: number; model_max_elements: number; max_ndof: number; deform_prob: number;
   deform_max: number; sampling: 'sobol' | 'random'; seed: number; tag: string; partition: string; cpus: number;
   time: string; account: string; max_parallel: number; test: boolean; gpu_partition: string; gpus: number;
   gpu_cpus: number; gpu_time: string; exp: string; model: string; epochs: number; batch: number | '';

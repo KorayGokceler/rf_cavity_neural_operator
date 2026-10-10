@@ -135,6 +135,10 @@ export default function TrubaPage({ lang }: Props) {
                 <label>{t(lang, 'threads')}<input type="number" min={1} max={128} value={f.threads} onChange={num('threads')} /></label>
                 <label>{t(lang, 'maxElements')}<input type="number" min={1000} step={1000} value={f.max_elements} onChange={num('max_elements')} /></label>
                 <label>{t(lang, 'maxhFactor')}<input type="number" step={0.5} min={1} max={10} value={f.maxh_factor} onChange={num('maxh_factor')} /></label>
+                <label>{t(lang, 'modelMaxElements')}<input type="number" min={100} step={1000} value={f.model_max_elements} onChange={num('model_max_elements')} /></label>
+                <label>{t(lang, 'tolF')}<input type="number" step={1e-7} min={1e-9} value={f.tol_f} disabled={!f.adapt} onChange={num('tol_f')} /></label>
+                <label>{t(lang, 'tolQ')}<input type="number" step={1e-4} min={1e-6} value={f.tol_q} disabled={!f.adapt} onChange={num('tol_q')} /></label>
+                <label>{t(lang, 'maxNdof')}<input type="number" min={10000} step={100000} value={f.max_ndof} onChange={num('max_ndof')} /></label>
               </>}
               {data && <>
                 <label>{t(lang, 'deformProb')}<input type="number" step={0.1} min={0} max={1} value={f.deform_prob} onChange={num('deform_prob')} /></label>
@@ -144,6 +148,7 @@ export default function TrubaPage({ lang }: Props) {
               </>}
               <label>TAG<input type="text" placeholder={res?.tag ?? ''} value={f.tag} onChange={(e) => set('tag', e.target.value)} /></label>
             </div>
+            {data && field && <label className="check"><input type="checkbox" checked={f.adapt} onChange={(e) => set('adapt', e.target.checked)} /><span>{t(lang, 'adaptOn')}</span></label>}
             {data && <>
               <div className="card-title">{t(lang, 'slurmCard')}</div>
               <div className="grid2">
