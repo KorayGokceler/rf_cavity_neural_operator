@@ -60,6 +60,10 @@ def test_adaptive_label_settings_and_shard_time_note():
     assert "shard_time" in TR.build_command(dict(FORM, action="dataset", time="0-06:00:00"))["notes"]
     assert "shard_time" not in TR.build_command(dict(FORM, action="train", time="0-06:00:00"))["notes"]
     assert TR._hours("1-02:30:00") == 26.5 and TR._hours("12:00:00") == 12
+    r = TR.build_command(dict(FORM, action="dataset", adapt=False, round_edges=False, heal=False))
+    for a in ("ADAPT=0", "ROUND_EDGES=0", "HEAL=0"):
+        assert a in r["run_args"], a
+    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v1_1s_sharp"      # never mixes with the default labels
 
 
 @pytest.mark.parametrize("bad", [

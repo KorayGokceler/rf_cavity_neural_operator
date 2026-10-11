@@ -46,9 +46,12 @@ TOL_F=${TOL_F:-1e-6}                   # field: adaptive stop, frequency change 
 TOL_Q=${TOL_Q:-1e-3}                   # field: adaptive stop, change of Q0 / G / R/Q / peaks
 MODEL_MAX_ELEMENTS=${MODEL_MAX_ELEMENTS:-10000}   # field: model mesh = finest level with ≤ this many tets
 MAX_NDOF=${MAX_NDOF:-900000}           # field: label-space DOF budget per sample (~12 GB at p3)
+ROUND_EDGES=${ROUND_EDGES:-1}          # field: fillet re-entrant (singular) edges (docs/30 §3); 0 = keep them sharp
+HEAL=${HEAL:-1}                        # field: OCC healing of ridged_box / dtl before meshing (docs/29 §2.3)
 if [ "$LABELS" = field ]; then
   SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-3600}
-  TAG=${TAG:-F_p${LABEL_ORDER}p${MODEL_ORDER}_ms${MESH_SIZE}_k${N_STORE}_mf${MIN_FILLET:-0.05}_v1}
+  # _1s: one-solve labels (ADAPT=0), _sharp: unrounded geometries — never share a tag with the defaults
+  TAG=${TAG:-F_p${LABEL_ORDER}p${MODEL_ORDER}_ms${MESH_SIZE}_k${N_STORE}_mf${MIN_FILLET:-0.05}_v1$([ "$ADAPT" = 1 ] || echo _1s)$([ "$ROUND_EDGES" = 1 ] || echo _sharp)}
 else
   SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-900}  # s; a stuck mesh/solve is skipped
 fi

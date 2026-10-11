@@ -28,6 +28,7 @@ DEFAULTS = {
     "MESH_SIZE": 0.10, "N_STORE": 10, "SAMPLING": "sobol", "DEFORM_PROB": 0.5, "DEFORM_MAX": 0.5, "SEED": 0,
     "LABEL_ORDER": 3, "MODEL_ORDER": 2, "MIN_FILLET": "", "THREADS": 8, "FIELD_MAX_ELEMENTS": 30000,
     "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 10000, "MAX_NDOF": 900000,
+    "ROUND_EDGES": 1, "HEAL": 1,
     "TAG": "", "TEST": 0,
     "GPU_PARTITION": "palamut-cuda", "GPUS": 1, "GPU_CPUS": 16, "GPU_TIME": "3-00:00:00",
     "EXP": "base", "MODEL": "base", "EPOCHS": 150, "LR": 3.0e-4, "CACHE_DIR": "", "TRAIN_EXTRA": "",
@@ -35,7 +36,7 @@ DEFAULTS = {
 DATASET_KEYS = ("LABELS", "PARTITION", "CPUS", "TIME", "ACCOUNT", "MAX_PARALLEL", "MESH_SIZE", "N_STORE",
                 "SAMPLING", "DEFORM_PROB", "DEFORM_MAX", "SEED", "TAG", "TEST")
 FIELD_KEYS = ("LABEL_ORDER", "MODEL_ORDER", "MIN_FILLET", "THREADS", "FIELD_MAX_ELEMENTS", "MAXH_FACTOR", "ADAPT",
-              "TOL_F", "TOL_Q", "MODEL_MAX_ELEMENTS", "MAX_NDOF")
+              "TOL_F", "TOL_Q", "MODEL_MAX_ELEMENTS", "MAX_NDOF", "ROUND_EDGES", "HEAL")
 TRAIN_KEYS = ("GPU_PARTITION", "GPUS", "GPU_CPUS", "GPU_TIME", "EXP", "MODEL", "EPOCHS", "BATCH", "LR",
               "NUM_WORKERS", "CACHE_DIR", "TRAIN_EXTRA", "TRAIN_FAMILIES")
 
@@ -167,6 +168,8 @@ def build_command(req):
         v["TOL_Q"] = _num(r.get("tol_q", 1e-3), 1e-6, 0.2, "tol_q")
         v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 10000), 100, 500000, "model_max_elements", True)
         v["MAX_NDOF"] = _num(r.get("max_ndof", 900000), 10000, 20_000_000, "max_ndof", True)
+        v["ROUND_EDGES"] = 1 if r.get("round_edges", True) else 0
+        v["HEAL"] = 1 if r.get("heal", True) else 0
     group, fams = _families(r.get("families") or list(TRAIN_FAMILIES), labels)
     n_per = r.get("n_per_family")
     n_per = None if n_per in (None, "") else _num(n_per, 1, 524288, "n_per_family", True)
@@ -230,7 +233,8 @@ def build_command(req):
         tag = v["TAG"]
     elif labels == "field":
         tag = (f"F_p{v['LABEL_ORDER']}p{v['MODEL_ORDER']}_ms{_fmt(v['MESH_SIZE'])}_k{v['N_STORE']}"
-               f"_mf{v['MIN_FILLET'] or '0.05'}_v1")
+               f"_mf{v['MIN_FILLET'] or '0.05'}_v1" + ("" if v["ADAPT"] else "_1s")      # one-solve labels
+               + ("" if v["ROUND_EDGES"] else "_sharp"))                                 # other geometries
     else:
         tag = f"E_ms{_fmt(v['MESH_SIZE'])}_k{v['N_STORE']}_v1"
     tag = tag.replace("_ms0.1_", "_ms0.10_")            # MESH_SIZE left at config.sh's literal 0.10
@@ -276,7 +280,7 @@ def defaults(root):
                      "n_per_family": 1024, "mesh_size": 0.10, "n_modes": 10, "label_order": 3, "model_order": 2,
                      "min_fillet": 0.05, "threads": 8, "max_elements": 30000, "maxh_factor": 3.0,
                      "adapt": True, "tol_f": 1e-6, "tol_q": 1e-3, "model_max_elements": 10000, "max_ndof": 900000,
-                     "deform_prob": 0.5, "deform_max": 0.5, "sampling": "sobol", "seed": 0, "tag": "",
+                     "round_edges": True, "heal": True, "deform_prob": 0.5, "deform_max": 0.5, "sampling": "sobol", "seed": 0, "tag": "",
                      "partition": "orfoz", "cpus": 56, "time": "0-12:00:00", "account": "", "max_parallel": 10,
                      "test": False, "gpu_partition": "palamut-cuda", "gpus": 1, "gpu_cpus": 16,
                      "gpu_time": "3-00:00:00", "exp": "field_base", "model": "base", "epochs": 150, "batch": "",

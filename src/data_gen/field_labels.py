@@ -150,6 +150,15 @@ def _mesh_from_bytes(vol_bytes, shape, curve, deform):
         return ho.load_curved_mesh(vol, brep, curve, deform)
 
 
+def _check_reload(vol_bytes, shape, curve, deform, model_order, ndof):
+    """The stored model mesh must rebuild the model space the fields were written in (FieldDataset and
+    the UI rebuild it from the .vol + BREP): a mismatch fails the sample here, not the training later."""
+    from ngsolve import HCurl
+    n = HCurl(_mesh_from_bytes(vol_bytes, shape, curve, deform), order=int(model_order), dirichlet="wall").ndof
+    if n != ndof:
+        raise RuntimeError(f"stored model mesh rebuilds HCurl(p{model_order}) with {n} DOFs, the fields have {ndof}")
+
+
 def _beam_axis(shape_type, mesh):
     from src.qoi.operators import beam_axis
     X = np.array([tuple(p.p) for p in mesh.ngmesh.Points()])
@@ -214,6 +223,9 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
     if s["adaptive"] and snap["ne"] != mesh.ne:          # model mesh = a coarser level: L2 transfer
         model_mesh = _mesh_from_bytes(snap["vol"], shape, s["curve"], deform)
         U, err, rq, fes2 = transfer_to_model(lab["gfs"][:K], model_mesh, s["model_order"], s["label_order"])
+    elif mesh.levels > 1:                                # a bisection hierarchy numbers its DOFs unlike its reload
+        model_mesh = ho.single_level(mesh, shape, s["curve"], deform)
+        U, err, rq, fes2 = transfer_to_model(lab["gfs"][:K], model_mesh, s["model_order"], s["label_order"])
     else:                                                # same mesh: exact nested projection
         U, err, rq, fes2 = project_to_model(mesh, {"fes": lab["fes"], "gfs": lab["gfs"][:K]}, s["model_order"])
     t2 = time.perf_counter()
@@ -222,13 +234,15 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         shape.WriteBrep(brep)
         brep_bytes = open(brep, "rb").read()
     vol_bytes = _mesh_bytes(model_mesh)
+    _check_reload(vol_bytes, shape, s["curve"], deform, s["model_order"], U.shape[0])
     return {"vol": np.frombuffer(vol_bytes, np.uint8), "brep": np.frombuffer(brep_bytes, np.uint8),
             "deform": deform, "freqs": lab["f_hz"][:K] / 1e9, "freq_next": float(lab["f_hz"][K] / 1e9),
             "u_model": U.astype(np.float32), "rq_model": rq, "proj_err": err,
             "qoi": np.column_stack([np.asarray(q[n], float) for n in QOI_LABELS]),
             "qoi_names": list(QOI_LABELS),
             "attrs": {"labels": "field", "label_order": int(s["label_order"]), "model_order": int(s["model_order"]),
-                      "curve": int(s["curve"]), "n_tets": int(model_mesh.ne), "n_tets_label": n_tets_label,
+                      "curve": int(s["curve"]), "n_tets": int(model_mesh.ne), "n_vertices": int(model_mesh.nv),
+                      "n_tets_label": n_tets_label,
                       "n_dof_label": int(lab["fes"].ndof), "n_dof_model": int(fes2.ndof),
                       "jacobian_ratio": float(ho.jacobian_ratio(model_mesh)),
                       "maxh": float(s["maxh_factor"] * h), "t_curved_mesh": t1 - t0, "t_labels": t2 - t1,

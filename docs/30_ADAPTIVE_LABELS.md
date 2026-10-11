@@ -147,9 +147,34 @@ constant 2–3 % because the port edge was still sharp in that run; §3 rounds i
 - **When the meshes coincide:** if the start mesh already exceeds the budget, the model mesh is the
   start mesh and the label mesh is finer. If the final mesh fits the budget, both are the same mesh
   and the nested projection of docs/29 is used.
-- **Attributes:** `n_tets` (model), `n_tets_label`, `n_tets_start`, `adapt_iters`, `adapt_stop`
-  (converged | budget | max_iter), `est_rel_f`, `est_rel_wall`, `adapt_df`, `adapt_dq`,
-  `sharp_edges`.
+- **Attributes:** `n_tets` (model), `n_vertices` (model), `n_tets_label`, `n_tets_start`,
+  `adapt_iters`, `adapt_stop` (converged | budget | max_iter), `est_rel_f`, `est_rel_wall`,
+  `adapt_df`, `adapt_dq`, `sharp_edges`.
+
+**Repaired meshes must be reloaded.** `netgen_mesh` repairs distorted curved elements by bisection
+(`mesh.Refine()`). NGSolve then keeps the refinement hierarchy, and its topology still numbers the
+bisected parents' edges and faces.
+- **What went wrong.** On a pillbox_pipes draw, the repaired mesh had 15509 edges and 25238 faces; the
+  same mesh saved and loaded again has 14891 and 23677. The HCurl p2 space differed accordingly (116322
+  against 115704 DOFs), so the stored fields did not fit the mesh that FieldDataset rebuilds, and the
+  sample could not be trained on.
+- **The fix.** `ho.single_level` rebuilds a repaired mesh with a .vol round trip and re-curves it. A
+  model mesh that still carries a hierarchy receives the fields by L2 transfer.
+- **The guard.** Every sample now rebuilds its stored model mesh once and checks the DOF count
+  (`_check_reload`), so a mismatch fails at generation, not at training.
+
+**Model-space frequency floor.** The model's Ritz layer works in HCurl p2 on the model mesh. Its
+Rayleigh quotient `rq_model` therefore bounds the model's frequency accuracy from below, whatever the
+label quality. Measured on pillbox_pipes (start mesh, mesh 0.2):
+
+| model mesh | p2 floor, modes 0–3 | proj_err |
+|---|---|---|
+| 11300 tets | 2.4e-3, 3.8e-4, 3.7e-4, 2.2e-3 | 2.6–5.4e-3 |
+| 13052 tets | 8.6e-3, 2.3e-3, 2.4e-3, 4.9e-4 | 1.8–3.1e-3 |
+
+That is about 0.04–0.9 %, above the 1e-4 assumed in docs/29. If the TRUBA trial shows similar values
+at `MODEL_MAX_ELEMENTS=10000`, a larger model mesh or `MODEL_ORDER=3` should be weighed against the
+training cost.
 
 ## 6. Defaults and cost
 
@@ -164,8 +189,20 @@ constant 2–3 % because the port edge was still sharp in that run; §3 rounds i
 process that holds NGSolve / netgen state crashes the child, which is also why the adaptive tests
 run after the generator tests.
 
-**TRUBA.** `run.sh … LABELS=field ADAPT=1 TOL_F=… TOL_Q=… MODEL_MAX_ELEMENTS=… MAX_NDOF=…`; the
-TRUBA page of the UI has the same fields.
+**TRUBA.** `run.sh … LABELS=field ADAPT=1 TOL_F=… TOL_Q=… MODEL_MAX_ELEMENTS=… MAX_NDOF=…
+ROUND_EDGES=… HEAL=…`; the TRUBA page of the UI has the same fields. The TAG gets `_1s` with
+`ADAPT=0` and `_sharp` with `ROUND_EDGES=0`, so neither mixes with the default labels.
+
+**Web UI / Colab.** The Generate page runs the same generator with every one of these settings
+(docs/26 §3c). Workers × threads are planned from the machine's cores and memory, e.g. 16 × 4 on
+64 cores and ≥ 250 GB. The Dataset page lists field datasets with their label quality and opens
+them, showing the fields and the stored p3 figures of merit.
+
+**Import order.** A process that uses both libraries must import torch before NGSolve. With ngsolve
+loaded first, the field model's torch forward segfaults later in the process; the bundled OpenMP /
+BLAS runtimes are the likely cause. train.py, FieldDataset and the web API already import torch first.
+The test session now does too (`tests/conftest.py`): test modules that import ngsolve at collection
+used to decide the order, which made the suite crash depending on which files ran.
 
 **Cost.** About 3 refinement levels of a growing mesh, i.e. about 3–4× one solve (pillbox with pipes:
 25 + 54 + 100 s on 4 threads against 43 s for the old one-solve label). On the training side the

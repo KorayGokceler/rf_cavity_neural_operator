@@ -10,6 +10,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# torch before NGSolve: with ngsolve loaded first, the field model's torch forward segfaults later in the
+# process (their bundled OpenMP / BLAS runtimes clash); test modules that importorskip("ngsolve") at
+# collection would otherwise decide the order.  train.py, FieldDataset and the web API import torch first.
+try:
+    import torch  # noqa: F401
+except ImportError:
+    pass
+
 
 def _gmsh_available() -> bool:
     """gmsh wheel imports fail without libGLU/libXrender etc., so try the import."""

@@ -113,13 +113,16 @@ export default function TrainPage({ lang, model, onModel }: Props) {
             <div>
               <div className="label">{t(lang, 'trainData')}</div>
               <div className="ds-list">
-                {datasets.map((d) => (
-                  <label key={d.id} className="check">
-                    <input type="checkbox" checked={p.datasets.includes(d.id)}
-                           onChange={() => set('datasets', p.datasets.includes(d.id) ? p.datasets.filter((x) => x !== d.id) : [...p.datasets, d.id])} />
-                    <span>{d.name}</span><span className="muted">{d.kind}</span>
-                  </label>
-                ))}
+                {datasets.map((d) => {
+                  const off = d.kind === 'field';        // field3d training is not on this page yet (configs/field_3d.yaml)
+                  return (
+                    <label key={d.id} className="check" title={off ? t(lang, 'fieldTrainOff') : undefined}>
+                      <input type="checkbox" disabled={off} checked={!off && p.datasets.includes(d.id)}
+                             onChange={() => set('datasets', p.datasets.includes(d.id) ? p.datasets.filter((x) => x !== d.id) : [...p.datasets, d.id])} />
+                      <span className={off ? 'muted' : ''}>{d.name}</span><span className="muted">{d.kind}</span>
+                    </label>
+                  );
+                })}
                 {!datasets.length && <span className="muted">{t(lang, 'noDatasets')}</span>}
               </div>
               <div className="note">{t(lang, 'trainDataNote')}</div>

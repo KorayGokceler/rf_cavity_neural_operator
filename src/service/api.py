@@ -18,6 +18,7 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     POST /api/datasets/{d}/items/{id}/open        geometry + FE solution (+ labels, parameters)
     POST /api/predictions {geometry_id, compare_to}  + model-vs-FE rows and a difference solution
     GET  /api/jobs/config · POST /api/jobs/generate · GET /api/jobs[/{id}] · POST /api/jobs/{id}/cancel
+    GET  /api/jobs/plan?max_ndof&threads&workers   field labels: workers × threads for this machine
     GET  /api/train/config · GET /api/train/runs[/{name}] · POST /api/train/start · /runs/{name}/resume
     POST /api/train/stop · POST /api/model/load {run}   training from the UI (RFCAV_RUNS_ROOT)
     GET  /api/truba/config · POST /api/truba/command {form}   one-line TRUBA command (src/service/truba.py)
@@ -454,10 +455,21 @@ def create_app(service=None, datasets=None):
                                   prepared={'_geom': r['geom'], '_M': M, 'feature_names': r['features']})
         truth = None
         if r['U'].shape[1]:
-            from src.service.model import build_solution
+            from src.service.model import QOI_SHOW, RQ_FLOOR_OHM, VOLTAGE_QOI, build_solution
             sol = build_solution(r['geom'], M, r['U'], r['f_GHz'], 'fe')
+            if d.kind == 'field' and r['qoi_labels']:        # the stored p3 labels, not the N0 display fields'
+                for row, lab in zip(sol['modes'], r['qoi_labels'], strict=False):
+                    row.update({n: lab[n] for n in QOI_SHOW if n in lab})       # finite or None
+                    if not (row.get('R_over_Q_ohm') or 0.0) > RQ_FLOOR_OHM:      # no field on the axis
+                        row.update({n: None for n in VOLTAGE_QOI})
+                rq = [-1.0 if m['degenerate'] or m['R_over_Q_ohm'] is None else m['R_over_Q_ohm']
+                      for m in sol['modes']]
+                acc = int(np.argmax(rq)) if max(rq, default=-1.0) > 0 else -1
+                for k, m in enumerate(sol['modes']):
+                    m['accelerating'] = k == acc
             sol['_geometry_id'] = resp['id']
-            truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels']})
+            truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels'],
+                                                   'qoi_source': 'p3_labels' if d.kind == 'field' else 'fe'})
         resp.update(truth=truth)
         return resp
 
@@ -469,11 +481,15 @@ def create_app(service=None, datasets=None):
     # ── dataset generation (background jobs; RFCAV_GEN_ROOT, e.g. a Google Drive folder) ──
     from src.service import jobs as J
     blocks = J.family_blocks()
+    FIELD_PARAMS = {'threads', 'label_order', 'model_order', 'min_fillet', 'maxh_factor', 'field_max_elements',
+                    'adapt', 'tol_f', 'tol_q', 'model_max_elements', 'max_ndof', 'round_edges', 'heal',
+                    'sample_timeout'}
     jm = J.JobManager(gen_root, on_done=lambda job: rescan()) if gen_root else None
     max_gen = _env('RFCAV_GEN_MAX', 20000, int)
 
     class GenReq(BaseModel):
         families: list[str]
+        labels: str = Field(default='n0', pattern='^(n0|field)$')
         n_total: int = Field(default=100, ge=1)
         mesh_size: float = Field(default=0.10, ge=Limits.min_mesh_size, le=0.5)
         n_modes: int = Field(default=10, ge=1, le=30)
@@ -481,11 +497,26 @@ def create_app(service=None, datasets=None):
         deform_prob: float = Field(default=0.5, ge=0.0, le=1.0)
         deform_max: float = Field(default=0.5, ge=0.0, le=0.9)
         seed: int = Field(default=0, ge=0)
-        shard_size: int = Field(default=256, ge=16, le=4096)
+        shard_size: int = Field(default=256, ge=4, le=4096)
         workers: int | None = Field(default=None, ge=1, le=256)
         convert: bool = True
         lean: bool = True
         tag: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$')
+        # field labels (docs/29–30); ignored for n0
+        threads: int | None = Field(default=None, ge=1, le=256)     # NGSolve threads per worker (None: plan)
+        label_order: int = Field(default=3, ge=2, le=5)
+        model_order: int = Field(default=2, ge=1, le=4)
+        min_fillet: float = Field(default=0.05, ge=0.0, le=0.3)
+        maxh_factor: float = Field(default=3.0, ge=1.0, le=10.0)
+        field_max_elements: int = Field(default=30000, ge=1000, le=500000)
+        adapt: bool = True
+        tol_f: float = Field(default=1e-6, ge=1e-9, le=1e-2)
+        tol_q: float = Field(default=1e-3, ge=1e-6, le=0.2)
+        model_max_elements: int = Field(default=10000, ge=100, le=500000)
+        max_ndof: int | None = Field(default=None, ge=10000, le=20_000_000)  # None: the machine's default
+        round_edges: bool = True
+        heal: bool = True
+        sample_timeout: int = Field(default=7200, ge=60, le=86400)
 
     def _jm():
         if jm is None:
@@ -493,13 +524,35 @@ def create_app(service=None, datasets=None):
                                      '(e.g. a Google Drive folder)')
         return jm
 
+    host = J.machine()
+
+    def _default_ndof():
+        """Largest standard label budget at which one field worker fits this machine's memory."""
+        fits = [n for n in (900_000, 600_000, 300_000, 150_000)
+                if not host['mem_gb'] or J.field_mem_gb(n) <= 0.85 * host['mem_gb']]
+        return fits[0] if fits else 60_000
+
     @app.get('/api/jobs/config')
     def jobs_config():
+        nd = _default_ndof()
         return {'enabled': jm is not None, 'gen_root': gen_root,
-                'cpu_count': os.cpu_count() or 1, 'max_total': max_gen,
+                'cpu_count': host['cpus'], 'mem_gb': host['mem_gb'], 'max_total': max_gen,
                 'families': {'train': [f for f in TRAIN_FAMILIES], 'ood': [f for f in OOD_FAMILIES]},
                 'blocks': {f: blocks.get(f) for f in TRAIN_FAMILIES + OOD_FAMILIES},
-                'tag_example': J.tag_of(0.10, 10)}
+                'tag_example': J.tag_of(0.10, 10),
+                'field': {'defaults': {k: v.default for k, v in GenReq.model_fields.items()
+                                       if k in FIELD_PARAMS} | {'max_ndof': nd},
+                          'plan': J.field_plan(host['cpus'], host['mem_gb'], nd),
+                          'core_s': J.FIELD_CORE_S, 'adapt_factor': J.FIELD_ADAPT_FACTOR,
+                          'no_cad': ['freeform']}}
+
+    @app.get('/api/jobs/plan')
+    def jobs_plan(max_ndof: int | None = None, threads: int | None = None, workers: int | None = None):
+        """Field labels: workers × threads and the memory they need on this machine (J.field_plan)."""
+        for name, v, lo in (('max_ndof', max_ndof, 10000), ('threads', threads, 1), ('workers', workers, 1)):
+            if v is not None and v < lo:
+                raise HTTPException(422, f"{name} ≥ {lo}")
+        return J.field_plan(host['cpus'], host['mem_gb'], max_ndof or _default_ndof(), threads, workers)
 
     @app.post('/api/jobs/generate')
     def jobs_generate(req: GenReq):
@@ -511,13 +564,26 @@ def create_app(service=None, datasets=None):
             raise HTTPException(422, f"unknown family / no id block: {bad}")
         if req.n_total > max_gen:
             raise HTTPException(422, f"n_total ≤ {max_gen} per family (RFCAV_GEN_MAX)")
-        tag = req.tag or J.tag_of(req.mesh_size, req.n_modes)
+        field = req.labels == 'field'
+        if field:
+            if 'freeform' in req.families:
+                raise HTTPException(422, 'freeform has no CAD solid: field labels need one (docs/29)')
+            if req.model_order >= req.label_order:
+                raise HTTPException(422, 'model_order must be below label_order (nested spaces)')
+            nd = req.max_ndof or _default_ndof()
+            plan = J.field_plan(host['cpus'], host['mem_gb'], nd, req.threads, req.workers)
+            tag = req.tag or J.field_tag_of(req.mesh_size, req.n_modes, req.label_order, req.model_order,
+                                            req.min_fillet, req.adapt, req.round_edges)
+        else:
+            tag = req.tag or J.tag_of(req.mesh_size, req.n_modes)
         out = []
         for f in req.families:
-            p = req.model_dump(exclude={'families', 'tag', 'workers'})
-            p.update(family=f, block=blocks[f], tag=tag,
-                     workers=req.workers or os.cpu_count() or 1,
+            p = req.model_dump(exclude={'families', 'tag', 'workers', 'threads', 'max_ndof'}
+                               | (set() if field else FIELD_PARAMS))
+            p.update(family=f, block=blocks[f], tag=tag, workers=req.workers or host['cpus'],
                      group='ood' if f in OOD_FAMILIES else 'train')
+            if field:
+                p.update(workers=plan['workers'], threads=plan['threads'], max_ndof=nd, convert=False)
             out.append(m.submit(p).public())
         return out
 
@@ -582,6 +648,10 @@ def create_app(service=None, datasets=None):
         if not ids:
             raise HTTPException(422, 'choose at least one dataset')
         ds = [_ds(i) for i in ids]
+        field = [d.name for d in ds if d.kind == 'field']
+        if field:
+            raise HTTPException(422, f"{field}: field-label datasets train the field3d model, which this page does "
+                                     "not run yet — use train.py --config configs/field_3d.yaml or the TRUBA page")
         if len(ds) == 1 and getattr(ds[0], 'path', None):
             return {'pkl': ds[0].path}, [ds[0].name]
         files, missing = set(), []

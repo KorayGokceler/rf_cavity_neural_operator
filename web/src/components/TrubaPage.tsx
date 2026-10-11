@@ -149,6 +149,8 @@ export default function TrubaPage({ lang }: Props) {
               <label>TAG<input type="text" placeholder={res?.tag ?? ''} value={f.tag} onChange={(e) => set('tag', e.target.value)} /></label>
             </div>
             {data && field && <label className="check"><input type="checkbox" checked={f.adapt} onChange={(e) => set('adapt', e.target.checked)} /><span>{t(lang, 'adaptOn')}</span></label>}
+            {data && field && <label className="check"><input type="checkbox" checked={f.round_edges} onChange={(e) => set('round_edges', e.target.checked)} /><span>{t(lang, 'roundEdges')}</span></label>}
+            {data && field && <label className="check"><input type="checkbox" checked={f.heal} onChange={(e) => set('heal', e.target.checked)} /><span>{t(lang, 'healOn')}</span></label>}
             {data && <>
               <div className="card-title">{t(lang, 'slurmCard')}</div>
               <div className="grid2">

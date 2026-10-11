@@ -109,8 +109,42 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 - **Dataset sayfası:** iş bitince otomatik yenilenir. Üretilenler `generated/<TAG>/…` adıyla görünür.
 - **Sınırlar:** aile başına ≤ `RFCAV_GEN_MAX` (20000) geometri. Üretim, `RFCAV_GEN_ROOT` verilmezse kapalıdır.
 
+**Alan etiketleri (Etiket türü = yüksek mertebe alan; docs/29–30):** TRUBA'daki `LABELS=field` ile aynı üretici
+ve aynı ayarlar:
+- uyarlamalı inceltme (aç / kapat), frekans ve Q0 / R/Q / tepe toleransı, etiket DOF bütçesi, model mesh
+  bütçesi;
+- etiket / model mertebesi, fillet tabanı, eleman bütçesi, maxh çarpanı, örnek zaman aşımı;
+- keskin iç kenarları yuvarlatma, OCC onarımı.
+
+`freeform` seçilemez (CAD katısı yok). Çıktı yalnız H5'tir (PKL dönüşümü yok, eğitim `field3d`). TAG,
+TRUBA'nınkiyle aynı kuralla kurulur: `F_p3p2_ms0.10_k10_mf0.05_v1`, tek çözümde `_1s`, yuvarlatmasız
+`_sharp` eki.
+
+**İşçi × thread planı** (`jobs.field_plan`): sunucu çekirdek sayısını (CPU affinity, cgroup kotası) ve
+belleği (`MemTotal`, cgroup sınırı) okur. Bir işçinin tepe belleği ≈ 1 GB + 12 GB · (DOF bütçesi / 900k).
+Belleğin %85'ine sığan sayıda 4 thread'li işçi açılır; artan çekirdekler işçilere ek thread olarak
+dağıtılır. Örnekler:
+
+| makine | DOF bütçesi | plan |
+|---|---|---|
+| 64 çekirdek, 251 GB | 900k | 16 işçi × 4 thread |
+| 64 çekirdek, 100 GB | 900k | 6 × 10 |
+| 2 çekirdek, 12.7 GB (ücretsiz Colab) | 600k (varsayılan) | 1 × 2 |
+
+Varsayılan DOF bütçesi, en az bir işçinin belleğe sığdığı en büyük standart değerdir (900k / 600k /
+300k / 150k). İşçi ve thread elle verilebilir; çekirdek ya da bellek aşılırsa sayfa uyarır.
+
+**Dataset sayfası, alan datasetleri** (tür `field`): tabloda model ve etiket mesh'i (tet), model DOF,
+uyarlamalı seviye sayısı, durma nedeni (yakınsadı / bütçe / en çok seviye), tahmini δf/f, yuvarlatılan
+ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde çalışma alanına getirir:
+- **Alanlar:** p2 etiket alanları gösterim için Whitney N0'a izdüşürülür (projeksiyon tabanlı
+  interpolasyon). N0 Rayleigh oranı, 11–13k tetlik mesh'lerde etiket frekansının %1.3 içinde.
+- **Değerler:** Q0, R/Q ve tepe değerleri saklanan p3 etiketleridir (`qoi_source: p3_labels`). Eksende
+  alanı olmayan modlarda gerilime bağlı büyüklükler "—" olarak gösterilir.
+
 **Uç noktalar:**
-- `GET /api/jobs/config`
+- `GET /api/jobs/config` (makine: `cpu_count`, `mem_gb`; alan varsayılanları ve planı)
+- `GET /api/jobs/plan?max_ndof&threads&workers`
 - `POST /api/jobs/generate`
 - `GET /api/jobs`, `GET /api/jobs/{id}`
 - `POST /api/jobs/{id}/cancel`
@@ -157,7 +191,8 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
   - İşlem: veri + eğitim, yalnız veri, yalnız eğitim, durum, kurulum.
   - Etiket türü: yüksek mertebe alan (field3d) ya da N0.
   - Aileler: eğitim ve OOD grupları.
-  - Veri ayarları: geometri sayısı, mesh boyu, mod, p3/p2, fillet tabanı, thread, eleman bütçesi.
+  - Veri ayarları: geometri sayısı, mesh boyu, mod, p3/p2, fillet tabanı, thread, eleman bütçesi;
+    uyarlamalı inceltme, toleranslar, model mesh ve DOF bütçesi, kenar yuvarlatma, OCC onarımı (docs/30).
   - SLURM: kuyruk, çekirdek, süre, hesap.
   - Eğitim: EXP, model boyu, epoch, batch, öğrenme hızı, GPU, önbellek, ek `train.py` ayarları.
   - Depo: adres, dal, klasör.
@@ -241,6 +276,8 @@ docker compose up --build                                                 # http
 Colab notları:
 - Sekme açık kalmalı. Boşta kalan oturumu Colab kapatır; kapanırsa hücreyi yeniden çalıştırıp aynı işi başlat (bitmiş parçalar atlanır, yarım parça baştan üretilir).
 - Üretim süresi çekirdek sayısıyla ölçeklenir: arayüzdeki tahmin, sunucunun gördüğü çekirdek sayısını kullanır.
+- Alan etiketlerinde işçi × thread, VM'nin çekirdeğinden ve belleğinden otomatik planlanır (§3c). Örnek:
+  64 çekirdek ve ≥ 250 GB RAM'de 16 × 4. Bellek azsa daha az işçi, işçi başına daha çok thread.
 - Eğitim için GPU çalışma zamanı seçin. Üretim CPU'da, eğitim GPU'da aynı anda çalışabilir.
 
 ## 5. Güvenlik notları (dışarıya açık)

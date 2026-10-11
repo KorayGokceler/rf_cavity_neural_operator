@@ -39,13 +39,25 @@ export interface FeatureView {
   range: [number, number]; signed: boolean; neutral: boolean; legend: string;
 }
 export interface JobsConfig {
-  enabled: boolean; gen_root: string | null; cpu_count: number; max_total: number;
+  enabled: boolean; gen_root: string | null; cpu_count: number; mem_gb: number; max_total: number;
   families: { train: string[]; ood: string[] }; blocks: Record<string, number | null>; tag_example: string;
+  field: { defaults: FieldGenParams; plan: FieldPlan; core_s: number; adapt_factor: number; no_cad: string[] };
 }
-export interface GenParams {
-  families: string[]; n_total: number; mesh_size: number; n_modes: number; sampling: 'sobol' | 'random';
-  deform_prob: number; deform_max: number; seed: number; shard_size: number; workers: number | null;
-  convert: boolean; lean: boolean; tag: string | null;
+// field labels (docs/29–30): the generator's --labels field options
+export interface FieldGenParams {
+  threads: number | null; label_order: number; model_order: number; min_fillet: number; maxh_factor: number;
+  field_max_elements: number; adapt: boolean; tol_f: number; tol_q: number; model_max_elements: number;
+  max_ndof: number | null; round_edges: boolean; heal: boolean; sample_timeout: number;
+}
+export interface GenParams extends FieldGenParams {
+  families: string[]; labels: 'n0' | 'field'; n_total: number; mesh_size: number; n_modes: number;
+  sampling: 'sobol' | 'random'; deform_prob: number; deform_max: number; seed: number; shard_size: number;
+  workers: number | null; convert: boolean; lean: boolean; tag: string | null;
+}
+// workers × NGSolve threads for field labels on the server's machine (src/service/jobs.field_plan)
+export interface FieldPlan {
+  workers: number; threads: number; mem_per_worker_gb: number; mem_total_gb: number; cpus: number; mem_gb: number;
+  warnings: ('oversubscribed' | 'memory')[];
 }
 export interface Job {
   id: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -59,7 +71,8 @@ export interface TrubaForm {
   action: 'all' | 'dataset' | 'train' | 'status' | 'setup'; labels: 'field' | 'n0'; families: string[];
   n_per_family: number | ''; mesh_size: number; n_modes: number; label_order: number; model_order: number;
   min_fillet: number | ''; threads: number; max_elements: number; maxh_factor: number; adapt: boolean;
-  tol_f: number; tol_q: number; model_max_elements: number; max_ndof: number; deform_prob: number;
+  tol_f: number; tol_q: number; model_max_elements: number; max_ndof: number; round_edges: boolean; heal: boolean;
+  deform_prob: number;
   deform_max: number; sampling: 'sobol' | 'random'; seed: number; tag: string; partition: string; cpus: number;
   time: string; account: string; max_parallel: number; test: boolean; gpu_partition: string; gpus: number;
   gpu_cpus: number; gpu_time: string; exp: string; model: string; epochs: number; batch: number | '';
@@ -96,10 +109,17 @@ export interface RunDetail extends RunSummary {
   params: (Omit<TrainParams, 'name' | 'datasets'> & { sources: string[] }) | null;
   stage: string | null; log: string[]; data_cached: boolean | null;
 }
-export interface DatasetRef { id: string; name: string; kind: 'h5' | 'pkl' }
+export interface DatasetRef { id: string; name: string; kind: 'h5' | 'pkl' | 'field' }
+// field-label datasets: label quality per geometry (src/service/datasets.FieldH5Dataset)
+export interface FieldRowInfo {
+  n_tets_label: number | null; n_dof_label: number | null; n_tets_start: number | null;
+  adapt_iters: number | null; adapt_stop: 'converged' | 'budget' | 'max_iter' | null;
+  est_rel_f: number | null; est_rel_wall: number | null; adapt_df: number | null; adapt_dq: number | null;
+  rounded_edges: number | null; sharp_edges: number; proj_err_max: number | null; t_labels_s: number | null;
+}
 export interface DatasetRow {
   id: number; family: string; n_nodes: number; n_edges: number; n_tets: number; betti1: number;
-  deformed: boolean | null; f_GHz: number[];
+  deformed: boolean | null; f_GHz: number[]; field?: FieldRowInfo;
 }
 export interface DatasetStats {
   total: number; n_modes: number;
@@ -193,6 +213,11 @@ export const api = {
              segments: j.segments.map((s: any) => ({ role: s.role, points: f32(s.points_b64) })) };
   },
   jobsConfig: () => call<JobsConfig>('/api/jobs/config'),
+  jobsPlan: (p: { max_ndof?: number | null; threads?: number | null; workers?: number | null }) => {
+    const q = new URLSearchParams();
+    Object.entries(p).forEach(([k, v]) => v !== undefined && v !== null && q.set(k, String(v)));
+    return call<FieldPlan>(`/api/jobs/plan?${q}`);
+  },
   generate: (p: GenParams) => call<Job[]>('/api/jobs/generate', json(p)),
   jobs: () => call<Job[]>('/api/jobs'),
   cancelJob: (id: string) => call<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),

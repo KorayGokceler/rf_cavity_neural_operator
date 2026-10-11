@@ -2,7 +2,11 @@
 the TRUBA layout (cluster/truba) so the results mix with cluster datasets:
 
     <gen_root>/<TAG>/h5/<family>/<family>_s00000.h5 …   (shards of `shard_size` geometries)
-    <gen_root>/<TAG>/pkl/<family>.pkl                    (converted, lean by default)
+    <gen_root>/<TAG>/pkl/<family>.pkl                    (converted, lean by default; N0 labels only)
+
+Two label kinds, as on TRUBA: 'n0' (Whitney N0 on the gmsh mesh, one process per core) and 'field'
+(adaptive NGSolve HCurl p3 labels on a curved mesh, docs/29–30: H5 only, `threads` NGSolve threads per
+worker; field_plan sizes workers × threads from the machine's cores and memory).
 
 Geometry ids = block · 2^19 + i with the family's fixed block from cluster/truba/families.tsv, so the
 same (family, i) is the same geometry everywhere. Shards are written to a local scratch directory
@@ -41,6 +45,99 @@ def family_blocks(tsv=None):
 def tag_of(mesh_size, n_modes):
     """Dataset tag of the TRUBA layout (cluster/truba/config.sh): E_ms<mesh>_k<modes>_v1."""
     return f"E_ms{mesh_size:g}_k{int(n_modes)}_v1"
+
+
+def field_tag_of(mesh_size, n_modes, label_order=3, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
+    """Field-label tag of cluster/truba/config.sh: F_p<label>p<model>_ms<mesh>_k<modes>_mf<fillet>_v1, + _1s for
+    one-solve labels and _sharp for unrounded geometries (neither may mix with the defaults under one tag)."""
+    tag = (f"F_p{int(label_order)}p{int(model_order)}_ms{mesh_size:g}_k{int(n_modes)}_mf{min_fillet:g}_v1"
+           + ("" if adapt else "_1s") + ("" if round_edges else "_sharp"))
+    return tag.replace("_ms0.1_", "_ms0.10_")            # as config.sh's literal MESH_SIZE=0.10
+
+
+# field labels: peak memory of one worker ≈ FIELD_MEM_BASE_GB + FIELD_MEM_GB_PER_NDOF · max_ndof (p3 labels,
+# 10 modes; ~12 GB at the 900k budget, docs/30 §6), and ~560 core-seconds per geometry for one solve at
+# ~18k tets (docs/29 §4), ×3 with adaptive refinement
+FIELD_MEM_BASE_GB, FIELD_MEM_GB_PER_NDOF = 1.0, 12.0 / 900_000
+FIELD_CORE_S, FIELD_ADAPT_FACTOR = 560.0, 3.0
+FIELD_THREADS = 4                    # default NGSolve threads per worker (more when memory limits the workers)
+
+
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def machine():
+    """{'cpus', 'mem_gb'} usable by this process: CPU affinity and cgroup CPU quota; MemTotal and the
+    cgroup memory limit (containers / Colab VMs report the host otherwise)."""
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    q = _read('/sys/fs/cgroup/cpu.max').split()                       # cgroup v2: "<quota> <period>" | "max …"
+    if len(q) == 2 and q[0] != 'max':
+        cpus = min(cpus, max(1, int(int(q[0]) / int(q[1]))))
+    mem = 0.0
+    for line in _read('/proc/meminfo').splitlines():
+        if line.startswith('MemTotal:'):
+            mem = int(line.split()[1]) / 2 ** 20
+    for lim in (_read('/sys/fs/cgroup/memory.max'), _read('/sys/fs/cgroup/memory/memory.limit_in_bytes')):
+        if lim.isdigit() and int(lim) < 2 ** 60:
+            mem = min(mem, int(lim) / 2 ** 30) if mem else int(lim) / 2 ** 30
+    return {'cpus': int(cpus), 'mem_gb': round(mem, 1)}
+
+
+def field_mem_gb(max_ndof):
+    """Peak memory [GB] of one field-label worker at the label DOF budget."""
+    return FIELD_MEM_BASE_GB + FIELD_MEM_GB_PER_NDOF * float(max_ndof)
+
+
+def field_plan(cpus, mem_gb, max_ndof, threads=None, workers=None, mem_frac=0.85):
+    """Workers × NGSolve threads for field labels on a machine with `cpus` cores and `mem_gb` memory.
+    Auto (None): as many workers of FIELD_THREADS threads as the memory holds (mem_frac of it; at least
+    one), then the spare cores go to the workers as extra threads.  Returns the plan + warnings."""
+    per = field_mem_gb(max_ndof)
+    cap = max(1, int(mem_frac * mem_gb / per)) if mem_gb > 0 else cpus
+    if workers is None:
+        t = int(threads or FIELD_THREADS)
+        workers = max(1, min(cpus // max(1, t), cap))
+    if threads is None:
+        threads = max(1, cpus // int(workers))
+    workers, threads = int(workers), int(threads)
+    warn = []
+    if workers * threads > cpus:
+        warn.append('oversubscribed')                     # more threads than cores: slower, not wrong
+    if mem_gb > 0 and workers * per > mem_frac * mem_gb:
+        warn.append('memory')                             # the workers may run out of memory
+    return {'workers': workers, 'threads': threads, 'mem_per_worker_gb': round(per, 1),
+            'mem_total_gb': round(workers * per, 1), 'cpus': int(cpus), 'mem_gb': mem_gb, 'warnings': warn}
+
+
+def generator_args(p):
+    """dataset_generator_3d.py options of one job (params p, without the shard's ids / file)."""
+    a = ['--families', p['family'], '--seed', str(p['seed']), '--n_eigen_modes', str(p['n_modes']),
+         '--mesh_size', str(p['mesh_size']), '--sampling', p['sampling'],
+         '--deform_prob', str(p['deform_prob']), '--deform_max', str(p['deform_max']),
+         '--n_workers', str(p['workers'])]
+    if p.get('labels', 'n0') != 'field':
+        return a + ['--sample_timeout', '900']
+    a += ['--labels', 'field', '--sample_timeout', str(int(p.get('sample_timeout') or 3600)),
+          '--threads', str(p['threads']), '--label_order', str(p['label_order']),
+          '--model_order', str(p['model_order']), '--min_fillet', str(p['min_fillet']),
+          '--maxh_factor', str(p['maxh_factor']), '--field_max_elements', str(p['field_max_elements']),
+          '--max_ndof', str(p['max_ndof']), '--tol_f', str(p['tol_f']), '--tol_q', str(p['tol_q']),
+          '--model_max_elements', str(p['model_max_elements'])]
+    if not p.get('adapt', True):
+        a.append('--no_adapt')
+    if not p.get('round_edges', True):
+        a.append('--no_round_edges')
+    if not p.get('heal', True):
+        a.append('--no_heal')
+    return a
 
 
 def run_logged(job, cmd, on_line=None, threads=1, env=None):
@@ -188,12 +285,8 @@ class JobManager:
 
                 ok0, f0 = job.ok, job.failed
                 job.ok_shard = job.failed_shard = 0
-                self._exec(job, [self.python, 'src/data_gen/dataset_generator_3d.py', '--families', p['family'],
+                self._exec(job, [self.python, 'src/data_gen/dataset_generator_3d.py', *generator_args(p),
                                  '--n_total', str(count), '--start_id', str(start),
-                                 '--seed', str(p['seed']), '--n_eigen_modes', str(p['n_modes']),
-                                 '--mesh_size', str(p['mesh_size']), '--sampling', p['sampling'],
-                                 '--deform_prob', str(p['deform_prob']), '--deform_max', str(p['deform_max']),
-                                 '--n_workers', str(p['workers']), '--sample_timeout', '900',
                                  '--h5_filename', local, '--resume'], prog)
                 job.ok, job.failed = ok0 + job.ok_shard, f0 + job.failed_shard
                 job.done = base_done + count
@@ -201,7 +294,7 @@ class JobManager:
                 shutil.move(local, dest + '.part')
                 os.replace(dest + '.part', dest)
                 job.outputs.append(dest)
-            if p.get('convert', True):
+            if p.get('convert', True) and p.get('labels', 'n0') != 'field':   # field: H5 only (docs/29)
                 job.stage = 'converting to PKL'
                 shards = sorted(f for f in os.listdir(h5_dir) if f.endswith('.h5'))
                 local_pkl = os.path.join(tmp, os.path.basename(pkl))

@@ -2,7 +2,7 @@
 // a sortable, filterable geometry table; "open" sends a geometry (with its FE modes) to the workspace.
 import { useEffect, useMemo, useState } from 'react';
 import { api, type DatasetRef, type DatasetRow, type DatasetStats } from '../api';
-import { t, type Lang } from '../i18n';
+import { t, type Key, type Lang } from '../i18n';
 import { int } from '../format';
 import { BarList, Histogram } from './Charts';
 
@@ -37,6 +37,8 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
   const f0 = useMemo(() => !stats ? [] : family ? stats.families[family]?.f0 ?? [] : Object.values(stats.families).flatMap((v) => v.f0), [stats, family]);
   const ne = useMemo(() => !stats ? [] : family ? stats.families[family]?.n_edges ?? [] : Object.values(stats.families).flatMap((v) => v.n_edges), [stats, family]);
   const nModes = Math.min(stats?.n_modes ?? 0, 6);
+  const field = list?.find((d) => d.id === did)?.kind === 'field';   // adaptive field labels (docs/30)
+  const sci = (v: number | null | undefined) => (v === null || v === undefined ? '—' : v.toExponential(1));
 
   const th = (k: SortKey, label: string, num = false) => (
     <th className={num ? 'num' : ''} aria-sort={sort === k ? (desc ? 'descending' : 'ascending') : 'none'}>
@@ -71,14 +73,23 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
         <BarList data={fams} title={t(lang, 'perFamily')} picked={family}
                  onPick={(l) => { setFamily(family === l ? '' : l); setOffset(0); }} />
         <Histogram values={f0} title={t(lang, 'f0Hist')} unit="GHz" />
-        <Histogram values={ne} title={t(lang, 'edgesHist')} unit="" />
+        <Histogram values={ne} title={t(lang, field ? 'dofHist' : 'edgesHist')} unit="" />
       </div>
 
       <div className="card">
         <table className="modes data">
           <thead>
             <tr>
-              {th('id', 'id')}{th('family', t(lang, 'family'))}{th('n_nodes', t(lang, 'nodes'), true)}{th('n_edges', 'N0', true)}
+              {th('id', 'id')}{th('family', t(lang, 'family'))}
+              {field ? <>
+                <th className="num" title={t(lang, 'modelMeshTip')}>{t(lang, 'tetsModel')}</th>
+                <th className="num" title={t(lang, 'labelMeshTip')}>{t(lang, 'tetsLabel')}</th>
+                {th('n_edges', 'DOF p2', true)}
+                <th className="num" title={t(lang, 'adaptItersTip')}>{t(lang, 'adaptIters')}</th>
+                <th>{t(lang, 'adaptStop')}</th>
+                <th className="num" title={t(lang, 'estErrTip')}>{t(lang, 'estErr')}</th>
+                <th className="num" title={t(lang, 'edgesTip')}>{t(lang, 'edgesRS')}</th>
+              </> : <>{th('n_nodes', t(lang, 'nodes'), true)}{th('n_edges', 'N0', true)}</>}
               {th('betti1', 'b1', true)}{th('f0', 'f₀ [GHz]', true)}
               {Array.from({ length: Math.max(0, nModes - 1) }, (_, i) => <th key={i} className="num">f{i + 1}</th>)}
               <th />
@@ -89,8 +100,18 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
               <tr key={r.id} onDoubleClick={() => onOpen(did, r.id)}>
                 <td className="num">{r.id}</td>
                 <td>{r.family}{r.deformed ? <span className="tag" title={t(lang, 'deformed')}>~</span> : null}</td>
-                <td className="num">{int(r.n_nodes)}</td>
-                <td className="num">{int(r.n_edges)}</td>
+                {field && r.field ? <>
+                  <td className="num">{int(r.n_tets)}</td>
+                  <td className="num">{r.field.n_tets_label === null ? '—' : int(r.field.n_tets_label)}</td>
+                  <td className="num">{int(r.n_edges)}</td>
+                  <td className="num">{r.field.adapt_iters ?? '—'}</td>
+                  <td><span className={`status ${r.field.adapt_stop === 'converged' ? 'good' : r.field.adapt_stop ? 'warning' : 'muted'}`}>{r.field.adapt_stop ? t(lang, `stop_${r.field.adapt_stop}` as Key) : t(lang, 'oneSolve')}</span></td>
+                  <td className="num">{sci(r.field.est_rel_f)}</td>
+                  <td className="num">{r.field.rounded_edges ?? 0} / {r.field.sharp_edges ? <strong title={t(lang, 'sharpTip')}>{r.field.sharp_edges}</strong> : 0}</td>
+                </> : <>
+                  <td className="num">{int(r.n_nodes)}</td>
+                  <td className="num">{int(r.n_edges)}</td>
+                </>}
                 <td className="num">{r.betti1}</td>
                 {Array.from({ length: Math.max(nModes, 1) }, (_, i) =>
                   <td key={i} className="num">{r.f_GHz[i] !== undefined ? r.f_GHz[i].toFixed(4) : '—'}</td>)}

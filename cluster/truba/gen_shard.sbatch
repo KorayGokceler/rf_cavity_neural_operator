@@ -30,6 +30,8 @@ if [ "$LABELS" = field ]; then          # docs/29: NGSolve threads per sample, C
         --field_max_elements "$FIELD_MAX_ELEMENTS" --maxh_factor "$MAXH_FACTOR"
         --tol_f "$TOL_F" --tol_q "$TOL_Q" --model_max_elements "$MODEL_MAX_ELEMENTS" --max_ndof "$MAX_NDOF")
   [ "$ADAPT" = 1 ] || LAB+=(--no_adapt)
+  [ "$ROUND_EDGES" = 1 ] || LAB+=(--no_round_edges)
+  [ "$HEAL" = 1 ] || LAB+=(--no_heal)
 fi
 [ -n "$MIN_FILLET" ] && LAB+=(--min_fillet "$MIN_FILLET")
 

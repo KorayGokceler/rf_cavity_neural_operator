@@ -100,3 +100,24 @@ def test_reentrant_edges_are_found_and_rounded():
         gmsh.model.remove()
         if own:
             gmsh.finalize()
+
+
+def test_single_level_gives_the_numbering_of_a_reload():
+    """After a bisection (the curved-mesh repair) NGSolve keeps the hierarchy, whose topology still numbers
+    the parents' edges and faces: HCurl would have DOFs a reload of the same mesh does not.  single_level
+    rebuilds it so that the stored fields match the mesh FieldDataset / the UI rebuild."""
+    from netgen.occ import Axes, Cylinder, Z
+    from ngsolve import VOL, ElementId, HCurl
+    from src.data_gen import highorder as ho
+    cyl = Cylinder(Axes((0, 0, -L / 2), Z), r=R, h=L)
+    cyl.faces.name = "wall"
+    m = _pillbox(0.02)
+    for e in range(m.ne):
+        m.SetRefinementFlag(ElementId(VOL, e), e % 7 == 0)
+    m.Refine()
+    m.Curve(3)
+    assert m.levels == 2
+    s = ho.single_level(m, cyl, 3)
+    assert s.levels == 1 and s.ne == m.ne and s.nv == m.nv
+    assert HCurl(s, order=2).ndof < HCurl(m, order=2).ndof          # the parents' unused DOFs are gone
+    assert ho.single_level(s, cyl, 3) is s

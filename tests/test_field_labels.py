@@ -1,5 +1,6 @@
 """Field labels (docs/29): generator --labels field → H5 → FieldDataset → field3d model, and the
 TRUBA one-line orchestrator (run.sh --dry-run)."""
+import json
 import os
 import subprocess
 
@@ -29,6 +30,7 @@ def field_h5(tmp_path_factory):
     gen._init_worker(gen.ARGS)
     try:
         with h5py.File(path, "w") as f:
+            f.attrs["metadata"] = json.dumps(gen.file_metadata(gen.ARGS), default=str)
             for s_id in range(4):                         # even: box, odd: pillbox
                 res = gen.generate_sample_data(s_id)
                 assert res is not None and res["labels"] == "field"
@@ -91,6 +93,47 @@ def test_field_dataset_rebuilds_the_labelled_mesh(field_h5, tmp_path):
     i = ds_bad.active_geoms.index(1)
     with pytest.raises(ValueError, match="do not match the rebuilt operators"):
         ds_bad[i]
+
+
+def test_field_datasets_in_the_ui_browser(field_h5):
+    """The web UI lists field-label H5 as kind 'field' with the label quality, and opens a geometry on its
+    model mesh: label fields on Whitney N0 for display (unit energy, frequencies from their own Rayleigh
+    quotient), the stored p3 figures of merit."""
+    from src.data.dataset_3d import rebuild_operators, to_csr
+    from src.service.datasets import FieldH5Dataset, discover
+    ds = discover(str(field_h5))
+    d = next(iter(ds.values()))
+    assert isinstance(d, FieldH5Dataset) and d.kind == "field"
+    rows = d.rows()
+    assert len(rows) == 4 and {r["family"] for r in rows} == {"calib_box", "calib_pillbox"}
+    r1 = next(r for r in rows if r["id"] == 1)
+    assert r1["n_edges"] > 0 and r1["n_tets"] > 0 and r1["n_nodes"] > 0
+    assert r1["field"]["adapt_stop"] in ("converged", "budget", "max_iter") and r1["field"]["adapt_iters"] >= 1
+    rec = d.open(1)                                                   # calibration pillbox
+    g, U = rec["geom"], rec["U"]
+    ne = len(g["edges"])
+    assert U.shape == (ne, K) and np.isfinite(U).all()
+    ops = rebuild_operators(g["X"], g["tets"])
+    Kn, Mn = to_csr(ops["K"], (ne, ne)), to_csr(ops["M"], (ne, ne))
+    lam = np.einsum("ik,ik->k", U, Kn @ U) / np.einsum("ik,ik->k", U, Mn @ U)
+    f_n0 = np.sqrt(lam) * 299792458.0 / (2 * np.pi * g["scale"]) / 1e9
+    # the N0 interpolant is the same mode (a sign / edge-order error would put it far off; the coarse
+    # 57-tet model mesh of the fixture costs N0 up to ~15 %)
+    assert abs(f_n0[0] / rec["f_GHz"][0] - 1) < 0.02 and np.all(np.abs(f_n0 / rec["f_GHz"] - 1) < 0.25)
+    assert rec["qoi_labels"][0]["Q0"] > 1e3                           # stored p3 label of the copper TM010
+    # the API shows the stored p3 figures of merit (not those of the N0 display fields)
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from src.service import api as A
+    from src.service.model import ModelService
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={"f": d}))
+    did = c.get("/api/datasets").json()[0]
+    assert did["kind"] == "field"
+    items = c.get(f"/api/datasets/{did['id']}/items").json()["items"]
+    assert items[0]["field"]["n_tets_label"] >= items[0]["n_tets"] > 0
+    out = c.post(f"/api/datasets/{did['id']}/items/1/open").json()
+    assert out["truth"]["qoi_source"] == "p3_labels"
+    assert out["truth"]["modes"][0]["Q0"] == pytest.approx(rec["qoi_labels"][0]["Q0"])
 
 
 def test_truba_one_line_run_dry_run(tmp_path):

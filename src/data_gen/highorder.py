@@ -20,6 +20,8 @@ Recipe (docs/18 E7, measured on the pillbox: p = 3, curve 3, 3.4k DOF → TM010 
 
 Wall quantities are evaluated on the boundary elements from the adjacent volume element.
 """
+import os
+import tempfile
 import time
 
 import numpy as np
@@ -134,9 +136,7 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
         for e in range(mesh.ne):
             mesh.SetRefinementFlag(ElementId(VOL, e), bool(bad[e]))
         mesh.Refine()
-        mesh.Curve(int(curve))
-        if deform is not None:
-            set_deformation(mesh, *deform, order=int(curve))
+        mesh = single_level(mesh, shape, curve, deform)
         r = element_jacobian_ratio(mesh)
     q = float(r.min())
     if q <= min_jacobian_ratio:
@@ -169,6 +169,21 @@ def load_curved_mesh(vol_path, brep_path, curve, deform=None):
     if deform is not None:
         set_deformation(mesh, *deform, order=int(curve))
     return mesh
+
+
+def single_level(mesh, shape, curve, deform=None):
+    """The (refined) mesh rebuilt from scratch: after mesh.Refine() NGSolve keeps the refinement hierarchy,
+    whose topology still numbers the bisected parents' edges and faces (unused DOFs of HCurl), so the
+    spaces and DOF numbering differ from those of the same mesh saved and loaded again
+    (load_curved_mesh) — the stored fields would not match the rebuilt mesh.  A .vol round trip gives the
+    numbering every later load reproduces; the mesh is re-curved (and deformed) on `shape`."""
+    if mesh.levels <= 1:
+        return mesh
+    with tempfile.TemporaryDirectory() as tmp:
+        vol, brep = os.path.join(tmp, "m.vol"), os.path.join(tmp, "s.brep")
+        mesh.ngmesh.Save(vol)
+        shape.WriteBrep(brep)
+        return load_curved_mesh(vol, brep, curve, deform)
 
 
 def element_jacobian_ratio(mesh, order=6):

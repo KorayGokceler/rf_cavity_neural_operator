@@ -195,6 +195,67 @@ def test_generation_job_writes_family_dataset(tmp_path, monkeypatch):
     assert c.post("/api/jobs/generate", json=dict(body, n_total=10 ** 9)).status_code == 422
 
 
+def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
+    """Field labels from the UI: the server plans workers × threads from its cores and memory, writes the
+    TRUBA tag, passes every adaptive setting to the generator, and keeps them H5 only (no PKL)."""
+    from src.service import jobs as J
+    from src.service import truba as TR
+    seen = []
+    monkeypatch.setattr(J.JobManager, "_run", lambda self, job: seen.append(dict(job.params)))
+    monkeypatch.setattr(J, "machine", lambda: {"cpus": 64, "mem_gb": 251.0})
+    monkeypatch.setenv("RFCAV_GEN_ROOT", str(tmp_path / "drive"))
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    cfg = c.get("/api/jobs/config").json()
+    assert cfg["cpu_count"] == 64 and cfg["mem_gb"] == 251.0
+    fd = cfg["field"]["defaults"]
+    assert fd["max_ndof"] == 900_000 and fd["adapt"] and fd["round_edges"] and fd["tol_f"] == 1e-6
+    assert cfg["field"]["plan"]["workers"] * cfg["field"]["plan"]["threads"] <= 64
+    plan = c.get("/api/jobs/plan", params={"max_ndof": 900_000}).json()
+    assert plan == J.field_plan(64, 251.0, 900_000) and plan["workers"] == 16 and plan["threads"] == 4
+    assert c.get("/api/jobs/plan", params={"threads": 8}).json()["workers"] == 8
+    assert "memory" in c.get("/api/jobs/plan", params={"workers": 40}).json()["warnings"]
+
+    body = {"families": ["elliptical", "spoke"], "labels": "field", "n_total": 4, "shard_size": 8,
+            "tol_q": 2e-3, "model_max_elements": 8000, "round_edges": False}
+    jobs = c.post("/api/jobs/generate", json=body).json()
+    assert [j["params"]["family"] for j in jobs] == ["elliptical", "spoke"]
+    for _ in range(100):
+        if len(seen) == 2:
+            break
+        import time
+        time.sleep(0.05)
+    p = seen[0]
+    assert p["labels"] == "field" and p["convert"] is False and (p["workers"], p["threads"]) == (16, 4)
+    assert p["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v1_sharp"
+    tr = TR.build_command(dict(TR.defaults(ROOT)["form"], action="dataset", round_edges=False, tag=""))
+    assert tr["tag"] == p["tag"]                                       # same tag as the TRUBA run
+    a = J.generator_args(p)
+    for flag, val in (("--labels", "field"), ("--threads", "4"), ("--n_workers", "16"), ("--tol_q", "0.002"),
+                      ("--model_max_elements", "8000"), ("--max_ndof", "900000"), ("--sample_timeout", "7200")):
+        assert a[a.index(flag) + 1] == val, flag
+    assert "--no_round_edges" in a and "--no_adapt" not in a and "--no_heal" not in a
+    assert "--labels" not in J.generator_args(dict(p, labels="n0"))
+    # rejected: a family without a CAD solid, nested orders
+    assert c.post("/api/jobs/generate", json=dict(body, families=["freeform"])).status_code == 422
+    assert c.post("/api/jobs/generate", json=dict(body, model_order=3)).status_code == 422
+    # small machine: the label budget follows the memory, one worker
+    monkeypatch.setattr(J, "machine", lambda: {"cpus": 2, "mem_gb": 12.7})
+    c2 = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    cfg2 = c2.get("/api/jobs/config").json()
+    assert cfg2["field"]["defaults"]["max_ndof"] == 600_000 and cfg2["field"]["plan"]["workers"] == 1
+
+
+def test_machine_and_field_plan():
+    from src.service import jobs as J
+    m = J.machine()
+    assert m["cpus"] >= 1 and m["mem_gb"] > 0
+    p = J.field_plan(64, 100.0, 900_000)                # memory-bound: fewer workers, more threads each
+    assert (p["workers"], p["threads"]) == (6, 10) and not p["warnings"]
+    assert J.field_plan(64, 0, 300_000)["workers"] == 16  # unknown memory: cores only
+    assert "oversubscribed" in J.field_plan(8, 64.0, 300_000, threads=4, workers=4)["warnings"]
+    assert J.field_tag_of(0.12, 6, adapt=False) == "F_p3p2_ms0.12_k6_mf0.05_v1_1s"
+
+
 def test_generation_disabled_without_root(monkeypatch):
     monkeypatch.delenv("RFCAV_GEN_ROOT", raising=False)
     c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
