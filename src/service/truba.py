@@ -37,6 +37,7 @@ DATASET_KEYS = ("LABELS", "PARTITION", "CPUS", "TIME", "ACCOUNT", "MAX_PARALLEL"
                 "SAMPLING", "DEFORM_PROB", "DEFORM_MAX", "SEED", "TAG", "TEST")
 FIELD_KEYS = ("LABEL_ORDER", "MODEL_ORDER", "MIN_FILLET", "THREADS", "FIELD_MAX_ELEMENTS", "MAXH_FACTOR", "ADAPT",
               "TOL_F", "TOL_Q", "MODEL_MAX_ELEMENTS", "MAX_NDOF", "ROUND_EDGES", "HEAL")
+FIELD_TAG_KEYS = ("LABEL_ORDER", "MODEL_ORDER", "MIN_FILLET", "ADAPT", "ROUND_EDGES")   # config.sh derives TAG from these
 TRAIN_KEYS = ("GPU_PARTITION", "GPUS", "GPU_CPUS", "GPU_TIME", "EXP", "MODEL", "EPOCHS", "BATCH", "LR",
               "NUM_WORKERS", "CACHE_DIR", "TRAIN_EXTRA", "TRAIN_FAMILIES")
 
@@ -198,11 +199,10 @@ def build_command(req):
         _, tsel = _families(tf, labels)
         v["TRAIN_FAMILIES"] = " ".join(tsel)
 
-    keys = {"setup": (), "status": ("LABELS", "MESH_SIZE", "N_STORE", "TAG", "TEST")
-            + (FIELD_KEYS[:3] if labels == "field" else ()),
+    where = ("LABELS", "MESH_SIZE", "N_STORE", "TAG", "TEST") + (FIELD_TAG_KEYS if labels == "field" else ())
+    keys = {"setup": (), "status": where,
             "dataset": DATASET_KEYS + (FIELD_KEYS if labels == "field" else ()),
-            "train": ("LABELS", "MESH_SIZE", "N_STORE", "TAG", "TEST") + (FIELD_KEYS[:3] if labels == "field" else ())
-            + TRAIN_KEYS,
+            "train": where + TRAIN_KEYS,
             "all": DATASET_KEYS + (FIELD_KEYS if labels == "field" else ()) + TRAIN_KEYS}[action]
     args = []
     if action in ("dataset", "train", "all") and group != "train":

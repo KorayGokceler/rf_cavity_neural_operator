@@ -64,6 +64,9 @@ def test_adaptive_label_settings_and_shard_time_note():
     for a in ("ADAPT=0", "ROUND_EDGES=0", "HEAL=0"):
         assert a in r["run_args"], a
     assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v1_1s_sharp"      # never mixes with the default labels
+    for action in ("status", "train"):                                 # they must find the same TAG
+        a = TR.build_command(dict(FORM, action=action, adapt=False, round_edges=False))["run_args"]
+        assert "ADAPT=0" in a and "ROUND_EDGES=0" in a, action
 
 
 @pytest.mark.parametrize("bad", [
