@@ -1,35 +1,52 @@
-// vtk.js view: cavity surface (ghost / coloured / hidden) + a coloured cut plane.
-// The caller passes per-point scalars (field at a phase, or a model input feature) and the range.
+// vtk.js view: cavity surface (ghost / coloured / hidden), a coloured cut plane or the field magnitude in the
+// whole volume (volume rendering), and optional arrows for the field direction.
+// The caller passes per-point scalars (|E| / |H| at a phase, or a model input feature) and the range.
 import { useEffect, useRef } from 'react';
 import '@kitware/vtk.js/Rendering/Profiles/Geometry';
+import '@kitware/vtk.js/Rendering/Profiles/Volume';
+import '@kitware/vtk.js/Rendering/Profiles/Glyph';
 import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkGlyph3DMapper from '@kitware/vtk.js/Rendering/Core/Glyph3DMapper';
+import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
+import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
+import vtkArrowSource from '@kitware/vtk.js/Filters/Sources/ArrowSource';
+import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
+import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
 import { divergingStops, hexToRgb, sequentialStops, type Theme } from '../colors';
 import type { ScalarMesh, Segments, Surface } from '../api';
 
-export type Comp = 'abs' | 'x' | 'y' | 'z';
 export type SurfaceMode = 'ghost' | 'field' | 'mesh' | 'hidden';
 
 export interface PlaneGeom { points: Float32Array; triangles: Uint32Array }
+/** Scalars on a regular grid (x fastest), mm. */
+export interface VolumeScalars { dims: [number, number, number]; origin: [number, number, number]; spacing: number; scalars: Float32Array }
+/** Arrow glyphs: positions [P,3] mm, field vectors [P,3]; the largest |vector| (vmax) is drawn `length` mm long. */
+export interface Arrows { points: Float32Array; vectors: Float32Array; vmax: number; length: number }
 
 interface Props {
   surface: Surface | null;
   surfaceScalars: Float32Array | null;     // per surface point (coloured surface mode)
   plane: PlaneGeom | null;
   planeScalars: Float32Array | null;       // per plane point
+  volume?: VolumeScalars | null;            // shown instead of the plane (3D view)
+  arrows?: Arrows | null;
   range: [number, number];
   signed: boolean;                          // diverging map around 0
   surfaceMode: SurfaceMode;
   theme: Theme;
   viewAxis: 'x' | 'y' | 'z';               // look along the cut normal
+  oblique?: boolean;                        // a more oblique camera (3D volume: see the depth)
   neutralPlane?: boolean;                   // plane drawn in one neutral tone (overlays carry the content)
   cells?: ScalarMesh | null;                // e.g. tets cut by the plane, edges drawn
   segments?: Segments[];                    // line overlays: grid / axis / marker / iso / arrow
 }
+
+export const VOL_RAMP_START = 0.35;                  // volume colours: the sequential ramp from 35 % on
 
 const ROLE_STYLE: Record<string, { color: string; width: number; opacity: number }> = {
   grid: { color: '--text-secondary', width: 1, opacity: 0.55 },
@@ -45,17 +62,24 @@ function lineCells(n: number): Uint32Array {          // n segments: [2, 2i, 2i+
   return out;
 }
 
-/** Scalar per point of a [P,3] vector field at the given phase: E(t) = E cos φ, H(t) = H sin φ. */
-export function fieldScalars(F: Float32Array, field: 'E' | 'H', comp: Comp, phaseDeg: number): Float32Array {
+/** The sequential stops from VOL_RAMP_START on, rescaled to [0, 1] (the volume's colours and its legend). */
+export function volumeStops(theme: Theme): [number, string][] {
+  return sequentialStops(theme).filter(([x]) => x >= VOL_RAMP_START)
+    .map(([x, c]) => [(x - VOL_RAMP_START) / (1 - VOL_RAMP_START), c] as [number, string]);
+}
+
+/** Time factor of a standing wave at the phase: E(t) = E cos φ, H(t) = H sin φ. */
+export function phaseFactor(field: 'E' | 'H', phaseDeg: number): number {
   const ph = (phaseDeg * Math.PI) / 180;
-  const a = field === 'E' ? Math.cos(ph) : Math.sin(ph);
+  return field === 'E' ? Math.cos(ph) : Math.sin(ph);
+}
+
+/** |F(t)| per point of a [P,3] vector field at the given phase. */
+export function fieldMagnitude(F: Float32Array, field: 'E' | 'H', phaseDeg: number): Float32Array {
+  const a = Math.abs(phaseFactor(field, phaseDeg));
   const n = F.length / 3;
   const out = new Float32Array(n);
-  const c = comp === 'x' ? 0 : comp === 'y' ? 1 : 2;
-  for (let i = 0; i < n; i++) {
-    const x = F[3 * i], y = F[3 * i + 1], z = F[3 * i + 2];
-    out[i] = comp === 'abs' ? Math.abs(a) * Math.hypot(x, y, z) : a * F[3 * i + c];
-  }
+  for (let i = 0; i < n; i++) out[i] = a * Math.hypot(F[3 * i], F[3 * i + 1], F[3 * i + 2]);
   return out;
 }
 
@@ -74,6 +98,16 @@ function cssVar(name: string, fallback: string) {
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+// A NEW vtkPolyData per update: vtk.js does not re-upload a polydata whose point / cell arrays were only
+// overwritten with setData (the cut plane stayed where it was first drawn).
+function setMesh(o: any, points: Float32Array, triangles: Uint32Array) {
+  const pd = vtkPolyData.newInstance();
+  pd.getPoints().setData(points, 3);
+  pd.getPolys().setData(polys(triangles));
+  o.mapper.setInputData(pd);
+  o.pd = pd;
+}
+
 export default function Viewer3D(p: Props) {
   const host = useRef<HTMLDivElement>(null);
   const vtk = useRef<any>(null);
@@ -92,44 +126,116 @@ export default function Viewer3D(p: Props) {
       renderer.addActor(actor);
       return { pd, mapper, actor };
     };
+    // volume rendering of |F| on the grid
+    const vol = { actor: vtkVolume.newInstance(), mapper: vtkVolumeMapper.newInstance(),
+                  ctf: vtkColorTransferFunction.newInstance(), otf: vtkPiecewiseFunction.newInstance() };
+    vol.actor.setMapper(vol.mapper);
+    vol.actor.getProperty().setRGBTransferFunction(0, vol.ctf);
+    vol.actor.getProperty().setScalarOpacity(0, vol.otf);
+    vol.actor.getProperty().setInterpolationTypeToLinear();
+    vol.actor.getProperty().setShade(false);
+    vol.actor.setVisibility(false);
+    renderer.addVolume(vol.actor);
+    // arrows: one glyph per point, oriented and scaled by the vector
+    const arrow = vtkArrowSource.newInstance({ tipResolution: 12, shaftResolution: 8, tipLength: 0.35, tipRadius: 0.14,
+                                               shaftRadius: 0.05 });
+    const gm = vtkGlyph3DMapper.newInstance({ orientationArray: 'vec', scaleArray: 'vec' });
+    gm.setOrientationModeToDirection();
+    gm.setScaleModeToScaleByMagnitude();
+    gm.setInputConnection(arrow.getOutputPort(), 1);
+    gm.setScalarVisibility(false);
+    const ga = vtkActor.newInstance();
+    ga.setMapper(gm);
+    ga.setVisibility(false);
+    renderer.addActor(ga);
     vtk.current = { grw, renderer, rw: grw.getRenderWindow(), surf: mk(), plane: mk(), cells: mk(), mk, lines: [],
-                    ctf: vtkColorTransferFunction.newInstance() };
+                    ctf: vtkColorTransferFunction.newInstance(), vol, arrows: { mapper: gm, actor: ga } };
     const ro = new ResizeObserver(() => { grw.resize(); grw.getRenderWindow().render(); });
     ro.observe(host.current!);
     return () => { ro.disconnect(); grw.delete(); vtk.current = null; };
   }, []);
 
+  useEffect(() => {                                     // background follows the theme
+    const v = vtk.current;
+    if (!v) return;
+    v.renderer.setBackground(...hexToRgb(cssVar('--surface-1', '#fcfcfb')));
+    v.rw.render();
+  }, [p.theme]);
+
   // surface geometry + camera along the cut normal (slightly oblique)
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
-    if (p.surface) {
-      v.surf.pd.getPoints().setData(p.surface.points, 3);
-      v.surf.pd.getPolys().setData(polys(p.surface.triangles));
-      v.surf.pd.modified();
-    }
+    if (p.surface) setMesh(v.surf, p.surface.points, p.surface.triangles);
     v.surf.actor.setVisibility(!!p.surface);
     const cam = v.renderer.getActiveCamera();
     const b = v.surf.pd.getBounds();
     const c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
-    const dir = p.viewAxis === 'x' ? [1, 0.25, 0.2] : p.viewAxis === 'y' ? [0.25, -1, 0.2] : [0.25, 0.2, 1];
+    const t = p.oblique ? 0.7 : 0.25;
+    const dir = p.viewAxis === 'x' ? [1, t, 0.8 * t] : p.viewAxis === 'y' ? [t, -1, 0.8 * t] : [t, 0.8 * t, 1];
     cam.setFocalPoint(c[0], c[1], c[2]);
     cam.setPosition(c[0] + dir[0], c[1] + dir[1], c[2] + dir[2]);
     cam.setViewUp(...(p.viewAxis === 'z' ? [0, 1, 0] : [0, 0, 1]) as [number, number, number]);
     v.renderer.resetCamera();
     v.rw.render();
-  }, [p.surface, p.viewAxis]);
+  }, [p.surface, p.viewAxis, p.oblique]);
 
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
-    if (p.plane && p.plane.triangles.length) {
-      v.plane.pd.getPoints().setData(p.plane.points, 3);
-      v.plane.pd.getPolys().setData(polys(p.plane.triangles));
-      v.plane.pd.modified();
-    }
+    if (p.plane && p.plane.triangles.length) setMesh(v.plane, p.plane.points, p.plane.triangles);
     v.rw.render();
   }, [p.plane]);
+
+  // 3D field magnitude: the grid geometry is rebuilt with the data, the scalars on every phase step
+  useEffect(() => {
+    const v = vtk.current;
+    if (!v) return;
+    const vo = p.volume;
+    if (vo) {
+      const img = vtkImageData.newInstance();
+      img.setDimensions(vo.dims);
+      img.setOrigin(vo.origin);
+      img.setSpacing([vo.spacing, vo.spacing, vo.spacing]);
+      img.getPointData().setScalars(vtkDataArray.newInstance({ name: 'mag', numberOfComponents: 1, values: vo.scalars }));
+      v.vol.mapper.setInputData(img);
+      v.vol.mapper.setSampleDistance(0.5 * vo.spacing);
+      v.vol.actor.getProperty().setScalarOpacityUnitDistance(0, 2 * vo.spacing);
+      const [lo, hi] = p.range[1] > p.range[0] ? p.range : [0, 1];
+      // the ramp from its mid tone: the near-background light end would make weak fields vanish; the opacity
+      // carries the weak end instead
+      v.vol.ctf.removeAllPoints();
+      volumeStops(p.theme).forEach(([x, c]) => v.vol.ctf.addRGBPoint(lo + x * (hi - lo), ...hexToRgb(c)));
+      // weak fields transparent, strong ones opaque: the field's shape inside the cavity
+      v.vol.otf.removeAllPoints();
+      v.vol.otf.addPoint(lo, 0);
+      v.vol.otf.addPoint(lo + 0.1 * (hi - lo), 0);
+      v.vol.otf.addPoint(lo + 0.35 * (hi - lo), 0.1);
+      v.vol.otf.addPoint(lo + 0.7 * (hi - lo), 0.4);
+      v.vol.otf.addPoint(hi, 0.8);
+    }
+    v.vol.actor.setVisibility(!!vo);
+    v.rw.render();
+  }, [p.volume, p.range, p.theme]);
+
+  // arrows (field direction; length ∝ |F|)
+  useEffect(() => {
+    const v = vtk.current;
+    if (!v) return;
+    const a = p.arrows;
+    if (a && a.points.length) {
+      const pd = vtkPolyData.newInstance();
+      pd.getPoints().setData(a.points, 3);
+      pd.getPointData().addArray(vtkDataArray.newInstance({ name: 'vec', numberOfComponents: 3, values: a.vectors }));
+      v.arrows.mapper.setInputData(pd, 0);
+      v.arrows.mapper.setScaleFactor(a.vmax > 0 ? a.length / a.vmax : 0);
+      const ap = v.arrows.actor.getProperty();
+      ap.setColor(...hexToRgb(cssVar('--text-primary', '#0b0b0b')));
+      ap.setOpacity(0.9);
+    }
+    v.arrows.actor.setVisibility(!!(a && a.points.length));
+    v.rw.render();
+  }, [p.arrows, p.theme]);
 
   useEffect(() => {
     const v = vtk.current;
@@ -151,7 +257,8 @@ export default function Viewer3D(p: Props) {
       o.mapper.setScalarVisibility(true);
       o.pd.modified();
     };
-    const planeOn = !!(p.plane && p.plane.triangles.length && (p.planeScalars || p.neutralPlane)) && p.surfaceMode !== 'mesh';
+    const planeOn = !p.volume && !!(p.plane && p.plane.triangles.length && (p.planeScalars || p.neutralPlane))
+      && p.surfaceMode !== 'mesh';
     const pp = v.plane.actor.getProperty();
     if (planeOn && p.neutralPlane) {
       v.plane.mapper.setScalarVisibility(false);
@@ -160,8 +267,7 @@ export default function Viewer3D(p: Props) {
     v.plane.actor.setVisibility(planeOn);
     const cells = p.cells;
     if (cells && cells.triangles.length) {
-      v.cells.pd.getPoints().setData(cells.points, 3);
-      v.cells.pd.getPolys().setData(polys(cells.triangles));
+      setMesh(v.cells, cells.points, cells.triangles);
       paint(v.cells, cells.scalars);
       const cp = v.cells.actor.getProperty();
       cp.setEdgeVisibility(true);
@@ -174,6 +280,8 @@ export default function Viewer3D(p: Props) {
     const sp = v.surf.actor.getProperty();
     sp.setRepresentationToSurface();
     sp.setEdgeVisibility(false);
+    // with the volume, only the far walls: the translucent near walls would occlude the volume (depth)
+    sp.setFrontfaceCulling(!!p.volume && p.surfaceMode === 'ghost');
     if (p.surfaceMode === 'mesh') {
       v.surf.mapper.setScalarVisibility(false);
       sp.setColor(...hexToRgb(cssVar('--surface-2', '#f3f2ee')));
@@ -188,11 +296,12 @@ export default function Viewer3D(p: Props) {
     } else {
       v.surf.mapper.setScalarVisibility(false);
       sp.setColor(...hexToRgb(cssVar('--muted', '#898781')));
-      sp.setOpacity(0.18);
+      sp.setOpacity(p.volume ? 0.25 : 0.18);
       v.surf.actor.setVisibility(p.surfaceMode !== 'hidden' && !!p.surface);
     }
     v.rw.render();
-  }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.signed, p.surfaceMode, p.theme, p.surface, p.cells, p.neutralPlane]);
+  }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.signed, p.surfaceMode, p.theme, p.surface, p.cells,
+      p.neutralPlane, p.volume]);
 
   // line overlays (rebuilt when they change)
   useEffect(() => {

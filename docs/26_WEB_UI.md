@@ -33,9 +33,17 @@
 | `POST /api/predictions` `{geometry_id}` | mod tablosu (f, kavite değerleri, η, dejenere, hızlandırıcı mod), süreler, uyarılar |
 | `GET /api/predictions/{id}/modes/{k}` | yüzey E/H (faz için iki alan) + eksen boyunca E_z |
 | `GET /api/predictions/{id}/plane?mode&axis&pos&res` | kesit düzlemi: noktalar, üçgenler, E, H |
+| `GET /api/predictions/{id}/volume?mode&n` | 3B görünüm: kutu üzerinde ~n noktalık düzenli ızgara (x en hızlı), E, H, kavite içi maskesi |
 | `GET /api/predictions/{id}/export` | JSON dosyası |
 
 **Faz kaydırıcısı tarayıcıda çalışır.** E ve H bir kez gönderilir, φ istemcide uygulanır; sunucuya gidip gelme yoktur.
+
+**Kesit ve hacim örneklemesi** (`nedelec.locate_grid`): her tet, sınır kutusundaki ızgara noktalarını
+barisentrik testle bulur. Maliyet ızgaraya doğrusal. Eski `locate`, kavite dışındaki her nokta için 16
+→ 256 aday tet arıyordu:
+- merkezden uzak bir kesit saniyeler sürüyordu, kaydırıcı ilerledikçe önceki yanıt iptal edildiği için
+  görüntü ilk kesitte kalıyordu. 11k tetlik bir örnekte kesit artık 20–60 ms sürüyor;
+- 88k noktalık hacim 23 s'den 0.4 s'ye indi.
 
 ## 3. Arayüz (v0.1)
 
@@ -43,13 +51,22 @@
   - Kontrol rozetleri: ✓ kapalı, tek parça; kulp sayısı b1; tet sayısı; hacim; OOD.
   - "Tahmin et" tuşu.
 - **Orta:**
-  - **3D görünüm:** yarı saydam kavite ve renkli kesit düzlemi. Kamera kesitin normalinden, hafif eğik bakar.
-  - **Kontroller:** E/H, bileşen (|·|, x, y, z), kesit ekseni ve konumu (mm), faz 0–180° kaydırıcısı ve ▶ oynat, yüzey (saydam / duvar alanı / gizli).
+  - **3D görünüm**, iki kip:
+    - **kesit:** yarı saydam kavite ve |E| ya da |H| ile renkli kesit düzlemi. Kamera kesitin
+      normalinden, hafif eğik bakar.
+    - **3B hacim:** alan büyüklüğü bütün hacimde (hacim görselleştirmesi). Zayıf alan saydam, güçlü alan
+      koyu ve yoğun. Kavitenin yalnız arka duvarları çizilir; ön duvarlar hacmi örterdi.
+  - **Oklar** (iki kipte de): alanın yönü. Ok boyu |alan| ile orantılı; kesitte ~300, hacimde ~700 ok.
+  - **Renk her zaman alan büyüklüğüdür.** Bileşen (x, y, z) seçeneği kaldırıldı; yön okların işi.
+  - **Kontroller:** E/H, görünüm (kesit / 3B hacim), oklar, kesit ekseni ve konumu (mm; hacimde bakış
+    ekseni), faz 0–180° kaydırıcısı ve ▶ oynat, yüzey (saydam / duvar alanı / gizli).
   - **Eksen grafiği:** eksen boyunca E_z(z); tek seri, artı imleç ve ipucu.
 - **Sağ:**
   - Mod tablosu: ★ hızlandırıcı mod, ≈ dejenere çift, η rozeti (✓ iyi < %2, ! orta < %10, ✕ zayıf).
   - Seçili modun bütün kavite değerleri, süreler, JSON indir.
-- **Renkler:** büyüklük için tek tonlu sıralı mavi rampa, işaretli bileşen için mavi ↔ gri ↔ kırmızı. Rampalar açık ve koyu temada ayrı seçildi.
+- **Renkler:** büyüklük için tek tonlu sıralı mavi rampa; özellik görünümündeki işaretli büyüklükler için
+  mavi ↔ gri ↔ kırmızı. Rampalar açık ve koyu temada ayrı seçildi. Hacim, rampanın %35'inden başlar:
+  arka plana yakın açık uç zayıf alanı görünmez yapardı, zayıf ucu saydamlık taşır.
 - **Dil:** TR/EN.
 - **Uyarılar:** eğitilmemiş model, OOD aile, ışın ekseni kavitede değil.
 

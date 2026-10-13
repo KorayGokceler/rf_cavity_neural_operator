@@ -115,6 +115,29 @@ def test_locate_bary_sums_to_one_for_interior_points(mesh, rng):
 
 # ───────────────────────── 4. plane_sample() ───────────────────────────────
 
+def test_locate_grid_matches_locate_on_volumes_and_planes(mesh):
+    """The grid locator (each tet scans the grid points of its box) agrees with the k-d tree locate on a
+    volume grid and on a plane (one dimension of 1, anisotropic spacing); points outside stay -1."""
+    X, tets, _ = mesh
+    lo, hi = X.min(0) - 0.05, X.max(0) + 0.05                   # a frame of grid points outside the box
+    for d, dims in ((0.07, None), (np.array([0.05, 1.0, 0.04]), (23, 1, 18))):
+        dims = np.asarray(dims) if dims is not None else np.ceil((hi - lo) / d).astype(int) + 1
+        lo_g = lo.copy()
+        if dims[1] == 1:
+            lo_g[1] = 0.37                                      # the plane y = 0.37
+        ax = [lo_g[i] + np.broadcast_to(d, (3,))[i] * np.arange(dims[i]) for i in range(3)]
+        zz, yy, xx = np.meshgrid(ax[2], ax[1], ax[0], indexing="ij")
+        pts = np.stack([xx.ravel(), yy.ravel(), zz.ravel()], 1)   # x fastest
+        t_ref, b_ref = nd.locate(X, tets, pts)
+        t, b = nd.locate_grid(X, tets, lo_g, d, dims)
+        assert t.shape == (len(pts),) and ((t >= 0) == (t_ref >= 0)).mean() > 0.995
+        assert (t >= 0).any() and (t < 0).any()
+        both = (t >= 0) & (t_ref >= 0)
+        rec = np.einsum("pi,pij->pj", b[both], X[tets[t[both]]])  # barycentric → the point itself
+        assert np.allclose(rec, pts[both], atol=1e-9)
+        assert np.allclose(np.einsum("pi,pij->pj", b_ref[both], X[tets[t_ref[both]]]), rec, atol=1e-9)
+
+
 def test_plane_sample_shapes_and_keys(mesh, rng):
     X, tets, edges = mesh
     K = 3

@@ -74,6 +74,16 @@ def test_upload_predict_fields_export(client, pillbox_msh):
     P = f32(q["points_b64"]).reshape(-1, 3)
     assert P.shape[0] == q["n_points"] > 0 and np.ptp(P[:, 1]) < 1e-3 and abs(P[0, 1]) < 5   # y = centroid plane
     assert f32(q["H_b64"]).size == 3 * q["n_points"]
+    v = client.get(f"/api/predictions/{p['id']}/volume", params={"mode": 0, "n": 20000}).json()
+    nx, ny, nz = v["dims"]
+    E = f32(v["E_b64"]).reshape(nz, ny, nx, 3)                         # x fastest (vtkImageData order)
+    inside = np.frombuffer(base64.b64decode(v["inside_b64"]), np.uint8).reshape(nz, ny, nx).astype(bool)
+    assert 10000 < v["n_points"] == nx * ny * nz < 40000 and 0 < v["n_inside"] == inside.sum() < v["n_points"]
+    assert np.all(E[~inside] == 0) and np.abs(E[inside]).max() > 0
+    assert v["origin_mm"][0] == pytest.approx(-100, abs=1) and v["spacing_mm"] > 0     # pillbox R = 100 mm
+    ctr = inside[nz // 2, ny // 2, nx // 2] and not inside[0, 0, 0]       # the bbox corner is outside the cylinder
+    assert ctr
+    assert client.get(f"/api/predictions/{p['id']}/volume", params={"n": 10}).status_code == 422
     r = client.get(f"/api/predictions/{p['id']}/export")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     assert len(r.json()["modes"]) == 6

@@ -291,13 +291,20 @@ class ModelService:
 
     def plane_values(self, geom, nodal, axis='y', pos_mm=None, res=121):
         """Vertex arrays `nodal` (list of [Nv,…]) interpolated on a cut plane (points mm, triangles, values)."""
-        from src.viz.nedelec import interp_vertex, locate, plane_grid
+        from src.viz.nedelec import interp_vertex, locate_grid
         ia = 'xyz'.index(axis)
         c, s = float(np.asarray(geom['center']).reshape(3)[ia]), float(geom['scale'])
         off = 0.0 if pos_mm is None else (pos_mm * 1e-3 - c) / s
-        pts, Ug, _, _ = plane_grid(geom['X'], axis, off, res, pad=0.0)
-        tid, bary = locate(geom['X'], geom['tets'], pts)
-        inside = (tid >= 0).reshape(Ug.shape)
+        X = np.asarray(geom['X'], float)
+        lo, hi = X.min(0), X.max(0)
+        d = np.maximum(hi - lo, 1e-12) / (res - 1)
+        lo[ia], d[ia] = off, 1.0
+        dims = np.full(3, res)
+        dims[ia] = 1                                     # flat index u + res·v: the (v, u) grid below
+        tid, bary = locate_grid(X, geom['tets'], lo, d, dims)
+        zz, yy, xx = np.meshgrid(*(lo[i] + d[i] * np.arange(dims[i]) for i in (2, 1, 0)), indexing='ij')
+        pts = np.stack([xx.ravel(), yy.ravel(), zz.ravel()], 1)
+        inside = (tid >= 0).reshape(res, res)
         idx = -np.ones(inside.shape, np.int64)
         idx[inside] = np.arange(int(inside.sum()))
         a, b, cc, d = idx[:-1, :-1], idx[:-1, 1:], idx[1:, :-1], idx[1:, 1:]
@@ -306,6 +313,27 @@ class ModelService:
         sel = tid >= 0
         vals = [interp_vertex(geom['tets'], tid[sel], bary[sel], np.asarray(v)) for v in nodal]
         return self.to_mm(geom, pts[sel]), tri, vals
+
+    def volume(self, sol, k, n_points=80_000):
+        """Mode k on a regular 3D grid (volume_values): dict(dims, origin_mm, spacing_mm, inside, E, H)."""
+        out = self.volume_values(sol['_geom'], [sol['_E'][:, :, k], sol['_H'][:, :, k]], n_points)
+        out['E'], out['H'] = out.pop('values')
+        return out
+
+    def volume_values(self, geom, nodal, n_points=80_000):
+        """Vertex arrays `nodal` (list of [Nv,3]) sampled on a regular grid of about n_points over the mesh
+        bounding box, in vtkImageData order (x fastest, then y, then z); 0 outside the cavity:
+        dict(dims [3], origin_mm [3], spacing_mm, inside [N] bool, values [list of [N,3]])."""
+        from src.viz.nedelec import interp_vertex, locate_grid
+        X = np.asarray(geom['X'], float)
+        lo, hi = X.min(0), X.max(0)
+        ext = np.maximum(hi - lo, 1e-12)
+        d = float((np.prod(ext) / max(int(n_points), 8)) ** (1 / 3))
+        dims = np.maximum(2, np.ceil(ext / d).astype(int) + 1)
+        tid, bary = locate_grid(X, geom['tets'], lo, d, dims)
+        vals = [np.nan_to_num(interp_vertex(geom['tets'], tid, bary, np.asarray(v, float))) for v in nodal]
+        return {'dims': [int(x) for x in dims], 'origin_mm': self.to_mm(geom, lo[None])[0].tolist(),
+                'spacing_mm': d * float(geom['scale']) * 1e3, 'inside': tid >= 0, 'values': vals}
 
     @staticmethod
     def surface_fields(sol, vid, k):

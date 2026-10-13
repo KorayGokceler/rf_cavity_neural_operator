@@ -224,6 +224,48 @@ def eval_field(X, tets, edges, u, points):
     return H[..., 0] if was_1d else H
 
 
+def locate_grid(X, tets, lo, d, dims, tol=1e-9, chunk=2_000_000):
+    """Point location for a regular grid lo + d·(i, j, k), i < dims[0] … (x fastest; d a scalar or one
+    spacing per axis; a dimension of 1 makes a plane): every tet visits the grid points of its bounding
+    box (barycentric test), so the cost is linear in the points covered — unlike locate(), whose points
+    outside the mesh each search 16 → 256 candidate tets (an off-centre cut plane took seconds).
+    Returns (tet_id [N] int64, -1 outside; bary [N,4], NaN outside), N = prod(dims)."""
+    X = np.asarray(X, dtype=np.float64)
+    tets = np.asarray(tets, dtype=np.int64)
+    dims = np.asarray(dims, dtype=np.int64)
+    lo = np.asarray(lo, dtype=np.float64)
+    d = np.broadcast_to(np.asarray(d, dtype=np.float64), (3,))
+    P = X[tets]                                                     # [T,4,3]
+    a = np.ceil((P.min(1) - lo) / d - 1e-9).astype(np.int64)        # first / last grid index in the box
+    b = np.floor((P.max(1) - lo) / d + 1e-9).astype(np.int64)
+    hit = ((a <= b) & (b >= 0) & (a <= dims - 1)).all(1)            # the box holds grid points
+    imin, imax = np.clip(a, 0, dims - 1), np.clip(b, 0, dims - 1)
+    span = np.where(hit[:, None], imax - imin + 1, 0)
+    count = span.prod(1)
+    J = np.linalg.inv(np.transpose(P[:, 1:] - P[:, :1], (0, 2, 1)))  # [T,3,3]: x − p0 → (λ1, λ2, λ3)
+    n = int(np.prod(dims))
+    tet_id = np.full(n, -1, dtype=np.int64)
+    bary = np.full((n, 4), np.nan)
+    ends = np.cumsum(count)
+    t0 = 0
+    while t0 < len(tets):                                           # chunks of ≤ `chunk` (tet, point) pairs
+        t1 = int(np.searchsorted(ends, (ends[t0 - 1] if t0 else 0) + chunk, side="right"))
+        t1 = max(t1, t0 + 1)
+        c = count[t0:t1]
+        tid = np.repeat(np.arange(t0, t1), c)
+        loc = np.arange(int(c.sum())) - np.repeat(np.cumsum(c) - c, c)
+        sx, sy = span[tid, 0], span[tid, 1]
+        ijk = imin[tid] + np.stack([loc % sx, (loc // sx) % sy, loc // (sx * sy)], 1)
+        x = lo + d * ijk
+        lam = np.einsum("pij,pj->pi", J[tid], x - P[tid, 0])
+        lam = np.concatenate([1.0 - lam.sum(1, keepdims=True), lam], 1)
+        ok = lam.min(1) >= -tol
+        g = ijk[ok, 0] + dims[0] * (ijk[ok, 1] + dims[1] * ijk[ok, 2])
+        tet_id[g], bary[g] = tid[ok], lam[ok]
+        t0 = t1
+    return tet_id, bary
+
+
 def plane_grid(X, axis="y", offset=0.0, res=121, pad=0.02):
     """Regular grid on the plane {coord[axis] == offset} over the mesh bbox of the
     two other axes (padded by `pad`): (points [res²,3], U, V, (iu, iv))."""

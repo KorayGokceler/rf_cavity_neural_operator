@@ -141,6 +141,11 @@ export interface ModeData {
   axis: { z_mm: number[]; Ez: (number | null)[] };
 }
 export interface Plane { points: Float32Array; triangles: Uint32Array; E: Float32Array; H: Float32Array }
+// mode on a regular 3D grid (x fastest, vtkImageData order; 0 outside the cavity) — the 3D field view
+export interface Volume {
+  dims: [number, number, number]; origin: [number, number, number]; spacing: number;
+  E: Float32Array; H: Float32Array; inside: Uint8Array; nInside: number;
+}
 
 function f32(b64: string): Float32Array {
   const bin = atob(b64);
@@ -151,6 +156,13 @@ function f32(b64: string): Float32Array {
 }
 function u32(b64: string): Uint32Array {
   return new Uint32Array(f32(b64).buffer);
+}
+
+function u8(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
@@ -250,6 +262,12 @@ export const api = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const j: any = await call(`/api/predictions/${pid}/plane?${q}`);
     return { points: f32(j.points_b64), triangles: u32(j.triangles_b64), E: f32(j.E_b64), H: f32(j.H_b64) };
+  },
+  volume: async (pid: string, k: number, n = 80000): Promise<Volume> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const j: any = await call(`/api/predictions/${pid}/volume?mode=${k}&n=${n}`);
+    return { dims: j.dims, origin: j.origin_mm, spacing: j.spacing_mm, E: f32(j.E_b64), H: f32(j.H_b64),
+             inside: u8(j.inside_b64), nInside: j.n_inside };
   },
   exportUrl: (pid: string) => `/api/predictions/${pid}/export`,
   trubaConfig: () => call<TrubaConfig>('/api/truba/config'),

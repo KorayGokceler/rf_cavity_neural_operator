@@ -13,6 +13,7 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     GET  /api/predictions/{id}/export             everything as one JSON file
     GET  /api/geometries/{id}/features            model input features (names, ranges)
     GET  /api/geometries/{id}/feature_plane|feature_surface?name&…   one feature on a cut / the wall
+    GET  /api/predictions/{id}/volume?mode&n         mode on a regular 3D grid (the 3D field view)
     GET  /api/datasets                            registered datasets (RFCAV_DATA, src/service/datasets.py)
     GET  /api/datasets/{d}/items | /stats         geometry table (filter, sort, page) / overview
     POST /api/datasets/{d}/items/{id}/open        geometry + FE solution (+ labels, parameters)
@@ -326,6 +327,18 @@ def create_app(service=None, datasets=None):
         pts, tri, E, H = service.plane(p, mode, axis, pos, res)
         return {'mode': mode, 'axis': axis, 'n_points': int(len(pts)), 'n_triangles': int(len(tri)),
                 'points_b64': b64(pts), 'triangles_b64': b64(tri, np.uint32), 'E_b64': b64(E), 'H_b64': b64(H)}
+
+    @app.get('/api/predictions/{pid}/volume')
+    def volume(pid: str, mode: int = 0, n: int = 80_000):
+        """Mode on a regular 3D grid (x fastest, vtkImageData order; 0 outside): the 3D field view."""
+        p = preds.get(pid)
+        if not 5_000 <= n <= 300_000 or not 0 <= mode < len(p['_f']):
+            raise HTTPException(422, 'n in [5000, 300000], valid mode')
+        v = service.volume(p, mode, n)
+        return {'mode': mode, 'dims': v['dims'], 'origin_mm': v['origin_mm'], 'spacing_mm': v['spacing_mm'],
+                'n_points': int(np.prod(v['dims'])), 'n_inside': int(v['inside'].sum()),
+                'inside_b64': base64.b64encode(np.ascontiguousarray(v['inside'], np.uint8).tobytes()).decode(),
+                'E_b64': b64(v['E']), 'H_b64': b64(v['H'])}
 
     @app.get('/api/predictions/{pid}/export')
     def export(pid: str):
