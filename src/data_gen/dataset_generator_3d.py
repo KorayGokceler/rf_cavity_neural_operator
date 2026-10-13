@@ -538,6 +538,16 @@ class SobolRNG:
     def __init__(self, u, fallback):
         self.u, self.i, self.rng = np.asarray(u, float), 0, fallback
 
+    @property
+    def state(self):
+        """Position in the Sobol point + the fallback generator's state (the generator's sharp fallback
+        replays a draw)."""
+        return self.i, self.rng.bit_generator.state
+
+    @state.setter
+    def state(self, st):
+        self.i, self.rng.bit_generator.state = st[0], st[1]
+
     def random(self, size=None):
         n = 1 if size is None else int(np.prod(size))
         take = min(n, len(self.u) - self.i)
@@ -567,6 +577,17 @@ class SobolRNG:
         n = x if np.isscalar(x) else len(x)
         order = np.argsort(self.random(n))
         return order if np.isscalar(x) else np.asarray(x)[order]
+
+
+def _rng_state(rng):
+    return rng.state if isinstance(rng, SobolRNG) else rng.bit_generator.state
+
+
+def _rng_restore(rng, state):
+    if isinstance(rng, SobolRNG):
+        rng.state = state
+    else:
+        rng.bit_generator.state = state
 
 
 def _sample_rng(s_id):
@@ -627,6 +648,10 @@ def mesh_sample(s_id, cad_path=None, post=None):
     post(cad_path, h, deform, shape_type, params): called once the geometry passed the checks; an exception
     re-draws the geometry like a failed check (field labels: curved mesh + element budget); its
     return value is the result's 'post'.
+    Field labels round the re-entrant edges (docs/30 §3).  When the filleted solid fails afterwards (port
+    junction fillets fold the curved netgen mesh at their vertices, whatever the mesh size), the SAME draw
+    is labelled with its edges sharp (params round_fallback = 1, n_sharp_edges > 0: peaks NaN) instead of
+    being re-drawn — re-drawing would drop most ported designs from the dataset.
     Used by generate_sample_data, scripts/active_sampling.py and scripts/label_benchmark.py."""
     import gmsh
     _gmsh_start()
@@ -636,61 +661,102 @@ def mesh_sample(s_id, cad_path=None, post=None):
     fam = "calibration" if ARGS.mode == "calibration" else \
         ARGS.families[int(rng.integers(0, len(ARGS.families)))]   # fixed across re-draws: exact family balance
     for attempt in range(ARGS.max_geom_tries):
-        gmsh.clear()
-        gmsh.model.add(f"rf3d_{s_id}_{attempt}")
-        occ = gmsh.model.occ
-        try:
-            if fam in DISCRETE_BUILDERS:
-                P, F, params = DISCRETE_BUILDERS[fam](rng)
-                shape_type, volume = fam, cs.surface_volume(P, F)
-                _discrete_model(P, F)
-            else:
-                shape_type, params = build_calibration(occ, s_id) if fam == "calibration" \
-                    else BUILDERS[fam](occ, rng)
-                occ.synchronize()
-                vols = gmsh.model.getEntities(3)
-                if len(vols) != 1:
-                    raise RuntimeError(f"{len(vols)} volumes")
-                if getattr(ARGS, "round_edges", False):          # field labels: no singular edges (docs/30 §3)
-                    v0 = gmsh.model.occ.getMass(3, vols[0][1])
-                    r_edge = cs.MIN_FILLET * (3 * v0 / (4 * np.pi)) ** (1 / 3)
-                    _, n_round, r_used, n_sharp = cs.round_reentrant_edges(occ, vols[0][1], r_edge)
-                    params.update(n_rounded_edges=float(n_round), r_rounded_edges=float(r_used),
-                                  n_sharp_edges=float(n_sharp))
-                    vols = gmsh.model.getEntities(3)
-                    if len(vols) != 1:
-                        raise RuntimeError(f"{len(vols)} volumes after rounding the re-entrant edges")
-                if getattr(ARGS, "heal", False) and fam in HEAL_FAMILIES:
-                    occ.healShapes(sewFaces=False, makeSolids=False)   # sew / makeSolids drop revolved solids
-                    occ.synchronize()
-                    vols = gmsh.model.getEntities(3)
-                    if len(vols) != 1:
-                        raise RuntimeError(f"{len(vols)} volumes after healing")
-                volume = gmsh.model.occ.getMass(3, vols[0][1])
-                if cad_path:
-                    gmsh.write(str(cad_path))
-            vol_div = params.pop("_vol_div", 1.0)              # multi-cell: size from the per-cell volume
-            h = ARGS.mesh_size_abs or ARGS.mesh_size * (volume / vol_div) ** (1.0 / 3.0)
-            h_cap = params.pop("_h_cap", None)             # smallest feature (iris, nose gap, pipe)
-            if h_cap and not ARGS.mesh_size_abs:
-                h = max(min(h, h_cap), 0.7 * h)            # ≤ ~3× the tets of the volume rule
-            nodes, tets = _mesh_current_model(h)
-            topo = mesh_topology(tets, len(nodes))
-            certify(topo)
-            t_mesh = time.perf_counter() - t0
-            nodes, dp, dmap = _draw_deform(s_id, nodes)
-            extra = post(cad_path, h, dmap, shape_type, params) if post is not None else None
+        draw = _rng_state(rng)                            # the sharp fallback rebuilds the same draw
+        done = False
+        for rounded in ((True, False) if getattr(ARGS, "round_edges", False) and fam not in DISCRETE_BUILDERS
+                        else (True,)):
+            if not rounded:
+                _rng_restore(rng, draw)
+            try:
+                extra, shape_type, params, volume, h, nodes, tets, topo, t_mesh, dp, dmap = _sample_geometry(
+                    s_id, attempt, fam, rng, cad_path, post, t0, rounded)
+                done = True
+                break
+            except _Rounded as e:                         # the filleted solid failed downstream: try it sharp
+                _gmsh_start(restart=True)
+                err = e.cause
+                print(f"sample {s_id}: rounded geometry failed ({e.cause}); labelling the same geometry "
+                      "with sharp re-entrant edges (peaks NaN)")
+            except Exception as e:                        # re-draw the geometry (random mode only)
+                _gmsh_start(restart=True)
+                err = e
+                break
+        if done:
             break
-        except Exception as e:  # re-draw the geometry (random mode only)
-            _gmsh_start(restart=True)
-            if ARGS.mode == "calibration" or attempt == ARGS.max_geom_tries - 1:
-                raise
-            print(f"sample {s_id}: geometry attempt {attempt} rejected ({e}); re-drawing")
+        if ARGS.mode == "calibration" or attempt == ARGS.max_geom_tries - 1:
+            raise err
+        print(f"sample {s_id}: geometry attempt {attempt} rejected ({err}); re-drawing")
     params = {k: float(v) for k, v in params.items()}
     params.update(dp)
     return {"nodes": nodes, "tets": tets, "shape_type": shape_type, "params": params, "h": float(h),
             "volume": float(volume), "t_mesh": t_mesh, "topo": topo, "deform": dmap,
             "cad_path": None if fam in DISCRETE_BUILDERS else cad_path, "post": extra}
+
+
+class _Rounded(Exception):
+    """A failure after the re-entrant edges were filleted (mesh_sample then tries the same geometry sharp)."""
+
+    def __init__(self, cause):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+def _sample_geometry(s_id, attempt, fam, rng, cad_path, post, t0, rounded):
+    """One geometry try of mesh_sample: build, (round,) heal, write the CAD, gmsh mesh, deform, post.
+    rounded=False: the re-entrant edges are only counted (the solid stays sharp).  A failure after edges
+    were actually filleted raises _Rounded."""
+    import gmsh
+    gmsh.clear()
+    gmsh.model.add(f"rf3d_{s_id}_{attempt}{'' if rounded else '_sharp'}")
+    occ = gmsh.model.occ
+    n_round = 0
+    try:
+        if fam in DISCRETE_BUILDERS:
+            P, F, params = DISCRETE_BUILDERS[fam](rng)
+            shape_type, volume = fam, cs.surface_volume(P, F)
+            _discrete_model(P, F)
+        else:
+            shape_type, params = build_calibration(occ, s_id) if fam == "calibration" \
+                else BUILDERS[fam](occ, rng)
+            occ.synchronize()
+            vols = gmsh.model.getEntities(3)
+            if len(vols) != 1:
+                raise RuntimeError(f"{len(vols)} volumes")
+            if getattr(ARGS, "round_edges", False):          # field labels: no singular edges (docs/30 §3)
+                v0 = gmsh.model.occ.getMass(3, vols[0][1])
+                r_edge = cs.MIN_FILLET * (3 * v0 / (4 * np.pi)) ** (1 / 3)
+                _, n_round, r_used, n_sharp = cs.round_reentrant_edges(occ, vols[0][1], r_edge,
+                                                                       fillet=rounded)
+                params.update(n_rounded_edges=float(n_round), r_rounded_edges=float(r_used),
+                              n_sharp_edges=float(n_sharp), round_fallback=float(not rounded))
+                vols = gmsh.model.getEntities(3)
+                if len(vols) != 1:
+                    raise RuntimeError(f"{len(vols)} volumes after rounding the re-entrant edges")
+            if getattr(ARGS, "heal", False) and fam in HEAL_FAMILIES:
+                occ.healShapes(sewFaces=False, makeSolids=False)   # sew / makeSolids drop revolved solids
+                occ.synchronize()
+                vols = gmsh.model.getEntities(3)
+                if len(vols) != 1:
+                    raise RuntimeError(f"{len(vols)} volumes after healing")
+            volume = gmsh.model.occ.getMass(3, vols[0][1])
+            if cad_path:
+                gmsh.write(str(cad_path))
+        vol_div = params.pop("_vol_div", 1.0)              # multi-cell: size from the per-cell volume
+        h = ARGS.mesh_size_abs or ARGS.mesh_size * (volume / vol_div) ** (1.0 / 3.0)
+        h_cap = params.pop("_h_cap", None)             # smallest feature (iris, nose gap, pipe)
+        if h_cap and not ARGS.mesh_size_abs:
+            h = max(min(h, h_cap), 0.7 * h)            # ≤ ~3× the tets of the volume rule
+        nodes, tets = _mesh_current_model(h)
+        topo = mesh_topology(tets, len(nodes))
+        certify(topo)
+        t_mesh = time.perf_counter() - t0
+        nodes, dp, dmap = _draw_deform(s_id, nodes)
+        extra = post(cad_path, h, dmap, shape_type, params) if post is not None else None
+    except Exception as e:
+        if n_round:
+            raise _Rounded(e) from e
+        raise
+    return extra, shape_type, params, volume, h, nodes, tets, topo, t_mesh, dp, dmap
 
 
 def field_settings(args):

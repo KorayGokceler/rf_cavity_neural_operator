@@ -110,7 +110,7 @@ def _try_fillet(occ, vol, edges, r):
     return None
 
 
-def round_reentrant_edges(occ, vol, radius, threshold=0.55, tries=3):
+def round_reentrant_edges(occ, vol, radius, threshold=0.55, tries=3, fillet=True):
     """Fillet the re-entrant edges (vacuum angle > 180°: pipe / port / bore junctions and unions left
     sharp by the booleans) of the solid `vol`.  At such an edge E and H are singular, so the surface
     peaks never converge and Q0 converges slowly (docs/30 §3: spoke without fillets, peaks 20–33 %
@@ -119,6 +119,7 @@ def round_reentrant_edges(occ, vol, radius, threshold=0.55, tries=3):
     families), the solid is kept as it is and its sharp edges are counted — the labels then drop the
     surface peaks (field_labels.label_sample(sharp_edges=…)).  Edge-by-edge filleting was tried: it
     leaves a broken topology with more sharp edges than before.
+    fillet=False only counts them (the generator's sharp fallback when the rounded solid cannot be meshed).
     Returns (volume tag, edges rounded, radius used, edges left sharp)."""
     import gmsh
     occ.synchronize()
@@ -126,8 +127,8 @@ def round_reentrant_edges(occ, vol, radius, threshold=0.55, tries=3):
     diag = float(np.linalg.norm(np.subtract(bb[3:], bb[:3])))
     eps = min(1e-3 * diag, 0.1 * radius)
     sharp = reentrant_edges(vol, eps, threshold)
-    if not sharp:
-        return vol, 0, 0.0, 0
+    if not sharp or not fillet:
+        return vol, 0, 0.0, len(sharp)
     r = float(radius)
     for _ in range(tries):
         new = _try_fillet(occ, vol, sharp, r)

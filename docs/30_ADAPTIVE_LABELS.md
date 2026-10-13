@@ -90,6 +90,36 @@ When OCC cannot fillet (some BSpline–cylinder unions), the solid is kept as it
 Filleting edge by edge was tried and left a broken topology with more sharp edges than before.
 `--no_round_edges` restores the old geometry.
 
+**Fillets that cannot be meshed: the sharp fallback.** On ported elliptical cavities, the fillet of a
+coupler-port junction folds the curved (order 3) netgen mesh. The det-J ratio reaches −100 to −1000.
+
+What does not cause it or fix it:
+
+| tested | effect on the folded elements |
+|---|---|
+| deformation map off | same count (it is not the cause) |
+| curvaturesafety 1.5 → 2 → 4 → 8 (up to 288k tets) | still 20–45 |
+| local RestrictH at the folded elements or at the BREP vertices (down to 0.1 × fillet radius) | still 10–30 |
+| fillet radius × 0.5 or × 3 | still folded |
+| filleting with netgen.occ instead of gmsh | still folded |
+| OCC healing, UnifySameDomain | still folded |
+
+Every folded element lies within about one element size of a BREP vertex that the fillet created.
+The same draws without the fillet mesh cleanly (min det-J ratio 0.26–0.39).
+
+The old behaviour re-drew such a geometry, which dropped essentially every ported design: of 12
+elliptical samples (seed 0, Sobol), 7 draws were rejected and none of the 12 accepted samples had a
+port. Now, when the filleted solid fails anywhere after the rounding, `mesh_sample` rebuilds the
+**same draw** with its edges sharp. Such a sample has `round_fallback = 1` and `n_sharp_edges > 0`,
+so its peaks are stored as NaN. A draw is re-drawn only if the sharp version fails too.
+
+On the same 12 samples:
+
+| | re-draws | sharp fallbacks | ported designs kept | start-mesh time |
+|---|---|---|---|---|
+| before | 7 | – | 0 | 263 s |
+| after | 0 | 3 | 3 | 131 s |
+
 ## 4. Refinement: remeshing, not bisection
 
 netgen's bisection of marked elements has a closure that explodes on curvature-graded meshes:

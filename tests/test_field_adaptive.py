@@ -96,10 +96,45 @@ def test_reentrant_edges_are_found_and_rounded():
         box2 = occ.addBox(5, 5, 5, 1, 1, 1)                                     # convex only: untouched
         occ.synchronize()
         assert cs.round_reentrant_edges(occ, box2, 0.1)[1:] == (0, 0.0, 0)
+        assert cs.round_reentrant_edges(occ, vol2, 0.1, fillet=False)[1:] == (0, 0.0, 0)
     finally:
         gmsh.model.remove()
         if own:
             gmsh.finalize()
+
+
+def test_a_rounded_geometry_that_fails_is_labelled_sharp_not_redrawn():
+    """Port-junction fillets fold the curved netgen mesh at their vertices whatever the mesh size (docs/30
+    §3): the generator then labels the SAME draw with sharp edges (peaks NaN) instead of re-drawing it —
+    re-drawing dropped every ported elliptical design.  Sample 524296 (seed 0, Sobol) draws two ports."""
+    import os
+    import tempfile
+    pytest.importorskip("gmsh")
+    from src.data_gen import cavity_shapes as cs
+    from src.data_gen import dataset_generator_3d as gen
+    old, old_fillet = gen.ARGS, cs.MIN_FILLET
+    gen.ARGS = gen.parse_args(["--labels", "field", "--families", "elliptical", "--seed", "0", "--sampling", "sobol",
+                               "--mesh_size", "0.3"])
+    seen = []
+
+    def post(path, h, dmap, st, prm):              # stands in for a curved mesh that folds on the fillets
+        seen.append(dict(prm))
+        if prm["n_rounded_edges"] > 0:
+            raise RuntimeError("curved mesh has folded elements")
+        return "labels"
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            g = gen.mesh_sample(524296, cad_path=os.path.join(tmp, "s.brep"), post=post)
+    finally:
+        gen.ARGS, cs.MIN_FILLET = old, old_fillet
+    assert len(seen) == 2 and g["post"] == "labels"
+    rounded, sharp = seen
+    assert rounded["n_rounded_edges"] > 0 and rounded["round_fallback"] == 0
+    assert sharp["n_rounded_edges"] == 0 and sharp["n_sharp_edges"] == rounded["n_rounded_edges"]
+    assert sharp["round_fallback"] == 1 and g["params"]["round_fallback"] == 1
+    geo = [k for k in rounded if k not in ("n_rounded_edges", "r_rounded_edges", "n_sharp_edges", "round_fallback")]
+    assert geo and all(rounded[k] == sharp[k] for k in geo)              # the same draw, only sharp
 
 
 def test_single_level_gives_the_numbering_of_a_reload():
