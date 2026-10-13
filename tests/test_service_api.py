@@ -84,6 +84,20 @@ def test_upload_predict_fields_export(client, pillbox_msh):
     ctr = inside[nz // 2, ny // 2, nx // 2] and not inside[0, 0, 0]       # the bbox corner is outside the cylinder
     assert ctr
     assert client.get(f"/api/predictions/{p['id']}/volume", params={"n": 10}).status_code == 422
+    fb = client.get(f"/api/predictions/{p['id']}/fields").json()            # every mode, at the vertices
+    K, nv = fb["n_modes"], fb["n_vertices"]
+    E16 = np.frombuffer(base64.b64decode(fb["E_b64"]), np.float16).astype(float).reshape(K, nv, 3)
+    E0 = E16[0] * fb["E_max"][0]
+    nodes = f32(fb["nodes_b64"]).reshape(nv, 3)
+    vid = np.frombuffer(base64.b64decode(fb["vid_b64"]), np.uint32)
+    assert K == 6 and nodes.shape == (nv, 3) and np.abs(nodes[:, 0]).max() == pytest.approx(100, abs=1)
+    assert np.frombuffer(base64.b64decode(fb["tets_b64"]), np.uint32).size == 4 * fb["n_tets"]
+    Es = f32(m["surface"]["E_b64"]).reshape(-1, 3)                          # mode 0 on the surface (above)
+    assert np.allclose(E0[vid], Es, rtol=2e-3, atol=2e-3 * fb["E_max"][0])      # = the per-mode surface data
+    assert np.linalg.norm(E16, axis=2).max() == pytest.approx(1, abs=1e-3)
+    assert len(fb["axis"]["Ez"]) == K and len(fb["axis"]["Ez"][0]) == len(fb["axis"]["z_mm"])
+    r = client.get(f"/api/predictions/{p['id']}/fields", headers={"Accept-Encoding": "gzip"})
+    assert r.headers.get("content-encoding") == "gzip"
     r = client.get(f"/api/predictions/{p['id']}/export")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     assert len(r.json()["modes"]) == 6

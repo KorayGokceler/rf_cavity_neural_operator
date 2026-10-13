@@ -1,6 +1,8 @@
 // vtk.js view: cavity surface (ghost / coloured / hidden), a coloured cut plane or the field magnitude in the
 // whole volume (volume rendering), and optional arrows for the field direction.
-// The caller passes per-point scalars (|E| / |H| at a phase, or a model input feature) and the range.
+// The caller passes per-point scalars (the amplitude |E| / |H|, or a model input feature), the range of the shown
+// values and a gain (the phase factor |cos φ| / |sin φ|): a phase step only rescales the colour maps, no data
+// is re-uploaded.
 import { useEffect, useRef } from 'react';
 import '@kitware/vtk.js/Rendering/Profiles/Geometry';
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
@@ -35,7 +37,8 @@ interface Props {
   planeScalars: Float32Array | null;       // per plane point
   volume?: VolumeScalars | null;            // shown instead of the plane (3D view)
   arrows?: Arrows | null;
-  range: [number, number];
+  range: [number, number];                  // of the shown values gain · scalars
+  gain?: number;                            // shown = gain · scalars (default 1)
   signed: boolean;                          // diverging map around 0
   surfaceMode: SurfaceMode;
   theme: Theme;
@@ -74,13 +77,11 @@ export function phaseFactor(field: 'E' | 'H', phaseDeg: number): number {
   return field === 'E' ? Math.cos(ph) : Math.sin(ph);
 }
 
-/** |F(t)| per point of a [P,3] vector field at the given phase. */
-export function fieldMagnitude(F: Float32Array, field: 'E' | 'H', phaseDeg: number): Float32Array {
-  const a = Math.abs(phaseFactor(field, phaseDeg));
-  const n = F.length / 3;
-  const out = new Float32Array(n);
-  for (let i = 0; i < n; i++) out[i] = a * Math.hypot(F[3 * i], F[3 * i + 1], F[3 * i + 2]);
-  return out;
+/** The scalar range the colour maps span: the shown range over the gain (an empty range → [0, 1]). */
+function dataRange(range: [number, number], gain = 1): [number, number] {
+  const [lo, hi] = range[1] > range[0] ? range : [0, 1];
+  const g = Math.max(Math.abs(gain), 1e-6);              // gain 0 (E at 90°): every value at the low end
+  return [lo / g, hi / g];
 }
 
 function polys(tri: Uint32Array): Uint32Array {
@@ -148,18 +149,23 @@ export default function Viewer3D(p: Props) {
     ga.setMapper(gm);
     ga.setVisibility(false);
     renderer.addActor(ga);
-    vtk.current = { grw, renderer, rw: grw.getRenderWindow(), surf: mk(), plane: mk(), cells: mk(), mk, lines: [],
+    // one render per frame: an update runs several of the effects below (data, colour maps, arrows), each asks
+    let frame = 0;
+    const render = () => {
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; grw.getRenderWindow().render(); });
+    };
+    vtk.current = { grw, renderer, render, surf: mk(), plane: mk(), cells: mk(), mk, lines: [],
                     ctf: vtkColorTransferFunction.newInstance(), vol, arrows: { mapper: gm, actor: ga } };
-    const ro = new ResizeObserver(() => { grw.resize(); grw.getRenderWindow().render(); });
+    const ro = new ResizeObserver(() => { grw.resize(); render(); });
     ro.observe(host.current!);
-    return () => { ro.disconnect(); grw.delete(); vtk.current = null; };
+    return () => { ro.disconnect(); cancelAnimationFrame(frame); grw.delete(); vtk.current = null; };
   }, []);
 
   useEffect(() => {                                     // background follows the theme
     const v = vtk.current;
     if (!v) return;
     v.renderer.setBackground(...hexToRgb(cssVar('--surface-1', '#fcfcfb')));
-    v.rw.render();
+    v.render();
   }, [p.theme]);
 
   // surface geometry + camera along the cut normal (slightly oblique)
@@ -177,17 +183,17 @@ export default function Viewer3D(p: Props) {
     cam.setPosition(c[0] + dir[0], c[1] + dir[1], c[2] + dir[2]);
     cam.setViewUp(...(p.viewAxis === 'z' ? [0, 1, 0] : [0, 0, 1]) as [number, number, number]);
     v.renderer.resetCamera();
-    v.rw.render();
+    v.render();
   }, [p.surface, p.viewAxis, p.oblique]);
 
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
     if (p.plane && p.plane.triangles.length) setMesh(v.plane, p.plane.points, p.plane.triangles);
-    v.rw.render();
+    v.render();
   }, [p.plane]);
 
-  // 3D field magnitude: the grid geometry is rebuilt with the data, the scalars on every phase step
+  // 3D field magnitude: a new grid per data set; the phase only moves the transfer functions (below)
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
@@ -201,22 +207,27 @@ export default function Viewer3D(p: Props) {
       v.vol.mapper.setInputData(img);
       v.vol.mapper.setSampleDistance(0.5 * vo.spacing);
       v.vol.actor.getProperty().setScalarOpacityUnitDistance(0, 2 * vo.spacing);
-      const [lo, hi] = p.range[1] > p.range[0] ? p.range : [0, 1];
-      // the ramp from its mid tone: the near-background light end would make weak fields vanish; the opacity
-      // carries the weak end instead
-      v.vol.ctf.removeAllPoints();
-      volumeStops(p.theme).forEach(([x, c]) => v.vol.ctf.addRGBPoint(lo + x * (hi - lo), ...hexToRgb(c)));
-      // weak fields transparent, strong ones opaque: the field's shape inside the cavity
-      v.vol.otf.removeAllPoints();
-      v.vol.otf.addPoint(lo, 0);
-      v.vol.otf.addPoint(lo + 0.1 * (hi - lo), 0);
-      v.vol.otf.addPoint(lo + 0.35 * (hi - lo), 0.1);
-      v.vol.otf.addPoint(lo + 0.7 * (hi - lo), 0.4);
-      v.vol.otf.addPoint(hi, 0.8);
     }
     v.vol.actor.setVisibility(!!vo);
-    v.rw.render();
-  }, [p.volume, p.range, p.theme]);
+    v.render();
+  }, [p.volume]);
+  useEffect(() => {
+    const v = vtk.current;
+    if (!v || !p.volume) return;
+    const [lo, hi] = dataRange(p.range, p.gain);
+    // the ramp from its mid tone: the near-background light end would make weak fields vanish; the opacity
+    // carries the weak end instead
+    v.vol.ctf.removeAllPoints();
+    volumeStops(p.theme).forEach(([x, c]) => v.vol.ctf.addRGBPoint(lo + x * (hi - lo), ...hexToRgb(c)));
+    // weak fields transparent, strong ones opaque: the field's shape inside the cavity
+    v.vol.otf.removeAllPoints();
+    v.vol.otf.addPoint(lo, 0);
+    v.vol.otf.addPoint(lo + 0.1 * (hi - lo), 0);
+    v.vol.otf.addPoint(lo + 0.35 * (hi - lo), 0.1);
+    v.vol.otf.addPoint(lo + 0.7 * (hi - lo), 0.4);
+    v.vol.otf.addPoint(hi, 0.8);
+    v.render();
+  }, [p.volume, p.range, p.gain, p.theme]);
 
   // arrows (field direction; length ∝ |F|)
   useEffect(() => {
@@ -234,13 +245,13 @@ export default function Viewer3D(p: Props) {
       ap.setOpacity(0.9);
     }
     v.arrows.actor.setVisibility(!!(a && a.points.length));
-    v.rw.render();
+    v.render();
   }, [p.arrows, p.theme]);
 
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
-    const [lo, hi] = p.range[1] > p.range[0] ? p.range : [0, 1];
+    const [lo, hi] = dataRange(p.range, p.gain);
     v.ctf.removeAllPoints();
     if (p.signed) {
       const m = Math.max(Math.abs(lo), Math.abs(hi));
@@ -251,11 +262,14 @@ export default function Viewer3D(p: Props) {
     const range: [number, number] = p.signed ? [-Math.max(Math.abs(lo), Math.abs(hi)), Math.max(Math.abs(lo), Math.abs(hi))] : [lo, hi];
     const paint = (o: any, vals: Float32Array | null) => {
       if (!vals) { o.mapper.setScalarVisibility(false); return; }
-      o.pd.getPointData().setScalars(vtkDataArray.newInstance({ name: 's', values: vals }));
+      if (o.vals !== vals || o.valsPd !== o.pd) {         // new data (not a phase step): set the scalars
+        o.pd.getPointData().setScalars(vtkDataArray.newInstance({ name: 's', values: vals }));
+        o.pd.modified();
+        o.vals = vals; o.valsPd = o.pd;
+      }
       o.mapper.setLookupTable(v.ctf);
       o.mapper.setScalarRange(...range);
       o.mapper.setScalarVisibility(true);
-      o.pd.modified();
     };
     const planeOn = !p.volume && !!(p.plane && p.plane.triangles.length && (p.planeScalars || p.neutralPlane))
       && p.surfaceMode !== 'mesh';
@@ -299,8 +313,8 @@ export default function Viewer3D(p: Props) {
       sp.setOpacity(p.volume ? 0.25 : 0.18);
       v.surf.actor.setVisibility(p.surfaceMode !== 'hidden' && !!p.surface);
     }
-    v.rw.render();
-  }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.signed, p.surfaceMode, p.theme, p.surface, p.cells,
+    v.render();
+  }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.gain, p.signed, p.surfaceMode, p.theme, p.surface, p.cells,
       p.neutralPlane, p.volume]);
 
   // line overlays (rebuilt when they change)
@@ -332,7 +346,7 @@ export default function Viewer3D(p: Props) {
       o.mapper.setScalarVisibility(false);
       v.lines.push(o);
     }
-    v.rw.render();
+    v.render();
   }, [p.segments, p.theme, p.viewAxis]);
 
   return <div className="viewer" ref={host} aria-label="3D view" />;

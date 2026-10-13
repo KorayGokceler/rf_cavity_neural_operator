@@ -165,6 +165,7 @@ const S = {
   colabNote: { tr: 'Checkpoint’ler her epoch sonunda Drive’a yazılır. Colab koparsa hücreyi yeniden çalıştırıp “Devam et”e basın.', en: 'Checkpoints are written to Drive after every epoch. If Colab disconnects, re-run the cell and press “Resume”.' },
   empty: { tr: 'Bir kavite yükleyin ya da örnek oluşturun.', en: 'Upload a cavity or build an example.' },
   noPrediction: { tr: 'Geometri hazır — “Tahmin et”e basın.', en: 'Geometry ready — press “Predict”.' },
+  loadingFields: { tr: 'Alan verisi yükleniyor…', en: 'Loading the field data…' },
   // TRUBA page
   trubaTab: { tr: 'TRUBA', en: 'TRUBA' },
   trubaTitle: { tr: 'TRUBA için tek satır komut', en: 'One-line TRUBA command' },

@@ -1,4 +1,5 @@
 // Typed client of src/service/api.py. Large arrays arrive as base64 little-endian float32 / uint32.
+import { decodeModes, type FieldBundle } from './fieldlab';
 
 export interface ModelInfo {
   n_modes: number; n_params: number; device: string; untrained: boolean; checkpoint: string | null;
@@ -135,18 +136,6 @@ export interface Prediction {
   axis_length_mm: number; time_s: Record<string, number>; warnings: string[]; model: ModelInfo;
   comparison?: { rows: CmpRow[]; diff_id: string; truth_id: string };
 }
-export interface ModeData {
-  mode: number; f_GHz: number;
-  surface: { E: Float32Array; H: Float32Array; E_max: number; H_max: number };
-  axis: { z_mm: number[]; Ez: (number | null)[] };
-}
-export interface Plane { points: Float32Array; triangles: Uint32Array; E: Float32Array; H: Float32Array }
-// mode on a regular 3D grid (x fastest, vtkImageData order; 0 outside the cavity) — the 3D field view
-export interface Volume {
-  dims: [number, number, number]; origin: [number, number, number]; spacing: number;
-  E: Float32Array; H: Float32Array; inside: Uint8Array; nInside: number;
-}
-
 function f32(b64: string): Float32Array {
   const bin = atob(b64);
   const buf = new ArrayBuffer(bin.length);
@@ -251,23 +240,16 @@ export const api = {
   datasetStats: (did: string) => call<DatasetStats>(`/api/datasets/${did}/stats`),
   datasetOpen: async (did: string, sid: number) =>
     geometry(await call(`/api/datasets/${did}/items/${sid}/open`, { method: 'POST' })),
-  mode: async (pid: string, k: number): Promise<ModeData> => {
+  // every mode of a solution + the volume mesh, once per solution (the workspace computes cuts, the 3D grid,
+  // modes and the phase from it)
+  fields: async (pid: string): Promise<FieldBundle> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const j: any = await call(`/api/predictions/${pid}/modes/${k}`);
-    return { ...j, surface: { ...j.surface, E: f32(j.surface.E_b64), H: f32(j.surface.H_b64) } };
-  },
-  plane: async (pid: string, k: number, axis: string, pos: number | null, res = 121): Promise<Plane> => {
-    const q = new URLSearchParams({ mode: String(k), axis, res: String(res) });
-    if (pos !== null) q.set('pos', String(pos));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const j: any = await call(`/api/predictions/${pid}/plane?${q}`);
-    return { points: f32(j.points_b64), triangles: u32(j.triangles_b64), E: f32(j.E_b64), H: f32(j.H_b64) };
-  },
-  volume: async (pid: string, k: number, n = 80000): Promise<Volume> => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const j: any = await call(`/api/predictions/${pid}/volume?mode=${k}&n=${n}`);
-    return { dims: j.dims, origin: j.origin_mm, spacing: j.spacing_mm, E: f32(j.E_b64), H: f32(j.H_b64),
-             inside: u8(j.inside_b64), nInside: j.n_inside };
+    const j: any = await call(`/api/predictions/${pid}/fields`);
+    const K = j.n_modes, nv = j.n_vertices;
+    return { K, nv, nodes: f32(j.nodes_b64), tets: u32(j.tets_b64), vid: u32(j.vid_b64),
+             E: decodeModes(new Uint16Array(u8(j.E_b64).buffer), K, nv, j.E_max),
+             H: decodeModes(new Uint16Array(u8(j.H_b64).buffer), K, nv, j.H_max),
+             Emax: j.E_max, Hmax: j.H_max, f: j.f_GHz, axis: { z: j.axis.z_mm, Ez: j.axis.Ez } };
   },
   exportUrl: (pid: string) => `/api/predictions/${pid}/export`,
   trubaConfig: () => call<TrubaConfig>('/api/truba/config'),

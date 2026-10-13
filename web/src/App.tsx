@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, type FeatureView, type Features, type Geometry, type Info, type ModeData, type Plane, type Prediction, type Volume } from './api';
+import { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { api, type FeatureView, type Features, type Geometry, type Info, type Prediction } from './api';
+import { fillGrid, gather, gridPoints, magnitude, modeField, rasterize, sampleArrows, sampleGrid, sampleSlice, scaled,
+         shareMesh, sliceArrows, slicePlane, thinGrid, type FieldBundle, type Grid, type Slice } from './fieldlab';
 import GeometryPanel from './components/GeometryPanel';
 import GeometryInfo from './components/GeometryInfo';
 import ModeTable from './components/ModeTable';
@@ -9,7 +11,7 @@ import DatasetPage from './components/DatasetPage';
 import GeneratePage from './components/GeneratePage';
 import TrainPage from './components/TrainPage';
 import TrubaPage from './components/TrubaPage';
-import Viewer3D, { fieldMagnitude, phaseFactor, volumeStops, type Arrows, type SurfaceMode, type VolumeScalars } from './components/Viewer3D';
+import Viewer3D, { phaseFactor, volumeStops, type Arrows, type SurfaceMode, type VolumeScalars } from './components/Viewer3D';
 import { cssGradient, divergingStops, sequentialStops, type Theme } from './colors';
 import { t, type Key, type Lang } from './i18n';
 import { sci } from './format';
@@ -21,36 +23,34 @@ type Display = 'field' | 'feature';
 type FeatureKind = 'position' | 'wall' | 'torsion' | 'mesh' | 'raw';
 const FEATURE_KINDS: FeatureKind[] = ['position', 'wall', 'torsion', 'mesh', 'raw'];
 type View3D = 'cut' | 'volume';                    // field on a cut plane | |field| in the whole volume
-const MAX_ARROWS = 700;                           // in the volume; ~300 on a cut
+const MAX_ARROWS = 700;                           // in the volume
+const CUT_ARROWS = 300;                           // on a cut
 
-/** One point per cell of size s (first come): an even subset of scattered points [P,3]. */
-function thin(points: Float32Array, s: number, keep: (i: number) => boolean = () => true): number[] {
-  const seen = new Set<string>();
-  const out: number[] = [];
-  for (let i = 0; i < points.length / 3; i++) {
-    if (!keep(i)) continue;
-    const key = `${Math.floor(points[3 * i] / s)},${Math.floor(points[3 * i + 1] / s)},${Math.floor(points[3 * i + 2] / s)}`;
-    if (!seen.has(key)) { seen.add(key); out.push(i); }
+// cuts and the 3D grid per mesh (the FE, model and difference solutions of a geometry share one: shareMesh)
+const cutCache = new WeakMap<Uint32Array, Map<string, Slice>>();
+const gridCache = new WeakMap<Uint32Array, Grid>();
+function cutOf(b: FieldBundle, axis: 0 | 1 | 2, pos: number): Slice {
+  let m = cutCache.get(b.tets);
+  if (!m) { m = new Map(); cutCache.set(b.tets, m); }
+  const key = `${axis}:${pos}`;
+  let s = m.get(key);
+  if (!s) {
+    if (m.size >= 8) m.clear();                    // a slider sweep: keep the recent ones only
+    s = slicePlane(b, axis, pos);
+    m.set(key, s);
   }
-  return out;
+  return s;
 }
-
-/** Arrows at the points idx of P [P,3] mm with vectors a·F; the largest amplitude |F| drawn `length` mm long. */
-function arrowsAt(P: Float32Array, F: Float32Array, idx: number[], a: number, length: number): Arrows {
-  const points = new Float32Array(3 * idx.length);
-  const vectors = new Float32Array(3 * idx.length);
+function gridOf(b: FieldBundle): Grid {
+  let g = gridCache.get(b.tets);
+  if (!g) { g = rasterize(b); gridCache.set(b.tets, g); }
+  return g;
+}
+interface ArrowBase { points: Float32Array; vectors: Float32Array; vmax: number; length: number }
+function arrowBase(points: Float32Array, vectors: Float32Array, length: number): ArrowBase {
   let vmax = 0;
-  idx.forEach((i, j) => {
-    for (let c = 0; c < 3; c++) { points[3 * j + c] = P[3 * i + c]; vectors[3 * j + c] = a * F[3 * i + c]; }
-    vmax = Math.max(vmax, Math.hypot(F[3 * i], F[3 * i + 1], F[3 * i + 2]));
-  });
+  for (let i = 0; i < vectors.length; i += 3) vmax = Math.max(vmax, Math.hypot(vectors[i], vectors[i + 1], vectors[i + 2]));
   return { points, vectors, vmax, length };
-}
-
-function maxMag(F: Float32Array): number {
-  let m = 0;
-  for (let i = 0; i < F.length; i += 3) m = Math.max(m, Math.hypot(F[i], F[i + 1], F[i + 2]));
-  return m;
 }
 
 function initialTheme(): Theme {
@@ -66,9 +66,6 @@ export default function App() {
   const [pred, setPred] = useState<Prediction | null>(null);
   const [source, setSource] = useState<Source>('model');
   const [mode, setMode] = useState(0);
-  const [modeData, setModeData] = useState<ModeData | null>(null);
-  const [truthData, setTruthData] = useState<ModeData | null>(null);
-  const [plane, setPlane] = useState<Plane | null>(null);
   const [features, setFeatures] = useState<Features | null>(null);
   const [display, setDisplay] = useState<Display>('field');
   const [fKind, setFKind] = useState<FeatureKind>('wall');
@@ -81,12 +78,13 @@ export default function App() {
   const [field, setField] = useState<'E' | 'H'>('E');
   const [view3d, setView3d] = useState<View3D>('cut');
   const [arrowsOn, setArrowsOn] = useState(false);
-  const [vol, setVol] = useState<Volume | null>(null);
   const [axis, setAxis] = useState<Axis>('y');
   const [pos, setPos] = useState<number | null>(null);
   const [phase, setPhase] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>('ghost');
+  const fields = useRef(new Map<string, FieldBundle | Promise<void>>());   // solution id → all its modes
+  const [, fieldsLoaded] = useReducer((x: number) => x + 1, 0);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   // the theme attribute before the re-render: the 3D view reads its colours (CSS variables) in its effects,
@@ -103,7 +101,8 @@ export default function App() {
   const truth = geom?.truth ?? null;
   const newGeometry = (g: Geometry | undefined) => {
     if (!g) return;
-    setGeom(g); setPred(null); setModeData(null); setTruthData(null); setPlane(null); setVol(null); setPos(null);
+    setGeom(g); setPred(null); setPos(null);
+    fields.current.clear();
     setFeatures(null); setFView(null); setFSurf(null);
     const acc = g.truth?.modes.find((m) => m.accelerating);
     setMode(acc ? acc.mode : 0);
@@ -130,35 +129,35 @@ export default function App() {
   const sources: Source[] = [...(truth ? ['fe' as Source] : []), ...(pred ? ['model' as Source] : []),
                              ...(pred?.comparison ? ['diff' as Source] : [])];
 
-  // field data of the shown solution (+ the FE one for the difference colour scale)
+  // every mode of a solution, fetched once (GET …/fields); the shown one first, then the other sources of
+  // the geometry, so switching the source does not wait either
+  const bundleOf = (id: string | null | undefined): FieldBundle | null => {
+    const b = id ? fields.current.get(id) : undefined;
+    return b && !(b instanceof Promise) ? b : null;
+  };
+  const want = useCallback((id: string | null | undefined) => {
+    const cache = fields.current;
+    if (!id || cache.has(id)) return;
+    const job: Promise<void> = api.fields(id).then((b) => {
+      if (cache.get(id) !== job) return;                  // a new geometry meanwhile
+      cache.set(id, shareMesh(b, [...cache.values()].filter((x): x is FieldBundle => !(x instanceof Promise))));
+      fieldsLoaded();
+    }).catch((e) => { cache.delete(id); setError(e.message); });
+    cache.set(id, job);
+  }, []);
+  const diffId = pred?.comparison?.diff_id;
+  const bundle = bundleOf(srcId);
+  const refBundle = source === 'diff' ? bundleOf(truth?.id) : bundle;    // the colour scale
+  useEffect(() => {                                       // drop the solutions no longer shown
+    const keep = new Set([truth?.id, pred?.id, diffId]);
+    for (const id of [...fields.current.keys()]) if (!keep.has(id)) fields.current.delete(id);
+  }, [truth?.id, pred?.id, diffId]);
   useEffect(() => {
-    if (!srcId || display !== 'field') return;
-    let live = true;
-    api.mode(srcId, mode).then((d) => live && setModeData(d)).catch((e) => setError(e.message));
-    return () => { live = false; };
-  }, [srcId, mode, display]);
-  useEffect(() => {
-    if (source !== 'diff' || !truth) return;
-    let live = true;
-    api.mode(truth.id, mode).then((d) => live && setTruthData(d)).catch(() => undefined);
-    return () => { live = false; };
-  }, [source, truth, mode]);
-  useEffect(() => {
-    if (!srcId || display !== 'field') return;
-    let live = true;
-    const h = setTimeout(() => {
-      api.plane(srcId, mode, axis, pos).then((p) => live && setPlane(p)).catch((e) => setError(e.message));
-    }, 120);
-    return () => { live = false; clearTimeout(h); };
-  }, [srcId, mode, axis, pos, display]);
-  // the whole volume (3D view)
-  useEffect(() => {
-    if (!srcId || display !== 'field' || view3d !== 'volume') return;
-    let live = true;
-    setVol(null);
-    api.volume(srcId, mode).then((v) => live && setVol(v)).catch((e) => setError(e.message));
-    return () => { live = false; };
-  }, [srcId, mode, display, view3d]);
+    if (display !== 'field') return;
+    want(srcId);
+    if (source === 'diff') want(truth?.id);
+    if (bundle) [truth?.id, pred?.id, diffId].forEach(want);
+  }, [display, srcId, source, truth?.id, pred?.id, diffId, bundle, want]);
   // model input features
   useEffect(() => {
     if (!geom || display !== 'feature') return;
@@ -189,63 +188,58 @@ export default function App() {
   const ai = AXES.indexOf(axis);
   const range = bbox ? [bbox[0][ai], bbox[1][ai]] : [0, 1];
   const posValue = pos ?? (range[0] + range[1]) / 2;
+  const cutPos = useDeferredValue(posValue);          // the slider moves at once, the cut follows
+
+  // the shown field, computed here: a cut / the grid per mesh, the vectors per (solution, mode, E/H), and per
+  // phase step only the arrows and the gain of the colour maps
+  const isVol = view3d === 'volume';
+  const onField = display === 'field' && !!bundle && mode < bundle.K;
+  const F = useMemo(() => (onField && bundle ? modeField(bundle, field, mode) : null), [onField, bundle, field, mode]);
+  const cut = useMemo(() => (onField && bundle && !isVol ? cutOf(bundle, ai as 0 | 1 | 2, cutPos) : null),
+                      [onField, bundle, isVol, ai, cutPos]);
+  const grid = useMemo(() => (onField && bundle && isVol ? gridOf(bundle) : null), [onField, bundle, isVol]);
+  const cutV = useMemo(() => (cut && F ? sampleSlice(cut, F) : null), [cut, F]);
+  const gridV = useMemo(() => (grid && F ? sampleGrid(grid, F) : null), [grid, F]);
+  const planeAmp = useMemo(() => (cutV ? magnitude(cutV) : null), [cutV]);
+  const surfAmp = useMemo(() => (bundle && F ? magnitude(gather(F, bundle.vid)) : null), [bundle, F]);
+  const volume = useMemo<VolumeScalars | null>(() => (grid && gridV ? {
+    dims: grid.dims, origin: grid.origin, spacing: grid.spacing, scalars: fillGrid(grid, magnitude(gridV)),
+  } : null), [grid, gridV]);
+  const cutSel = useMemo(() => (cut && arrowsOn ? sliceArrows(cut, CUT_ARROWS) : null), [cut, arrowsOn]);
+  const gridSel = useMemo(() => {
+    if (!grid || !arrowsOn) return null;
+    const { sel, step } = thinGrid(grid, MAX_ARROWS);
+    return { sel, step, points: gridPoints(grid, sel) };
+  }, [grid, arrowsOn]);
+  const arrows0 = useMemo(() => {
+    if (gridSel && gridV && grid) return arrowBase(gridSel.points, gather(gridV, gridSel.sel), 1.3 * gridSel.step * grid.spacing);
+    if (cutSel && cutV) return arrowBase(cutSel.points, sampleArrows(cutV, cutSel.ids, cutSel.w), 1.3 * cutSel.step);
+    return null;
+  }, [gridSel, gridV, grid, cutSel, cutV]);
+  const a = phaseFactor(field, phase);
+  const arrows = useMemo<Arrows | null>(() => (arrows0 ? { ...arrows0, vectors: scaled(arrows0.vectors, a) } : null),
+                                        [arrows0, a]);
+  const scaleOf = (b: FieldBundle | null, f: 'E' | 'H') => (b && mode < b.K ? (f === 'E' ? b.Emax : b.Hmax)[mode] : null);
+  const lim = scaleOf(refBundle, field) ?? scaleOf(bundle, field) ?? 1;     // differences on the FE scale
 
   // what the viewer colours
   const view = useMemo(() => {
     if (display === 'feature') {
       return { plane: fView?.plane ?? null, planeS: fView?.plane?.scalars ?? null, surfS: fSurf,
                volume: null as VolumeScalars | null, arrows: null as Arrows | null,
-               range: (fView?.range ?? [0, 1]) as [number, number], signed: fView?.signed ?? false,
+               range: (fView?.range ?? [0, 1]) as [number, number], gain: 1, signed: fView?.signed ?? false,
                label: fView?.legend ?? '', unit: '', neutral: fView?.neutral ?? false,
                cells: fView?.cells ?? null, segments: fView?.segments ?? [] };
     }
-    // colour = |E| or |H| (the scalar field); the arrows carry the direction
-    const ref = source === 'diff' ? truthData : modeData;
-    const surfMax = ref ? (field === 'E' ? ref.surface.E_max : ref.surface.H_max) : 1;
-    const isVol = view3d === 'volume';
-    const a = phaseFactor(field, phase);
-    const VF = vol ? (field === 'E' ? vol.E : vol.H) : null;
-    const PF = plane ? (field === 'E' ? plane.E : plane.H) : null;
-    const localMax = isVol ? (VF ? maxMag(VF) : 0) : (PF ? maxMag(PF) : 0);
-    const lim = source === 'diff' ? surfMax : Math.max(surfMax, localMax);      // differences on the FE scale
-    let volume: VolumeScalars | null = null;
-    let arrows: Arrows | null = null;
-    if (isVol && vol && VF) {
-      volume = { dims: vol.dims, origin: vol.origin, spacing: vol.spacing, scalars: fieldMagnitude(VF, field, phase) };
-      if (arrowsOn) {
-        const st = Math.max(1, Math.round(Math.cbrt(vol.nInside / MAX_ARROWS)));
-        const [nx, ny, nz] = vol.dims;
-        const P = new Float32Array(3 * nx * ny * nz);
-        for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-          const g = i + nx * (j + ny * k);
-          P[3 * g] = vol.origin[0] + i * vol.spacing; P[3 * g + 1] = vol.origin[1] + j * vol.spacing;
-          P[3 * g + 2] = vol.origin[2] + k * vol.spacing;
-        }
-        const idx: number[] = [];
-        for (let k = 0; k < nz; k += st) for (let j = 0; j < ny; j += st) for (let i = 0; i < nx; i += st) {
-          const g = i + nx * (j + ny * k);
-          if (vol.inside[g]) idx.push(g);
-        }
-        arrows = arrowsAt(P, VF, idx, a, 1.3 * st * vol.spacing);
-      }
-    } else if (!isVol && plane && PF && arrowsOn) {
-      const n = plane.points.length / 3;
-      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-      for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) {
-        lo[c] = Math.min(lo[c], plane.points[3 * i + c]); hi[c] = Math.max(hi[c], plane.points[3 * i + c]);
-      }
-      const ext = [0, 1, 2].map((c) => hi[c] - lo[c]).sort((x, y) => y - x);
-      const s = Math.sqrt((ext[0] * ext[1]) / Math.min(n, 300)) || 1;          // ~300 arrows on the cut
-      arrows = arrowsAt(plane.points, PF, thin(plane.points, s), a, 1.3 * s);
-    }
+    // colour = |E| or |H| (the scalar field) at the phase: the amplitude times the gain; the arrows carry the
+    // direction
     return {
-      plane: isVol ? null : plane, planeS: !isVol && PF ? fieldMagnitude(PF, field, phase) : null,
-      surfS: modeData ? fieldMagnitude(field === 'E' ? modeData.surface.E : modeData.surface.H, field, phase) : null,
-      volume, arrows, range: [0, lim] as [number, number], signed: false,
+      plane: isVol ? null : cut, planeS: isVol ? null : planeAmp, surfS: surfAmp, volume, arrows,
+      range: [0, lim] as [number, number], gain: Math.abs(a), signed: false,
       label: `|${source === 'diff' ? 'Δ' : ''}${field}|, U = 1 J`,
       unit: field === 'E' ? 'V/m' : 'A/m', neutral: false, cells: null, segments: [],
     };
-  }, [display, fView, fSurf, source, truthData, modeData, plane, vol, view3d, arrowsOn, field, phase]);
+  }, [display, fView, fSurf, isVol, cut, planeAmp, surfAmp, volume, arrows, lim, a, source, field]);
   const legend = useMemo(() => cssGradient(view.signed ? divergingStops(theme) : view.volume ? volumeStops(theme)
     : sequentialStops(theme), view.signed), [view.signed, view.volume, theme]);
 
@@ -296,12 +290,13 @@ export default function App() {
             <div className="viewer-card">
               <Viewer3D surface={geom?.surface ?? null} surfaceScalars={view.surfS} plane={view.plane}
                         planeScalars={view.planeS} volume={view.volume} arrows={view.arrows}
-                        range={view.range} signed={view.signed}
+                        range={view.range} gain={view.gain} signed={view.signed}
                         surfaceMode={surfaceMode} theme={theme} viewAxis={axis}
                         oblique={display === 'field' && view3d === 'volume'}
                         neutralPlane={view.neutral} cells={view.cells} segments={view.segments} />
               {!geom && <div className="viewer-empty">{t(lang, 'empty')}</div>}
               {geom && !shown && display === 'field' && <div className="viewer-empty">{t(lang, 'noPrediction')}</div>}
+              {shown && display === 'field' && srcId && !bundle && <div className="viewer-empty">{t(lang, 'loadingFields')}</div>}
               {(shown || display === 'feature') && geom && (
                 <div className="legend">
                   {!view.neutral && <>
@@ -380,9 +375,9 @@ export default function App() {
             {source === 'diff' && display === 'field' && <div className="note">{t(lang, 'diffNote')}</div>}
             {display === 'feature' && <div className="note">{t(lang, `fkn_${fKind}` as Key)}</div>}
 
-            {modeData && display === 'field' && <AxisPlot z={modeData.axis.z_mm} ez={modeData.axis.Ez} title={t(lang, 'axisPlot')} note={t(lang, 'axisNote')}
-                                                          scale={(source === 'diff' ? truthData : modeData)?.surface.E_max ?? modeData.surface.E_max}
-                                                          empty={t(lang, 'noAxisField')} />}
+            {onField && bundle && <AxisPlot z={bundle.axis.z} ez={bundle.axis.Ez[mode]} title={t(lang, 'axisPlot')} note={t(lang, 'axisNote')}
+                                            scale={scaleOf(refBundle, 'E') ?? scaleOf(bundle, 'E') ?? 1}
+                                            empty={t(lang, 'noAxisField')} />}
           </section>
 
           <aside className="panel right">

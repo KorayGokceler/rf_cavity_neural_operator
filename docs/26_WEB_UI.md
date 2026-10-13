@@ -34,9 +34,37 @@
 | `GET /api/predictions/{id}/modes/{k}` | yüzey E/H (faz için iki alan) + eksen boyunca E_z |
 | `GET /api/predictions/{id}/plane?mode&axis&pos&res` | kesit düzlemi: noktalar, üçgenler, E, H |
 | `GET /api/predictions/{id}/volume?mode&n` | 3B görünüm: kutu üzerinde ~n noktalık düzenli ızgara (x en hızlı), E, H, kavite içi maskesi |
+| `GET /api/predictions/{id}/fields` | bütün modlar düğümlerde + hacim mesh'i, tek yanıtta (çalışma alanı bunu kullanır) |
 | `GET /api/predictions/{id}/export` | JSON dosyası |
 
-**Faz kaydırıcısı tarayıcıda çalışır.** E ve H bir kez gönderilir, φ istemcide uygulanır; sunucuya gidip gelme yoktur.
+**Çalışma alanı alanı tarayıcıda hesaplar** (`web/src/fieldlab.ts`). Bir çözüm için tek istek atılır:
+`/fields`. İçinde bütün modların düğüm alanları (float16, her mod kendi E_max / H_max'ına bölünmüş), düğümler,
+tet'ler ve yüzey düğümleri var. Yanıt gzip'li (tünel: Colab, telefon). Sonrası tarayıcıda:
+- **kesit:** tet'ler düzlemle kesilir (mesh'in gerçek kesiti), kenar üstündeki değer kenar boyunca doğrusal;
+- **3B ızgara:** `locate_grid`'in aynısı (her tet kutusundaki ızgara noktalarını barisentrik testle bulur);
+- **mod, E/H, faz:** yalnız hangi diziden okunacağı değişir.
+
+Hız için:
+- Bir geometrinin FE, model ve fark çözümleri aynı mesh'i paylaşır. Kesitler ve ızgara mesh başına bir kez
+  hesaplanır. Tahminden sonra öteki kaynaklar arkadan indirilir; kaynak değiştirmek de beklemez.
+- Faz yalnız renk eşlemesinin aralığını değiştirir (genlik × |cos φ| / |sin φ|). Hacim dokusu yeniden
+  yüklenmez; her adımda yalnız oklar yeniden kurulur.
+- Bir değişiklik birkaç efekti tetikler; 3D görünüm yine kare başına bir kez çizer.
+
+Ölçüm (Playwright, tünel benzetimi 150 ms gecikme, 2 MB/s; yerleşimin GPU'su yok, çizim yazılımla):
+
+| işlem | önce | sonra |
+|---|---|---|
+| mod değiştir (kesit) | 0.47–0.49 s, 708 kB | 46–76 ms, 0 kB |
+| E ↔ H | 0.27–0.30 s | 51–55 ms |
+| kesit konumu | 0.39 s, 438 kB | 37 ms, 0 kB |
+| 3B hacme geç | 0.93 s, 2.9 MB | 0.16 s, 0 kB |
+| mod değiştir (hacim + oklar) | 2.0 s, 3.1 MB | 0.44 s, 0 kB |
+| 10 adım faz kaydırma (hacim) | 6.2 s | 0.65 s |
+| örneği aç (ilk indirme) | 763 kB | 529 kB (bütün modlar) |
+
+Önceden her mod değişimi ve kesit konumu yeni bir istekti. Yanıt gecikince bir sonraki değişiklik onu iptal
+ediyordu; görüntü bazen hiç değişmiyordu. Artık ilk indirmeden sonra hiçbir etkileşim ağa gitmez.
 
 **Kesit ve hacim örneklemesi** (`nedelec.locate_grid`): her tet, sınır kutusundaki ızgara noktalarını
 barisentrik testle bulur. Maliyet ızgaraya doğrusal. Eski `locate`, kavite dışındaki her nokta için 16
@@ -56,7 +84,8 @@ barisentrik testle bulur. Maliyet ızgaraya doğrusal. Eski `locate`, kavite dı
       normalinden, hafif eğik bakar.
     - **3B hacim:** alan büyüklüğü bütün hacimde (hacim görselleştirmesi). Zayıf alan saydam, güçlü alan
       koyu ve yoğun. Kavitenin yalnız arka duvarları çizilir; ön duvarlar hacmi örterdi.
-  - **Oklar** (iki kipte de): alanın yönü. Ok boyu |alan| ile orantılı; kesitte ~300, hacimde ~700 ok.
+  - **Oklar** (iki kipte de): alanın yönü. Ok boyu |alan| ile orantılı. Kesitte ~300 ok, kesit düzlemindeki
+    kare ızgarada; hacimde ~700 ok, ızgaranın her n'inci çizgisinde.
   - **Renk her zaman alan büyüklüğüdür.** Bileşen (x, y, z) seçeneği kaldırıldı; yön okların işi.
   - **Kontroller:** E/H, görünüm (kesit / 3B hacim), oklar, kesit ekseni ve konumu (mm; hacimde bakış
     ekseni), faz 0–180° kaydırıcısı ve ▶ oynat, yüzey (saydam / duvar alanı / gizli).

@@ -14,6 +14,7 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     GET  /api/geometries/{id}/features            model input features (names, ranges)
     GET  /api/geometries/{id}/feature_plane|feature_surface?name&…   one feature on a cut / the wall
     GET  /api/predictions/{id}/volume?mode&n         mode on a regular 3D grid (the 3D field view)
+    GET  /api/predictions/{id}/fields               all modes at the vertices + the mesh (the workspace, client side)
     GET  /api/datasets                            registered datasets (RFCAV_DATA, src/service/datasets.py)
     GET  /api/datasets/{d}/items | /stats         geometry table (filter, sort, page) / overview
     POST /api/datasets/{d}/items/{id}/open        geometry + FE solution (+ labels, parameters)
@@ -197,6 +198,8 @@ def create_app(service=None, datasets=None):
     lim = Limits()
     geoms, preds = Store(lim.max_items, lim.ttl_s), Store(lim.max_items, lim.ttl_s)
     app = FastAPI(title='RF Cavity Neural Solver', version=VERSION)
+    from fastapi.middleware.gzip import GZipMiddleware
+    app.add_middleware(GZipMiddleware, minimum_size=4096, compresslevel=3)   # tunnels (Colab, phone): fewer bytes
     app.state.service = service
     _access_token(app, os.environ.get('RFCAV_TOKEN') or None)
 
@@ -318,6 +321,25 @@ def create_app(service=None, datasets=None):
                             'E_max': float(np.linalg.norm(p['_E'][:, :, k], axis=1).max()),
                             'H_max': float(np.linalg.norm(p['_H'][:, :, k], axis=1).max())},
                 'axis': {'z_mm': [float(v) for v in z], 'Ez': [_clean(v) for v in ez]}}
+
+    @app.get('/api/predictions/{pid}/fields')
+    def fields(pid: str):
+        """Every mode of a solution at the mesh vertices + the volume mesh, in one response: the workspace
+        cuts planes, fills the 3D volume and applies modes, phase and E/H in the browser (no request per
+        change).  E, H: [K, Nv, 3] float16, each mode divided by its E_max / H_max (max over the vertices)."""
+        p = preds.get(pid)
+        g = geoms.get(p['_geometry_id'])
+        geom = p['_geom']
+        E, H = (np.transpose(np.asarray(p[k], float), (2, 0, 1)) for k in ('_E', '_H'))     # [K, Nv, 3]
+        e_max, h_max = (np.maximum(np.linalg.norm(F, axis=2).max(1), 1e-300) for F in (E, H))
+        axis = [service.axis_profile(p, k) for k in range(len(p['_f']))]
+        return {'n_modes': int(len(p['_f'])), 'n_vertices': int(E.shape[1]), 'n_tets': int(len(geom['tets'])),
+                'f_GHz': [float(v) for v in p['_f']], 'E_max': e_max.tolist(), 'H_max': h_max.tolist(),
+                'nodes_b64': b64(service.to_mm(geom, geom['X'])), 'tets_b64': b64(geom['tets'], np.uint32),
+                'vid_b64': b64(g['vid'], np.uint32),
+                'E_b64': b64(E / e_max[:, None, None], np.float16), 'H_b64': b64(H / h_max[:, None, None], np.float16),
+                'axis': {'z_mm': [float(v) for v in axis[0][0]] if axis else [],
+                         'Ez': [[_clean(v) for v in a[1]] for a in axis]}}
 
     @app.get('/api/predictions/{pid}/plane')
     def plane(pid: str, mode: int = 0, axis: str = 'y', pos: float | None = None, res: int = 121):
