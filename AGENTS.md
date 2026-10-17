@@ -1,6 +1,7 @@
 # AGENTS.md — instructions for every coding agent working on this repository
 
 Read this file first, then `docs/31_SESSION_HANDOFF.md` (current state, measurements, open decisions).
+How agents and models split the work (roles, branches, review, templates): `docs/32_AGENT_WORKFLOW.md`.
 The owner works in Turkish: reply to them in Turkish; code, comments and commit messages are English.
 
 ## What this project is
@@ -69,7 +70,8 @@ bash cluster/truba/run.sh all LABELS=field ... --dry-run      # always dry-run T
 - Do not change the data generator's behaviour without the owner's go-ahead.
 - Never open public tunnels from a sandbox, never disable TLS verification, never commit data or
   checkpoints (`*.h5`, `*.pkl`, `*.ckpt` are ignored).
-- One agent per branch or git worktree; do not edit the same files in parallel.
+- One agent per branch or git worktree (`bash scripts/agent_worktree.sh <name>`); do not edit the same
+  files in parallel. Claim an open item in docs/31 §6 (owner, branch) before starting it.
 - Docs: a change in behaviour updates the matching `docs/NN_*.md`; new topics get the next number and
   an entry in `docs/README.md`.
 - At the end of a session, update `docs/31_SESSION_HANDOFF.md` (what changed, numbers, open items) so

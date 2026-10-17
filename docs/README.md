@@ -14,6 +14,7 @@ Güncel çalışma belgeleri (kod bunlara göre yazılır):
 | [29_FIELD_LABELS](29_FIELD_LABELS.md) | alan etiketleri: eğri mesh + p3 etiket → p2 model uzayı, maliyet, TRUBA tek satır komut ve arayüz sayfası |
 | [30_ADAPTIVE_LABELS](30_ADAPTIVE_LABELS.md) | adaptif etiketler: hata göstergesi (hacim + duvar), yeniden mesh'leme, keskin kenar yuvarlatma, etiket / model mesh ayrımı, ölçümler |
 | [31_SESSION_HANDOFF](31_SESSION_HANDOFF.md) | oturum devri: güncel durum, ölçümler (eğitim adımı, veri hazırlama, çözücü, CG), kararlar, açık işler; her oturum sonunda güncellenir |
+| [32_AGENT_WORKFLOW](32_AGENT_WORKFLOW.md) | ajanlarla çalışma: kurulum (Claude Code ve diğer araçlar), roller ve modeller, worktree ile paralel iş, görev yaşam döngüsü, mesaj şablonları |
 | [23_ROADMAP](23_ROADMAP.md) | yol haritası |
 | [../cluster/truba/README.md](../cluster/truba/README.md) | TRUBA (SLURM) betikleri |
 

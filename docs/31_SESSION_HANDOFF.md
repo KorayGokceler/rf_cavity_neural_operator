@@ -149,17 +149,20 @@ diyor). TRUBA'da ölçülmeli.
 
 ## 6. Açık işler (öncelik sırasıyla)
 
-1. Pilot eğitim: 1–2 aile, birkaç yüz örnek. Öğrenme eğrisi ve aileler arası genelleme.
-2. Veri hattı:
-   - token özelliklerini veri üretilirken H5'e yazmak (örnek başına −2,8 s);
-   - operatörleri yerel diske önbelleklemek ya da yüklenen örnekleri birkaç adım yeniden kullanmak.
-3. CG'yi eğitim grafiğinden çıkarmak: Kp'yi örnek başına bir kez Cholesky ile ayrıştırıp üçgensel çözüm.
-   Alternatifler: p-multigrid ön koşullayıcı, tol 1e-6 denemesi.
-4. TRUBA referans koşuları (`TEST=1`, `MAX_NDOF` 900k) ve örnek başına belleğin ölçümü (§3.4).
-5. Alan modelini web arayüzüne bağlamak; README'yi alan modeline göre güncellemek.
-6. Hibrit mod prototipi (model alt uzayı → LOBPCG).
-7. Görev E: gövdede token alt örnekleme.
-8. Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor.
+Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu günceller.
+
+| # | iş | sahip | dal | durum |
+|---|---|---|---|---|
+| 1 | Pilot eğitim: 1–2 aile, birkaç yüz örnek. Öğrenme eğrisi ve aileler arası genelleme. | — | — | açık |
+| 2 | Veri hattı: token özelliklerini veri üretilirken H5'e yazmak (örnek başına −2,8 s); operatörleri yerel diske önbelleklemek ya da yüklenen örnekleri birkaç adım yeniden kullanmak. | — | — | açık |
+| 3 | CG'yi eğitim grafiğinden çıkarmak: Kp'yi örnek başına bir kez Cholesky ile ayrıştırıp üçgensel çözüm. Alternatifler: p-multigrid ön koşullayıcı, tol 1e-6 denemesi. | — | — | açık |
+| 4 | TRUBA referans koşuları (`TEST=1`, `MAX_NDOF` 900k) ve örnek başına belleğin ölçümü (§3.4). | — | — | açık |
+| 5 | Alan modelini web arayüzüne bağlamak; README'yi alan modeline göre güncellemek. | — | — | açık |
+| 6 | Hibrit mod prototipi (model alt uzayı → LOBPCG). | — | — | açık |
+| 7 | Görev E: gövdede token alt örnekleme. | — | — | açık |
+| 8 | Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor. | sahip | — | kullanıcıda |
+
+1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 
 ## 7. Ölçümleri yeniden üretme
 
@@ -177,14 +180,10 @@ diyor). TRUBA'da ölçülmeli.
 
 ## 8. Çalışma düzeni: birden çok model, birden çok ajan
 
-- **Tek doğruluk kaynağı repo:** `AGENTS.md` (her araç), `CLAUDE.md` (Claude Code; AGENTS.md'yi içe aktarır),
-  `docs/` ve bu belge. Sohbet geçmişi başka bir modele taşınmaz; taşınması gereken her şey buraya yazılır.
-- **Roller:**
-  - en güçlü model ana ajan ve entegratör;
-  - uygulayıcılar, her biri kendi dalında ya da worktree'sinde;
-  - farklı bir model ya da sağlayıcıdan bir inceleyici; farklı modeller farklı hataları yakalıyor;
-  - doğrulayıcı, testleri ve analitik kontrolü çalıştırır.
-- **Hakem testlerdir, model görüşü değil.** "Bitti" = ilgili testler + analitik kontrol + arayüzde build ve
-  tarayıcı kontrolü.
-- **Claude Code alt ajanları** `.claude/agents/` altında: `explorer`, `numerics-check`, `ui`, `physics-review`.
-- **Her oturumun sonunda bu belgenin §1, §3 ve §6'sı güncellenir.**
+Ayrıntılar `docs/32_AGENT_WORKFLOW.md`'de: kurulum, roller ve modeller, worktree ile paralel iş,
+görev yaşam döngüsü, mesaj şablonları. Özet:
+- tek doğruluk kaynağı repo (`AGENTS.md`, bu belge, `docs/`);
+- ajan başına bir dal ve worktree (`scripts/agent_worktree.sh`);
+- inceleme farklı bir modelden; hakem testler;
+- Claude Code'da `/task`, `/verify`, `/handoff` ve dört alt ajan;
+- her oturumun sonunda bu belgenin §1, §3, §4 ve §6'sı güncellenir.
