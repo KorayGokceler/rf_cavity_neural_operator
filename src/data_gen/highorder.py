@@ -567,12 +567,13 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
             "n_dof": int(fes.ndof), "n_pot": int(G.shape[1])}
 
 
-def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8):
+def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8, torsion_maxiter=5000):
     """Features of the quadrature points (normalised geometry), FEATURE_NAMES_3D order:
     x, y, z, dist_to_boundary, dir_bnd_x/y/z (unit vector to the nearest wall point), point volume
     (quadrature weight / max) and the torsion function (−Δw = 1, w = 0 on the wall, H1(order + 1)
     on the curved mesh, / max) — exact on coarse curved meshes, where the vertex features of the
-    straight mesh degenerate (no interior vertices).  Returns [Nt·nq, 9] float32."""
+    straight mesh degenerate (no interior vertices).  torsion_maxiter: CG iterations of the torsion
+    solve before it falls back to sparse Cholesky.  Returns [Nt·nq, 9] float32."""
     from scipy.spatial import cKDTree
     from ngsolve import (BND, CF, H1, TRIG, BilinearForm, GridFunction, IntegrationRule, LinearForm, Preconditioner,
                          TaskManager, grad, x, y, z)
@@ -586,8 +587,9 @@ def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8):
     fes = H1(mesh, order=int(order) + 1, dirichlet="wall")
     u, v = fes.TnT()
     dx = volume_measure(order + 1)
-    # Jacobi-CG to 1e-12: the float32 features equal the sparse-Cholesky ones (13k tets: 0 of 183k
-    # entries differ) at 0.55 s instead of 1.35 s (docs/31 §3.6)
+    # Jacobi-CG to 1e-12 instead of sparse Cholesky: 0.55 s instead of 1.35 s at 13k tets, float32
+    # features equal (13k tets: 0 of 183k entries differ; 95k tets: 7 of 1.3M, ≤ 6e-8; docs/31 §3.6).
+    # ngsolve's CGSolver returns silently at maxiter: a stalled solve falls back to the factorisation.
     from ngsolve.krylovspace import CGSolver
     with TaskManager():
         a = BilinearForm(grad(u) * grad(v) * dx, symmetric=True)
@@ -595,7 +597,10 @@ def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8):
         a.Assemble()
         f = LinearForm(1.0 * v * dx).Assemble()
         w = GridFunction(fes)
-        w.vec.data = CGSolver(a.mat, pre.mat, tol=1e-12, maxiter=5000) * f.vec
+        cg = CGSolver(a.mat, pre.mat, tol=1e-12, maxiter=torsion_maxiter)
+        w.vec.data = cg * f.vec
+        if cg.residuals and not cg.residuals[-1] <= 1e-12 * cg.residuals[0]:
+            w.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
     tw = np.asarray(w(mips)).reshape(-1)
     qv = np.asarray(qw, dtype=np.float64).reshape(-1)
     return np.column_stack([P, dist, direc, qv / qv.max(), tw / max(tw.max(), 1e-30)]).astype(np.float32)

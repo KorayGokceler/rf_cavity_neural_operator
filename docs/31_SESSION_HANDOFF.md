@@ -144,9 +144,12 @@ Sonuç: ağ küçük. Maliyet CPU'daki operatör kurulumunda, batch'leme dönü�
 - C'nin sütun permütasyonu indeks yeniden etiketlemesiyle yapılıyor.
 - Duvar kd-ağacı sorgusu paralel (1,29 s → 0,4 s).
 - Torsiyon özelliği seyrek Cholesky yerine Jacobi-CG ile çözülüyor, tol 1e-12 (1,35 s → 0,55 s).
-  Float32 özelliklerde 182 728 girdinin hiçbiri değişmedi.
+  Float32 özelliklerde 182 728 girdinin hiçbiri değişmedi. İncelemede 95k tetlik mesh'te 1,33M girdinin 7'si
+  ≤ 6e-8 farklı çıktı; bit eşitliği mesh'e bağlı, fark zararsız. CG `maxiter`'da sessizce durursa seyrek
+  Cholesky'ye dönülüyor (`test_torsion_feature_falls_back_to_cholesky_when_cg_stalls`).
 - **Sonuç:** 6 koşuda 3,5–6,3 s, ortanca ~4,2 s (önce ortanca ~9,5 s).
-- **Doğruluk:** K, M, G, Kp, C, P, qx, qw, token özellikleri bit düzeyinde aynı.
+- **Doğruluk:** bu örnekte K, M, G, Kp, C, P, qx, qw ve token özellikleri bit düzeyinde aynı. İnceleme, iki duvar
+  kabuklu 9,2k tetlik pillbox'ta da aynı sonucu buldu (6,81 s → 2,92 s).
 - Denenip alınmayanlar:
   - `Gᵀ(MG)` sırası 0,27 s kazandırıyor ama Kp'yi 4e-17 değiştiriyor; bit eşitliği için alınmadı.
   - Statik yoğunlaştırmalı torsiyon daha yavaş (1,3 s).
@@ -159,7 +162,8 @@ sonraki koşular; gerçek donanımı onlar temsil ediyor. Eğitimin ilk adımın
 
 - Bloklar SciPy'nin COO üzerinden `block_diag`'i yerine doğrudan birleştiriliyor; her çıktı dizisi için
   tek bellek ayırma yapılıyor.
-- **Sonuç (kararlı durum):** B=1 0,80 s → 0,25 s; B=2 1,58 s → 0,58 s.
+- **Sonuç (kararlı durum):** B=1 0,80 s → 0,34 s; B=2 1,58 s → 0,61 s. Tek bloklu batch değerleri kopyalıyor;
+  veri kümesinin dizileriyle bellek paylaşmıyor (inceleme bulgusu, kopyasız 0,25 s idi).
 - **Doğruluk:** batch tensörleri eskisiyle bit düzeyinde aynı (20 anahtar).
 - Yeni birim test `test_block_diag_csr_matches_scipy_block_diag`: sırasız, tekrarlı, açık sıfırlı, dolgulu
   girdiler.

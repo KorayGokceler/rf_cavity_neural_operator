@@ -270,7 +270,7 @@ def _block_diag(mats, rows, cols, layout='csr'):
     torch COO tensor (row-major) of the same matrix.
 
     The CSR blocks are concatenated directly (canonical: sorted columns, duplicates summed — what
-    scipy's block_diag gives through COO, entry for entry); 0.8–4 s → ~0.1 s for one 140k-DOF p2
+    scipy's block_diag gives through COO, entry for entry); 0.80 → 0.34 s (steady state) for one 140k-DOF p2
     geometry (docs/31 §3.6)."""
     if layout not in ('csr', 'coo'):
         raise ValueError(f"layout must be 'csr' or 'coo', got {layout!r}")
@@ -292,17 +292,17 @@ def _block_diag(mats, rows, cols, layout='csr'):
         idx = torch.from_numpy(np.vstack([C.row, C.col]).astype(np.int64))
         return torch.sparse_coo_tensor(idx, torch.from_numpy(C.data.astype(np.float64)),
                                        size=S.shape).coalesce()
-    # one allocation per output array (fresh memory dominates the cost); one block shares its values
+    # one allocation per output array (fresh memory dominates the cost); int64 offsets
     nb, tot = len(blocks), sum(A.nnz for A in blocks)
     ptr = np.zeros(nb * rows + 1, np.int64)
     ind = np.empty(tot, np.int64)
-    val = blocks[0].data if nb == 1 else np.empty(tot, np.float64)
+    val = blocks[0].data.copy() if nb == 1 else np.empty(tot, np.float64)   # never the dataset's arrays
     o = 0
     for b, A in enumerate(blocks):
         r0, r = b * rows + 1, A.shape[0]
-        np.add(A.indptr[1:], o, out=ptr[r0:r0 + r])
+        np.add(A.indptr[1:], o, out=ptr[r0:r0 + r], dtype=np.int64)
         ptr[r0 + r:r0 + rows] = o + A.nnz
-        np.add(A.indices, b * cols, out=ind[o:o + A.nnz])
+        np.add(A.indices, b * cols, out=ind[o:o + A.nnz], dtype=np.int64)
         if nb > 1:
             val[o:o + A.nnz] = A.data
         o += A.nnz

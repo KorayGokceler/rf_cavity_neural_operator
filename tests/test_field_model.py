@@ -160,3 +160,15 @@ def test_grad_checkpoint_gives_the_same_outputs_and_gradients(sample):
     assert g0.keys() == g1.keys() and len(g0) > 0
     for n in g0:
         assert torch.equal(g1[n], g0[n]), n
+
+
+def test_torsion_feature_falls_back_to_cholesky_when_cg_stalls(sample):
+    """point_features: the torsion CG stops silently at maxiter; a stalled solve must fall back to the
+    factorisation (same float32 features), and the default path reproduces field_operators' features."""
+    from ngsolve import TET, VOL, IntegrationRule
+    mesh, ops, _, _ = sample
+    mips = mesh.MapToAllElements(IntegrationRule(TET, 4), VOL)
+    args = (mesh, mips, ops["qx"], ops["qw"], ops["center"], ops["scale"], 2)
+    f_ok = ho.point_features(*args)
+    assert np.array_equal(f_ok, np.asarray(ops["qfeat"]).reshape(f_ok.shape))
+    np.testing.assert_allclose(ho.point_features(*args, torsion_maxiter=2), f_ok, rtol=0, atol=1e-6)
