@@ -117,6 +117,40 @@ diyor). TRUBA'da ölçülmeli.
 - **Kp'nin tam LU'su (SciPy SuperLU):** 15 dakikada bitmedi; gerçek bir Cholesky kütüphanesi gerekiyor
   (CHOLMOD ya da NGSolve `sparsecholesky`).
 
+### 3.6 Eğitim ve çıkarım maliyeti: ölçüm ve optimizasyon
+
+Ölçüm betiği: `python scripts/profile_field_step.py <H5> --sample 1 [--device cuda] [--cprofile]`.
+Örnek §3.2'deki geometri. CPU, 4 iş parçacığı, 4 mod, `field_3d.yaml` boyutları, 0,854 M parametre.
+
+**Temel durum** (optimizasyondan önce):
+
+| aşama | süre | not |
+|---|---|---|
+| mesh (üretici, CAD'den eğri mesh) | 8,3 s | yalnız çıkarımda; eğitimde `.vol`'dan 0,24 s |
+| `field_operators` | 8,8–10,3 s (6 koşu) | |
+| `field_item` / `field_collate` | 0,13 / 2,4 s | |
+| çıkarım ileri geçişi (gradyansız) | 8,1–9,3 s | CG 1,8 s (110 iterasyon); tepe RSS 3,1 GB |
+| eğitim adımı | ileri 8,8–20,6 s, geri 13–15 s | CG 1,5–1,8 s + 1,5–1,8 s; **tepe RSS 10,1 GB** |
+| ağın yoğun FLOP'u (ileri) | 309 GFLOP | GPU'da ~0,1 s mertebesi (ölçülmedi) |
+
+Sonuç: ağ küçük. Maliyet CPU'daki operatör kurulumunda, batch'leme dönüşümlerinde ve aktivasyon belleğinde.
+
+**Faz 1a — `field_operators`** (`highorder._tosp`, `field_operators`, `point_features`):
+
+- NGSolve matrisleri kendi CSR dizilerinden kopyalanıyor. COO üzerinden yeniden sıralama kalktı
+  (K: 0,66 s → 1 ms).
+- K ve M ölçeklemesi yerinde yapılıyor.
+- `ConvertOperator` `TaskManager` içinde çalışıyor (1,73 s → 0,57 s, aynı sonuç).
+- C'nin sütun permütasyonu indeks yeniden etiketlemesiyle yapılıyor.
+- Duvar kd-ağacı sorgusu paralel (1,29 s → 0,4 s).
+- Torsiyon özelliği seyrek Cholesky yerine Jacobi-CG ile çözülüyor, tol 1e-12 (1,35 s → 0,55 s).
+  Float32 özelliklerde 182 728 girdinin hiçbiri değişmedi.
+- **Sonuç:** 6 koşuda 3,5–6,3 s, ortanca ~4,2 s (önce ortanca ~9,5 s).
+- **Doğruluk:** K, M, G, Kp, C, P, qx, qw, token özellikleri bit düzeyinde aynı.
+- Denenip alınmayanlar:
+  - `Gᵀ(MG)` sırası 0,27 s kazandırıyor ama Kp'yi 4e-17 değiştiriyor; bit eşitliği için alınmadı.
+  - Statik yoğunlaştırmalı torsiyon daha yavaş (1,3 s).
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -161,6 +195,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 6 | Hibrit mod prototipi (model alt uzayı → LOBPCG). | — | — | açık |
 | 7 | Görev E: gövdede token alt örnekleme. | — | — | açık |
 | 8 | Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor. | sahip | — | kullanıcıda |
+| 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0 ve 1a bitti |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 

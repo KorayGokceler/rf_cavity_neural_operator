@@ -150,7 +150,7 @@ A 1024-geometry shard takes about 4 h, within the 12 h default. Training with p2
 per geometry is the expensive part:
 
 - Batch 2 per GPU.
-- 14 loader workers: operator assembly is about 10 s per geometry.
+- 14 loader workers: operator assembly is about 4–6 s per geometry at 13k tets, 4 threads (was ~10 s; docs/31 §3.6).
 - `CACHE_DIR` keeps the pickled operators, about 0.5 GB per geometry. Use it only when the scratch
   quota allows.
 

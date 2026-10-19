@@ -6,7 +6,7 @@
 #  Data: dataset_generator_3d.py --labels field (one H5 per shard): per geometry a curved netgen
 #  mesh (.vol + BREP), NGSolve HCurl p3 labels (frequencies, QoI) and the label fields projected
 #  onto the model space HCurl(model_order) of the same mesh.  The dataset rebuilds the mesh and the
-#  model-order operators per geometry (~10 s at p2 for 16k tets: use num_workers ≥ 8 or cache_dir).
+#  model-order operators per geometry (~4–6 s at p2 for 13k tets, docs/31 §3.6: num_workers ≥ 8 or cache_dir).
 #
 #  Model: the trunk of EigenspaceOperator3D on the quadrature points, ψ(x_q) → L2(p) → HCurl(p)
 #  DOFs, Rayleigh–Ritz with the kernel projection (same losses and metrics as eigenspace_3d.yaml).

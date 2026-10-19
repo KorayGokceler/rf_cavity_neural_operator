@@ -141,7 +141,7 @@ class FieldDataset(Dataset):
     data_path: one H5 file, a glob ("data/field/*.h5"), a directory or a list.  The split is by
     geometry (seeded permutation of the sorted (file, group) index).  cache_dir: keep the rebuilt
     operators on disk (pickle per geometry; ~0.5 GB per 16k-tet geometry at p2) instead of
-    reassembling them every epoch (~10 s per geometry at p2)."""
+    reassembling them every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6)."""
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,
                  feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False):

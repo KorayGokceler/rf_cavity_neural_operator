@@ -448,7 +448,14 @@ def edge_dofs(mesh, gfs, X_phys, edges, n_gauss=4):
 # ─────────────────────────── learned-field operators (model option B) ───────
 
 def _tosp(mat):
+    """scipy CSR copy of an NGSolve sparse matrix.  A SparseMatrixd is copied from its own CSR arrays
+    (sorted, ~1 ms for 8M entries; the COO route sorts again, ~0.3 s); symmetric storage keeps one
+    triangle in CSR and goes through COO."""
     import scipy.sparse as sp
+    from ngsolve.la import SparseMatrixd, SparseMatrixSymmetricd
+    if isinstance(mat, SparseMatrixd) and not isinstance(mat, SparseMatrixSymmetricd):
+        v, c, p = mat.CSR()
+        return sp.csr_matrix((np.array(v), np.array(c), np.array(p)), shape=(mat.height, mat.width))
     r, c, v = mat.COO()
     return sp.csr_matrix((np.asarray(v), (np.asarray(r), np.asarray(c))), shape=(mat.height, mat.width))
 
@@ -505,7 +512,8 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
     if scale is None:
         scale = float(np.max(np.abs(Xv - center)))
     s = float(scale)
-    Ks, Ms = (Ks * s).tocsr(), (Ms / s).tocsr()                # ξ-scaling of the covariant basis
+    Ks.data *= s                                              # ξ-scaling of the covariant basis, in place
+    Ms.data *= 1 / s                                          # (= scipy's Ms / s, bit for bit)
     free_h1 = np.flatnonzero(np.asarray(list(fesh1.FreeDofs()), dtype=bool))
     cols = [Gs[:, free_h1]]
     for shell in wall_shells(mesh)[1:]:                       # H1 vertex DOF i = vertex i
@@ -519,12 +527,19 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
     # learned field → DOFs: point values → VectorL2 (per element) → HCurl (ConvertOperator)
     vl, sl = VectorL2(mesh, order=order), L2(mesh, order=order)
     from ngsolve import ConvertOperator
-    Cs = _tosp(ConvertOperator(vl, fes))
+    with TaskManager():
+        Cs = _tosp(ConvertOperator(vl, fes))
     nt = mesh.ne
     sdofs = np.array([sl.GetDofNrs(ElementId(VOL, e)) for e in range(nt)], dtype=np.int64)   # [Nt, nl]
     nl, ns = sdofs.shape[1], sl.ndof
     colmap = (np.arange(3)[None, :, None] * ns + sdofs[:, None, :]).reshape(-1)               # (t, c, l)
-    C = Cs[:, colmap].tocsr()
+    pos = np.full(Cs.shape[1], -1, dtype=Cs.indices.dtype)
+    pos[colmap] = np.arange(colmap.size, dtype=pos.dtype)
+    if colmap.size == Cs.shape[1] and pos.min() >= 0:          # a permutation (L2 DOFs are element-local)
+        C = sp.csr_matrix((Cs.data, pos[Cs.indices], Cs.indptr), shape=Cs.shape)
+    else:
+        C = Cs[:, colmap].tocsr()
+    C.sort_indices()                                          # canonical CSR, as field_collate builds
     ir = IntegrationRule(TET, int(quad_order or 2 * order))
     ref = np.array([tuple(pt) for pt in ir.points])[:, :3]
     wq = np.array(list(ir.weights))
@@ -559,23 +574,28 @@ def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8):
     on the curved mesh, / max) — exact on coarse curved meshes, where the vertex features of the
     straight mesh degenerate (no interior vertices).  Returns [Nt·nq, 9] float32."""
     from scipy.spatial import cKDTree
-    from ngsolve import (BND, CF, H1, TRIG, BilinearForm, GridFunction, IntegrationRule, LinearForm,
+    from ngsolve import (BND, CF, H1, TRIG, BilinearForm, GridFunction, IntegrationRule, LinearForm, Preconditioner,
                          TaskManager, grad, x, y, z)
     bm = mesh.MapToAllElements(IntegrationRule(TRIG, wall_order), BND)
     on = np.asarray(mesh.BoundaryCF({"wall": 1.0}, default=0.0)(bm)).reshape(-1) > 0.5
     wp = (np.asarray(CF((x, y, z))(bm)).reshape(-1, 3)[on] - center) / scale
     P = qxn.reshape(-1, 3)
-    dist, idx = cKDTree(wp).query(P)
+    dist, idx = cKDTree(wp).query(P, workers=-1)
     d = wp[idx] - P
     direc = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-30)
     fes = H1(mesh, order=int(order) + 1, dirichlet="wall")
     u, v = fes.TnT()
     dx = volume_measure(order + 1)
+    # Jacobi-CG to 1e-12: the float32 features equal the sparse-Cholesky ones (13k tets: 0 of 183k
+    # entries differ) at 0.55 s instead of 1.35 s (docs/31 §3.6)
+    from ngsolve.krylovspace import CGSolver
     with TaskManager():
-        a = BilinearForm(grad(u) * grad(v) * dx, symmetric=True).Assemble()
+        a = BilinearForm(grad(u) * grad(v) * dx, symmetric=True)
+        pre = Preconditioner(a, "local")
+        a.Assemble()
         f = LinearForm(1.0 * v * dx).Assemble()
         w = GridFunction(fes)
-        w.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
+        w.vec.data = CGSolver(a.mat, pre.mat, tol=1e-12, maxiter=5000) * f.vec
     tw = np.asarray(w(mips)).reshape(-1)
     qv = np.asarray(qw, dtype=np.float64).reshape(-1)
     return np.column_stack([P, dist, direc, qv / qv.max(), tw / max(tw.max(), 1e-30)]).astype(np.float32)
