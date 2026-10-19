@@ -3,7 +3,7 @@ field_operators, field_item + collate), inference without gradients and one trai
 backward), the Kp CG share of each, the dense FLOPs of the network and the peak memory.  CPU or CUDA.
 
     python scripts/profile_field_step.py <field-label H5> [--sample 1] [--device cuda] [--threads 4]
-        [--reps 2] [--config configs/field_3d.yaml] [--cprofile] [--json out.json]
+        [--reps 2] [--config configs/field_3d.yaml] [--grad_checkpoint] [--cprofile] [--json out.json]
 
 The model has the sizes of --config; the weights are random (the cost does not depend on them).  Every
 timing is wall clock without a profiler; --cprofile adds a separate profiled run of field_operators.
@@ -89,10 +89,11 @@ def to_device(batch, device):
     return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
 
 
-def build_model(cfg_path, val_dim, n_modes):
+def build_model(cfg_path, val_dim, n_modes, **eigenspace):
     with open(cfg_path) as fh:
         cfg = yaml.safe_load(fh)
     mc, tc = cfg["model"], cfg["training"]
+    mc["eigenspace"] = {**mc["eigenspace"], **eigenspace}
     lm = CavityLightning(
         val_dim=val_dim, num_field_modes=min(int(mc["num_field_modes"]), n_modes), hidden_dim=mc["embed_dim"],
         n_heads=mc["n_heads"], n_basis=mc["n_basis"], rff_dim=mc["rff_dim"],
@@ -114,6 +115,7 @@ def main():
     ap.add_argument("--reps", type=int, default=2)
     ap.add_argument("--config", default="configs/field_3d.yaml")
     ap.add_argument("--cprofile", action="store_true")
+    ap.add_argument("--grad_checkpoint", action="store_true", help="model.eigenspace.grad_checkpoint = true")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
@@ -122,7 +124,7 @@ def main():
     ngsolve.SetNumThreads(a.threads)
     dev = torch.device(a.device)
     clock = Clock(dev)
-    res = {"device": str(dev), "threads": a.threads}
+    res = {"device": str(dev), "threads": a.threads, "grad_checkpoint": a.grad_checkpoint}
 
     with h5py.File(a.h5, "r") as f:
         keys = sorted(k for k in f.keys() if k.startswith("sample_"))
@@ -166,7 +168,8 @@ def main():
     batch = to_device(batch, dev)
     res["t_to_device"] = clock() - t
 
-    lm = build_model(a.config, batch["Input_funcs"].shape[-1], K)
+    lm = build_model(a.config, batch["Input_funcs"].shape[-1], K,
+                     **({"grad_checkpoint": True} if a.grad_checkpoint else {}))
     lm.to(dev)
     model = lm.model
     res.update(n_tets=int(mesh.ne), n_tokens=int(batch["X"].shape[1]), n_dof=int(ops["n_dof"]),

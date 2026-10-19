@@ -8,6 +8,8 @@ Maxwell cavity eigenmodes (E field, Whitney N0 edge DOFs).
 
 1. Trunk: RFF(xyz) ‖ vertex features → MLP → n_layers mass-aware linear-attention blocks (key /
    value sums weighted by the node volumes batch['Area'], NEO).
+   grad_checkpoint: in training, keep only the inputs of each block's attention and FFN halves and
+   recompute them in the backward (one extra trunk forward for ~÷2 training memory; docs/31 §3.6).
 2. Edge basis: for edge e = (a → b) (low → high vertex index) a vector MLP evaluates m vector
    fields at the midpoint from ½(h_a + h_b) ‖ RFF(x_mid) and dots them with t_e = x_b − x_a:
        V[e, j] = ψ_j(x_mid) · t_e  ≈ ∫_e ψ_j · t   (midpoint rule).
@@ -19,6 +21,7 @@ Maxwell cavity eigenmodes (E field, Whitney N0 edge DOFs).
 """
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from src.models.hcurl import hcurl_ritz
 from src.models.layers import MassAwareBlock, MLPEncoder, RandomFourierFeatures, mass_weights, physics_freq_z
@@ -43,7 +46,7 @@ class EigenspaceOperator3D(nn.Module):
     def __init__(self, val_dim, embed_dim=128, n_layers=4, n_heads=4, n_basis=16,
                  num_field_modes=6, rff_dim=64, rff_length_scale=0.1, dropout=0.0,
                  edge_rff=True, mass_ridge=1e-8, drop_tol=1e-6, eig_broadening=1e-4,
-                 kp_tol=1e-8, kp_maxiter=2000):
+                 kp_tol=1e-8, kp_maxiter=2000, grad_checkpoint=False):
         super().__init__()
         if n_basis < num_field_modes:
             raise ValueError(f"n_basis={n_basis} < num_field_modes={num_field_modes}: "
@@ -52,6 +55,7 @@ class EigenspaceOperator3D(nn.Module):
         self.mass_ridge, self.drop_tol, self.eig_broadening = mass_ridge, drop_tol, eig_broadening
         self.kp_tol, self.kp_maxiter = kp_tol, kp_maxiter
         self.edge_rff = bool(edge_rff)
+        self.grad_checkpoint = bool(grad_checkpoint)
         self.freq_stats = None
 
         self.rff = RandomFourierFeatures(3, rff_dim, length_scale=rff_length_scale)
@@ -71,9 +75,16 @@ class EigenspaceOperator3D(nn.Module):
         if mask is None:
             mask = torch.ones(X.shape[:2], dtype=torch.bool, device=X.device)
         w = mass_weights(batch, mask)
-        h = self.encoder(torch.cat([self.rff(X), Y], dim=-1)) * mask.unsqueeze(-1).to(X.dtype)
+        ckpt = self.grad_checkpoint and self.training and torch.is_grad_enabled()
+        inp = torch.cat([self.rff(X), Y], dim=-1)
+        h = (checkpoint(self.encoder, inp, use_reentrant=False) if ckpt else self.encoder(inp)) \
+            * mask.unsqueeze(-1).to(X.dtype)
         for blk in self.blocks:
-            h = blk(h, mask, w)
+            if ckpt:        # keep the half-block inputs; the backward recomputes one half at a time
+                h = checkpoint(blk.attn_part, h, mask, w, use_reentrant=False)
+                h = checkpoint(blk.ffn_part, h, mask, use_reentrant=False)
+            else:
+                h = blk(h, mask, w)
         return self.norm(h)
 
     def edge_basis(self, batch: dict) -> torch.Tensor:

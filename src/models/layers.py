@@ -93,8 +93,13 @@ class MassAwareBlock(nn.Module):
                                  nn.Linear(4 * dim, dim), nn.Dropout(dropout))
 
     def forward(self, x, mask, weights):
+        return self.ffn_part(self.attn_part(x, mask, weights), mask)
+
+    def attn_part(self, x, mask, weights):
         h = self.norm1(x)
-        x = x + self.attn(h, h, h, mask=mask, weights=weights)
+        return x + self.attn(h, h, h, mask=mask, weights=weights)
+
+    def ffn_part(self, x, mask):
         return (x + self.ffn(self.norm2(x))) * mask.unsqueeze(-1).to(x.dtype)
 
 

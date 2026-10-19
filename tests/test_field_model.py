@@ -133,3 +133,30 @@ def test_block_diag_csr_matches_scipy_block_diag():
         assert np.array_equal(D, S.toarray())
     with pytest.raises(ValueError):
         _block_diag(mats[:1], 3, 3)
+
+
+def test_grad_checkpoint_gives_the_same_outputs_and_gradients(sample):
+    """grad_checkpoint recomputes the encoder and the attention / FFN halves in the backward: the
+    training forward, the loss and every parameter gradient are the same as without it."""
+    _, ops, r, Y = sample
+    f_ghz = r["f_hz"] / 1e9
+    batch = field_collate([field_item(ops, Y, f_ghz)])
+    m, runs = 8, []
+    for gc in (False, True):
+        torch.manual_seed(0)
+        model = EigenspaceOperatorField(val_dim=9, embed_dim=32, n_layers=2, n_heads=2, n_basis=m,
+                                        num_field_modes=K, rff_dim=16, rff_length_scale=0.3, grad_checkpoint=gc)
+        model.freq_stats = {"mean": float(f_ghz.mean()), "std": 1.0}
+        model.train()
+        out = model(batch)
+        G_M, G_A, _ = hcurl_grams(out["basis"].double(), batch["Y_field"].double(),
+                                  {"M_div": out["M_div"], "A_V": out["A_V"], "Z": out["Z"]}, batch)
+        loss = span_residual(G_M, m).mean() + span_residual(G_A, m).mean() + out["eigenvalues"].mean()
+        loss.backward()
+        runs.append((out["eigenvalues"].detach(), loss.detach(),
+                     {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}))
+    (lam0, l0, g0), (lam1, l1, g1) = runs
+    assert torch.equal(lam0, lam1) and torch.equal(l0, l1)
+    assert g0.keys() == g1.keys() and len(g0) > 0
+    for n in g0:
+        assert torch.equal(g1[n], g0[n]), n

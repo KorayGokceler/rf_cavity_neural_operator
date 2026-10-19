@@ -78,6 +78,16 @@ pillbox_pipes #0 (the current N0 label mesh has 10k tets / 13.5k edges):
 - **Storage:** netgen .vol + BREP reload + Curve reproduces the curved mesh exactly (eigenvalues
   1e-14) in 0.13 s, from 1.4 MB per sample. Operators are rebuilt per item, because storing them
   would take ~0.4 GB per sample at p2.
+- **Measured per step** (13k tets, 183k tokens, CPU, 4 threads; docs/31 §3.6):
+  - `field_operators` ~4.2 s;
+  - `field_collate` 0.25 s;
+  - training step ~22 s.
+- **Training memory:** `model.eigenspace.grad_checkpoint: true` (the default in `configs/field_3d.yaml`)
+  keeps only the inputs of the encoder and of each block's attention and FFN halves, and recomputes
+  them in the backward.
+  - Peak process memory: 9.9 GB → 3.8 GB.
+  - Gradients are bit-identical (`test_grad_checkpoint_gives_the_same_outputs_and_gradients`).
+  - The step time stays within the measurement noise on CPU.
 
 ## 5. Remaining work
 

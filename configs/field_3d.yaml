@@ -42,6 +42,7 @@ model:
     edge_rff: true              # RFF(x_q) enters the field head
     kp_tol: 1.0e-8
     kp_maxiter: 3000            # p2 potential spaces are ~3× larger than the N0 vertex spaces
+    grad_checkpoint: true       # recompute encoder + attention/FFN halves in the backward: 9.9 → 3.8 GB, same gradients (docs/31 §3.6)
     drop_tol: 1.0e-6
     mass_ridge: 1.0e-8
     eig_broadening: 1.0e-4

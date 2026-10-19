@@ -71,7 +71,7 @@ def parse_overrides(override_list):
         overrides[key] = val
     return overrides
 
-_EIGENSPACE3D_KEYS = ('n_layers', 'edge_rff', 'mass_ridge', 'drop_tol', 'eig_broadening',
+_EIGENSPACE3D_KEYS = ('n_layers', 'edge_rff', 'mass_ridge', 'drop_tol', 'eig_broadening', 'grad_checkpoint',
                       'kp_tol', 'kp_maxiter')
 
 

@@ -2,7 +2,7 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-17, dal `claude/field-model`.
+> Son güncelleme: 2026-10-19, dal `claude/field-model`.
 
 ## 1. Durum
 
@@ -164,6 +164,39 @@ sonraki koşular; gerçek donanımı onlar temsil ediyor. Eğitimin ilk adımın
 - Yeni birim test `test_block_diag_csr_matches_scipy_block_diag`: sırasız, tekrarlı, açık sıfırlı, dolgulu
   girdiler.
 
+**Faz 2a — aktivasyon kontrol noktası** (`model.eigenspace.grad_checkpoint`, `field_3d.yaml`'da açık):
+
+- Eğitimde encoder ile her bloğun dikkat ve FFN yarılarının yalnız girdileri tutuluyor; backward'da yarılar
+  tek tek yeniden hesaplanıyor.
+- Sıralı denemeler (3 tekrar, tepe RSS):
+
+| ayar | tepe RSS | kararlı adım (ileri + geri) |
+|---|---|---|
+| kapalı | 9,89 GB | 21,5–24,9 s |
+| blok başına | 4,56 GB | 24,4–28,6 s |
+| yarım blok başına | 4,07 GB | 21,8–24,0 s |
+| yarım blok + encoder (**seçilen**) | **3,79 GB** | 21,4–22,5 s |
+
+- **Doğruluk:** gradyanlar bit düzeyinde aynı
+  (`test_grad_checkpoint_gives_the_same_outputs_and_gradients`).
+- **Uçtan uca:** `train.py --fast_dev_run` ile train, val ve test adımları geçiyor.
+- Yeniden hesaplamanın maliyeti CPU'da ölçüm gürültüsünde kaldı. GPU'da ölçülmeli.
+- Aynı koşudaki çıkarım ileri geçişi 5,5–6,6 s çıktı (önce 8,1–9,3 s). Çıkarım kodu değişmedi; bu fark
+  makine değişkenliği.
+
+**Faz 0–2a özeti** (kararlı durum, örnek başına):
+
+| | önce | sonra |
+|---|---|---|
+| veri hazırlama (operatörler + collate) | ~10,3 s | ~4,5 s |
+| eğitim tepe belleği | 9,9 GB | 3,8 GB |
+
+**Sıradaki adımlar:**
+- **1c — operatör önbelleği.** Hedef: yüklemeyi ≤ 0,5 s'ye indirmek ve disk boyutunu ölçmek.
+- **3a — Kp'nin Cholesky'si.** Hedef: CG 3 s → ≤ 0,5 s.
+- **2b — bf16 karışık hassasiyet** (GPU).
+- **GPU ölçümü:** Colab'da `profile_field_step.py --device cuda`.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -208,7 +241,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 6 | Hibrit mod prototipi (model alt uzayı → LOBPCG). | — | — | açık |
 | 7 | Görev E: gövdede token alt örnekleme. | — | — | açık |
 | 8 | Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor. | sahip | — | kullanıcıda |
-| 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b bitti |
+| 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b, 2a bitti; sırada 1c, 3a, 2b |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 
