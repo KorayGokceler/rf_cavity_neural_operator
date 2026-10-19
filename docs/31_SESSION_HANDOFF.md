@@ -191,9 +191,31 @@ sonraki koşular; gerçek donanımı onlar temsil ediyor. Eğitimin ilk adımın
 | veri hazırlama (operatörler + collate) | ~10,3 s | ~4,5 s |
 | eğitim tepe belleği | 9,9 GB | 3,8 GB |
 
+**Faz 1c — operatör önbelleği:** mevcut `dataset.cache_dir` (geometri başına pickle) hedefi zaten
+karşılıyor, kod değişmedi.
+
+- Önbellekten yükleme 0,16–0,19 s (sayfa önbelleği sıcak); ilk kurulum + yazma 5,9–7,0 s.
+- Boyut: geometri başına 332–382 MB. 2000 geometri ≈ 0,7 TB.
+- İçerik: K, M 97 MB, C 135 MB, Kp 22 MB, P 14 MB; indeksler int32.
+- K ile M'nin deseni aynı; paylaşılırsa ~%9 kazanç. Değmediği için yapılmadı.
+- Disk kotası yetmiyorsa önbelleksiz kurulum örnek başına ~4,5 s.
+
+**Faz 3a ön ölçümü — Kp'nin seyrek Cholesky'si** (NGSolve `sparsecholesky`, aynı Kp, CPU, 24 sağ taraf):
+
+| yöntem | süre |
+|---|---|
+| ayrıştırma | 0,92–0,96 s |
+| çözüm | 0,54–0,58 s |
+| torch CG, tol 1e-8 | 1,66–1,77 s (130 iterasyon) |
+
+- Çözümler 6e-10 içinde aynı.
+- Eğitim adımı başına (ileri + geri) CG ~3,4 s, Cholesky ~2,0 s. Adımın %6–10'u kadar kazanç.
+- GPU'da CG büyük olasılıkla bunun çok altında. CPU'daki bir ayrıştırma GPU'daki eğitimi yavaşlatır;
+  NGSolve nesnesi DataLoader işçilerinden de taşınamaz.
+- **Karar:** GPU ölçümünden önce yapılmıyor.
+
 **Sıradaki adımlar:**
-- **1c — operatör önbelleği.** Hedef: yüklemeyi ≤ 0,5 s'ye indirmek ve disk boyutunu ölçmek.
-- **3a — Kp'nin Cholesky'si.** Hedef: CG 3 s → ≤ 0,5 s.
+- **3a:** yalnız GPU ölçümü CG'yi pahalı gösterirse.
 - **2b — bf16 karışık hassasiyet** (GPU).
 - **GPU ölçümü:** Colab'da `profile_field_step.py --device cuda`.
 
