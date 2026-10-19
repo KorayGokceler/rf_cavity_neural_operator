@@ -267,25 +267,47 @@ def _block_diag(mats, rows, cols, layout='csr'):
     """Block-diagonal torch CSR (float64) of scipy matrices on a padded
     (rows × cols per block) layout.  CSR: ~3–8× faster sparse products than
     COO (review docs/22, m5) and no coalesce step.  layout='coo': a coalesced
-    torch COO tensor (row-major) of the same matrix."""
+    torch COO tensor (row-major) of the same matrix.
+
+    The CSR blocks are concatenated directly (canonical: sorted columns, duplicates summed — what
+    scipy's block_diag gives through COO, entry for entry); 0.8–4 s → ~0.1 s for one 140k-DOF p2
+    geometry (docs/31 §3.6)."""
+    if layout not in ('csr', 'coo'):
+        raise ValueError(f"layout must be 'csr' or 'coo', got {layout!r}")
     blocks = []
     for A in mats:
         A = sp.csr_matrix(A, dtype=np.float64)
-        A.resize((rows, cols))
+        if A.shape[0] > rows or A.shape[1] > cols:
+            raise ValueError(f"_block_diag: block {A.shape} exceeds the padded {rows} × {cols}")
+        if not A.has_canonical_format:
+            A = A.copy()
+            A.sum_duplicates()
         blocks.append(A)
-    S = sp.block_diag(blocks, format='csr')
     if layout == 'coo':
+        for A in blocks:
+            A.resize((rows, cols))
+        S = sp.block_diag(blocks, format='csr')
         S.sort_indices()
         C = S.tocoo()
         idx = torch.from_numpy(np.vstack([C.row, C.col]).astype(np.int64))
         return torch.sparse_coo_tensor(idx, torch.from_numpy(C.data.astype(np.float64)),
                                        size=S.shape).coalesce()
-    if layout != 'csr':
-        raise ValueError(f"layout must be 'csr' or 'coo', got {layout!r}")
-    return torch.sparse_csr_tensor(torch.from_numpy(S.indptr.astype(np.int64)),
-                                   torch.from_numpy(S.indices.astype(np.int64)),
-                                   torch.from_numpy(S.data), size=S.shape,
-                                   check_invariants=False)
+    # one allocation per output array (fresh memory dominates the cost); one block shares its values
+    nb, tot = len(blocks), sum(A.nnz for A in blocks)
+    ptr = np.zeros(nb * rows + 1, np.int64)
+    ind = np.empty(tot, np.int64)
+    val = blocks[0].data if nb == 1 else np.empty(tot, np.float64)
+    o = 0
+    for b, A in enumerate(blocks):
+        r0, r = b * rows + 1, A.shape[0]
+        np.add(A.indptr[1:], o, out=ptr[r0:r0 + r])
+        ptr[r0 + r:r0 + rows] = o + A.nnz
+        np.add(A.indices, b * cols, out=ind[o:o + A.nnz])
+        if nb > 1:
+            val[o:o + A.nnz] = A.data
+        o += A.nnz
+    return torch.sparse_csr_tensor(torch.from_numpy(ptr), torch.from_numpy(ind), torch.from_numpy(val),
+                                   size=(nb * rows, nb * cols), check_invariants=False)
 
 
 def _mask(lengths, n):

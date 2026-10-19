@@ -151,6 +151,19 @@ Sonuç: ağ küçük. Maliyet CPU'daki operatör kurulumunda, batch'leme dönü�
   - `Gᵀ(MG)` sırası 0,27 s kazandırıyor ama Kp'yi 4e-17 değiştiriyor; bit eşitliği için alınmadı.
   - Statik yoğunlaştırmalı torsiyon daha yavaş (1,3 s).
 
+**Ölçüm notu:** bu bulut sanal makinesinde belleğe ilk dokunuş ~0,2 GB/s (800 MB: 3,8 s), sonra ~4,8 GB/s.
+Bir sürecin ilk birkaç çağrısı bu yüzden 2–10 kat yavaş görünüyor. Tablolardaki "kararlı" sayılar ısınmadan
+sonraki koşular; gerçek donanımı onlar temsil ediyor. Eğitimin ilk adımındaki 20,6 s de bu etkiden.
+
+**Faz 1b — `field_collate`** (`dataset_3d._block_diag`, CSR yolu):
+
+- Bloklar SciPy'nin COO üzerinden `block_diag`'i yerine doğrudan birleştiriliyor; her çıktı dizisi için
+  tek bellek ayırma yapılıyor.
+- **Sonuç (kararlı durum):** B=1 0,80 s → 0,25 s; B=2 1,58 s → 0,58 s.
+- **Doğruluk:** batch tensörleri eskisiyle bit düzeyinde aynı (20 anahtar).
+- Yeni birim test `test_block_diag_csr_matches_scipy_block_diag`: sırasız, tekrarlı, açık sıfırlı, dolgulu
+  girdiler.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -195,7 +208,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 6 | Hibrit mod prototipi (model alt uzayı → LOBPCG). | — | — | açık |
 | 7 | Görev E: gövdede token alt örnekleme. | — | — | açık |
 | 8 | Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor. | sahip | — | kullanıcıda |
-| 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0 ve 1a bitti |
+| 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b bitti |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 

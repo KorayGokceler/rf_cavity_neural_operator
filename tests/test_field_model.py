@@ -100,3 +100,36 @@ def test_ritz_of_the_labels_returns_their_eigenvalues_and_mismatch_is_caught(sam
     assert Y3.shape == Y.shape
     with pytest.raises(ValueError, match="not eigenvectors"):
         check_labels(ops, Y3, r3["f_hz"] / 1e9)
+
+
+def test_block_diag_csr_matches_scipy_block_diag():
+    """The direct CSR concatenation gives scipy's block_diag entry for entry: canonical (sorted, duplicates
+    summed, explicit zeros kept), padded rows and columns empty, any input format."""
+    import scipy.sparse as sp
+    from src.data.dataset_3d import _block_diag
+    rng = np.random.default_rng(0)
+
+    def messy(n, m):                                   # unsorted, duplicated COO with an explicit zero
+        r, c = rng.integers(0, n, 40), rng.integers(0, m, 40)
+        v = rng.standard_normal(40)
+        v[0] = 0.0
+        return sp.coo_matrix((v, (r, c)), shape=(n, m))
+
+    mats = [messy(7, 5), sp.csr_matrix(messy(4, 6)), messy(6, 3).tocsc(), sp.csr_matrix((0, 2))]
+    for blocks in (mats[:1], mats):
+        rows, cols = max(A.shape[0] for A in blocks) + 2, max(A.shape[1] for A in blocks) + 1
+        T = _block_diag(blocks, rows, cols)
+        padded = []
+        for A in blocks:
+            A = sp.csr_matrix(A, dtype=np.float64)
+            A.resize((rows, cols))
+            padded.append(A)
+        S = sp.block_diag(padded, format="csr")
+        assert T.shape == S.shape
+        assert np.array_equal(T.crow_indices().numpy(), S.indptr)
+        assert np.array_equal(T.col_indices().numpy(), S.indices)
+        assert np.array_equal(T.values().numpy(), S.data)
+        D = _block_diag(blocks, rows, cols, layout="coo").to_dense().numpy()
+        assert np.array_equal(D, S.toarray())
+    with pytest.raises(ValueError):
+        _block_diag(mats[:1], 3, 3)
