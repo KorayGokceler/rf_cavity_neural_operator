@@ -204,8 +204,8 @@ turns a form into the line to paste on a login node:
 - `scripts/eval_3d.py`, the prediction service and the QoI loss are N0-only. `field3d` checkpoints
   train and test through `train.py`, but `--then-eval` is skipped for them.
 - No rotation augmentation for `field3d`: C and QP are built for the stored orientation.
-- `field_operators` spends its 11 s in the point features, the scipy conversions and
-  `ConvertOperator`; 2–3× faster looks possible.
+- `field_operators` took ~9.5 s per 13k-tet geometry (point features, scipy conversions,
+  `ConvertOperator`). It now takes ~4.2 s with bit-identical output (docs/31 §3.6).
 - Netgen meshing is not bit-reproducible across runs (threaded surface meshing). The stored mesh is
   the record, so the labels are reproducible from the H5, not from the seed.
 - The per-family numbers in §2.4 come from 4 draws each. The first TRUBA trial run (`TEST=1`) should
