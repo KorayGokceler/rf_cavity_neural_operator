@@ -25,6 +25,8 @@ Araştırma ve inceleme kayıtları (tarihsel; kararların gerekçesi burada, ko
 | [18_3D_EXTENSION](18_3D_EXTENSION.md) | 3B'ye geçiş araştırması: çözücü seçenekleri, N0 / NGSolve yüksek mertebe deneyleri (E2'), eksenel simetrik çözüm |
 | [21_3D_REVIEW_PHYSICS](21_3D_REVIEW_PHYSICS.md) | fizik / sayısal analiz incelemesi ve bulguları |
 | [22_3D_REVIEW_MODEL](22_3D_REVIEW_MODEL.md) | model / eğitim kodu incelemesi ve bulguları |
+| [33_GEOMETRY_REVIEW](33_GEOMETRY_REVIEW.md) | geometri ailelerinin literatürle karşılaştırılması (2026-10): etiket tanımı sorunları, aile aile değerlendirme, yeni aileler, deformasyon, doğrulama seti, sahibin kararları |
+| [research/2026-10_geometry](research/2026-10_geometry/README.md) | docs/33'ün ham malzemesi: dört araştırma raporu (İngilizce), kaynak listeleri ve sayıları üreten betikler |
 
 2D model (GNOT, SpectralNO, 2D eigenspace operator) ve onun belgeleri (eski 00–17) ile H-alanı formülasyonu
 kaldırıldı; `legacy-2d` (2D) ve `legacy-h` (H formülasyonu) dallarında duruyorlar.

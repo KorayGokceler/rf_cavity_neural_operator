@@ -2,7 +2,7 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-19, dal `claude/field-model`.
+> Son güncelleme: 2026-10-22, dal `claude/field-model`.
 
 ## 1. Durum
 
@@ -13,11 +13,16 @@
 | Model uzayı tabanı | p2, ≤ 10k tetlik model mesh'inde ölçülen frekans tabanı %0,04–0,9 (docs/30). Model bunun altına inemez. |
 | Web arayüzü | Çalışma alanı alanı tarayıcıda hesaplıyor (docs/26). "Model" kaynağı hâlâ N0 modeli; alan modeli arayüze bağlanmadı. |
 | TRUBA | Alan etiketi koşusu henüz yapılmadı (`TEST=1` referans koşuları açık iş). |
+| Geometri aileleri | Literatürle karşılaştırıldı (docs/33). Etiket tanımlarında üç sorun (ridged_box ekseni, borulu E_acc uzunluğu, β = 1), eliptik yarım hücre çözücüsünde bir tolerans hatası; değişiklikler sahibin onayını bekliyor (docs/33 §10). |
 | README | Model bölümü N0 modelini anlatıyor; alan modeline göre güncellenmeli. |
 
-Son commitler: `866e4a8` (çalışma alanı istemci tarafında), `971834e` (kesit kaydırıcısı, 3B hacim görünümü,
-oklar), `e36d3fd` (pahı mesh'lenemeyen çekilişte keskin kenarlı yedek), `584abc2` (alan etiketi üretimi
-arayüzde; onarılmış mesh'lerin model mesh'i), `2249fbd` (adaptif etiketler).
+Son commitler:
+- bu oturumun son commit'i: geometri incelemesi (docs/33, docs/research/2026-10_geometry);
+- `6ccb65f` inceleme düzeltmeleri (burulma CG yedeği, paylaşılmayan batch değerleri, int64 ofsetler);
+- `843146f` gövdede gradyan kontrol noktası (eğitim belleği 9,9 → 3,8 GB);
+- `d832941` blok köşegen CSR'yi doğrudan kuran collate;
+- `6e17f3d` 2,3 kat hızlı alan operatörleri (bit düzeyinde aynı çıktı) ve aşama profil betiği;
+- `99adcee`, `7e7db32` ajan düzeni (AGENTS.md, CLAUDE.md, alt ajanlar, docs/31–32).
 
 ## 2. Yöntem tek bakışta
 
@@ -267,9 +272,11 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 6 | Hibrit mod prototipi (model alt uzayı → LOBPCG). | — | — | açık |
 | 7 | Görev E: gövdede token alt örnekleme. | — | — | açık |
 | 8 | Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor. | sahip | — | kullanıcıda |
-| 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b, 2a bitti; sırada 1c, 3a, 2b |
+| 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b, 2a bitti; 1c ölçüldü (kod gerekmiyor); 3a GPU ölçümüne kadar ertelendi; sırada GPU ölçümü (Colab) ve 2b |
+| 10 | Geometri ve etiket düzeltmeleri (docs/33 §9–10): etiket tanımları ve ham değerlerin saklanması; eliptik yarım hücre çözücüsü ve çakışma kuralı; aralıklar, çapalar, re-entrant duvar; çok hücrede K ≥ N + 2; deformasyon ön ayarları; yeni aileler (qwr, dtl_cell, rfd, gun). TRUBA ana üretiminden önce karar verilmeli. | sahip (karar) | `claude/field-model` | inceleme bitti; sahibin kararını bekliyor |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
+10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
 
 ## 7. Ölçümleri yeniden üretme
 
