@@ -50,9 +50,9 @@ do not commit it.
 | `a1_halfcell.py` | standalone copy of the half-cell construction, plus the wall angle (imported by the other `a1_` scripts) | — | — |
 | `a1_ratios.py` | published mid and end cells: ratios, wall angle, outcome of our validity test | §3.1 | 1 s |
 | `a1_derived.py` | end/mid ratios, iris-tip radii, passband spacing, pipe cut-offs, field left at the caps, capped-coax estimate | §3.1, §3.9 | < 1 s |
-| `a1_mc_generator.py` | acceptance and wall-angle distribution of the sampler and of the perturbed anchors | §3.1 | see below |
-| `a1_notangent3.py`, `a1_solverfix.py` | the tangent-solver tolerance finding (multi-start check of the "no tangent" rejections) | §3.1 | see below |
-| `a1_widened.py` | acceptance and wall-angle spread: current vs widened ranges, current vs proposed rules | §3.1 | see below |
+| `a1_mc_generator.py` | acceptance and wall-angle distribution of the sampler and of the perturbed anchors | §3.1 | 2 min |
+| `a1_notangent3.py`, `a1_solverfix.py` | the tangent-solver tolerance finding (multi-start check of the "no tangent" rejections) | §3.1 | 5 min each |
+| `a1_widened.py` | acceptance and wall-angle spread: current vs widened ranges, current vs proposed rules | §3.1 | 2 min |
 | `a3_axisym.py` | axisymmetric TM0 eigen-solver (NGSolve, H_φ formulation) for the generator's reentrant / pillbox_pipes profiles; run alone: the analytic pillbox check | §3.2, §3.3 | 1.3 s |
 | `a3_family_stats.py` | R/Q, G, T and shape ratios of `n` draws of a family: `python …/a3_family_stats.py reentrant 400 0` | §3.2, §3.3 | ~0.2 s per draw |
 | `a3_scan.py` | reentrant profile scan outside today's ranges (storage-ring region, capacity-loaded cells) | §3.3 | 8 s |
@@ -72,7 +72,10 @@ Check runs in this session, after the scripts were copied here:
 | `a3_gun.py` | 2859.1 / 2879.0 MHz, separation 19.9 MHz | published 0-mode 2852.5, π-mode 2856.0 MHz (3.5 MHz) |
 | `deform_mag.py` | median maximum displacement 8.42 / 0.84 / 0.17 mm for `deform_max` 0.5 / 0.05 / 0.01 | — |
 | `a1_ratios.py`, `a1_derived.py` | the tables of a1 §3.1 and §4.1 | the report |
-| `a1_solverfix.py` | 222 of 3000 random β = 1 draws (7.4 %) rejected with a valid wall; all 222 recovered by tight tolerances; 298 s | the report |
+| `a1_solverfix.py` | 222 of 3000 random β = 1 draws (7.4 %) rejected with a valid wall; all 222 recovered by tight tolerances | the report |
+| `a1_notangent3.py` | valid walls missed by the solver: 133 of 1500 perturbed-TESLA draws (8.9 %), 101 of 1500 perturbed-`ilc_ll` draws (6.7 %) | the report |
+| `a1_mc_generator.py` | accepted: TESLA neighbourhood 58.1 %, `ilc_ll` 42.8 % (32.6 % rejected as re-entrant), random β = 1 50.1 % | the report |
+| `a1_widened.py` | accepted: current ranges 50.1 % → 75.9 % with the proposed rules (5.4 % re-entrant); widened ranges 41.8 % → 65.3 % (13.9 % re-entrant) | the report |
 | `elliptical_dist.py` | wall angle p1 / p10 / p50 / p90 / p99 = 61.5 / 68.7 / 78.9 / 87.1 / 89.7°; 50 % of random β = 1 half-cells accepted | docs/33 §3.1 |
 | `chord_inflation.py` | the table of docs/33 §2.2 | — |
 
