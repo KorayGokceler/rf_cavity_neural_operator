@@ -169,7 +169,7 @@ const S = {
   // TRUBA page
   trubaTab: { tr: 'TRUBA', en: 'TRUBA' },
   trubaTitle: { tr: 'TRUBA için tek satır komut', en: 'One-line TRUBA command' },
-  trubaIntro: { tr: 'Formu doldurun, oluşan tek satırı TRUBA login düğümünde (ör. ssh levrek1) yapıştırın: depo yoksa klonlanır, ortam yoksa kurulur, işler SLURM’a sırayla (bağımlılıklarla) gönderilir.', en: 'Fill in the form and paste the single line on a TRUBA login node (e.g. ssh levrek1): the repo is cloned if missing, the environment is set up if missing, and the jobs are submitted to SLURM in order (with dependencies).' },
+  trubaIntro: { tr: 'Formu doldurun, oluşan tek satırı TRUBA ARF kullanıcı arayüzü sunucusunda (OpenVPN açıkken ör. ssh kullanici@172.16.6.11, arf-ui1) yapıştırın: depo yoksa klonlanır, ortam yoksa kurulur, işler SLURM’a sırayla (bağımlılıklarla) gönderilir.', en: 'Fill in the form and paste the single line on a TRUBA ARF user-interface server (with OpenVPN on, e.g. ssh user@172.16.6.11, arf-ui1): the repo is cloned if missing, the environment is set up if missing, and the jobs are submitted to SLURM in order (with dependencies).' },
   action: { tr: 'İşlem', en: 'Action' },
   act_all: { tr: 'veri + eğitim', en: 'data + training' },
   act_dataset: { tr: 'yalnız veri', en: 'data only' },
