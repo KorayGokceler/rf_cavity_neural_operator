@@ -34,7 +34,9 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
+import tempfile
 import time
 from multiprocessing import Pool, TimeoutError as MPTimeoutError, cpu_count
 
@@ -90,6 +92,9 @@ def parse_args(argv=None):
                    help="Max Lipschitz constant of δ (< 1 keeps the map injective, tets positively oriented).")
     p.add_argument("--start_id", type=int, default=0,
                    help="First sample id (shards: ids start_id … start_id+n_total−1, same seed → disjoint samples).")
+    p.add_argument("--step_dir", type=str, default=None,
+                   help="Also write each undeformed sample's CAD solid as <family>_<id>.step [mm] into this folder "
+                        "(for CST; deformed samples are skipped: their labels belong to the warped mesh).")
     p.add_argument("--resume", action="store_true",
                    help="Continue an interrupted run: append to <h5_filename>.partial and skip the ids already in "
                         "it (cluster jobs killed by the wall-time limit lose nothing).")
@@ -771,8 +776,6 @@ def field_settings(args):
 def generate_field_sample(s_id):
     """Field-label sample (docs/29): the generator geometry, its curved netgen mesh and the HCurl
     labels (field_labels.label_sample) — a failed curved mesh / element budget re-draws."""
-    import tempfile
-
     from src.data_gen import field_labels as fl
     with tempfile.TemporaryDirectory() as tmp:
         cad = os.path.join(tmp, "solid.brep")
@@ -780,6 +783,7 @@ def generate_field_sample(s_id):
             path, h, st, ARGS.n_eigen_modes, deform=dmap, settings=field_settings(ARGS),
             sharp_edges=int(prm.get("n_sharp_edges", 0)), params=prm)
         g = mesh_sample(s_id, cad_path=cad, post=post)
+        _save_step(g, s_id)
     lab = g["post"]
     return {"id": s_id, "labels": "field", "field": lab, "freqs": lab["freqs"], "freq_next": lab["freq_next"],
             "shape_type": g["shape_type"], "geom_params": g["params"], "mesh_h": float(g["h"]),
@@ -801,8 +805,9 @@ def generate_sample_data(s_id):
                 gmsh.clear()
             except Exception:
                 pass
+    tmp = tempfile.mkdtemp() if getattr(ARGS, "step_dir", None) else None     # CAD for the STEP copy
     try:
-        g = mesh_sample(s_id)
+        g = mesh_sample(s_id, cad_path=tmp and os.path.join(tmp, "solid.brep"))
         nodes, tets, shape_type, params, h, volume, t_mesh = (
             g[k] for k in ("nodes", "tets", "shape_type", "params", "h", "volume", "t_mesh"))
         t0 = time.perf_counter()
@@ -810,6 +815,7 @@ def generate_sample_data(s_id):
         k = ARGS.n_eigen_modes
         vals, vecs, info = solve_e_modes(A, k + 1)
         t_solve = time.perf_counter() - t0
+        _save_step(g, s_id)
         return {
             "id": s_id, "nodes": np.ascontiguousarray(A["mesh"].p.T), "tets": np.ascontiguousarray(A["mesh"].t.T),
             "edges": A["edges"], "e_edges": vecs[:, :k],
@@ -823,10 +829,21 @@ def generate_sample_data(s_id):
         print(f"Error generating sample {s_id}: {e}")
         return None
     finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
         try:
             gmsh.clear()
         except Exception:
             pass
+
+
+def _save_step(g, s_id):
+    """--step_dir: the sample's CAD solid as <family>_<id>.step [mm] (mesh_sample result g; skipped for
+    deformed samples and for the discrete freeform family, which have no CAD solid to match the labels)."""
+    if getattr(ARGS, "step_dir", None) and g["cad_path"] and g["deform"] is None:
+        from src.data_gen.highorder import write_step
+        os.makedirs(ARGS.step_dir, exist_ok=True)
+        write_step(g["cad_path"], os.path.join(ARGS.step_dir, f"{g['shape_type']}_{s_id:08d}.step"))
 
 
 def _write_common_attrs(g, res):

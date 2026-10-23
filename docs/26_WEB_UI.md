@@ -148,7 +148,14 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
   ```
   <GEN_ROOT>/<TAG>/h5/<aile>/<aile>_s00000.h5 …
   <GEN_ROOT>/<TAG>/pkl/<aile>.pkl
+  <GEN_ROOT>/<TAG>/step/<aile>/<aile>_<kimlik>.step
   ```
+- **STEP dosyaları:** deforme olmayan her geometrinin CAD katısı, mm biriminde, parçasıyla birlikte `step/<aile>/`
+  klasörüne (Drive'da da) yazılır. CST ya da başka bir CAD aracında aynı geometriyi çözmek için. Dosya adındaki
+  kimlik H5'teki `sample_<kimlik>` ile aynı. Deforme örneklerin etiketleri bükülmüş mesh'e ait olduğundan onlara
+  STEP yazılmaz; CST karşılaştırması için deformasyon olasılığını 0 seçin. Katı, kavitenin vakum hacmidir
+  (borular PEC kapaklı); CST'de arka planı PEC (ya da kayıplı bakır, σ = 5,8·10⁷ S/m) seçip katıyı vakum olarak
+  içe aktarın.
 - **Google Drive:** `Colab_WebUI.ipynb` (tek hücre) ya da `Colab_Maxwell3D.ipynb` hücre 15, `MyDrive/rf_cavity_3d/ui_datasets` klasörünü kullanır. Üretim **Colab VM'sinin CPU'larında** çalışır (çekirdek başına bir işçi; GPU gerekmez).
   - Parçalar önce yerel diske yazılır, tamamlanınca Drive'a taşınır (Drive yavaş bir ağ diski).
   - Bağlantı koparsa biten parçalar Drive'da kalır. Aynı işi yeniden başlatınca bitmiş parçalar atlanır, kaldığı yerden devam eder.

@@ -239,6 +239,22 @@ def test_cli_writes_h5(tmp_path):
             assert np.all(g["edges"][:, 0] < g["edges"][:, 1])
 
 
+def test_cli_step_dir_writes_the_cad_of_undeformed_samples(tmp_path):
+    from netgen.occ import OCCGeometry
+    out, step = tmp_path / "s.h5", tmp_path / "step"
+    common = ["--n_workers", "1", "--mesh_size", "0.2", "--n_eigen_modes", "2", "--families", "pillbox_pipes",
+              "--step_dir", str(step)]
+    gen.main(["--n_total", "2", "--h5_filename", str(out), *common])
+    with h5py.File(out, "r") as f:
+        for key in f:
+            sid = int(key.split("_")[-1])
+            shape = OCCGeometry(str(step / f"pillbox_pipes_{sid:08d}.step")).shape
+            assert shape.mass == pytest.approx(f[key].attrs["volume"] * 1e9, rel=1e-6)   # STEP in mm, H5 in m
+    gen.main(["--n_total", "1", "--start_id", "10", "--deform_prob", "1", "--h5_filename", str(tmp_path / "d.h5"),
+              *common])
+    assert not (step / "pillbox_pipes_00000010.step").exists()       # deformed: labels ≠ the CAD solid
+
+
 def test_cli_resume_appends_missing_ids(tmp_path):
     """--resume (cluster wall-time kills): an interrupted run's .partial keeps its samples, only
     the missing ids are generated, and the result equals an uninterrupted run; large id offsets

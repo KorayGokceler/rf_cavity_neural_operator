@@ -3,6 +3,7 @@ the TRUBA layout (cluster/truba) so the results mix with cluster datasets:
 
     <gen_root>/<TAG>/h5/<family>/<family>_s00000.h5 …   (shards of `shard_size` geometries)
     <gen_root>/<TAG>/pkl/<family>.pkl                    (converted, lean by default; N0 labels only)
+    <gen_root>/<TAG>/step/<family>/<family>_<id>.step   (CAD of every undeformed geometry [mm], e.g. for CST)
 
 Two label kinds, as on TRUBA: 'n0' (Whitney N0 on the gmsh mesh, one process per core) and 'field'
 (adaptive NGSolve HCurl p3 labels on a curved mesh, docs/29–30: H5 only, `threads` NGSolve threads per
@@ -274,6 +275,7 @@ class JobManager:
                     continue
                 job.stage = f"shard {s + 1}/{n_shards}"
                 local = os.path.join(tmp, os.path.basename(dest))
+                step_local = os.path.join(tmp, f"step_s{s:05d}")
                 start = int(p['block']) * ID_BLOCK + s * size
                 base_done = job.done
 
@@ -287,13 +289,18 @@ class JobManager:
                 job.ok_shard = job.failed_shard = 0
                 self._exec(job, [self.python, 'src/data_gen/dataset_generator_3d.py', *generator_args(p),
                                  '--n_total', str(count), '--start_id', str(start),
-                                 '--h5_filename', local, '--resume'], prog)
+                                 '--h5_filename', local, '--resume', '--step_dir', step_local], prog)
                 job.ok, job.failed = ok0 + job.ok_shard, f0 + job.failed_shard
                 job.done = base_done + count
                 job.stage = f"copying shard {s + 1} to the storage"
                 shutil.move(local, dest + '.part')
                 os.replace(dest + '.part', dest)
                 job.outputs.append(dest)
+                if os.path.isdir(step_local):                    # STEP files next to the shards
+                    step_dir = os.path.join(os.path.dirname(os.path.dirname(h5_dir)), 'step', p['family'])
+                    os.makedirs(step_dir, exist_ok=True)
+                    for f in os.listdir(step_local):
+                        shutil.move(os.path.join(step_local, f), os.path.join(step_dir, f))
             if p.get('convert', True) and p.get('labels', 'n0') != 'field':   # field: H5 only (docs/29)
                 job.stage = 'converting to PKL'
                 shards = sorted(f for f in os.listdir(h5_dir) if f.endswith('.h5'))

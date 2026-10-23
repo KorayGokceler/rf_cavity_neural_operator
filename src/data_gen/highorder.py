@@ -150,6 +150,13 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
     return (mesh, shape) if return_shape else mesh
 
 
+def write_step(brep_path, step_path):
+    """STEP copy [mm] of a BREP solid [m] (the generator's CAD, or the H5 'brep' of a field label), for CST
+    and other CAD tools."""
+    from netgen.occ import OCCGeometry, Pnt
+    OCCGeometry(str(brep_path)).shape.Scale(Pnt(0, 0, 0), 1000.0).WriteStep(str(step_path))
+
+
 def load_curved_mesh(vol_path, brep_path, curve, deform=None):
     """Rebuild a curved mesh saved as netgen .vol (straight tets + surface geometry info) plus the
     BREP of the meshed shape (netgen_mesh(..., return_shape=True)): identical vertex / element
