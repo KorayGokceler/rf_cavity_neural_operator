@@ -16,7 +16,7 @@ One curved mesh per geometry; two polynomial orders on it.
 | curved mesh | `highorder.netgen_mesh` | netgen at maxh = 3·h, curvaturesafety 2, grading 0.5, curved to order 3, local repair of distorted elements (§2.2) |
 | labels | `field_labels.label_sample` | HCurl **p3**: frequencies, fields, QoI computed directly from the p3 fields (`mode_qoi`) |
 | model space | `field_labels.project_to_model` | M-orthogonal projection of the p3 fields onto HCurl **p2** of the same mesh (nested spaces, so this is the exact best approximation) |
-| storage | `field_labels.write_field_group` | per geometry: netgen `.vol` + BREP of the meshed shape (+ deformation map), `freqs`, `u_model` (float32), `qoi`, `rq_model`, `proj_err` |
+| storage | `field_labels.write_field_group` | per geometry: netgen `.vol` + BREP of the meshed shape (+ deformation map), `freqs`, `u_model` (float32), `qoi`, `axis_t` / `axis_ez` (E_z along the beam axis at U = 1 J, float32: T and R/Q at any β), `rq_model`, `proj_err` |
 | dataset | `FieldDataset` | rebuilds the curved mesh exactly, assembles the p2 operators, checks the stored labels against them (§3.3) |
 | model | `CavityLightning(model_type='field3d')` | `EigenspaceOperatorField` (docs/28), same losses and metrics as the N0 model |
 
@@ -180,7 +180,7 @@ Knobs, from cheapest to most accurate:
 - `--dry-run` prints every sbatch command with its dependencies and submits nothing
   (`dry_sbatch.sh`).
 - Re-running is safe: finished shards are skipped, and the same `EXP` resumes from `last.ckpt`.
-- The field TAG is `F_p3p2_ms0.10_k10_mf0.05_v1`, separate from the N0 TAG.
+- The field TAG is `F_p3p2_ms0.10_k10_mf0.05_v2`, separate from the N0 TAG.
 
 The web UI's **TRUBA** tab (`src/service/truba.py`, `/api/truba/config`, `/api/truba/command`)
 turns a form into the line to paste on a login node:

@@ -13,7 +13,7 @@
 | Model uzayı tabanı | p2, ≤ 10k tetlik model mesh'inde ölçülen frekans tabanı %0,04–0,9 (docs/30). Model bunun altına inemez. |
 | Web arayüzü | Çalışma alanı alanı tarayıcıda hesaplıyor (docs/26). "Model" kaynağı hâlâ N0 modeli; alan modeli arayüze bağlanmadı. |
 | TRUBA | Alan etiketi koşusu henüz yapılmadı (`TEST=1` referans koşuları açık iş). |
-| Geometri aileleri | Literatürle karşılaştırıldı (docs/33). Etiket tanımlarında üç sorun (ridged_box ekseni, borulu E_acc uzunluğu, β = 1), eliptik yarım hücre çözücüsünde bir tolerans hatası; değişiklikler sahibin onayını bekliyor (docs/33 §10). |
+| Geometri aileleri | Literatürle karşılaştırıldı ve düzeltmeler yapıldı (docs/33 §12): ridged_box / box ekseni, borusuz standart E_acc uzunluğu, eksen E_z'nin saklanması (her β için), eliptik yarım hücre çözücüsü (tolerans, çok başlangıç, re-entrant duvar), çapalar, aralıklar. Veri kümesi etiketi `_v2`. Yeni aileler ayrı iş. |
 | README | Model bölümü N0 modelini anlatıyor; alan modeline göre güncellenmeli. |
 
 Son commitler:
@@ -273,7 +273,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 7 | Görev E: gövdede token alt örnekleme. | — | — | açık |
 | 8 | Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor. | sahip | — | kullanıcıda |
 | 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b, 2a bitti; 1c ölçüldü (kod gerekmiyor); 3a GPU ölçümüne kadar ertelendi; sırada GPU ölçümü (Colab) ve 2b |
-| 10 | Geometri ve etiket düzeltmeleri (docs/33 §9–10): etiket tanımları ve ham değerlerin saklanması; eliptik yarım hücre çözücüsü ve çakışma kuralı; aralıklar, çapalar, re-entrant duvar; çok hücrede K ≥ N + 2; deformasyon ön ayarları; yeni aileler (qwr, dtl_cell, rfd, gun). TRUBA ana üretiminden önce karar verilmeli. | sahip (karar) | `claude/field-model` | inceleme bitti; sahibin kararını bekliyor |
+| 10 | Geometri ve etiket düzeltmeleri (docs/33 §12). Kalan: yeni aileler (qwr, rfd, dtl_cell, gun, büyük açıklıklı eliptik), spoke uç duvarı ve dtl yarım tüpleri, composite'in dönüşümü, doğrulama seti (§8). TRUBA `TEST=1` koşuları artık `_v2` etiketleriyle. | Claude Code oturumu | `claude/field-model` | düzeltmeler bitti; yeni aileler sahibin sıra kararını bekliyor |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.

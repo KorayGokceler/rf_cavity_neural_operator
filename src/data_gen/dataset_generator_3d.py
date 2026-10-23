@@ -778,7 +778,7 @@ def generate_field_sample(s_id):
         cad = os.path.join(tmp, "solid.brep")
         post = lambda path, h, dmap, st, prm: fl.label_sample(  # noqa: E731
             path, h, st, ARGS.n_eigen_modes, deform=dmap, settings=field_settings(ARGS),
-            sharp_edges=int(prm.get("n_sharp_edges", 0)))
+            sharp_edges=int(prm.get("n_sharp_edges", 0)), params=prm)
         g = mesh_sample(s_id, cad_path=cad, post=post)
     lab = g["post"]
     return {"id": s_id, "labels": "field", "field": lab, "freqs": lab["freqs"], "freq_next": lab["freq_next"],

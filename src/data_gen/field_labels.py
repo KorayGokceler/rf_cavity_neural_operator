@@ -18,7 +18,11 @@ Storage (dataset_generator_3d --labels field, H5 group per geometry; read by loa
     deform_om / deform_a / deform_ph   the smooth deformation map (when the sample has one)
     freqs    [K]     label (p3) frequencies, GHz
     u_model  [n2, K] float32  projected label fields, model-order DOFs (wall rows 0)
-    qoi      [K, Q]  label QoI (qoi_names attr), U = 1 J, copper, β = 1
+    qoi      [K, Q]  label QoI (qoi_names attr), U = 1 J, copper, β = 1; L_acc from
+                     src.qoi.operators.acceleration_length (axis chord without a standard length)
+    axis_t   [P]     positions along the beam axis inside the label mesh [m] (attrs axis_dir, axis_point,
+                     axis_dt; L_acc attr = the accelerating length, NaN = axis chord)
+    axis_ez  [K, P]  E along the axis there [V/m] at U = 1 J (float32): T, V, R/Q at any β
     rq_model [K]     Rayleigh quotients of u_model in the model space [1/m²] (load-time check)
     proj_err [K]     ‖u₃ − E u₂‖_M / ‖u₃‖_M
     attrs    labels='field', label_order, model_order, curve, n_tets, n_dof_model, n_dof_label, …
@@ -159,17 +163,19 @@ def _check_reload(vol_bytes, shape, curve, deform, model_order, ndof):
         raise RuntimeError(f"stored model mesh rebuilds HCurl(p{model_order}) with {n} DOFs, the fields have {ndof}")
 
 
-def _beam_axis(shape_type, mesh):
-    from src.qoi.operators import beam_axis
+def _beam_axis(shape_type, mesh, params=None):
+    """(axis_dir, axis_point, L_acc) of mode_qoi for the family (src.qoi.operators)."""
+    from src.qoi.operators import acceleration_length, beam_axis
     X = np.array([tuple(p.p) for p in mesh.ngmesh.Points()])
-    ax = beam_axis(shape_type, X, 1.0, np.zeros(3))
+    ax = beam_axis(shape_type, X, 1.0, np.zeros(3), params)
     d = ax.get("axis_dir", "z")
     return (np.eye(3)["xyz".index(d)] if isinstance(d, str) else np.asarray(d, float),
-            np.asarray(ax.get("axis_point", (0.0, 0.0, 0.0)), float))
+            np.asarray(ax.get("axis_point", (0.0, 0.0, 0.0)), float), acceleration_length(shape_type, params))
 
 
-def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, sharp_edges=0):
-    """All field labels of one geometry (the generator's CAD solid at label mesh size h).
+def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, sharp_edges=0, params=None):
+    """All field labels of one geometry (the generator's CAD solid at label mesh size h; params: its
+    geom_params, for the beam axis and the accelerating length).
     adaptive (default): adaptive refinement until the frequencies change < tol_f and the figures of merit
     < tol_q (docs/30).  sharp_edges > 0 (re-entrant edges the generator could not round): the surface
     peaks are singular there, so they are left out of the convergence check and stored as NaN."""
@@ -191,7 +197,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
             raise err
         t1 = time.perf_counter()
         ne0 = mesh.ne
-        axis_dir, axis_point = _beam_axis(shape_type, mesh)
+        axis = _beam_axis(shape_type, mesh, params)
         snap = {}
 
         def keep_model_level(m, lab_, q_, rec):          # finest level within the model budget
@@ -200,7 +206,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         remesh = ad.mesh_remesher(shape, s["maxh_factor"] * h, curve=s["curve"], deform=deform, curvaturesafety=cs,
                                   grading=s["grading"], min_jacobian_ratio=s["min_jacobian_ratio"])
         res = ad.adaptive_modes(mesh, K, order=s["label_order"], curve=s["curve"], deform=deform,
-                                axis=(axis_dir, axis_point), on_iter=keep_model_level, remesh=remesh,
+                                axis=axis, on_iter=keep_model_level, remesh=remesh,
                                 settings={"tol_f": s["tol_f"], "tol_q": s["tol_q"], "max_iter": s["adapt_max_iter"],
                                           "max_ndof": s["max_ndof"], "theta": s["theta"], "peaks": sharp_edges == 0,
                                           "min_jacobian_ratio": s["min_jacobian_ratio"]})
@@ -212,8 +218,8 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         mesh, shape = curved_mesh(cad_path, h, deform, s)
         t1 = time.perf_counter()
         lab = ho.solve_modes(mesh, n_modes + 1, order=s["label_order"], max_ndof=s["max_ndof"])
-        axis_dir, axis_point = _beam_axis(shape_type, mesh)
-        q = ho.mode_qoi(mesh, lab["gfs"][:K], lab["f_hz"][:K], axis_dir, axis_point)
+        axis = _beam_axis(shape_type, mesh, params)
+        q = ho.mode_qoi(mesh, lab["gfs"][:K], lab["f_hz"][:K], *axis)
     if sharp_edges:
         q = dict(q)
         for n in PEAK_QOI + ("E_pk_Vm", "B_pk_T"):
@@ -239,14 +245,16 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
             "deform": deform, "freqs": lab["f_hz"][:K] / 1e9, "freq_next": float(lab["f_hz"][K] / 1e9),
             "u_model": U.astype(np.float32), "rq_model": rq, "proj_err": err,
             "qoi": np.column_stack([np.asarray(q[n], float) for n in QOI_LABELS]),
-            "qoi_names": list(QOI_LABELS),
+            "qoi_names": list(QOI_LABELS), "axis_t": q["axis_t"], "axis_ez": q["axis_ez"].astype(np.float32),
             "attrs": {"labels": "field", "label_order": int(s["label_order"]), "model_order": int(s["model_order"]),
                       "curve": int(s["curve"]), "n_tets": int(model_mesh.ne), "n_vertices": int(model_mesh.nv),
                       "n_tets_label": n_tets_label,
                       "n_dof_label": int(lab["fes"].ndof), "n_dof_model": int(fes2.ndof),
                       "jacobian_ratio": float(ho.jacobian_ratio(model_mesh)),
                       "maxh": float(s["maxh_factor"] * h), "t_curved_mesh": t1 - t0, "t_labels": t2 - t1,
-                      "sharp_edges": int(sharp_edges), **adapt_attrs}}
+                      "sharp_edges": int(sharp_edges), **adapt_attrs,
+                      "axis_dir": np.asarray(axis[0], float), "axis_point": np.asarray(axis[1], float),
+                      "axis_dt": float(q["axis_dt"]), "L_acc": float(np.nan if axis[2] is None else axis[2])}}
 
 
 def write_field_group(g, res):
@@ -262,6 +270,8 @@ def write_field_group(g, res):
     for k in ("rq_model", "proj_err"):
         g.create_dataset(k, data=np.asarray(res[k], float))
     g.create_dataset("qoi", data=res["qoi"])
+    g.create_dataset("axis_t", data=np.asarray(res["axis_t"], float))
+    g.create_dataset("axis_ez", data=res["axis_ez"], **z)
     g.attrs["qoi_names"] = ",".join(res["qoi_names"])
     g.attrs["freq_next"] = float(res["freq_next"])
     for k, v in res["attrs"].items():

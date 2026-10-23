@@ -26,7 +26,7 @@
  runs/<EXP>/predict/<ad>/prediction.json, modes.vtu
 ```
 
-Klasör yapısı: `$DATA_ROOT/$TAG/` (varsayılan `/arf/scratch/$USER/rfcav3d/E_ms0.1_k10_v1/`):
+Klasör yapısı: `$DATA_ROOT/$TAG/` (varsayılan `/arf/scratch/$USER/rfcav3d/E_ms0.1_k10_v2/`):
 `h5/ pkl/ runs/ logs/`. TAG fizik ayarlarından türetilir; ayar değişince yeni klasör açılır,
 böylece farklı ayarlarla üretilmiş veriler birbirine karışmaz.
 

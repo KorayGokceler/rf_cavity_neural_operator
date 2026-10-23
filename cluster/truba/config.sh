@@ -51,11 +51,11 @@ HEAL=${HEAL:-1}                        # field: OCC healing of ridged_box / dtl 
 if [ "$LABELS" = field ]; then
   SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-3600}
   # _1s: one-solve labels (ADAPT=0), _sharp: unrounded geometries — never share a tag with the defaults
-  TAG=${TAG:-F_p${LABEL_ORDER}p${MODEL_ORDER}_ms${MESH_SIZE}_k${N_STORE}_mf${MIN_FILLET:-0.05}_v1$([ "$ADAPT" = 1 ] || echo _1s)$([ "$ROUND_EDGES" = 1 ] || echo _sharp)}
+  TAG=${TAG:-F_p${LABEL_ORDER}p${MODEL_ORDER}_ms${MESH_SIZE}_k${N_STORE}_mf${MIN_FILLET:-0.05}_v2$([ "$ADAPT" = 1 ] || echo _1s)$([ "$ROUND_EDGES" = 1 ] || echo _sharp)}
 else
   SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-900}  # s; a stuck mesh/solve is skipped
 fi
-TAG=${TAG:-E_ms${MESH_SIZE}_k${N_STORE}_v1}
+TAG=${TAG:-E_ms${MESH_SIZE}_k${N_STORE}_v2}
 SBATCH_CMD=${SBATCH_CMD:-sbatch}       # run.sh --dry-run swaps in dry_sbatch.sh (prints, submits nothing)
 # TEST=1: a small trial run (TEST_N geometries per family, one shard) under <TAG>_test
 TEST=${TEST:-0}

@@ -225,7 +225,8 @@ def create_app(service=None, datasets=None):
                 'limits': {'max_upload_mb': lim.max_upload_mb, 'max_tets': lim.max_tets,
                            'cad': list(G.CAD_EXT), 'mesh': list(G.MESH_EXT)},
                 'conventions': {'U_J': 1.0, 'wall': 'copper, sigma = 5.8e7 S/m', 'beta': 1.0,
-                                'R_over_Q': 'linac: V^2/(omega U)', 'beam_axis': 'x = y = 0 along z (hwr: x)'}}
+                                'R_over_Q': 'linac: V^2/(omega U)', 'beam_axis': 'src.qoi.operators.beam_axis: x = y = 0 along z; hwr, ridged_box, box per family',
+                                'L_acc': 'cavity length along the beam, pipes excluded (acceleration_length)'}}
 
     @app.post('/api/geometries')
     def upload(file: UploadFile = File(...), unit: str = Form('mm'), mesh_size: float = Form(0.10),
@@ -269,7 +270,7 @@ def create_app(service=None, datasets=None):
     def _prepared(g):
         """Converter geometry (features + operators) of a stored geometry, computed once."""
         if '_geom' not in g:
-            g['_geom'], g['_M'] = service.geometry(g['nodes'], g['tets'], g['family'])
+            g['_geom'], g['_M'] = service.geometry(g['nodes'], g['tets'], g['family'], g.get('params'))
         return g['_geom'], g['_M']
 
     def _summary(sid, sol, extra=None):

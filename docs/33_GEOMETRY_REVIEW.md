@@ -593,3 +593,73 @@ fizik.
   fillet tabanına göre dağılımı ölçülmedi.
 - **Mesh maliyetleri.** Yeni ailelerin tet sayıları benzetme yoluyla tahmin edildi; 4 Sobol çekilişiyle
   ölçülmeli.
+
+## 12. Uygulama durumu (2026-10-22)
+
+Sahip düzeltmelere onay verdi. Yeni kod yalnız gereken yerlere yazıldı; ayar ile zaten yapılabilenler belgelendi.
+Üretici artık aynı tohumdan başka geometri üretiyor. Bu yüzden veri kümesi etiketleri `_v1`'den `_v2`'ye
+geçti (TRUBA, arayüz, `src/service`); eski ve yeni parçalar aynı klasörde karışmaz.
+
+**Yapılanlar:**
+
+| konu | değişiklik | yer |
+|---|---|---|
+| ridged_box ve box ekseni (§2.1) | ridged_box: x yönünde, çıkıntı aralığının ortasından (boruların ekseni); box: kutu merkezinden z | `qoi.operators.beam_axis(…, params)` |
+| hızlandırma uzunluğu (§2.2) | boruları dışarıda bırakan iç uzunluk: eliptikte hücreler, pillbox / reentrant'ta hücre, spoke / dtl'de tank, hwr'de dış çap, ridged_box ve box'ta kutu boyu; ışını olmayan ailelerde kiriş | `qoi.operators.acceleration_length`; alan etiketleri, N0 etiketleri ve N0 eğitimindeki model QoI'si aynı tanımı kullanıyor |
+| β (§2.3) | her mod için eksen boyunca E_z (U = 1 J) saklanıyor: T, V ve R/Q her β'da yeniden çözümsüz hesaplanır | `mode_qoi` → H5 `axis_t`, `axis_ez` |
+| çözücü toleransı (§3.1) | `xtol = ftol = gtol = 1e-15` ve beş başlangıç noktası; doğru teğet türü (iki merkez doğrunun iki yanında) denetleniyor | `half_cell_wall` |
+| çakışma kuralı (§3.1) | kaldırıldı; yerine "r duvar boyunca artar" | `half_cell_wall`, `_valid_half` |
+| re-entrant duvar (§3.1) | 105°'ye kadar, iris düzlemine ≥ 0,05 Req uzaklıkla | `MAX_WALL_ANGLE`, `WEB_MIN` |
+| düz teğet parçası | spline'ın düz parçada sapmaması için elips adımıyla örnekleniyor (genişletilmiş aralıklarda bu parça uzuyor; test yakaladı) | `half_cell_wall` |
+| çapalar (§3.1) | `ilc_ll` yayınlanan LL değerleri; ICHIRO eklendi. `anchor` = 1 + sıralı ad indeksi (ichiro 1, ilc_ll 2, tesla 3) | `ANCHORS` |
+| elips aralıkları (§3.1) | A/L 0,6–0,9, B/A 0,6–1,3, a/L 0,12–0,35, b/a 0,65–1,9 | `_draw_half` |
+| uç hücreler (§3.1) | L ×0,9–1,1, A ×0,9–1,2, B ×0,85–1,4, a ve b ×0,5–1,05, iris ×1,0–1,35 | `END_CELL_RANGES` |
+| saplar (§3.1) | kod değişmedi; simetri bozucu pertürbasyon olarak belgelendi | `cavity_shapes` belge dizesi, docs/19 |
+| reentrant (§3.3) | Lc/R 0,4–1,6, g/Lc 0,15–0,75 | `build_reentrant` |
+
+**Ölçülenler** (bu oturumda):
+- Yayınlanmış 14 yarım hücrenin hepsi kabul ediliyor (TESLA orta ve iki uç, LL, ICHIRO, NLSF, NLSF-RE, Cornell
+  ERL orta ve iki uç, FCC-ee C3794, C3795 orta ve uç, FCCUROS5). Önce dördü reddediliyordu.
+- Rastgele β = 1 yarım hücrelerin kabulü yeni aralıklarla %65,1 (1. ajanın tahmini %65,3; eski kod ve
+  aralıklarla %50).
+- `draw_elliptical` çekiliş başına 57 ms; meshleme ve etiketin yanında ihmal edilebilir.
+- Testler: tam takım 271 test geçti; sonraki düzenlemelerden ve inceleme düzeltmelerinden etkilenen dosyalar
+  yeniden çalıştırıldı (146 ve 124 test geçti);
+  `ruff check .` temiz; `npm run build` temiz.
+
+**Fizik incelemesi** (bağımsız alt ajan): ridged_box ekseni, etiketlerle model QoI'sinin aynı uzunluğu
+kullanması, `axis_ez` ölçeklemesi, teğet türü testi (400 hücrede 12×12 başlangıçla kaba kuvvet: yanlış teğet 0)
+ve kapalı profil (3000 çekilişte 254 re-entrant duvar, en büyük açı 104,6°, en ince ağ 0,0501 Req, kendini
+kesme yok) doğru bulundu. Bulgular ve yapılanlar:
+- arayüz QoI'si `geom_params`'ı kullanmıyordu → veri kümesi okuyucuları ve örnek uç noktası artık geçiriyor;
+  çözüm yanıtında `L_acc_mm` var;
+- düz teğet parçası gereğinden sık örnekleniyordu (parça başına 396 noktaya kadar) → en çok 2n nokta;
+- H5 tek başına V(β)'yı kuramıyordu → `axis_dir`, `axis_point`, `axis_dt`, `L_acc` grup özniteliği;
+- `calib_box` da box gibi ele alınıyor;
+- deformasyonlu örneklerde eksen ve L_acc nominal parametrelerden geliyor (docs/24'te sınırlama olarak yazıldı;
+  düzeltmesi deformasyon haritasını N0 H5'e de taşımayı gerektirir, sahibin kararı).
+
+**Uçtan uca kontrol** (bu oturumda, `--max_ndof 150000`):
+- pillbox_pipes: L_acc 72 mm, eksen kirişi 132 mm. Temel mod Epk/Eacc 3,47 (eski tanımla 1,83 kat büyük
+  olurdu).
+- elliptical, 3 hücre: L_acc 279 mm, kiriş 385 mm.
+- `axis_ez`'den hesaplanan R/Q, etiketteki R/Q ile her modda aynı.
+- ridged_box (N0 yolu, 6 geometri): yeni eksen kiriş 52–99 mm, eski eksen 0 mm. En alttaki saptırıcı modlarda
+  R/Q ≈ 0, üst modlarda 165 Ω'a kadar.
+- Analitik pillbox doğrulaması PASS: f 1,4·10⁻⁶, Q0 3,6·10⁻⁵, R/Q 5·10⁻⁶.
+
+**Kod gerektirmeyenler:**
+- **Deformasyon (§5).** İmalat düzeyi koşu bugün de mümkün: `DEFORM_MAX=0.01`–`0.02`. TRUBA varsayılanı
+  (0,5 / 0,5) çeşitlilik için olduğu gibi kaldı; parametreler her örnekte saklanıyor.
+- **Çok hücrede mod sayısı (§3.9).** Eğitimde N ≤ 5, π modu öğrenilen 6 modun içinde. 7–9 hücreli OOD testi
+  için TRUBA zaten 10 mod saklıyor; değerlendirmede `model.num_field_modes=10` ile eğitilmiş bir model gerekir.
+- **Boru kesim frekansları.** Boru yarıçapı `geom_params`'ta; kesim frekansı sonradan hesaplanır.
+- **Boru uzunluğu kuralı (§3.2).** Etiketler kapalı PEC problemi için doğru; yalnız gerçek tasarımlarla
+  kıyasta önemli. Doğrulama geometrilerinde borular ≥ 3 rp alınır (§8).
+
+**Ayrı iş olarak kalanlar** (yeni kod ister; sahibin sıra kararıyla):
+- yeni aileler: qwr, rfd (ridged_box yerine), dtl_cell, 1,6 hücreli tabanca, büyük açıklıklı eliptik alt
+  ailesi;
+- spoke uç duvarları ve konik spoke, dtl'de uçta yarım drift tüpü;
+- composite'in gerçek hücre ve eklentilere dönüştürülmesi;
+- doğrulama seti (§8).

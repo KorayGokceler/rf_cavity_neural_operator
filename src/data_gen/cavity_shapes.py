@@ -4,12 +4,14 @@ Axisymmetric cavities are built as a meridian profile in the (z, r) half-plane
 (z = beam axis), revolved 2π about z with gmsh OCC.  Beam pipes are closed by flat
 PEC end caps, as in a closed eigenmode solve.  Lengths in metres.
 
-- elliptical:    TESLA-type elliptical cells (1–5) with beam pipes; real-design anchors, low-β
-                 cells, different end half-cells, optional coupler ports on the pipes.  Half-cell =
-                 iris ellipse (a, b) at the iris plane + equator ellipse (A, B) at the
-                 equator, joined by their common tangent (the standard construction).
-                 TESLA mid-cell: Req 103.3, Riris 35, A = B = 42, a 12, b 19, L 57.7 mm.
-- reentrant:     nose-cone (klystron / IOT type) cavity with beam pipes, filleted corners.
+- elliptical:    TESLA-type elliptical cells (1–5) with beam pipes; real-design anchors (TESLA, LL,
+                 ICHIRO), low-β cells, different end half-cells, optional hollow port stubs on the pipes
+                 (evanescent for the stored modes: a symmetry-breaking perturbation, not a coupler).
+                 Half-cell = iris ellipse (a, b) at the iris plane + equator ellipse (A, B) at the
+                 equator, joined by their common tangent (the standard construction); mildly re-entrant
+                 walls allowed (MAX_WALL_ANGLE).  TESLA mid-cell: Req 103.3, Riris 35, A = B = 42, a 12,
+                 b 19, L 57.7 mm.
+- reentrant:     nose-cone cavity (klystron / IOT, storage-ring cells) with beam pipes, filleted corners.
 - pillbox_pipes: pillbox with beam pipes, rounded iris edge and outer corners.
 - ridged_box:    rectangular cavity with 1–2 full-length ridges (+ optional beam pipes), filleted.
 - composite:     CSG tree: cylinder / ellipsoid body with attached rounded primitives and dents.
@@ -196,10 +198,17 @@ def revolve_segments(occ, segs):
 
 # ─────────────────────────── elliptical cells ──────────────────
 
+# Half-cell wall rules (docs/33 §3.1): r must grow along the wall; re-entrant walls (wall angle > 90°, as in
+# the RE and NLSF-RE cells) up to MAX_WALL_ANGLE, if the wall keeps ≥ WEB_MIN·Req from the iris plane (half
+# the metal web between neighbouring cells).  Multi-start: the first start alone misses large-aperture cells.
+MAX_WALL_ANGLE, WEB_MIN = 105.0, 0.05
+_TANGENT_STARTS = ([np.pi / 2, 0.0], [1.2, 0.3], [0.8, 0.8], [2.0, -0.5], [2.5, -1.0])
+
+
 def half_cell_wall(Req, Riris, L, A, B, a, b, n=24):
     """Wall points (z, r) of a half-cell from the iris plane (z = 0, r = Riris) to the
     equator (z = L, r = Req): iris ellipse → common tangent → equator ellipse.
-    None if no valid (monotone, non-overlapping) tangent exists."""
+    None if no valid tangent exists (r monotone; re-entrant within MAX_WALL_ANGLE and WEB_MIN)."""
     ci, ce = np.array([0.0, Riris + b]), np.array([L, Req - B])
 
     def P1(t):
@@ -222,14 +231,25 @@ def half_cell_wall(Req, Riris, L, A, B, a, b, n=24):
         d = P2(s) - P1(t)
         return [cross(T1(t), T2(s)) / (a * A), cross(T1(t), d) / (a * L)]
 
-    sol = least_squares(res, [np.pi / 2, 0.0], bounds=([1e-3, -np.pi / 2 + 1e-3], [np.pi - 1e-3, np.pi / 2]))
-    t, s = sol.x
-    if np.max(np.abs(sol.fun)) > 1e-9 or (P2(s) - P1(t)) @ T1(t) <= 0:
-        return None
-    wall = np.vstack([P1(np.linspace(0, t, n)), P2(np.linspace(s, np.pi / 2, n))])
-    if np.any(np.diff(wall[:, 0]) < -1e-12) or np.any(np.diff(wall[:, 1]) < -1e-12):
-        return None                                       # re-entrant wall: rejected
-    return wall
+    for x0 in _TANGENT_STARTS:                            # the first start finds nearly every cell
+        sol = least_squares(res, x0, bounds=([1e-3, -np.pi / 2 + 1e-3], [np.pi - 1e-3, np.pi / 2]),
+                            xtol=1e-15, ftol=1e-15, gtol=1e-15)   # the default 1e-8 stops above the 1e-9 test
+        t, s = sol.x
+        d = P2(s) - P1(t)
+        if np.max(np.abs(sol.fun)) > 1e-9 or d @ T1(t) <= 0 or cross(d, ci - P1(t)) * cross(d, ce - P1(t)) >= 0:
+            continue                                      # not the iris → equator tangent (centres on both sides)
+        arc1, arc2 = P1(np.linspace(0, t, n)), P2(np.linspace(s, np.pi / 2, n))
+        step = max(np.linalg.norm(np.diff(arc, axis=0), axis=1).mean() for arc in (arc1, arc2))
+        k = min(int(np.linalg.norm(d) / step), 2 * n)
+        line = arc1[-1] + np.linspace(0, 1, k + 2)[1:-1, None] * d     # the spline then stays straight here
+        wall = np.vstack([arc1, line, arc2])
+        theta = np.degrees(np.arctan2(d[1], d[0]))       # wall angle to the beam axis (> 90°: re-entrant)
+        if np.any(np.diff(wall[:, 1]) < -1e-12) or theta > MAX_WALL_ANGLE:
+            continue
+        if theta > 90 and wall[n:, 0].min() < WEB_MIN * Req:
+            continue                                      # re-entrant wall leaning too far towards the iris
+        return wall
+    return None
 
 
 HALF_KEYS = ("Req", "Riris", "L", "A", "B", "a", "b")
@@ -237,27 +257,30 @@ HALF_KEYS = ("Req", "Riris", "L", "A", "B", "a", "b")
 # Mid-cell half-cell geometries of real designs [m], used only as SAMPLING CENTRES (perturbed
 # ±10 %, rescaled in size); labels always come from the FE solve, so small inaccuracies in these
 # literature values do not affect the data.  TESLA: Aune et al., PRST-AB 3, 092001 (2000);
-# ILC low-loss: approximate values of the Cornell/KEK LL cell (verify before citing).
+# ILC low-loss (LL) and KEK ICHIRO: Juntong & Jones, arXiv:0910.1305, Table 1.
 ANCHORS = {
     "tesla": dict(Req=0.1033, Riris=0.035, L=0.0577, A=0.042, B=0.042, a=0.012, b=0.019),
-    "ilc_ll": dict(Req=0.0986, Riris=0.030, L=0.0577, A=0.0501, B=0.0342, a=0.0076, b=0.0100),
+    "ilc_ll": dict(Req=0.09858, Riris=0.030, L=0.0577, A=0.050052, B=0.0365, a=0.0076, b=0.0100),
+    "ichiro": dict(Req=0.09814, Riris=0.030, L=0.0577, A=0.050052, B=0.034222, a=0.0076, b=0.009945),
 }
+# end / mid half-cell ratios; cover the TESLA end-cups, the Cornell ERL ends and the FCC-ee C3795 end
+END_CELL_RANGES = (("L", 0.9, 1.1), ("A", 0.9, 1.2), ("B", 0.85, 1.4), ("a", 0.5, 1.05), ("b", 0.5, 1.05),
+                   ("Riris", 1.0, 1.35))
 N_CELLS, P_CELLS = [1, 2, 3, 4, 5], [0.35, 0.25, 0.2, 0.1, 0.1]     # training; OOD elliptical_long: 6–9
 
 
 def _draw_half(rng, Req, Riris, beta):
-    """Random half-cell (ratios around TESLA / LEP / CEBAF-like cells); L ∝ β (β < 1: shorter cells)."""
+    """Random half-cell; L ∝ β (β < 1: shorter cells).  The ellipse ranges cover the published β = 1
+    cells TESLA, LL, ICHIRO, NLSF(-RE), Cornell ERL and the FCC-ee 800 MHz cells (docs/33 §3.1)."""
     h = {"Req": Req, "Riris": Riris, "L": Req * rng.uniform(0.45, 0.65) * beta}
-    h["A"] = h["L"] * rng.uniform(0.6, 0.85)
-    h["B"] = h["A"] * rng.uniform(0.85, 1.25)
-    h["a"] = h["L"] * rng.uniform(0.15, 0.30)
-    h["b"] = h["a"] * rng.uniform(1.0, 1.9)
+    h["A"] = h["L"] * rng.uniform(0.6, 0.9)
+    h["B"] = h["A"] * rng.uniform(0.6, 1.3)
+    h["a"] = h["L"] * rng.uniform(0.12, 0.35)
+    h["b"] = h["a"] * rng.uniform(0.65, 1.9)
     return h
 
 
 def _valid_half(h):
-    if h["Riris"] + h["b"] >= h["Req"] - h["B"]:
-        return None
     return half_cell_wall(**{k: h[k] for k in HALF_KEYS})
 
 
@@ -282,9 +305,9 @@ def draw_elliptical(rng, n_cells=None):
         halves, walls = {"mid": mid}, {"mid": w_mid}
         for e in ("e1", "e2"):
             end = dict(mid)
-            if rng.uniform() < 0.6:                        # end half-cell differs (as in real structures)
-                end.update({k: mid[k] * rng.uniform(0.85, 1.15) for k in ("L", "A", "B", "a", "b")})
-                end["Riris"] = mid["Riris"] * rng.uniform(1.0, 1.35)
+            if rng.uniform() < 0.6:                        # end half-cell differs (as in real structures:
+                for k, lo, hi in END_CELL_RANGES:          # thinner iris ellipse, larger iris)
+                    end[k] = mid[k] * rng.uniform(lo, hi)
             w = _valid_half(end)
             halves[e], walls[e] = (end, w) if w is not None else (dict(mid), w_mid)
         n = int(n_cells if n_cells is not None else rng.choice(N_CELLS, p=P_CELLS))
@@ -370,9 +393,9 @@ def build_elliptical(occ, rng, params=None, n_cells=None, shape_type="elliptical
 def build_reentrant(occ, rng):
     for _ in range(100):
         R = rng.uniform(0.03, 0.07)
-        Lc = R * rng.uniform(0.4, 1.0)
+        Lc = R * rng.uniform(0.4, 1.6)                  # up to 1.6: storage-ring cells (docs/33 §3.3)
         rp = R * rng.uniform(0.10, 0.25)
-        g = Lc * rng.uniform(0.15, 0.6)                 # nose-to-nose gap
+        g = Lc * rng.uniform(0.15, 0.75)                # nose-to-nose gap
         t_tip = R * rng.uniform(0.08, 0.2)              # nose tip wall thickness
         alpha = np.radians(rng.uniform(-25, 35))        # nose outer cone half-angle (< 0: mushroom nose)
         zt = (Lc - g) / 2

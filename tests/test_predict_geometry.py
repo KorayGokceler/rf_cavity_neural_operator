@@ -76,6 +76,20 @@ def test_beam_axis_per_family():
     assert beam_axis("elliptical", X, 0.1, np.zeros(3)) == {}
     ax = beam_axis("hwr", X, 0.1, np.array([0, 0, 0.2]))
     assert ax["axis_dir"] == "x" and ax["axis_point"][2] == pytest.approx(0.2 + 0.1 * (-0.25))
+    # ridged_box sits in [0, a] × [0, b] × [0, d]: the axis runs along x through the middle of the gap
+    p = {"a": 0.08, "b": 0.05, "d": 0.04, "ridge_h": 0.01, "double": 1.0, "gap": 0.02}
+    ax = beam_axis("ridged_box", X, 1.0, np.zeros(3), p)
+    assert ax["axis_dir"] == "x" and ax["axis_point"] == pytest.approx((0.0, 0.025, 0.02))
+    assert beam_axis("ridged_box", X, 1.0, np.zeros(3), {**p, "double": 0.0, "ridge_h": 0.02})["axis_point"][2] == 0.01
+
+
+def test_acceleration_length_excludes_the_beam_pipes():
+    from src.data_gen import cavity_shapes as cs
+    from src.qoi.operators import acceleration_length
+    p, halves, walls = cs.draw_elliptical(np.random.default_rng(4), n_cells=3)
+    assert acceleration_length("elliptical", p) == pytest.approx(cs.elliptical_chain(halves, walls, 3)[1])
+    assert acceleration_length("pillbox_pipes", {"Lc": 0.03, "Lpipe": 0.02}) == 0.03
+    assert acceleration_length("composite", {"R0": 0.03}) is None and acceleration_length("elliptical", None) is None
 
 
 @pytest.mark.parametrize("source", ["mesh", "step"])

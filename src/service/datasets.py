@@ -86,7 +86,7 @@ class H5Dataset:
         U = np.zeros_like(V)
         U[rows] = sign[:, None] * V
         params = {k: _float(v) for k, v in attrs.items() if k not in _PARAM_SKIP and _float(v) is not None}
-        geom.update(shape_type=str(attrs.get('shape_type', '')))
+        geom.update(shape_type=str(attrs.get('shape_type', '')), params=json.loads(attrs.get('geom_params', '{}')))
         return {'id': sid, 'family': geom['shape_type'], 'nodes': np.asarray(nodes, float),
                 'tets': np.asarray(tets, np.int64), 'geom': geom, 'M': M, 'U': U, 'f_GHz': freqs,
                 'f_next': _float(attrs.get('freq_next')), 'params': params, 'qoi_labels': None,
@@ -207,7 +207,7 @@ class FieldH5Dataset:
         names = [n for n in rec['qoi_names'] if n]
         labels = [{n: _float(rec['qoi'][k, j]) for j, n in enumerate(names)} for k in order]
         params = {k: _float(v) for k, v in attrs.items() if k not in _PARAM_SKIP and _float(v) is not None}
-        geom.update(shape_type=rec['shape_type'])
+        geom.update(shape_type=rec['shape_type'], params=json.loads(attrs.get('geom_params', '{}')))
         return {'id': sid, 'family': rec['shape_type'], 'nodes': nodes, 'tets': tets, 'geom': geom, 'M': M,
                 'U': U, 'f_GHz': freqs, 'f_next': _float(rec['freq_next']), 'params': params,
                 'qoi_labels': labels, 'features': FEATURE_NAMES_3D, 'source_file': os.path.basename(fp)}

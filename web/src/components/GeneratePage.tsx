@@ -26,8 +26,8 @@ type Form = Omit<GenParams, 'families'>;
 
 /** TAG as the server derives it (src/service/jobs.tag_of / field_tag_of = cluster/truba/config.sh). */
 function defaultTag(p: Form) {
-  if (p.labels === 'n0') return `E_ms${p.mesh_size}_k${p.n_modes}_v1`;
-  return `F_p${p.label_order}p${p.model_order}_ms${p.mesh_size}_k${p.n_modes}_mf${p.min_fillet}_v1`
+  if (p.labels === 'n0') return `E_ms${p.mesh_size}_k${p.n_modes}_v2`;
+  return `F_p${p.label_order}p${p.model_order}_ms${p.mesh_size}_k${p.n_modes}_mf${p.min_fillet}_v2`
     .replace('_ms0.1_', '_ms0.10_') + (p.adapt ? '' : '_1s') + (p.round_edges ? '' : '_sharp');
 }
 

@@ -226,7 +226,7 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
         time.sleep(0.05)
     p = seen[0]
     assert p["labels"] == "field" and p["convert"] is False and (p["workers"], p["threads"]) == (16, 4)
-    assert p["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v1_sharp"
+    assert p["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2_sharp"
     tr = TR.build_command(dict(TR.defaults(ROOT)["form"], action="dataset", round_edges=False, tag=""))
     assert tr["tag"] == p["tag"]                                       # same tag as the TRUBA run
     a = J.generator_args(p)
@@ -253,7 +253,7 @@ def test_machine_and_field_plan():
     assert (p["workers"], p["threads"]) == (6, 10) and not p["warnings"]
     assert J.field_plan(64, 0, 300_000)["workers"] == 16  # unknown memory: cores only
     assert "oversubscribed" in J.field_plan(8, 64.0, 300_000, threads=4, workers=4)["warnings"]
-    assert J.field_tag_of(0.12, 6, adapt=False) == "F_p3p2_ms0.12_k6_mf0.05_v1_1s"
+    assert J.field_tag_of(0.12, 6, adapt=False) == "F_p3p2_ms0.12_k6_mf0.05_v2_1s"
 
 
 def test_generation_disabled_without_root(monkeypatch):

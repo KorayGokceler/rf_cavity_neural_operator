@@ -43,14 +43,14 @@ def family_blocks(tsv=None):
 
 
 def tag_of(mesh_size, n_modes):
-    """Dataset tag of the TRUBA layout (cluster/truba/config.sh): E_ms<mesh>_k<modes>_v1."""
-    return f"E_ms{mesh_size:g}_k{int(n_modes)}_v1"
+    """Dataset tag of the TRUBA layout (cluster/truba/config.sh): E_ms<mesh>_k<modes>_v2."""
+    return f"E_ms{mesh_size:g}_k{int(n_modes)}_v2"
 
 
 def field_tag_of(mesh_size, n_modes, label_order=3, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
-    """Field-label tag of cluster/truba/config.sh: F_p<label>p<model>_ms<mesh>_k<modes>_mf<fillet>_v1, + _1s for
+    """Field-label tag of cluster/truba/config.sh: F_p<label>p<model>_ms<mesh>_k<modes>_mf<fillet>_v2, + _1s for
     one-solve labels and _sharp for unrounded geometries (neither may mix with the defaults under one tag)."""
-    tag = (f"F_p{int(label_order)}p{int(model_order)}_ms{mesh_size:g}_k{int(n_modes)}_mf{min_fillet:g}_v1"
+    tag = (f"F_p{int(label_order)}p{int(model_order)}_ms{mesh_size:g}_k{int(n_modes)}_mf{min_fillet:g}_v2"
            + ("" if adapt else "_1s") + ("" if round_edges else "_sharp"))
     return tag.replace("_ms0.1_", "_ms0.10_")            # as config.sh's literal MESH_SIZE=0.10
 

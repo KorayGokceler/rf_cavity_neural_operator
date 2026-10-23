@@ -18,7 +18,7 @@ Output contract (docs/19_3D_DATA_PIPELINE.md; H5 dataset 'e_edges', metadata['fi
         'Kp'         CSR [Nv×Nv]      Gᵀ M G (SPD on the first n_pot rows/cols, zero elsewhere)
         'bnd_edge'   bool [Ne]        PEC wall edge (edge of a boundary face); 'n_pot',
                                       'n_bnd_components', 'betti1' (= 1 + b2 − χ, informative)
-        'scale','center','shape_type','n_nodes','n_edges', 'torsion_max'}},
+        'scale','center','shape_type','params','n_nodes','n_edges', 'torsion_max'}},
      'samples': [{'geom_id', 'Y' float32 [Ne] (unit M-norm on the normalised mesh, sign arbitrary;
                   wall rows exactly 0), 'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id],
                   'qoi' {name: float} for src.qoi.QOI_LABELS (cavity figures of merit Q0, G, R/Q, R_sh,
@@ -416,22 +416,27 @@ def qoi_api():
 def qoi_metadata(n_failed=0):
     """metadata['qoi'] of a PKL with QoI labels (§0.4)."""
     return {"labels": list(qoi_api().QOI_LABELS), **QOI_LABEL_SETTINGS,
-            "axis": "x=y=0 along z (hwr: x through the mid-length, src.qoi.operators.beam_axis)", "L_acc": "axis chord", "n_failed": int(n_failed)}
+            "axis": "src.qoi.operators.beam_axis (x=y=0 along z; hwr, ridged_box, box per family)",
+            "L_acc": "src.qoi.operators.acceleration_length (axis chord without params)", "n_failed": int(n_failed)}
 
 
 def qoi_operators_of(geom, M=None, **kw):
     """src.qoi.build_qoi_operators for one geometry_pool entry (X, tets, edges, scale, center);
-    M: scipy mass matrix (assembled by build_qoi_operators when None).  The beam axis follows the
-    geometry's family (src.qoi.operators.beam_axis: hwr → transverse, x) unless kw sets one."""
+    M: scipy mass matrix (assembled by build_qoi_operators when None).  The beam axis and the
+    accelerating length follow the geometry's family and geom['params'] (src.qoi.operators.beam_axis,
+    acceleration_length) unless kw sets an axis."""
+    op = importlib.import_module("src.qoi.operators")
     center = geom.get("center", None)
     center = np.zeros(3) if center is None else np.asarray(center, dtype=np.float64).reshape(3)
+    st, prm = geom.get("shape_type", ""), geom.get("params")
     if not any(k in kw for k in ("axis_xy", "axis_dir", "axis_point")):
-        kw.update(importlib.import_module("src.qoi.operators").beam_axis(
-            geom.get("shape_type", ""), geom["X"], float(geom["scale"]), center))
-    return qoi_api().build_qoi_operators(np.asarray(geom["X"], dtype=np.float64),
-                                         np.asarray(geom["tets"], dtype=np.int64),
-                                         np.asarray(geom["edges"], dtype=np.int64),
-                                         float(geom["scale"]), center, M=M, **kw)
+        kw.update(op.beam_axis(st, geom["X"], float(geom["scale"]), center, prm))
+    ops = qoi_api().build_qoi_operators(np.asarray(geom["X"], dtype=np.float64),
+                                        np.asarray(geom["tets"], dtype=np.int64),
+                                        np.asarray(geom["edges"], dtype=np.int64),
+                                        float(geom["scale"]), center, M=M, **kw)
+    ops["L_acc"] = op.acceleration_length(st, prm)
+    return ops
 
 
 def qoi_labels(ops, Y, f_ghz):
@@ -534,6 +539,7 @@ class RFCavity3DConverter:
                 n_modes = len(freqs) if n_modes is None else min(n_modes, len(freqs))
                 geom, M = extract_geometry_3d(grp["nodes"][:], grp["tets"][:])
                 geom["shape_type"] = str(grp.attrs.get("shape_type", "unknown"))
+                geom["params"] = json.loads(grp.attrs.get("geom_params", "{}"))
                 # freq of mode K+1 [GHz]: f_next ≈ f_K means the K-mode cut splits a degenerate cluster
                 geom["freq_next"] = float(grp.attrs.get("freq_next", np.nan))
                 rows, sign = h5_edges_to_canonical(grp["edges"][:], geom["n_nodes"], geom["edges"])

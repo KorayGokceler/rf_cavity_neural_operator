@@ -169,13 +169,41 @@ def axis_operator(X, tets, edges, scale, center, n_axis=401, axis_xy=(0.0, 0.0),
 # Beam axis per generator family when it is not the default line x = y = 0 along z (the families are
 # built with z = beam axis, docs/24 §0.2) — hwr: the coaxial line runs along z, the beam crosses it
 # transversally along x at mid-length (cavity_shapes.build_hwr).
-def beam_axis(shape_type, X, scale, center):
-    """{'axis_dir', 'axis_point'} kwargs of build_qoi_operators for a generator family ({} = default)."""
-    if str(shape_type) == "hwr":
+def beam_axis(shape_type, X, scale, center, params=None):
+    """{'axis_dir', 'axis_point'} kwargs of build_qoi_operators for a generator family ({} = z through the
+    origin).  params: the family's geom_params [m] (needed for ridged_box and box, whose solids start at
+    the origin; without them those keep the default)."""
+    st, p = str(shape_type), params or {}
+    if st == "hwr":
         X = np.asarray(X, dtype=np.float64)
         zmid = 0.5 * (X[:, 2].min() + X[:, 2].max()) * float(scale) + float(np.asarray(center).reshape(3)[2])
         return {"axis_dir": "x", "axis_point": (0.0, 0.0, zmid)}
+    if st == "ridged_box" and "gap" in p:       # along x through the gap (beam pipes, when drawn, lie there)
+        zc = (p["ridge_h"] if p.get("double", 0.0) > 0.5 else 0.0) + p["gap"] / 2
+        return {"axis_dir": "x", "axis_point": (0.0, p["b"] / 2, zc)}
+    if st in ("box", "calib_box") and "a" in p:
+        return {"axis_dir": "z", "axis_point": (p["a"] / 2, p["b"] / 2, 0.0)}
     return {}
+
+
+def acceleration_length(shape_type, params):
+    """Standard accelerating length [m] (E_acc = V / L): the cavity's inner length along the beam axis,
+    beam pipes excluded — the cells for elliptical (N·βλ/2 at the design point), the cell for
+    pillbox / re-entrant cells, the tank for spoke / dtl, the outer diameter for hwr.  None (→ axis
+    chord) for families without a beam (composite, freeform, junction, coax_qw) or without params."""
+    st, p = str(shape_type), params or {}
+    try:
+        if st in ("elliptical", "elliptical_long"):
+            return p["e1_L"] + p["e2_L"] + 2 * (p["n_cells"] - 1) * p["L"]
+        key = {"pillbox_pipes": "Lc", "reentrant": "Lc", "pillbox_port": "Lc", "spoke": "Lt", "dtl": "Lt",
+               "ridged_box": "a", "box": "d", "calib_box": "d"}.get(st)
+        if key is not None:
+            return float(p[key])
+        if st == "hwr":
+            return 2 * float(p["Ro"])
+    except KeyError:
+        pass
+    return None
 
 
 # ─────────────────────────── surface fields ────────────────────
@@ -307,7 +335,8 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
 
     Rs [Ω] scalar or [K] overrides the copper model R_s = √(π f μ0/σ) (σ = sigma) at each mode's own
     f; beta the particle velocity (transit phase ω z/(βc)); L_acc [m] the accelerating length
-    (default: the axis chord inside Ω, ops['L_axis']·s); convention 'linac' (R/Q = V²/(ωU),
+    (default: ops['L_acc'] when set, see acceleration_length, else the axis chord inside Ω,
+    ops['L_axis']·s); convention 'linac' (R/Q = V²/(ωU),
     R_sh = V²/P_c) or 'circuit' (both halved).
     Returns dict {key: float64 ndarray [K]} for QOI_KEYS (K = 1 for a 1-D U).
     """
@@ -334,7 +363,7 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
     Pc_raw = 0.5 * Rs / (w * MU0) ** 2 * uSu
     V_raw, V0_raw = s * Vc, s * V0
     Epk_raw, Bpk_raw = ep, hp / (w * s)
-    L = ops["L_axis"] * s if L_acc is None else L_acc
+    L = L_acc if L_acc is not None else (ops.get("L_acc") or ops["L_axis"] * s)
     return figures_of_merit(f, Rs, U_raw, Pc_raw, V_raw, V0_raw, Epk_raw, Bpk_raw, L, convention)
 
 

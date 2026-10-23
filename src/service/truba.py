@@ -233,10 +233,10 @@ def build_command(req):
         tag = v["TAG"]
     elif labels == "field":
         tag = (f"F_p{v['LABEL_ORDER']}p{v['MODEL_ORDER']}_ms{_fmt(v['MESH_SIZE'])}_k{v['N_STORE']}"
-               f"_mf{v['MIN_FILLET'] or '0.05'}_v1" + ("" if v["ADAPT"] else "_1s")      # one-solve labels
+               f"_mf{v['MIN_FILLET'] or '0.05'}_v2" + ("" if v["ADAPT"] else "_1s")      # one-solve labels
                + ("" if v["ROUND_EDGES"] else "_sharp"))                                 # other geometries
     else:
-        tag = f"E_ms{_fmt(v['MESH_SIZE'])}_k{v['N_STORE']}_v1"
+        tag = f"E_ms{_fmt(v['MESH_SIZE'])}_k{v['N_STORE']}_v2"
     tag = tag.replace("_ms0.1_", "_ms0.10_")            # MESH_SIZE left at config.sh's literal 0.10
     if v["TEST"]:
         tag += "_test"

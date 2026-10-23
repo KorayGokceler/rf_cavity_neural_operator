@@ -163,7 +163,7 @@ ve aynı ayarlar:
 - keskin iç kenarları yuvarlatma, OCC onarımı.
 
 `freeform` seçilemez (CAD katısı yok). Çıktı yalnız H5'tir (PKL dönüşümü yok, eğitim `field3d`). TAG,
-TRUBA'nınkiyle aynı kuralla kurulur: `F_p3p2_ms0.10_k10_mf0.05_v1`, tek çözümde `_1s`, yuvarlatmasız
+TRUBA'nınkiyle aynı kuralla kurulur: `F_p3p2_ms0.10_k10_mf0.05_v2`, tek çözümde `_1s`, yuvarlatmasız
 `_sharp` eki.
 
 **İşçi × thread planı** (`jobs.field_plan`): sunucu çekirdek sayısını (CPU affinity, cgroup kotası) ve
@@ -259,7 +259,7 @@ ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde ç
 ```bash
 # geliştirme
 pip install -r requirements.txt -r requirements-web.txt
-RFCAV_CHECKPOINT=runs/large RFCAV_DATA=/arf/scratch/$USER/rfcav3d/E_ms0.1_k10_v1 \
+RFCAV_CHECKPOINT=runs/large RFCAV_DATA=/arf/scratch/$USER/rfcav3d/E_ms0.1_k10_v2 \
     uvicorn src.service.api:app --port 8000          # checkpoint yoksa eğitilmemiş demo modeli; RFCAV_DATA: dataset kökleri (':' ile)
 cd web && npm install && npm run dev                                     # http://localhost:5173 (/api → :8000)
 

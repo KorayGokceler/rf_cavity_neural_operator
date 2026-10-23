@@ -325,6 +325,12 @@ def test_half_cell_common_tangent():
     ang = np.arctan2(d[:, 1], d[:, 0])
     assert np.abs(np.diff(ang)).max() < 0.2
     assert cs.half_cell_wall(0.05, 0.035, 0.03, 0.03, 0.03, 0.01, 0.01) is None   # ellipses overlap
+    mm = 1e-3                                                # published cells the old tangent solve rejected:
+    for Req, Ri, L, A, B, a, b in ((101.205, 37, 62.665, 52.1, 47.9, 9.9, 11.3),        # Cornell ERL end (tolerance)
+                                   (369.63, 150, 187, 73.52, 131.75, 106.25, 118.7),   # FCC-ee 400 MHz (start)
+                                   (98.58, 32, 57.7, 49, 35.3, 10.5, 17)):             # NLSF-RE, re-entrant 101°
+        w = cs.half_cell_wall(Req * mm, Ri * mm, L * mm, A * mm, B * mm, a * mm, b * mm)
+        assert w is not None and np.all(np.diff(w[:, 1]) >= -1e-12) and w[24:, 0].min() >= cs.WEB_MIN * Req * mm
 
 
 def test_fillet_tangency():
@@ -406,7 +412,8 @@ def test_elliptical_chain_end_cells_and_ood_split():
     for n in (1, 2, 5):
         p, halves, walls = cs.draw_elliptical(rng, n_cells=n)
         chain, z1 = cs.elliptical_chain(halves, walls, n)
-        assert np.all(np.diff(chain[:, 0]) > -1e-12)                   # z monotone along the chain
+        assert all(np.all(np.diff(w[:, 1]) >= -1e-12) for w in walls.values())   # r monotone in every half
+        assert chain[:, 0].min() > -1e-12 and chain[:, 0].max() < z1 + 1e-12
         assert np.isclose(chain[0, 1], halves["e1"]["Riris"]) and np.isclose(chain[-1, 1], halves["e2"]["Riris"])
         assert np.isclose(chain[-1, 0], z1) and np.linalg.norm(np.diff(chain, axis=0), axis=1).max() < 0.2 * z1
     assert max(cs.N_CELLS) < 6                                          # OOD elliptical_long: 6–9 cells

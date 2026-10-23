@@ -388,14 +388,16 @@ def axis_samples(mesh, axis_dir, axis_point, n_axis=2001):
     return tt, dt, perp[None, :] + tt[:, None] * d[None, :]
 
 
-def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), sigma=5.8e7, beta=1.0,
+def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), L_acc=None, sigma=5.8e7, beta=1.0,
              convention="linac", n_axis=2001, wall_order=8):
     """src.qoi QOI_KEYS of the NGSolve modes (copper walls, U = 1 J), directly from the high-order
     fields: U = ½ε0∫|E|², P_c = ½R_s/(ωμ0)² ∫_wall |n × curl E|², V = |∫ E·d e^{jωt/(βc)} dt| on the
     axis, E_pk / B_pk = max over the wall integration points (order wall_order) of |E| / |curl E|/ω.
     Wall values come from the adjacent volume element (BoundaryFromVolumeCF: a plain boundary
-    evaluation of an HCurl field is its tangential trace, ≈ 0 on PEC).  L_acc = axis chord inside
-    the mesh."""
+    evaluation of an HCurl field is its tangential trace, ≈ 0 on PEC).  L_acc: the accelerating
+    length (src.qoi.operators.acceleration_length; None = the axis chord inside the mesh).
+    Also returns 'axis_t' [P] (axis positions inside the mesh, spacing 'axis_dt') and 'axis_ez' [K, P] (E along the axis
+    at U = 1 J): T, V and R/Q at any β follow from them without a new solve."""
     from ngsolve import (BND, TRIG, BoundaryFromVolumeCF, Cross, InnerProduct, IntegrationRule, Integrate,
                          curl, ds, specialcf)
     from src.qoi.operators import figures_of_merit, surface_resistance
@@ -412,19 +414,22 @@ def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), sigma=5.
     raw = {k: np.zeros(len(gfs)) for k in ("U", "P", "V", "V0", "E", "B")}
     loc_ax = locate(mesh, axp)
     q = np.where(loc_ax[1], dt, 0.0)
-    L = float(q.sum())
+    L = float(q.sum()) if L_acc is None else float(L_acc)
+    ez = np.zeros((len(gfs), len(tt)))
     for j, g in enumerate(gfs):
         Eb, Cb = BoundaryFromVolumeCF(g), BoundaryFromVolumeCF(curl(g))
         ct = Cross(nrm, Cb)
         raw["U"][j] = 0.5 * EPS0 * Integrate(InnerProduct(g, g), mesh, order=order)
         sw = Integrate(InnerProduct(ct, ct) * ds("wall", bonus_intorder=order), mesh)
         raw["P"][j] = 0.5 * Rs[j] / (w[j] * MU0) ** 2 * sw
-        Ez = evaluate(g, loc_ax) @ d
+        Ez = ez[j] = evaluate(g, loc_ax) @ d
         raw["V"][j] = np.abs((q * Ez * np.exp(1j * w[j] * tt / (beta * C0))).sum())
         raw["V0"][j] = (q * np.abs(Ez)).sum()
         raw["E"][j] = np.linalg.norm(np.asarray(Eb(mips)).reshape(-1, 3)[on_wall], axis=1).max()
         raw["B"][j] = np.linalg.norm(np.asarray(Cb(mips)).reshape(-1, 3)[on_wall], axis=1).max() / w[j]
-    return figures_of_merit(f, Rs, raw["U"], raw["P"], raw["V"], raw["V0"], raw["E"], raw["B"], L, convention)
+    out = figures_of_merit(f, Rs, raw["U"], raw["P"], raw["V"], raw["V0"], raw["E"], raw["B"], L, convention)
+    inside = np.asarray(loc_ax[1], bool)
+    return {**out, "axis_t": tt[inside], "axis_dt": dt, "axis_ez": ez[:, inside] / np.sqrt(raw["U"])[:, None]}
 
 
 def edge_dofs(mesh, gfs, X_phys, edges, n_gauss=4):

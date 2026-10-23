@@ -339,7 +339,8 @@ def _collate_qoi(batch, out, Ne):
     out['QoI_area'] = _pad_rows([np.asarray(o['face_area'], np.float64).reshape(-1) for o in ops], Nf)
     out['QoI_SurfMask'] = _mask(nf, Nf)
     out['QoI_scale'] = torch.tensor([float(o['scale']) for o in ops], dtype=torch.float64)
-    out['QoI_Laxis'] = torch.tensor([float(o['L_axis']) for o in ops], dtype=torch.float64)
+    out['QoI_Laxis'] = torch.tensor([float(o['L_acc'] / o['scale'] if o.get('L_acc') else o['L_axis']) for o in ops],
+                                    dtype=torch.float64)     # normalised accelerating length (qoi_from_dofs)
 
 
 def maxwell3d_collate(batch):
@@ -354,7 +355,8 @@ def maxwell3d_collate(batch):
     QoI_Az [B·P × B·Ne], QoI_Esurf / QoI_Hsurf [B·3Nf × B·Ne] (block-diagonal
     COO float64, same edge layout as M), QoI_zeta, QoI_q [B, P] (0 padding),
     QoI_area [B, Nf] (0 padding), QoI_SurfMask [B, Nf] bool, QoI_scale,
-    QoI_Laxis [B] (float64; P, Nf = max over the batch)."""
+    QoI_Laxis [B] (normalised accelerating length, L_acc / scale or the axis chord; float64;
+    P, Nf = max over the batch)."""
     if any(it.get('BndEdge', None) is None for it in batch):
         raise ValueError("maxwell3d_collate: item without 'BndEdge' (PEC wall-edge mask)")
     pad = lambda k: pad_sequence([it[k] for it in batch], batch_first=True)   # noqa: E731

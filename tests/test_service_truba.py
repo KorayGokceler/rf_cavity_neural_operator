@@ -23,7 +23,7 @@ def test_default_field_pipeline_is_one_runnable_line():
     assert "LABELS=field" in r["run_args"] and "N_PER_FAMILY=1024" in r["run_args"]
     assert "FAMILIES=" not in r["run_args"]                       # all train families = run.sh's default
     assert "freeform" not in r["families"]                        # field labels need a CAD solid
-    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v1"
+    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2"
     assert r["estimate"]["workers_per_job"] == 56 // 8
     shlex.split(cmd)                                              # well-formed shell words
     r = subprocess.run(["bash", "-n", "-c", cmd], capture_output=True, text=True)
@@ -34,7 +34,7 @@ def test_values_are_written_only_when_they_differ_from_config_sh():
     r = TR.build_command(dict(FORM, action="dataset", labels="n0", families=["elliptical", "hwr"], mesh_size=0.12,
                               test=True, n_per_family=""))
     assert r["run_args"] == "bash cluster/truba/run.sh dataset FAMILIES=elliptical,hwr MESH_SIZE=0.12 TEST=1"
-    assert r["tag"] == "E_ms0.12_k10_v1_test"
+    assert r["tag"] == "E_ms0.12_k10_v2_test"
     r = TR.build_command(dict(FORM, action="train", exp="f2", model="large", gpus=4, batch=1, min_fillet=0.08,
                               cache_dir="/arf/scratch/$USER/ops", train_extra=["training.patience=30"]))
     a = r["run_args"]
@@ -42,7 +42,7 @@ def test_values_are_written_only_when_they_differ_from_config_sh():
               'CACHE_DIR="/arf/scratch/$USER/ops"', "TRAIN_EXTRA=training.patience=30"):
         assert s in a, s
     assert "N_PER_FAMILY" not in a and "THREADS" not in a        # dataset-only settings stay out of `train`
-    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.08_v1"
+    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.08_v2"
     assert TR.build_command(dict(FORM, action="all", families=TR.OOD_FAMILIES + ("elliptical",)))["group"] == \
         ",".join(("elliptical",) + TR.OOD_FAMILIES)
     assert TR.build_command(dict(FORM, dry_run=True))["run_args"].endswith(" --dry-run")
@@ -63,7 +63,7 @@ def test_adaptive_label_settings_and_shard_time_note():
     r = TR.build_command(dict(FORM, action="dataset", adapt=False, round_edges=False, heal=False))
     for a in ("ADAPT=0", "ROUND_EDGES=0", "HEAL=0"):
         assert a in r["run_args"], a
-    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v1_1s_sharp"      # never mixes with the default labels
+    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2_1s_sharp"      # never mixes with the default labels
     for action in ("status", "train"):                                 # they must find the same TAG
         a = TR.build_command(dict(FORM, action=action, adapt=False, round_edges=False))["run_args"]
         assert "ADAPT=0" in a and "ROUND_EDGES=0" in a, action

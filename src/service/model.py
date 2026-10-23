@@ -144,6 +144,7 @@ def build_solution(geom, M, U, f_ghz, source, eta=None, qoi_kw=None, ops=None):
     E, H = physical_fields(geom, M, U, f)
     return {'source': source, 'n_edges': int(len(geom['edges'])), 'modes': modes,
             'axis_length_mm': float(ops['L_axis'] * geom['scale'] * 1e3),
+            'L_acc_mm': float((ops.get('L_acc') or ops['L_axis'] * geom['scale']) * 1e3),
             '_geom': geom, '_M': M, '_U': U, '_f': f, '_E': E, '_H': H, '_ops': ops,
             '_axis': axis_values(geom, M, U, f, ops),
             '_zeta_mm': np.asarray(ops['zeta']) * geom['scale'] * 1e3}
@@ -246,10 +247,11 @@ class ModelService:
                 'load_error': self.load_error,
                 'run': self.checkpoint and os.path.basename(os.path.dirname(os.path.abspath(self.checkpoint)))}
 
-    def geometry(self, nodes, tets, family=''):
-        """(converter geometry dict with features + operators, CSR mass) of a mesh [m]."""
+    def geometry(self, nodes, tets, family='', params=None):
+        """(converter geometry dict with features + operators, CSR mass) of a mesh [m]; params: the
+        family's geom_params (beam axis and accelerating length, src.qoi.operators)."""
         geom, M = extract_geometry_3d(nodes, tets)
-        geom.update(shape_type=family or '')
+        geom.update(shape_type=family or '', params=params)
         return geom, (M.tocsr() if hasattr(M, 'tocsr') else M)
 
     def predict(self, nodes, tets, family='', qoi_kw=None, warmup=False, geom=None, M=None):

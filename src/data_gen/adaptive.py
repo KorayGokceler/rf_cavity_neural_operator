@@ -181,6 +181,7 @@ def adaptive_modes(mesh, k, order=3, curve=3, deform=None, axis=((0, 0, 1), (0, 
     the predicted element count Σ(h/h_new)³ is kept inside the DOF budget); remesh=None: bisection of the
     Dörfler-marked elements of `mesh` (modified in place; on graded meshes the closure explodes).
 
+    axis: (axis_dir, axis_point[, L_acc]) of mode_qoi.
     Returns dict(mesh, lab (solve_modes of the final mesh, k + 1 modes), q (mode_qoi, k modes), hist
     (one record per iteration), stop ('converged' | 'budget' | 'max_iter')).  on_iter(mesh, lab, q, rec)
     is called after every solve (e.g. to keep an intermediate mesh)."""

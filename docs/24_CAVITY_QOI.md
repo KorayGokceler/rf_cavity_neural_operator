@@ -49,7 +49,9 @@ the same operators are applied to the FE field.
   quadrature weights q_p (normalised length); points outside the mesh get q_p = 0.
 - R_s: default copper σ = 5.8e7 S/m, R_s(f) = √(π f μ0/σ) at the mode's own frequency (predicted
   frequency for the model, FE frequency for labels); or a fixed `Rs` [Ω] (e.g. SRF Nb).
-- β = 1 default. Accelerating length `L_acc` [m]: given, else the axis chord length inside Ω.
+- β = 1 default. Accelerating length `L_acc` [m]: given, else `ops['L_acc']`
+  (`acceleration_length(shape_type, params)`: the cavity's inner length along the beam, pipes excluded),
+  else the axis chord length inside Ω.
 - Convention `'linac'` (default): R/Q = V²/(ωU), R_sh = V²/P_c. `'circuit'`: both halved.
 
 ### 0.3 numpy API — `src/qoi/operators.py` (exported from `src/qoi/__init__.py`)
@@ -168,8 +170,21 @@ V_acc = |∫ E_z(0, 0, z) e^{jωz/(βc)} dz| on the beam axis (physical x = y = 
 the axial origin (ζ is measured from the volume centroid). Transit-time factor
 T = V_acc / ∫|E_z| dz (= the classical sin x/x for a constant on-axis field; ∫|E_z| rather than
 |∫E_z| keeps T ∈ [0, 1] also for modes whose E_z changes sign). E_acc = V_acc / L_acc with
-L_acc = the chord of the axis inside Ω by default (pillbox: its length; with beam pipes the pipes
-count — pass `L_acc` explicitly for a CST-like N·βλ/2 definition). β = 1 default.
+L_acc = `src.qoi.operators.acceleration_length(shape_type, geom_params)`: the cavity's inner length
+along the beam axis, beam pipes excluded — the sum of the cell lengths for elliptical (N·βλ/2 at the
+design point), the cell for pillbox / re-entrant cells, the tank for spoke and dtl, the outer diameter
+for hwr, the box length for ridged_box and box. Families without a beam (composite, freeform,
+junction, coax_qw) keep the axis chord inside Ω. Before 2026-10 the chord was used everywhere; with
+beam pipes it inflated Epk/Eacc and Bpk/Eacc by a median 1.2–2.4× (docs/33 §2.2). β = 1 default; the
+field labels also store E_z along the axis (`axis_t`, `axis_ez`, docs/29), so T, V and R/Q at any β
+follow without a new solve.
+
+Beam axis (`beam_axis`): z through the origin, except hwr (x through the mid-length), ridged_box (x
+through the middle of the ridge gap, where its beam pipes are) and box (z through the box centre).
+Limitation: the axis and L_acc come from the nominal `geom_params`; a smooth deformation
+(`--deform_prob`, TRUBA default 0.5 with `deform_max` 0.5) moves the walls by up to a few per cent of
+the bounding box, so on deformed samples the axis may graze the walls (ridged_box gap) and L_acc is the
+undeformed length. Labels and model-side QoI use the same definition, so training stays consistent.
 
 ### 1.4 R/Q and shunt impedance — linac vs circuit
 

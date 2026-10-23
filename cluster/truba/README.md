@@ -5,7 +5,7 @@ saklanır**. Aileler birbirini beklemez. Bir aileyi büyütmek ya da yeni aile e
 dokunmaz.
 
 ```
-$DATA_ROOT/$TAG/                         (varsayılan /arf/scratch/$USER/rfcav3d/E_ms0.10_k10_v1)
+$DATA_ROOT/$TAG/                         (varsayılan /arf/scratch/$USER/rfcav3d/E_ms0.10_k10_v2)
 ├── h5/<aile>/<aile>_s00000.h5 …         ham FEM çıktısı (asıl kayıt): parça = 1024 geometri
 ├── pkl/<aile>.pkl                       ailenin eğitim PKL'i (N0 + QoI etiketleri, lean)
 ├── pkl/mix_<ad>.pkl                     isteğe bağlı karışık eğitim PKL'i (merge.sh)
@@ -53,7 +53,7 @@ bash cluster/truba/run.sh status LABELS=field
 - `LABELS=field` (docs/29):
   - NGSolve p3 etiketleri eğri mesh üzerinde üretilir, p2 model uzayına izdüşürülür; dönüştürme adımı yoktur.
   - Eğitim, train grubundaki ailelerin H5 parça klasörlerinden yapılır (OOD aileleri eğitime girmez).
-  - Ayrı TAG kullanılır: `F_p3p2_ms0.10_k10_mf0.05_v1`.
+  - Ayrı TAG kullanılır: `F_p3p2_ms0.10_k10_mf0.05_v2`.
   - İş başına `CPUS / THREADS` örnek aynı anda çalışır (`THREADS=8` → 7 örnek, örnek başına ~5 GB).
 - `LABELS=n0` (varsayılan): aşağıdaki akışın aynısıdır: üretim → aile PKL'i → `merge.sh` → eğitim.
 
