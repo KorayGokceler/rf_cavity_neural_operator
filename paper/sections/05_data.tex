@@ -7,52 +7,24 @@ The eigenproblem is the closed-cavity problem of \cref{sec:formulation} in the $
 
 \subsection{Geometry families}\label{sec:05-geometry}
 
-Eight families with CAD solids are used for field labels (\cref{tab:05-families}).
-A free-form family exists only for the lowest-order data path (no CAD solid), and five further families (plain box, quarter-wave coaxial, pillbox with side ports, 6--9-cell elliptical chains, junction boxes) are held out of distribution.
+Eight families with CAD solids are used for field labels: multi-cell elliptical cavities, re-entrant (nose-cone) cells, pillbox cells with beam pipes, ridged rectangular cavities, constructive-solid-geometry composites, half-wave coaxial resonators, spoke cavities and drift-tube-linac tanks (parameter ranges in \cref{sec:A05-families}); five further families are held out of distribution.
 The controlled experiments of \cref{sec:experiments} use one family (pillbox cells with pipes).
-% src: dataset_generator_3d.py FAMILIES, parse_args (discrete families dropped for labels=field); cavity_shapes.OOD_FAMILIES; BRIEF §1
+% src: dataset_generator_3d.py FAMILIES, parse_args; cavity_shapes.OOD_FAMILIES; BRIEF §1
 Parameters are drawn uniformly; with Sobol' sampling the first 64 draws of sample $i$ (family and shape parameters) come from the $i$-th point of one scrambled Sobol' sequence~\cite{sobol1967distribution,virtanen2020scipy}, later re-draws from a pseudo-random stream.
-An optional smooth random deformation of the mesh nodes (3--8 sinusoidal waves, Lipschitz constant below one so that the map stays injective) is available and switched off in our experiments.
+An optional smooth random deformation of the mesh nodes is available and switched off in our experiments.
 % src: dataset_generator_3d.py _sample_rng (qmc.Sobol d=64, scramble=True); docs/19 §2 (deformation); docs/34 §3 (--deform_prob 0)
 
-\begin{table}[t]
-\centering
-\caption{Families with CAD solids used for field labels: main parameters (uniform ranges, $\beta$ = relative cell length). Corner radii obey the fillet floor.}
-\label{tab:05-families}
-\small
-\begin{tabular}{@{}l p{0.78\linewidth}@{}}
-\toprule
-Family & Main parameters \\
-\midrule
-elliptical & 1--5 cells; $R_{eq}\in[40,110]$\,mm, $R_{iris}/R_{eq}\in[0.25,0.42]$, $L/R_{eq}\in[0.45,0.65]\beta$, $A/L\in[0.6,0.9]$, $B/A\in[0.6,1.3]$, $a/L\in[0.12,0.35]$, $b/a\in[0.65,1.9]$; $\beta<1$ in 25\,\%, TESLA/LL/ICHIRO anchors in 30\,\%, port stubs in 35\,\% \\
-re-entrant & $R\in[30,70]$\,mm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.10,0.25]$, nose gap $g/L_c\in[0.15,0.75]$, cone angle $-25^\circ\ldots35^\circ$ \\
-pillbox, pipes & $R\in[30,60]$\,mm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.12,0.35]$ \\
-ridged box & $a\in[40,100]$, $b\in[30,80]$, $d\in[20,60]$\,mm; 1--2 ridges; optional beam pipes \\
-composite & cylinder or ellipsoid body ($R_0\in[25,50]$\,mm), 1--4 attached primitives, 0--2 dents \\
-half-wave coaxial & $R_o\in[30,60]$, $L\in[80,200]$\,mm, $r_i/R_o\in[0.2,0.5]$; optional taper and transverse port \\
-spoke & tank $R_t\in[50,100]$\,mm, 1--2 spokes, optional beam bore \\
-drift-tube linac & tank $R_t\in[50,100]$\,mm, $L_c/R_t\in[0.5,0.9]$, 1--3 drift tubes on stems \\
-\bottomrule
-\end{tabular}
-% src: cavity_shapes.py draw_elliptical, _draw_half, build_reentrant, build_pillbox_pipes, build_ridged_box, build_composite, build_hwr, build_spoke, build_dtl; docs/19 §2
-\end{table}
-
 \paragraph{Elliptical half-cells.}
-A half-cell joins an iris ellipse $(a,b)$ and an equator ellipse $(A,B)$ by their common tangent line (least-squares solve, five starting points, tolerance $10^{-15}$).
-A wall is accepted if the radius does not decrease along it and, for a re-entrant wall, its angle to the beam axis is at most $105^\circ$ and it stays at least $0.05\,R_{eq}$ from the iris plane.
-End half-cells differ from the mid-cell with probability $0.6$ (e.g.\ iris radius $\times[1,1.35]$, $a,b\times[0.5,1.05]$).
-Published designs enter as sampling centres only (perturbed by $\pm10\,\%$ and rescaled); labels always come from the finite-element solve.
-The ranges were widened until all $14$ published reference half-cells that we compiled were accepted: the TESLA mid-cell and both end cups~\cite{aune2000superconducting}, the low-loss and ICHIRO cells~\cite{juntong2009highgradient}, NLSF and NLSF-RE, the Cornell ERL mid-cell and both ends, FCC-ee C3794, C3795 (mid and end) and FCCUROS5.
-Four of them were rejected by the earlier solver tolerance and overlap rule.
-Several of these dimensions could not be checked against full texts, so we treat them as plausible reference shapes, not as authoritative design data.
+A half-cell joins an iris ellipse and an equator ellipse by their common tangent; the wall must have non-decreasing radius, and mildly re-entrant walls (up to $105^\circ$) are admitted (details in \cref{sec:A05-halfcell}).
+Published designs enter as sampling centres only; labels always come from the finite-element solve.
+The ranges were widened until all $14$ published reference half-cells that we compiled (TESLA~\cite{aune2000superconducting}, low-loss and ICHIRO~\cite{juntong2009highgradient}, and others listed in the appendix) were accepted, four of which an earlier solver tolerance had rejected.
 Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the earlier rules); rejected draws are replaced, so no sample is lost but the distribution is truncated.
-% src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %); docs/33 §11 (full texts unavailable, some dimensions only from an open-source design code); cavity_shapes.py half_cell_wall, END_CELL_RANGES, MAX_WALL_ANGLE, WEB_MIN
+% src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %), §11, §3.1
 
 \paragraph{Fillet floor.}
 A corner radius far below the cavity size forces a curved mesh into many tiny elements (netgen sizes an element on a curved face as about radius over curvature safety) while changing frequencies little.
 Every drawn corner radius is therefore raised to at least $0.05$ times the cavity size (never above the builder's feasible maximum), and re-entrant edges left by boolean operations (port, bore and pipe junctions) are rounded with the same rule; where this fails the solid keeps its sharp edges and its surface peaks are stored as NaN.
-For pillbox cells with pipes ($R=\SI{57}{mm}$, $r_p=\SI{17}{mm}$) floors of $0.02$, $0.04$, $0.06$, $0.08$ (iris radius \SI{1.2}{mm}--\SI{4.5}{mm}) give $45$k, $30$k, $25$k and $18$k tets.
-Small fillets thus drive the element count: four draws of the ridged box, which has fillets along every edge, gave $38$k--$89$k tets, four draws of the spoke family $5.2$k--$7.8$k (curvature safety 2, before adaptive refinement).
+Small fillets drive the element count (e.g.\ $45$k tets at floor $0.02$ against $18$k at $0.08$ for a pillbox cell with pipes; \cref{sec:A05-counts}).
 % src: dataset_generator_3d.py min_fillet default 0.05 (labels=field); docs/29 §2.1 table and §2.4; docs/30 §3 (rounding, NaN peaks)
 
 \subsection{Curved meshes}\label{sec:05-mesh}
@@ -85,7 +57,7 @@ Bisection of marked elements on curvature-graded meshes has a closure that explo
 Each iteration therefore builds a new mesh from an error-equidistributing size field,
 $h_{\mathrm{new},T}=h_T\bigl(\rho\,\overline{\eta^2}/\eta_T^2\bigr)^{1/(2p)}$ with $\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$, $\rho=0.25$, $h_{\mathrm{new}}/h\in[0.3,1]$ and $p$ the polynomial order, passed to Netgen as local size restrictions at the element centroids.
 The restrictions accumulate over iterations (rebuilding from the latest field alone oscillates); the predicted element count matched Netgen's within $15\,\%$ and is scaled down uniformly if it exceeds the DOF budget.
-The start mesh is coarse (curvature safety $1.5$, falling back to $2$ if elements fold).
+The start mesh is deliberately coarse; its selection rule is shared with the low-fidelity labels (\cref{sec:multifidelity}).
 % src: docs/30 §4; adaptive.py mesh_remesher, size_field
 
 \paragraph{Stopping.}
@@ -102,8 +74,9 @@ The \emph{model mesh} is the finest level with at most $10\,000$ tets (about $10
 % src: docs/30 §5, §6 (model_max_elements 10000, about 100k DOF)
 On one mesh the order-two space is nested in the order-three space, so the $L^2$ projection is the exact best approximation; on a coarser model mesh the label fields are evaluated at the model mesh's $216$ integration points per tet (located once for all modes) and projected, $\mathsf M_2\mathsf u_2=\int\mathbf v_2\cdot\E_3$.
 We store, per mode, $\text{proj\_err}=\|\E_3-\E_2\|/\|\E_3\|$ and the Rayleigh quotient of $\E_2$ in the model space.
-On two pillbox-with-pipes model meshes $\text{proj\_err}$ was $0.18$--$0.54\,\%$ and the Rayleigh quotients exceeded the order-three frequencies by $0.04$--$0.9\,\%$, a floor that a Ritz layer in this space cannot go below.
-% src: docs/30 §5 (proj_err 1.8e-3–5.4e-3; p2 floor 4e-4–8.6e-3 on meshes of 11300 and 13052 tets), docs/31 §1
+On two pillbox-with-pipes model meshes $\text{proj\_err}$ was $0.18$--$0.54\,\%$, and the Rayleigh quotients of the projected modes exceeded the order-three frequencies by $0.04$--$0.9\,\%$.
+This is the frequency of the projected field \emph{target}; the floor of the model space itself, the discrete order-two eigenvalue, was within $0.033\,\%$ of the order-three frequencies on the four geometries of \cref{sec:multifidelity}.
+% src: docs/30 §5 (proj_err 1.8e-3–5.4e-3; Rayleigh quotients of projected HF modes 4e-4–8.6e-3, meshes of 11300 and 13052 tets); docs/34 §4.1 (FE floor ≤ 0.033 %); EDITOR_NOTES note 2
 
 Each geometry is stored as the Netgen mesh file of the model mesh, the BREP of the meshed shape, the frequencies, the projected fields (single precision, wall rows zero), the figures of merit, the axial field, and the wall-distance token features of \cref{sec:method}; about \SI{9}{MB} for ten modes.
 % src: docs/29 §1, §4
@@ -156,28 +129,5 @@ adaptive, volume + wall & 5961 & 157k & $6.1\cdot10^{-7}$ & $-3.4\cdot10^{-5}$ &
 In the controlled experiments (four samples, 150k-DOF budget, two single-thread workers on a shared four-core VM) a high-fidelity label including meshing took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}, $163$k--$328$k label DOFs); a later matched measurement gave a cost ratio of $4.3$ to one order-two solve on the same model mesh (\cref{sec:multifidelity}).
 A pillbox cell with pipes at a 450k-DOF budget takes \SI{433}{s} on two threads; the eigensolver is now about $90\,\%$ of a sample.
 % src: docs/34 §3 (172.5, 119.9, 208.7, 125.7 s), §8.1 (4.3); docs/31 §3.8 (433 s); docs/30 §6 (90 %)
-\Cref{tab:05-speedup} lists measured speed-ups.
-The largest was the transfer to the model mesh, which re-searched every model integration point in the label mesh for every form and mode; points are now located once.
-The gradient stiffness $\Kp$ is assembled as a gradient--gradient form on the potential space instead of a sparse triple product (same matrix to a relative $9\cdot10^{-16}$), and oversized draws are rejected right after mesh generation.
-The labels are unchanged: at 150k DOFs frequencies differ by $1.6\cdot10^{-15}$, $\Qz$ and $G$ by $7\cdot10^{-14}$, $\RoQ$ and peaks by at most $7\cdot10^{-10}$; at 450k DOFs the field subspace differs by $8\cdot10^{-6}$, limited by the Arnoldi tolerance, whereas the transfer alone differs by $3.5\cdot10^{-14}$.
-% src: docs/31 §3.8 (all numbers in this paragraph and in the table)
-
-\begin{table}[t]
-\centering
-\caption{Generator speed-ups (same sample and machine; two values are two runs).}
-\label{tab:05-speedup}
-\small
-\begin{tabular}{@{}lrr@{}}
-\toprule
-Item & Before [s] & After [s] \\
-\midrule
-transfer to model mesh (16.6k label tets $\to$ 8.9k model tets, 430k label DOFs) & 253.5 & 29.4 \\
-pillbox cell with pipes, 450k-DOF budget (two levels) & 664 & 433 \\
-pillbox cell with pipes, 150k-DOF budget (one level) & 150 / 121 & 112 / 115 \\
-elliptical, 150k-DOF budget, first draw rejected & 104 / 112 & 75.5 \\
-rejected oversized draw & 29 & 12 \\
-assembly of $\Kp$ & 4.4--6 & 0.34 \\
-\bottomrule
-\end{tabular}
+The generator was optimised without changing the labels (frequencies unchanged to $2\cdot10^{-15}$, figures of merit to $\le7\cdot10^{-10}$ at 150k DOFs): the transfer to the model mesh fell from \SI{253.5}{s} to \SI{29.4}{s} and a 450k-DOF sample from \SI{664}{s} to \SI{433}{s} (\cref{sec:A05-speedup}).
 % src: docs/31 §3.8
-\end{table}

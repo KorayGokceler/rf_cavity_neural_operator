@@ -5,11 +5,10 @@ For a superconducting cavity such as the nine-cell \SI{1.3}{GHz} niobium structu
 the designer needs not only the mode frequencies but also the fields and the derived figures of merit:
 the unloaded quality factor $\Qz$, the geometry factor, the shunt impedance $\RoQ$, the transit-time factor, and the
 peak-field ratios $\Epk/\Eacc$ and $\Bpk/\Eacc$ that limit the achievable gradient.
-Each design iteration changes the shape, so each iteration requires a new three-dimensional eigenvalue solve on a curved geometry.
+Each design iteration changes the shape and needs a new three-dimensional eigenvalue solve on a curved geometry.
 Axisymmetric codes \citep{halbach1976superfish} are cheap but cover only part of the design space;
 general three-dimensional design relies on finite-element eigensolvers such as the ACE3P suite \citep{ko2010advances} or commercial tools such as CST Studio Suite,
-whose cost per geometry grows with the mesh resolution needed for accurate figures of merit,
-and a design study repeats this solve for every shape variant.
+whose cost per geometry grows with the mesh resolution needed for accurate figures of merit.
 A surrogate that returns frequencies, fields and figures of merit directly from the geometry would shorten the loop,
 provided it can be trusted at the accuracy of the solver it replaces.
 
@@ -23,10 +22,9 @@ any discretisation that does not respect the $H(\mathrm{curl})$ structure, and a
 produces spurious modes at or near zero frequency \citep{hiptmair2002finite,boffi2010finite}.
 Third, a network that outputs values on a fixed grid or a fixed set of degrees of freedom is tied to one discretisation,
 whereas the accuracy of an eigenvalue computation depends on the mesh and the polynomial order.
-Lowest-order edge elements add a further limit: in our earlier lowest-order (Whitney) model, even the best representable field on the training mesh
+Lowest-order edge elements add a limit: in our earlier lowest-order (Whitney) model, even the best representable field on the training mesh
 had a \SIrange{12}{21}{\percent} error in $\E$ % src: docs/28 §1
-and the frequency error floor was \num{2.4e-3}, % src: docs/28 §3
-which is not competitive with a solver.
+and the frequency error floor was \num{2.4e-3}. % src: docs/28 §3
 
 \paragraph{Approach.}
 We therefore do not ask the network for the modes themselves.
@@ -34,9 +32,8 @@ The network maps the geometry to a \emph{learned basis} of $m$ vector fields.
 A fixed linear map takes the basis to the degrees of freedom of a conforming high-order N\'ed\'elec space \citep{nedelec1980mixed} of order $p$ on a curved (isoparametric) mesh,
 the basis is projected onto the discretely divergence-free subspace by solving a Poisson-type problem for the potential (the kernel projection, a float64 conjugate-gradient solve),
 and a Rayleigh--Ritz step in the projected span returns the $K$ lowest frequencies and the fields.
-The network is trained mainly to place the true modes inside the span of the basis; the frequencies and fields are then computed by the Ritz step
-and not read off a regression head.
-Since the Ritz step is a Galerkin projection onto a subspace of the discrete problem, min--max theory applies to its output.
+The network is trained mainly to place the true modes inside the span of the basis; the Ritz step, not a regression head, then computes frequencies and fields.
+Since this is a Galerkin projection onto a subspace of the discrete problem, min--max theory applies.
 The construction is implemented with NGSolve and Netgen \citep{schoberl1997netgen,schoberl2014cpp11}.
 
 \paragraph{Contributions.}
@@ -44,18 +41,18 @@ The construction is implemented with NGSolve and Netgen \citep{schoberl1997netge
   \item \textbf{A neural operator with a built-in eigenvalue bound.}
   Every predicted eigenvalue is an upper bound of the corresponding nonzero discrete eigenvalue of the finite-element space in which the model runs,
   and the kernel projection excludes spurious zero modes (\cref{sec:method}, \cref{prop:upper-bound}).
-  In all our held-out evaluations the predictions stayed above the discrete eigenvalues of their space, with a smallest margin of \SI{0.47}{\percent} in the main study. % src: docs/34 §8.2
-  The bound is with respect to the discrete eigenvalue, not the exact one.
+  In the main held-out study every prediction stayed above the discrete eigenvalue of its space (smallest margin \SI{0.47}{\percent}); % src: docs/34 §8.2
+  the bound is with respect to the discrete, not the exact, eigenvalue.
   \item \textbf{Independence of the discretisation space.}
-  The same trained weights run unchanged on a higher-order space ($p=3$) and on a mesh refined once (eight times as many tetrahedra), and the bound still holds there
+  The same weights run unchanged on a $p=3$ space and on a mesh refined once (eight times as many tetrahedra), and the bound still holds
   (smallest margin \SI{0.009}{\percent}). % src: docs/34 §4.2
-  The accuracy does not improve in the richer space (the frequency error worsens by \numrange{0.2}{0.6} percentage points), % src: docs/34 §4.2
-  because the remaining error lies in the learned basis, not in the discretisation.
+  Accuracy does not improve in the richer space (the frequency error worsens by \numrange{0.2}{0.6} percentage points): % src: docs/34 §4.2
+  the remaining error lies in the learned basis.
   \item \textbf{Accuracy floor of the representation.}
   With quadrature-point tokens on a curved $p=2$ space, the relative eigenvalue error in a single-sample overfit test is \numrange{1e-6}{9e-6}, % src: docs/28 §3
   against \num{2.4e-3} for the lowest-order model. % src: docs/28 §3
   \item \textbf{A data pipeline with analytic validation.}
-  An adaptive $p=3$ label generator on curved meshes, driven by an error indicator from the volume and the wall, with separate label and model meshes (\cref{sec:data}).
+  An adaptive $p=3$ label generator on curved meshes with separate label and model meshes (\cref{sec:data}).
   On an analytic pillbox the solver reproduces the exact values to \num{6e-7} in frequency, \num{3e-5} in $\Qz$, \num{1e-5} in $\RoQ$, \num{2e-4} in $\Epk$ and \num{4e-4} in $\Bpk$ at \num{157000} degrees of freedom. % src: docs/31 §1
   Removing repeated work cut the cost of an adaptive label at \num{450000} DOF from \SI{664}{s} to \SI{433}{s}, with labels unchanged (frequency differences $\le\num{2e-15}$, figures of merit $\le\num{7e-9}$ relative). % src: docs/31 §3.8
   \item \textbf{Training on low-fidelity labels.}
@@ -68,7 +65,7 @@ The construction is implemented with NGSolve and Netgen \citep{schoberl1997netge
 \end{enumerate}
 
 \paragraph{Scope.}
-This is a method-and-pipeline paper with controlled small-scale evidence, not a production surrogate.
+This is a method-and-pipeline paper with controlled small-scale evidence.
 All training runs are small: CPU only, at most 40 training geometries from one family (a pillbox with beam pipes), and a 64-dimensional two-block trunk. % src: BRIEF §1; docs/34 §4, §8.2
 The absolute errors of \SIrange{1}{2}{\percent} in frequency reflect this under-trained model rather than a limit of the method;
 the figure-of-merit loss is switched off for the field model;
@@ -77,8 +74,7 @@ At the scale studied, inference takes a time of the same order as an FE solve in
 and the model cannot be more accurate than the finite-element solution of its own space (\cref{sec:discussion}).
 
 \paragraph{Outline.}
-\Cref{sec:related} reviews related work.
-\Cref{sec:formulation} states the eigenproblem, the discrete spaces and the figures of merit.
-\Cref{sec:method} describes the model, proves the upper-bound property and gives the losses.
-\Cref{sec:data} describes the geometry families and the label generator, and \cref{sec:multifidelity} the two label fidelities and how they are used in training.
-\Cref{sec:experiments} reports the experiments, and \cref{sec:discussion} discusses limitations and future work.
+\Cref{sec:related} reviews related work, \cref{sec:formulation} states the eigenproblem and the figures of merit, and
+\cref{sec:method} describes the model and proves the upper-bound property.
+\Cref{sec:data} covers the label generator and \cref{sec:multifidelity} the two label fidelities.
+\Cref{sec:experiments} reports the experiments and \cref{sec:discussion} discusses limitations and future work.

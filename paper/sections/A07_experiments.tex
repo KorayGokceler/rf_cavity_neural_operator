@@ -1,0 +1,41 @@
+\section{Additional experiments}\label{sec:A07-experiments}
+
+\subsection{An earlier, smaller LF-to-HF study}\label{sec:A07-first}
+% src: docs/34 §3, §4, §4.1, §4.3
+Before this experiment, the same architecture was trained on 14 LF geometries for 30 epochs (two threads, about an hour; LF meshes of the time) and evaluated on four HF geometries (identifiers 3, 5, 10, 13) that were not in training.
+On three LF test geometries it had a frequency error of $2.07\%$ and a field error of $0.182$. On the HF geometries the frequency errors of modes 0--3 were between $+0.63\%$ and $+3.02\%$, all positive, and the field error of modes 0--2 was $0.026$--$0.072$.
+The discrete order-2 eigenvalue on the model mesh differs from the HF frequency by at most $0.033\%$ (the floor of the model space, \cref{sec:multifidelity}), so the error is the model's and not the space's. No additional LF-to-HF gap was visible, which is expected as the LF and HF frequencies agree to about $10^{-4}$ on this family.
+
+A first fine-tuning test (two HF geometries added, 8 further epochs at $3\times10^{-4}$ from the LF checkpoint) had a control with 8 further epochs on LF data only. On the two held-out HF geometries the mean error fell from $1.83\%$ and $1.76\%$ to
+$1.50\%$ and $1.50\%$ for the control, against $1.73\%$ and $1.50\%$ with the HF fine-tune: the gain came from the additional training, not from the HF labels.
+% src: docs/34 §4.3
+This is the control missing for arm~D of \cref{tab:equal-cost}, and suggests (without proving) that D's gain is also due to the extra steps. What HF labels add on this family is mostly wall-dependent ($\Qz$, surface peaks), whose loss term is off here.
+
+\subsection{Training-path cost reductions}\label{sec:A07-engineering}
+% src: docs/31 §3.6, §3.7; docs/28 §4
+Training on curved high-order meshes is dominated by work that does not depend on the learned parameters. \Cref{tab:A07-engineering} lists the reductions we measured. They leave results unchanged: the loss, the input tensors and all 76 parameter gradients are bit-identical to the previous code
+on two geometries (checkpointing: gradients identical as well). Timings are single-thread CPU times on a loaded machine (repeatable to about $1\%$; wall-clock varies by $\sim30\%$).
+
+\begin{table}[t]
+\centering\small
+\caption{Measured cost reductions of the training path (curved pillbox, 8931 tetrahedra, 92\,751 DOF, unless noted).}
+\label{tab:A07-engineering}
+% src: docs/31 §3.6, §3.7; docs/28 §4
+\begin{tabular}{p{0.52\linewidth}rrr}
+\toprule
+Quantity & Before & After & Change\\
+\midrule
+Training step (forward + backward), pillbox & 40.7\,s & 32.4\,s & $-20\%$\\
+Training step, elliptical cell (5719 tets) & 20.1\,s & 19.0\,s & $-5.5\%$\\
+Batch preparation (item, transpose, collate), pillbox & 4.40\,s & 3.0--3.2\,s & $-27$ to $-32\%$\\
+Dataset load with stored wall features, pillbox & 4.24\,s & 2.67\,s & $-37\%$\\
+Dataset load with stored wall features, elliptical & 3.12\,s & 1.83\,s & $-41\%$\\
+Peak memory, checkpointed trunk (13k tets) & 9.9\,GB & 3.8\,GB & $-62\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The step gain comes from storing the wall-distance and torsion features in the data file instead of recomputing them, from sparse products that use a transpose prepared once per geometry (it removes a sort of $0.5$--$0.7$\,s per matrix in each backward pass),
+and from conjugate-gradient updates written into preallocated buffers ($15$--$20\%$ less CG time, same iterate and iteration count). Activation checkpointing in the trunk recomputes the attention and feed-forward halves in the backward pass; the step time stays within measurement noise on CPU.
+The gain grows with the number of tokens and nonzeros, hence $20\%$ on the pillbox and $5.5\%$ on the smaller elliptical cell. Measured and not adopted: a per-geometry sparse Cholesky factorisation of $\Kp$ ($\sim5\%$ of the step), a looser CG tolerance (it changes the gradients) and a smaller operator cache.
+GPU timing was not measured.

@@ -19,23 +19,22 @@ harmonic Dirichlet fields whose dimension $b_2$ is the number of wall components
 gradient of a potential that is constant on its component). % src: docs/20 §8, docs/19 §6.1
 Handles of $\Omega$ add nothing to this kernel in the $\E$ formulation, which is why we use $\E$ and not $\Hf$ (for $\Hf$ the harmonic fields
 created by handles are not gradients and cannot be removed by a gradient projection). % src: AGENTS.md invariants, docs/19 §6.1
-Eigenvalue $0$ thus has infinite multiplicity, and the physical resonances are the positive eigenvalues
-$0<\lambda_1\le\lambda_2\le\dots$, whose eigenfields are divergence free. This matters for learning: any learned
-approximation of the fields contains gradient components, which have zero energy $(\curl\cdot,\curl\cdot)$ but non-zero mass and produce
-Rayleigh quotients near~$0$ (spurious modes) unless they are removed explicitly.
+Eigenvalue $0$ thus has infinite multiplicity; the physical resonances are the positive eigenvalues $0<\lambda_1\le\lambda_2\le\dots$, with
+divergence-free eigenfields. For learning this matters because any learned field contains gradient components, which have zero energy but non-zero mass and
+produce Rayleigh quotients near~$0$ (spurious modes) unless removed explicitly.
 
 \subsection{Conforming discretisation on curved meshes}\label{sec:03-discrete}
 % src: docs/28 §2, docs/29 §1, src/data_gen/highorder.py field_operators / solve_modes
 Let $\mathcal T_h$ be a tetrahedral mesh of a CAD description of the cavity \citep{schoberl1997netgen} whose elements are images
 $T=F_T(\hat T)$ of the reference tetrahedron under polynomial maps of degree $q$ (the curve order; $q=3$ throughout, % src: docs/29 §1, field_labels.DEFAULTS curve=3
-so the geometry is iso- or super-parametric for $p\le 3$). $\Vh$ is the conforming Nédélec space of the first kind \citep{nedelec1980mixed} on
-$\mathcal T_h$, mapped with the covariant Piola transform and with zero tangential trace on $\bdry$. Its order $p$ is indexed as in NGSolve
-\citep{schoberl2014ngsolve}: $p=0$ is the lowest-order (Whitney) element, and $\Vh$ contains the gradients of the Lagrange space of
-degree $p+1$; the basis is the hierarchical one with the local complete-sequence property \citep{schoberl2005high}. We use $p=2$ for the space of the model and
-$p=3$ for the reference labels. % src: docs/29 §1
-Let $\Sh$ be the $H^1_0$-conforming space of order $p+1$ on the same curved mesh, extended by one function per additional wall component
-(equal to $1$ there and $0$ on the other components). Then $\nabla\Sh\subset\Vh$, and the discrete de~Rham sequence is exact
-\citep{monk2003finite,arnold2006finite}, so $\nabla\Sh$ is exactly the kernel of the curl in $\Vh$. With $n$ the number of free (non-wall) DOFs and
+so the geometry is iso- or super-parametric for $p\le 3$). $\Vh$ is the conforming Nédélec space of the first kind \citep{nedelec1980mixed} on $\mathcal T_h$, mapped with the covariant Piola transform, with zero
+tangential trace on $\bdry$ and the hierarchical basis of \citet{schoberl2005high}, as implemented in NGSolve \citep{schoberl2014ngsolve}. The order $p$ is the
+implementation's: the gradient map is built from the $H^1$ space of order $p+1$ on the same curved mesh, whose gradients lie in $\Vh$. % src: highorder.field_operators / solve_modes (fes.CreateGradient); checked: HCurl(order=p) gives an H1 space of order p+1 for p=1,2,3 on a curved mesh
+We use $p=2$ for the model space and $p=3$ for the reference labels. % src: docs/29 §1
+Let $\Sh$ be the $H^1_0$-conforming space of order $p+1$ on the same mesh, extended by one function per additional wall component
+(equal to $1$ there and $0$ on the other components). Then $\nabla\Sh\subset\Vh$, and since the covariant Piola map commutes with the gradient the discrete
+sequence is exact \citep{monk2003finite,arnold2006finite}, so $\nabla\Sh$ is the kernel of the curl in $\Vh$ (we rely on this; the cited exactness is for conforming
+meshes with a common geometry map). With $n$ the number of free (non-wall) DOFs and
 $\{\mathbf w_i\}$ the basis, let
 \begin{equation}\label{eq:03-matrices}
   \Kmat_{ij}=(\curl\mathbf w_j,\curl\mathbf w_i),\quad
@@ -58,9 +57,7 @@ whose null space is $\operatorname{range}\Gmat$. The physical part of the spectr
 the $\Mmat$-orthogonal complement of $\operatorname{range}\Gmat$ ($\Pmat$ is the $\Mmat$-orthogonal projector onto it).
 The \emph{discrete eigenvalues} $\lambda_{h,1}\le\lambda_{h,2}\le\dots$ are the positive eigenvalues of \eqref{eq:03-gev}, i.e.\ the
 eigenvalues of $\Kmat$ restricted to $W_h$. They depend only on $(\mathcal T_h,q,p)$. Because $W_h$ is not contained in
-the divergence-free fields, the $\lambda_{h,k}$ are not ordered with respect to the exact $\lambda_k$ (for lowest-order elements on a pillbox the
-TM$_{010}$ frequency approaches the exact one from below, with deviations $-0.75\%$ to $-0.05\%$ as the mesh-size parameter of that study falls from $0.20$ to $0.05$). % src: docs/19 §6.3 table (TM010, E)
-They converge to $\lambda_k$ under refinement by discrete compactness \citep{monk2003finite,boffi2010finite}. Bounds in this paper are therefore
+the divergence-free fields, the $\lambda_{h,k}$ are not ordered with respect to the exact $\lambda_k$. They converge to $\lambda_k$ under refinement by discrete compactness \citep{monk2003finite,boffi2010finite}. Bounds in this paper are therefore
 relative to $\lambda_{h,k}$ of the space in which a computation runs, not to $\lambda_k$.
 
 \paragraph{Normalisation and frequencies.}
@@ -98,29 +95,13 @@ wall loss. Every quantity is reported for the mode scaled to stored energy $U=\S
   \Epk&=\max_{\bdry}|\E|, &
   \Bpk&=\mu_0\max_{\bdry}|\Hf|=\max_{\bdry}\frac{|\curl\E|}{\omega}. \notag
 \end{align}
-Here $R_s=\sqrt{\pi f\mu_0/\sigma}$ is the skin-effect resistance at the mode's own frequency, with $\sigma=\SI{5.8e7}{S/m}$ (copper) by default;
-$\Qz\propto 1/R_s$, while $G$, $\RoQ$, $T$ and the peak ratios do not depend on the wall material. The beam axis $\ell$ has unit tangent $\mathbf d$ and arc
-length $t$, and the particle velocity is $\beta c_0$ with $\beta=1$. % src: docs/24 §0.2, §1.1
-The modulus makes $V_{\mathrm{acc}}$ independent of the time and axial origins, and $T\in[0,1]$ because the denominator is $\int|E_\parallel|$ and not
-$|\int E_\parallel|$. $\Epk/\Eacc$ (dimensionless) and $\Bpk/\Eacc$ (in $\si{\milli\tesla\per(\mega\volt\per\metre)}$) are the peak-field ratios. % src: docs/24 §1.3, §1.5
-We use the \emph{linac} convention for $\RoQ$ and $R_{\mathrm{sh}}$ \citep{wangler2008rf,padamsee2008rf}; the circuit convention (parallel RLC, $P=V^2/2R$) halves
-both and leaves $\Qz$, $G$, $T$ and the peak ratios unchanged. % src: docs/24 §1.4
-
-\paragraph{Beam axis and accelerating length.}
-% src: docs/24 §0.2, §1.3; src/qoi/operators.py beam_axis, acceleration_length
-All geometry families are built with the beam along $z$, and the default axis is the line $x=y=0$; exceptions are fixed per family (e.g.\ the half-wave
-coaxial resonator is crossed along $x$ at mid-length). $\Lacc$ is the inner length of the cavity along the axis, beam pipes excluded: the sum of the cell lengths for
-elliptical cavities, the cell length for pillbox-type cells, the tank length for spoke and drift-tube structures. For families without a beam it
-is the chord of the axis inside $\Omega$, and $\RoQ$ is then a defined functional and not an accelerator figure. Axis and $\Lacc$ follow the nominal geometry
-parameters, so on smoothly deformed samples they are those of the undeformed shape. % src: docs/24 §1.3 (limitation)
-
-\paragraph{Eigenpair consistency.}
-For a discrete eigenpair, $\tfrac12\mu_0\!\int|\Hf|^2$ computed from $\E$ and the eigenfrequency equals $\tfrac12\varepsilon_0\!\int|\E|^2$ because
-$\omega^2=c_0^2\lambda/s^2$ with $\lambda$ the Rayleigh quotient; for a predicted field and frequency that are not an eigenpair the two differ by the
-Rayleigh-quotient mismatch. We therefore take $U$ from $\E$ and use the frequency explicitly in $\Hf$, hence in $P_c$, $\Bpk$ and $\Qz$. % src: docs/24 §1.2
-On high-order fields the functionals are evaluated directly, with wall values taken from the adjacent volume element (for $\E\in\Hcurl$ a plain boundary
-evaluation gives only the tangential trace, which vanishes on a PEC wall). % src: highorder.mode_qoi docstring
-Wall quantities ($\Qz$, $G$, $\Epk$, $\Bpk$) are far more sensitive to element quality than frequencies, which is why mesh quality is controlled in the data pipeline (\cref{sec:data}). % src: docs/29 §2.2
+Here $R_s=\sqrt{\pi f\mu_0/\sigma}$ is the skin-effect resistance at the mode's own frequency ($\sigma=\SI{5.8e7}{S/m}$, copper); $\Qz\propto1/R_s$, while $G$, $\RoQ$, $T$
+and the peak ratios do not depend on the wall material. The beam axis $\ell$ has unit tangent $\mathbf d$ and arc length $t$, and $\beta=1$. % src: docs/24 §0.2, §1.1
+The modulus makes $V_{\mathrm{acc}}$ independent of the time and axial origins; $T\in[0,1]$ because the denominator is $\int|E_\parallel|$ and not $|\int E_\parallel|$.
+$\Bpk/\Eacc$ is given in $\si{\milli\tesla\per(\mega\volt\per\metre)}$. We use the \emph{linac} convention for $\RoQ$ and $R_{\mathrm{sh}}$
+\citep{wangler2008rf,padamsee2008rf}; the circuit convention halves both. % src: docs/24 §1.4
+The beam axis is the line $x=y=0$ along $z$ (exceptions per family) and $\Lacc$ is the inner cavity length along it, beam pipes excluded (\cref{sec:A03-qoi}).
+For a predicted field and frequency, $U$ is taken from $\E$ and the frequency enters $\Hf$, hence $P_c$, $\Bpk$ and $\Qz$ (\cref{sec:A03-qoi}). % src: docs/24 §1.2
 
 \subsection{What a model must produce}\label{sec:03-targets}
 For a geometry with its curved mesh, a model maps the geometry to $\bigl(\{f_k\}_{k=1}^{\nmodes},\{\mathbf u_k\}_{k=1}^{\nmodes}\bigr)$: the $\nmodes$ lowest
