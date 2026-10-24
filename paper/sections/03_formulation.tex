@@ -28,7 +28,7 @@ produce Rayleigh quotients near~$0$ (spurious modes) unless removed explicitly.
 Let $\mathcal T_h$ be a tetrahedral mesh of a CAD description of the cavity \citep{schoberl1997netgen} whose elements are images
 $T=F_T(\hat T)$ of the reference tetrahedron under polynomial maps of degree $q$ (the curve order; $q=3$ throughout, % src: docs/29 §1, field_labels.DEFAULTS curve=3
 so the geometry is iso- or super-parametric for $p\le 3$). $\Vh$ is the conforming Nédélec space of the first kind \citep{nedelec1980mixed} on $\mathcal T_h$, mapped with the covariant Piola transform, with zero
-tangential trace on $\bdry$ and the hierarchical basis of \citet{schoberl2005high}, as implemented in NGSolve \citep{schoberl2014ngsolve}. The order $p$ is the
+tangential trace on $\bdry$ and the hierarchical basis of \citet{schoberl2005high}, as implemented in NGSolve \citep{schoberl2014cpp11}. The order $p$ is the
 implementation's: the gradient map is built from the $H^1$ space of order $p+1$ on the same curved mesh, whose gradients lie in $\Vh$. % src: highorder.field_operators / solve_modes (fes.CreateGradient); checked: HCurl(order=p) gives an H1 space of order p+1 for p=1,2,3 on a curved mesh
 We use $p=2$ for the model space and $p=3$ for the reference labels. % src: docs/29 §1
 Let $\Sh$ be the $H^1_0$-conforming space of order $p+1$ on the same mesh, extended by one function per additional wall component

@@ -77,7 +77,7 @@ Each Cartesian component of $\bm\psi_j$ is fitted by weighted least squares, $\b
 % src: src/data_gen/highorder.py field_operators (P = solve(A, Phi^T W), W = detJ*wq); n_l = dim P_p = 10, 20
 \emph{(ii) Interpolation into $\Vh$.}
 A fixed sparse operator $\Cmat$ maps the element-wise polynomial field to $\Vh$.
-In the implementation it is the NGSolve conversion operator~\cite{schoeberl2014cpp11}, which applies the dual basis of $\Vh$ element by element and averages shared DOFs.
+In the implementation it is the NGSolve conversion operator~\cite{schoberl2014cpp11}, which applies the dual basis of $\Vh$ element by element and averages shared DOFs.
 % src: ngsolve ConvertOperator docstring ("interpolation operator defined by element-wise application of dual shapes (and averaging between elements)"); docs/28 §2 calls it projection-based interpolation
 It plays the role of a projection-based interpolation operator~\cite{demkowicz2005projection}; we use only its linearity and locality.
 With $\mathsf I_{\rm int}$ the $0/1$ diagonal matrix of non-wall DOFs and $\mathsf F=\mathrm{blockdiag}(\mathsf F_t)$,
