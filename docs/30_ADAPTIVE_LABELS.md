@@ -167,10 +167,16 @@ constant 2–3 % because the port edge was still sharp in that run; §3 rounds i
 - **Label mesh.** The finest adaptive level: frequencies, figures of merit and the p3 fields.
 - **Model mesh.** The finest level with at most `model_max_elements` tets (default 10000). The model
   trains on it, at HCurl(model_order = 2).
-- **Transfer.** The p3 label fields are L2-projected onto the model space. NGSolve evaluates the
-  fine fields at the model mesh's integration points (point search across meshes):
+- **Transfer.** The p3 label fields are L2-projected onto the model space. The fine fields are
+  evaluated at the model mesh's integration points (216 per tet):
 
       M₂ u₂ = ∫ v₂ · E₃ dx₃
+
+  The points are located in the label mesh once (`highorder.locate`, ~6 µs each) and the values of all
+  modes are put on the model mesh's `IntegrationRuleSpace`, which the linear forms read at the same
+  points. Integrating the label GridFunctions directly repeats the point search for every form and
+  mode: 253 s of the 664 s of a 430k-DOF sample, against 29 s now, the same projection to 3e-14
+  (docs/31 §3.8).
 
 - **Stored per mode:** proj_err and rq_model. As before, FieldDataset repeats the Rayleigh-quotient
   check on the rebuilt model mesh.
@@ -233,6 +239,11 @@ loaded first, the field model's torch forward segfaults later in the process; th
 BLAS runtimes are the likely cause. train.py, FieldDataset and the web API already import torch first.
 The test session now does too (`tests/conftest.py`): test modules that import ngsolve at collection
 used to decide the order, which made the suite crash depending on which files ran.
+
+**Cost (after docs/31 §3.8).** The solver (assembly, sparse Cholesky, ARPACK shift-invert) is now 90 % of a
+sample: pillbox_pipes at `MAX_NDOF` 450k takes 433 s (was 664 s) on 2 threads, 400 s of it in the two
+level solves. A draw rejected for `max_elements` is dropped right after netgen's generation (8.5 s,
+was 25 s).
 
 **Cost.** About 3 refinement levels of a growing mesh, i.e. about 3–4× one solve (pillbox with pipes:
 25 + 54 + 100 s on 4 threads against 43 s for the old one-solve label). On the training side the
