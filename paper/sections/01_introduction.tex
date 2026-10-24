@@ -57,7 +57,7 @@ The construction is implemented with NGSolve and Netgen \citep{schoberl1997netge
   \item \textbf{A data pipeline with analytic validation.}
   An adaptive $p=3$ label generator on curved meshes, driven by an error indicator from the volume and the wall, with separate label and model meshes (\cref{sec:data}).
   On an analytic pillbox the solver reproduces the exact values to \num{6e-7} in frequency, \num{3e-5} in $\Qz$, \num{1e-5} in $\RoQ$, \num{2e-4} in $\Epk$ and \num{4e-4} in $\Bpk$ at \num{157000} degrees of freedom. % src: docs/31 §1
-  Removing repeated work cut the cost of one label from \SI{664}{s} to \SI{433}{s} (\num{450000} DOF) with labels unchanged (frequency differences $\le\num{2e-15}$, figures of merit $\le\num{7e-9}$ relative). % src: docs/31 §3.8
+  Removing repeated work cut the cost of an adaptive label at \num{450000} DOF from \SI{664}{s} to \SI{433}{s}, with labels unchanged (frequency differences $\le\num{2e-15}$, figures of merit $\le\num{7e-9}$ relative). % src: docs/31 §3.8
   \item \textbf{Training on low-fidelity labels.}
   A low-fidelity (LF) label is one $p=2$ solve on the model mesh; the high-fidelity (HF) label is the adaptive $p=3$ solution projected to $p=2$ (\cref{sec:multifidelity}).
   An LF label is $4.3\times$ cheaper, % src: docs/34 §8.1

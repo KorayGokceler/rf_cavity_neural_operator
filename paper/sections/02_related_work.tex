@@ -21,7 +21,7 @@ Physics-informed networks add the PDE residual to the loss~\citep{raissi2019phys
 Constraints enforced only through the loss are not guaranteed to hold at inference.
 Several works therefore couple learning to a mesh: hybrid FEM--NN models embed a network in a finite-element model and differentiate through the solve~\citep{mitusch2021hybrid}; FEONet predicts finite-element coefficients and trains on the weak-form residual~\citep{lee2025finite}; and a data-driven exterior calculus keeps the discrete conservation structure exact while learning the metric~\citep{trask2022enforcing}.
 In electromagnetics, FNO surrogates have been trained for scattering and inverse design~\citep{augenstein2023neural}.
-To our knowledge none of these targets the Maxwell eigenproblem on conforming high-order $H(\mathrm{curl})$ spaces on curved meshes, where the constraint is the kernel of the curl.
+As far as we found, none of these learns the Maxwell eigenproblem on conforming high-order $H(\mathrm{curl})$ spaces on curved meshes, where the constraint is the kernel of the curl.
 
 \paragraph{Maxwell eigenproblems and Nédélec elements.}
 Nodal discretisations of the cavity problem produce spurious modes~\citep{bossavit1990solving}; curl-conforming elements~\citep{nedelec1980mixed} avoid them, and their analysis (discrete compactness, spurious-free convergence) is treated in~\citep{boffi2000fortin,caorsi2001spurious}, in the monograph of~\citet{monk2003finite} and in the surveys of~\citet{hiptmair2002finite} and~\citet{boffi2010finite}.

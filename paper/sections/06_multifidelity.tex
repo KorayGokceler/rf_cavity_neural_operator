@@ -36,43 +36,40 @@ quality of the projected target rather than of the floor itself.
 
 \subsection{The shared start mesh}\label{sec:06-mesh}
 
-A comparison or a mixture of the two fidelities is only meaningful if both are generated on the same mesh. The
-adaptive path starts from the curved mesh with the first of a list of curvature-safety settings (a coarser one
-first, the default as a fallback when it folds elements), and does not retry a finer setting after a mesh that
-exceeds the element limit.
+Comparing or mixing the two fidelities is only meaningful on the same mesh. The adaptive path starts from the curved
+mesh with the first of a list of curvature-safety settings (coarser first, the default $2.0$ as a fallback when
+elements fold; $1.5$ is the coarser setting), and does not retry a finer setting after a mesh that exceeds the
+element limit.
 % src: src/data_gen/field_labels.py start_mesh; docs/34 §8.1
-The first version of our $\LF$ generator built its mesh with the finer default setting (curvature safety $2.0$) only,
-whereas the adaptive path starts at $1.5$. On six test geometries
-this produced meshes $1.2$--$1.9$ times larger than the $\HF$ model meshes ($5.9$k--$12.1$k against
-$4.8$k--$10.0$k tetrahedra), so the cheap labels were more expensive than necessary and the mesh distribution at
-training differed from that at inference.
-% src: docs/34 §8.1 (1.2–1.9×, 5.9k–12.1k vs 4.8k–10.0k)
-Using the coarser setting alone did not remove the discrepancy, since geometries on which it folds elements were
-re-meshed by the $\LF$ path with a finer mesh, whereas the adaptive path fell back to the default setting. 
-% src: docs/34 §8.1 (cs 1.5 alone insufficient; id 3: 13.7k vs 6.9k)
-An earlier measurement had concluded that the $\LF$ mesh does not become smaller whichever meshing parameter is
-varied; this was a misdiagnosis caused by the mismatched start rule and is a pitfall worth recording.
+The first version of our $\LF$ generator used the finer setting only. On six test geometries this gave meshes
+$1.2$--$1.9$ times larger than the $\HF$ model meshes ($5.9$k--$12.1$k against $4.8$k--$10.0$k tetrahedra), so the
+cheap labels were more expensive than necessary and the mesh distribution at training differed from that at
+inference. Switching to the coarser setting alone did not suffice, because on geometries where it folds elements
+the $\LF$ path re-meshed more finely whereas the adaptive path fell back to the default.
+% src: docs/34 §8.1 (1.2–1.9×, 5.9k–12.1k vs 4.8k–10.0k; cs 1.5 alone insufficient)
+An earlier measurement had concluded that the $\LF$ mesh does not shrink whichever meshing parameter is varied;
+this was a misdiagnosis caused by the mismatched start rule, and a pitfall worth recording.
 % src: docs/34 §3 (corrected in §8.1)
-Reusing the start-mesh rule for $\LF$ labels gave identical meshes to the $\HF$ model meshes on 8 of 8 training and
-6 of 6 test geometries, reduced the mean size over 40 $\LF$ samples from 9404 to 7639 tetrahedra ($-19\,\%$), and
-raised the cost ratio of an $\HF$ to an $\LF$ label from $2.3$ to $4.3$ (\SI{1242}{s} against \SI{291}{s} on the
-same eight meshes, two workers with one thread each on a 4-core machine under concurrent training load; $4.1$ on
-the six test geometries, \SI{779}{s} against \SI{190}{s}).
+Reusing the start-mesh rule gave meshes identical to the $\HF$ model meshes on 8 of 8 training and 6 of 6 test
+geometries, reduced the mean size over 40 $\LF$ samples from 9404 to 7639 tetrahedra ($-19\,\%$), and raised the
+cost ratio $\HF$/$\LF$ from $2.3$ to $4.3$ (\SI{1242}{s} against \SI{291}{s} on the same eight meshes; two workers
+with one thread each on a 4-core machine under concurrent training load; $4.1$ on the six test geometries,
+\SI{779}{s} against \SI{190}{s}).
 % src: docs/34 §8.1 (8/8, 6/6, 9404→7639 −19 %, 1242 s/291 s = 4.3, old ratio 2.3, 779/190 s)
-One qualification: with the element budget used here (at most 150\,000 label DOFs) the budget is exhausted by the
-first order-3 solve, so the ``adaptive'' $\HF$ label is a single order-3 solve on the start mesh. With a larger
-budget the $\HF$ model mesh may be a refined level and the two fidelities would no longer share a mesh.
+With the budget used here (at most 150\,000 label DOFs) the first order-3 solve exhausts the budget, so the
+``adaptive'' $\HF$ label is a single order-3 solve on the start mesh; with a larger budget the $\HF$ model mesh may
+be a refined level and the meshes would differ.
 % src: docs/34 §8.1, §3, §5
 
 \subsection{How the labels differ}\label{sec:06-diff}
 
-On identical meshes, the $\LF$ frequency exceeds the $\HF$ one by $0.004$--$0.047\,\%$ over the modes
-considered, and the part of an $\HF$ mode that falls outside the span of the six $\LF$ modes has an $M$-norm of
-$0.08$--$0.32\,\%$ for modes 0--3; the model's own error is $10$--$50$ times larger than these differences.
+On identical meshes, the $\LF$ frequency exceeds the $\HF$ one by $0.004$--$0.047\,\%$, and the part of an $\HF$
+mode that falls outside the span of the six $\LF$ modes has an $M$-norm of $0.08$--$0.32\,\%$ for modes 0--3; the
+model's own error is $10$--$50$ times larger than these differences.
 % src: docs/34 §8.1 (freq +0.004–+0.047 %; field 0.08–0.32 %; 10–50×)
 Quantities determined by the wall behave differently. \Cref{tab:06-diff} gives the differences for mode 0 of four
-geometries, measured at an earlier stage when the two meshes coincided on only one of the four geometries, so the
-surface peaks combine the effect of the fidelity with that of the mesh and were not repeated on identical meshes.
+geometries, measured on the earlier meshes, where the $\LF$ and $\HF$ meshes coincided for only one of the four geometries; the
+values therefore mix the effect of the fidelity with that of the mesh and were not repeated on identical meshes.
 % src: docs/34 §3 (table; LF/HF tet counts differ for ids 5, 10, 13)
 
 \begin{table}[t]
