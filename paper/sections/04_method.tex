@@ -112,6 +112,8 @@ A cheap diagonal penalty on the gradient content instead of the projection was m
 % TODO pass 3: check that 07 carries the penalty-vs-projection ablation table and the reference is correct
 Since $\mathsf B\mapsto\mathsf Z$ is the symmetric operator $\Kp^{-1}$, its backward pass is one more solve with the same matrix, $\bar{\mathsf B}=\Kp^{-1}\bar{\mathsf Z}$, implemented as a custom PyTorch~\cite{paszke2019pytorch} autograd function instead of differentiating through the iterations.
 % src: src/models/hcurl.py KpSolve
+The trunk costs $O(Nd^2L)$ per geometry, linear in the number of tokens, whereas the float64 CG solves (forward and backward) dominate: one training step of the default-size model (not the one of the experiments) on a $13$k-tetrahedron mesh ($183$k tokens, order two) took about $22$\,s on four CPU threads; sizes and timings are in \cref{sec:A04-cost}.
+% src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads: step ~22 s); docs/28 §4 ("p3 is impractical for training")
 
 \subsection{Rank-revealing Rayleigh--Ritz layer}\label{sec:04-ritz}
 
@@ -208,9 +210,3 @@ A loss on the figures of merit exists in the code but is disabled for this model
 
 Each sample's span term is multiplied by $\omega_{\mathrm{fid}}$ and its frequency term by $\omega_{\mathrm{fid}}\beta_{\mathrm{fid}}$, with $\mathrm{fid}\in\{\LF,\HF\}$ the fidelity of its label (\cref{sec:multifidelity}); the defaults are $\omega=\beta=(1,1)$.
 % src: docs/34 §2, configs/field_3d.yaml (fidelity_weights, fidelity_freq_scale), src/training/lightning_module.py _compute_loss_3d, _span_terms
-
-\subsection{Cost}\label{sec:04-cost}
-
-The trunk costs $O(Nd^2L)$ per geometry, linear in the number of tokens; the float64 CG solves (forward and backward) dominate and operators are rebuilt per sample.
-One training step on a $13$k-tetrahedron mesh ($183$k tokens, order two) took about $22$\,s on four CPU threads for the default-size model (not the one of the experiments); sizes and timings are in \cref{sec:A04-cost}.
-% src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads: step ~22 s); docs/28 §4 ("p3 is impractical for training")

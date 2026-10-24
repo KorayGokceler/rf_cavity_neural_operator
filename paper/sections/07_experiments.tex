@@ -123,8 +123,8 @@ C2, at $1.4\times$ the cost, is lower than A on three of the six geometries (24,
 Geometry~27 is the worst in every arm ($2.9$--$4.4\%$); we did not investigate why. The supported statement is therefore that LF labels at equal or lower cost gave a comparable held-out error in this setting, not that they are more accurate.
 % src: docs/34 §8.2
 
-\paragraph{What this experiment can and cannot show.} On identical meshes the LF and HF frequencies differ by at most $0.047\%$ and the fields by at most $0.32\%$ in the mass norm (modes 0--3), whereas the model errors are $1$--$2\%$ in frequency and about $5\%$ in field: the label difference is more than twenty times smaller than the model error.
-% src: docs/34 §8.1 (0.004-0.047 %, 0.08-0.32 %); §8.2 (model error); the factor is computed from mean errors 1.1-1.7 % vs 0.047 % (EDITOR_NOTES_2 decision 2 quotes 30-300x)
+\paragraph{What this experiment can and cannot show.} On identical meshes the LF and HF frequencies differ by at most $0.047\%$ and the fields by at most $0.32\%$ in the mass norm (modes 0--3), whereas the model errors are $1$--$2\%$ in frequency and about $5\%$ in field: the label difference is one to two orders of magnitude smaller than the model error (at least about $15\times$ for the field, $20\times$ for the frequency).
+% src: docs/34 §8.1 (0.004-0.047 %, 0.08-0.32 %); §8.2 (model error); the factor is computed from mean errors 1.1-1.7 % vs 0.047 % (frequency 23-425x, field 14-63x: one to two orders of magnitude)
 With the model this far from the labels, the study does not probe the regime in which the label type should matter, and the confound with the number of geometries remains. The robust results are on the label side (\cref{sec:multifidelity}): LF labels on the HF model mesh are cheaper by $2.8$--$4.3\times$ and nearly identical to the HF labels.
 
 \paragraph{LF-to-HF gap.} The predictions of C2 have a mean error of $1.35\%$ against the LF labels of the test meshes and $1.37\%$ against the HF labels: $0.02$ percentage points apart. This is a consequence of the label agreement above, not independent evidence that training on LF labels is harmless.

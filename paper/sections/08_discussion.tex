@@ -13,7 +13,7 @@ Any benefit must therefore come from amortised design-space exploration, a warm 
 
 \paragraph{Low-fidelity labels and the role of HF.}
 Because the Ritz layer works in the model space, it can reach exactly the eigenvalues of the low-fidelity (LF) solve, which is why LF labels are natural for it (\cref{sec:multifidelity}).
-In our experiments the LF and HF labels differ by at most \SI{0.047}{\percent} in frequency and \SI{0.32}{\percent} in field, which is 30--300 times less than the model error, % src: docs/34 §8.1; referee §E (label difference 30-300x below model error)
+In our experiments the LF and HF labels differ by at most \SI{0.047}{\percent} in frequency and \SI{0.32}{\percent} in field, which is one to two orders of magnitude less than the model error, % src: docs/34 §8.1; computed: frequency 23-425x, field 14-63x
 so the study does not yet probe the regime in which the label type matters for the model.
 LF and HF do differ on wall-dominated quantities (quality factor, peak fields), measured on four geometries on earlier meshes (\cref{sec:multifidelity}); % src: docs/34 §3; EDITOR_NOTES 3
 HF labels therefore remain necessary for any loss on such quantities and for test sets, whose reference must not share the model's discretisation error.
