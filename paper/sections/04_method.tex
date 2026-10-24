@@ -66,8 +66,7 @@ The weights $w_q\propto|\det J|\,\hat w_q$ are the quadrature weights of the mes
 Both sums are quadratures of $\int\kappa\,\mathsf A_v\bm h\,\mathrm d\bm y$ and $\int\kappa\,\mathrm d\bm y$ for a separable kernel $\kappa$: a global integral operator evaluated with the mesh's own quadrature (an interpretation shared with the Galerkin-type attention of Cao~\cite{cao2021choose}), whose value changes under refinement by quadrature error only.
 Forming $\sum_q w_q\phi(\mathsf A_k\bm h_q)(\mathsf A_v\bm h_q)^{\!\top}$ once makes a block cost $O(Nd^2)$ for embedding dimension $d$.
 The head is a two-layer MLP, $\bm\psi_{1..m}(\bm x_q)=\mathrm{head}([\bm h^L_q\,\Vert\,\gamma(\bm x_q)])\in(\R^3)^m$; it does not depend on the numbering of mesh entities, so the $\bm\psi_j$ are geometric fields.
-Defaults are $d=128$, $L=4$, $4$ heads, $m=24$, $K=6$ and a $64$-dimensional Fourier map of length scale $0.1$; the experiments use a smaller configuration (\cref{sec:experiments}).
-% src: configs/field_3d.yaml (embed_dim 128, n_layers 4, n_heads 4, n_basis 24, num_field_modes 6, rff_dim 64, rff_length_scale 0.1)
+Width, depth, number of heads, basis width $m$, number of modes $K$ and Fourier dimension are hyperparameters; the configuration-file defaults are larger than the sizes used for all reported results, which are stated in \cref{sec:experiments} (defaults: \cref{sec:A04-cost}).
 
 \subsection{From point values to degrees of freedom}\label{sec:04-map}
 
@@ -102,7 +101,7 @@ With $\mathsf B=\Gmat^{\!\top}\Mmat\Vmat$ and $\mathsf Z=\Kp^{-1}\mathsf B$,
 \end{equation}
 by $\Kmat\Gmat=0$ and $\Kp\mathsf Z=\mathsf B$ (a Schur complement).
 $\Pmat\Vmat$ is the $\Mmat$-orthogonal projection of $\Vmat$ onto the discretely divergence-free subspace $W_h=\{\bm v\in\Vh:\bm v^{\!\top}\Mmat\Gmat=0\}$; neither Gram matrix requires it to be formed.
-$\Kp=\Gmat^{\!\top}\Mmat\Gmat$ is symmetric positive definite ($\Gmat$ has full column rank), so this E formulation needs no zero-mean handling.
+$\Kp=\Gmat^{\!\top}\Mmat\Gmat$ is symmetric positive definite.
 
 $\mathsf Z$ is computed by Jacobi-preconditioned conjugate gradients, batched over samples and over the $m$ right-hand sides, each (sample, column) pair with its own step sizes, until $\|\mathsf r_j\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column, $\tau=10^{-8}$ (checked every ten iterations; at most $3000$ iterations, with a warning if reached).
 % src: src/models/hcurl.py _pcg (check_every=10, thr = tol*||rhs||); configs/field_3d.yaml (kp_tol 1e-8, kp_maxiter 3000)
@@ -134,8 +133,8 @@ We assume:
 \begin{description}
 \item[(A)] the columns of $\Gmat$ span $\ker\Kmat$ on $\Vh$, and $\Mmat$ is positive definite.
 \end{description}
-(A) is the exactness of the discrete sequence $\Sh\xrightarrow{\ \nabla\ }\Vh\xrightarrow{\ \curl\ }$ of the conforming spaces used here, with one extra potential per additional wall component~\cite{hiptmair2002finite,arnold2006finite}.
-Under (A), $\Vh=\ker\Kmat\oplus W_h$ is an $\Mmat$-orthogonal splitting, $\Kmat$ is positive definite on $W_h$, and the positive eigenvalues of the full problem are those of the pencil restricted to $W_h$ (if $\Kmat x=\lambda\Mmat x$, $\lambda>0$, then $\bm g^{\!\top}\Mmat x=\lambda^{-1}\bm g^{\!\top}\Kmat x=0$ for all $\bm g\in\ker\Kmat$, so $x\in W_h$; dimensions match).
+(A) is not proved here: it rests on the exactness of the discrete sequence $\Sh\xrightarrow{\ \nabla\ }\Vh\xrightarrow{\ \curl\ }$ stated in \cref{sec:formulation} (covariant Piola map, $\Sh$ extended by one potential per additional wall component)~\cite{monk2003finite,arnold2006finite}.
+Under (A), $\Vh=\ker\Kmat\oplus W_h$ is an $\Mmat$-orthogonal splitting, $\Kmat$ is positive definite on $W_h$, and the positive eigenvalues of the full problem are those of the pencil restricted to $W_h$ (an eigenvector with $\lambda>0$ is $\Mmat$-orthogonal to $\ker\Kmat$ because $\bm g^{\!\top}\Mmat x=\lambda^{-1}\bm g^{\!\top}\Kmat x=0$).
 Courant--Fischer~\cite{parlett1998symmetric} gives
 \begin{equation}\label{eq:04-minmax}
   \lamh_k=\min_{\substack{S\subset W_h\\ \dim S=k}}\ \max_{0\ne\bm v\in S}\frac{\bm v^{\!\top}\Kmat\bm v}{\bm v^{\!\top}\Mmat\bm v}.
@@ -172,22 +171,11 @@ Since $\lamh_k\to\lambda_k$ as the space is enriched~\cite{boffi2010finite}, but
 Two consequences feed the losses: if $\Pmat\Vmat$ has full column rank, $\sum_{i\le m}\theta_i^{-1}\le\sum_{i\le m}\lamh_i^{-1}$ with equality iff $\spn(\Pmat\Vmat)$ is spanned by the $m$ lowest eigenvectors (the left side is $\mathrm{tr}(\Av^{-1}\Mdiv)$); and the Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors in $\spn(\Pmat\Vmat)$~\cite{boffi2010finite}.
 
 \begin{remark}[Inexact projection]\label{rem:04-inexact}
-The proposition is exact only for an exact $\mathsf Z$.
-CG returns $\tilde{\mathsf Z}=\mathsf Z+\delta$ with $\rho=\Kp\delta$, $\|\rho_{:,j}\|\le\tau\|\mathsf B_{:,j}\|$.
-\emph{The numerator is unaffected:} $\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$, so the residual gradient component $-\Gmat\delta$ of the computed field $\tilde{\Pmat}\Vmat$ carries no curl energy.
-\emph{The denominator is perturbed:} the layer uses $\tilde{\mathsf M}_{\rm div}=\Vmat^{\!\top}\Mmat\Vmat-\mathsf B^{\!\top}\tilde{\mathsf Z}=\Mdiv+\mathsf E$, $\mathsf E=-\mathrm{sym}(\mathsf Z^{\!\top}\rho)$.
-For a coefficient vector $c$, $c^{\!\top}\mathsf Ec=-\langle\Gmat\mathsf Zc,\Gmat\delta c\rangle_{\Mmat}$, and $\Gmat\mathsf Zc$ is the $\Mmat$-projection of $\Vmat c$ onto $\mathrm{range}\,\Gmat$, hence
-\[
-  \eta(c):=\frac{|c^{\!\top}\mathsf Ec|}{c^{\!\top}\Mdiv c}\le\frac{\|\rho c\|_{\Kp^{-1}}}{\mu(c)\,\|\Vmat c\|_{\Mmat}},\qquad
-  \mu(c)=\frac{\|\Pmat\Vmat c\|_{\Mmat}^2}{\|\Vmat c\|_{\Mmat}^2}.
-\]
-If $\bar\eta=\sup\eta(c)<1$ over the coefficient subspace kept by the Ritz layer, then $c^{\!\top}\tilde{\mathsf M}_{\rm div}c\le(1+\bar\eta)\,c^{\!\top}\Mdiv c$, every computed Rayleigh quotient is at least $(1+\bar\eta)^{-1}$ times that of the exact field $\Pmat\Vmat c\in W_h$, and Step~3 gives $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$.
-An inexact solve can thus lower the Ritz values only by the relative amount $\bar\eta$, proportional to the CG residual and inversely proportional to the divergence-free fraction $\mu$, which is why directions with tiny $\mu$ are discarded rather than regularised.
-(The returned field $\tilde{\Pmat}\Vmat c$ has the same numerator and the larger mass $c^{\!\top}\Mdiv c+\|\rho c\|_{\Kp^{-1}}^2$, so its own quotient is lowered by a second-order amount.)
-We do not bound $\bar\eta$ a priori: $\theta_k\ge\lamh_k$ is rigorous in exact arithmetic and observed for the implemented solver.
-In every evaluation of \cref{sec:experiments} the predicted eigenvalues exceeded the discrete eigenvalue of the evaluated space, with smallest margins of $+0.006\,\%$ (native space), $+0.009\,\%$ (order three, refined mesh) and $+0.47\,\%$ (equal-cost study).
+The proposition is exact only for an exact $\mathsf Z$; CG returns $\tilde{\mathsf Z}$ with a residual of relative size $\tau$.
+The numerator of the Rayleigh quotient is unaffected, because $\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$: the residual gradient component of the computed field carries no curl energy.
+Only the mass matrix $\Mdiv$ is perturbed, and if the relative perturbation $\bar\eta<1$ then $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$; $\bar\eta$ is proportional to the CG residual and inversely proportional to the divergence-free mass fraction, which is why directions with tiny fraction are discarded (\cref{sec:A04-inexact}).
+We do not bound $\bar\eta$ a priori, so the bound is rigorous in exact arithmetic and observed for the implemented solver: in every evaluation of \cref{sec:experiments} the predicted eigenvalues exceeded the discrete eigenvalue of the evaluated space, with smallest margins $+0.006\,\%$ (native space), $+0.009\,\%$ (order three, refined mesh) and $+0.47\,\%$ (equal-cost study).
 % src: docs/34 §4.1 (smallest difference +0.006 %), §4.2 (min. +0.009 %), §8.2 (at least +0.47 %)
-Floating-point rounding is not covered by the argument.
 \end{remark}
 
 \begin{remark}[Space independence]\label{rem:04-space}
@@ -213,12 +201,10 @@ $\sqrt{r_k^{\Mmat}}$ and $\sqrt{r_k^{\Kmat}}$ are the relative best-approximatio
 $\mathcal L_{\rm span}$ is invariant under invertible recombination of the columns of $\Vmat$ and under sign changes and rotations in degenerate target clusters, so it needs no eigenvalue matching or cluster detection.
 
 \paragraph{Other terms.}
-The self-supervised term $\mathcal L_{\rm ss}=-\log\mathrm{tr}(\Av^{-1}\Mdiv)=-\log\sum_i\theta_i^{-1}$ needs no labels; by the first consequence of \cref{prop:upper-bound} it is bounded below by $-\log\sum_{i\le m}\lamh_i^{-1}$, with equality exactly for the lowest-$m$ eigenspace.
-Being built from the projected mass, it cannot be lowered by a nearly-gradient column; the unprojected compliance was measured to blow up by more than $10^3$ in such a case.
+The self-supervised term $\mathcal L_{\rm ss}=-\log\mathrm{tr}(\Av^{-1}\Mdiv)=-\log\sum_i\theta_i^{-1}$ needs no labels and, by the first consequence of \cref{prop:upper-bound}, is bounded below by $-\log\sum_{i\le m}\lamh_i^{-1}$, with equality for the lowest-$m$ eigenspace; it uses the projected mass, so gradient content cannot lower it (without projection the compliance exploded by more than $10^3$ in a test).
 % src: docs/20 §3 (selfsup: "Neredeyse-gradyan bir kolonda projeksiyonsuz compliance >10^3x patlar (test edildi)")
-The conditioning term $\mathcal L_{\rm ortho}=\frac1{m(m-1)}\sum_{i\ne j}\Mdiv_{ij}^2/(\Mdiv_{ii}\Mdiv_{jj})$ penalises collinear learned fields.
-The frequency term $\mathcal L_{\rm freq}=\frac1K\sum_{k}(z_k-z_k^\star)^2$ uses $z=(f-\bar f)/\sigma_f$, the frequency in GHz standardised with the mean and standard deviation of the training labels; its gradient reaches the network through both eigendecompositions.
-The total is $\mathcal L=\alpha_{\rm span}\mathcal L_{\rm span}+\alpha_{\rm ss}\mathcal L_{\rm ss}+\alpha_{\rm ortho}\mathcal L_{\rm ortho}+\alpha_{\rm freq}\mathcal L_{\rm freq}$ with $(\alpha_{\rm span},\alpha_{\rm ss},\alpha_{\rm ortho},\alpha_{\rm freq})=(1,0.01,0.01,0.1)$.
+$\mathcal L_{\rm ortho}=\frac1{m(m-1)}\sum_{i\ne j}\Mdiv_{ij}^2/(\Mdiv_{ii}\Mdiv_{jj})$ penalises collinear fields, and $\mathcal L_{\rm freq}=\frac1K\sum_k(z_k-z_k^\star)^2$ acts on frequencies standardised with the training-label mean and standard deviation.
+The total is $\sum_{\rm t}\alpha_{\rm t}\mathcal L_{\rm t}$ with weights $(\alpha_{\rm span},\alpha_{\rm ss},\alpha_{\rm ortho},\alpha_{\rm freq})=(1,0.01,0.01,0.1)$.
 % src: configs/field_3d.yaml (span_weight 1.0, selfsup_weight 0.01, ortho_weight 0.01, freq_weight 0.1)
 A loss on the figures of merit exists in the code but is disabled for this model.
 
@@ -230,13 +216,6 @@ The defaults are $\omega=\beta=(1,1)$.
 
 \subsection{Cost}\label{sec:04-cost}
 
-The trunk costs $O(Nd^2L)$ time and $O(Nd)$ memory, linear in the number of tokens; with gradient checkpointing (recomputing the encoder and each attention and feed-forward half in the backward pass) the peak process memory of training fell from $9.9$ to $3.8$\,GB with bit-identical gradients.
-% src: docs/28 §4 (training memory: 9.9 GB -> 3.8 GB, gradients bit-identical)
-The mesh-dependent part dominates: a CG iteration costs $O(\mathrm{nnz}(\Kp)\,m)$ in float64, the iteration count grows roughly like $h^{-1}$ (in the lowest-order variant from $60$ to $170$ iterations while the edge count grew from $2\,053$ to $47\,919$), and the backward pass adds one more solve; the $m\times m$ Ritz layer is negligible.
-% src: docs/20 §5 (PCG iterations 60 ... 170 for N_e 2053 ... 47919)
-On a curved pillbox-with-pipes mesh of $10.5$k tetrahedra, order two has $112$k DOFs, $41$k potentials and $148$k tokens, and order three $282$k DOFs, $100$k potentials and $253$k tokens; assembling the operators takes $7$--$10$\,s and $37$\,s on one thread.
-% src: docs/28 §4 table (netgen curvaturesafety 2: 10.5k tets, p2 112k DOF / 41k potentials / 148k tokens / 7-10 s; p3 282k / 100k / 253k / 37 s)
-For a mesh of $13$k tetrahedra ($183$k tokens, order two) on four CPU threads we measured $4.2$\,s for operator assembly, $0.34$\,s for batch collation and about $22$\,s per training step.
-% src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads)
-Operators are rebuilt per sample rather than stored, since they would take about $0.4$\,GB per sample at order two against $1.4$\,MB for the curved mesh, and order three is impractical for training on a CPU at these sizes.
-% src: docs/28 §4 Storage and Options (1.4 MB per sample; ~0.4 GB per sample at p2; "p3 is impractical for training")
+The trunk costs $O(Nd^2L)$ per geometry, linear in the number of tokens; the mesh-dependent float64 CG solves (forward and backward) dominate, with a cost that grows with the DOF count and roughly like $h^{-1}$ in iterations, and operators are rebuilt per sample rather than stored.
+On a $13$k-tetrahedron mesh ($183$k tokens, order two) one training step took about $22$\,s on four CPU threads, and order three is impractical for training on a CPU; operator sizes and timings are in \cref{sec:A04-cost}.
+% src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads: step ~22 s); docs/28 §4 ("p3 is impractical for training")

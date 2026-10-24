@@ -1,0 +1,60 @@
+\section{Method: details}\label{sec:A04-method}
+
+\subsection{Inexact kernel projection}\label{sec:A04-inexact}
+
+\cref{prop:upper-bound} assumes that $\mathsf Z$ solves $\Kp\mathsf Z=\mathsf B$ exactly.
+The CG solve of \cref{sec:04-proj} returns $\tilde{\mathsf Z}=\mathsf Z+\delta$ with residual $\rho=\Kp\tilde{\mathsf Z}-\mathsf B=\Kp\delta$ and $\|\rho_{:,j}\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column.
+
+\paragraph{The numerator is unaffected.}
+$\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly, and $\Kmat\Gmat=0$.
+The computed field is $\tilde{\Pmat}\Vmat=\Pmat\Vmat-\Gmat\delta$, so its curl energy equals that of the exact projection: the residual gradient component $-\Gmat\delta$ carries no curl energy.
+
+\paragraph{The denominator is perturbed.}
+The Ritz layer uses $\tilde{\mathsf M}_{\rm div}=\Vmat^{\!\top}\Mmat\Vmat-\mathsf B^{\!\top}\tilde{\mathsf Z}$.
+Since $\mathsf B=\Kp\mathsf Z$, $\mathsf B^{\!\top}\delta=\mathsf Z^{\!\top}\rho$, hence
+\[
+  \tilde{\mathsf M}_{\rm div}=\Mdiv+\mathsf E,\qquad \mathsf E=-\mathrm{sym}(\mathsf Z^{\!\top}\rho).
+\]
+For a coefficient vector $c$, $c^{\!\top}\mathsf Ec=-(\mathsf Zc)^{\!\top}\Kp(\delta c)=-\langle\Gmat\mathsf Zc,\Gmat\delta c\rangle_{\Mmat}$.
+$\Gmat\mathsf Zc$ is the $\Mmat$-orthogonal projection of $\Vmat c$ onto $\mathrm{range}\,\Gmat$, so $\|\Gmat\mathsf Zc\|_{\Mmat}\le\|\Vmat c\|_{\Mmat}$, and $\|\Gmat\delta c\|_{\Mmat}^2=(\delta c)^{\!\top}\Kp(\delta c)=\|\rho c\|_{\Kp^{-1}}^2$.
+With $c^{\!\top}\Mdiv c=\|\Pmat\Vmat c\|_{\Mmat}^2=\mu(c)\|\Vmat c\|_{\Mmat}^2$, where $\mu(c)\in[0,1]$ is the divergence-free mass fraction of $\Vmat c$,
+\[
+  \eta(c):=\frac{|c^{\!\top}\mathsf Ec|}{c^{\!\top}\Mdiv c}\ \le\ \frac{\|\rho c\|_{\Kp^{-1}}}{\mu(c)\,\|\Vmat c\|_{\Mmat}}.
+\]
+
+\paragraph{Consequence for the Ritz values.}
+Let $\bar\eta=\sup\eta(c)<1$ over the coefficient subspace $\mathcal C$ kept by the Ritz layer.
+Then $c^{\!\top}\tilde{\mathsf M}_{\rm div}c\le(1+\bar\eta)\,c^{\!\top}\Mdiv c$ on $\mathcal C$, and $\Pmat\Vmat$ is injective there.
+Every computed Rayleigh quotient $c^{\!\top}\Av c/c^{\!\top}\tilde{\mathsf M}_{\rm div}c$ is therefore at least $(1+\bar\eta)^{-1}$ times the Rayleigh quotient of the exact field $\Pmat\Vmat c\in W_h$.
+The argument of Step~3 of the proof, applied to $k$-dimensional subspaces of $\mathcal C$ and their images under $\Pmat\Vmat$, gives
+\[
+  \tilde\theta_k\ \ge\ \lamh_k/(1+\bar\eta).
+\]
+An inexact solve can thus lower the Ritz values only by the relative amount $\bar\eta$.
+It is proportional to the CG residual and inversely proportional to the divergence-free fraction $\mu$, which is why directions with a tiny fraction are discarded rather than regularised.
+The returned field $\tilde{\Pmat}\Vmat c$ has the same numerator and the larger mass $c^{\!\top}\Mdiv c+\|\rho c\|_{\Kp^{-1}}^2$, so its own Rayleigh quotient is lowered by a relative amount of second order in the residual.
+We do not bound $\bar\eta$ a priori, and floating-point rounding is not covered by this argument.
+
+\subsection{Cost and default configuration}\label{sec:A04-cost}
+
+\paragraph{Default configuration.}
+The configuration-file defaults of the model are embedding dimension $d=128$, $L=4$ attention blocks, $4$ heads, basis width $m=24$, $K=6$ modes and a $64$-dimensional Fourier map of length scale $0.1$.
+% src: configs/field_3d.yaml (embed_dim 128, n_layers 4, n_heads 4, n_basis 24, num_field_modes 6, rff_dim 64, rff_length_scale 0.1)
+The reported experiments use a smaller model (\cref{sec:experiments}).
+
+\paragraph{Operator sizes.}
+For a curved pillbox-with-pipes mesh of $10.5$k tetrahedra, order two has $112$k DOFs, $41$k potentials and $148$k tokens, and order three $282$k DOFs, $100$k potentials and $253$k tokens; assembling the operators takes $7$--$10$\,s and $37$\,s on one thread.
+% src: docs/28 §4 table (netgen curvaturesafety 2: 10.5k tets, p2 112k DOF / 41k potentials / 148k tokens / 7-10 s; p3 282k / 100k / 253k / 37 s)
+Operators are rebuilt per sample rather than stored, because they would take about $0.4$\,GB per sample at order two against $1.4$\,MB for the curved mesh.
+% src: docs/28 §4 Storage (1.4 MB per sample; ~0.4 GB per sample at p2)
+
+\paragraph{Training step.}
+For a mesh of $13$k tetrahedra ($183$k tokens, order two) on four CPU threads we measured $4.2$\,s for operator assembly, $0.34$\,s for batch collation and about $22$\,s per training step.
+% src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads)
+Gradient checkpointing (recomputing the encoder and each attention and feed-forward half in the backward pass) lowered the peak process memory of training from $9.9$ to $3.8$\,GB with bit-identical gradients.
+% src: docs/28 §4 (training memory: 9.9 GB -> 3.8 GB, gradients bit-identical)
+
+\paragraph{CG iterations.}
+A CG iteration costs $O(\mathrm{nnz}(\Kp)\,m)$ in float64 and the backward pass adds one more solve; the $m\times m$ Ritz layer is negligible.
+The iteration count grows roughly like $h^{-1}$: in the lowest-order variant it rose from $60$ to $170$ while the edge count grew from $2\,053$ to $47\,919$.
+% src: docs/20 §5 (PCG iterations 60 ... 170 for N_e 2053 ... 47919)
