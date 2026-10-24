@@ -1,0 +1,41 @@
+\section{Related work}\label{sec:related}
+
+\paragraph{Neural operators.}
+Neural operators learn maps between function spaces: DeepONet splits the approximation into a branch and a trunk network~\citep{lu2021learning}, the Fourier neural operator (FNO) parametrises an integral kernel in Fourier space on regular grids~\citep{li2021fourier}, and \citet{kovachki2023neural} give a general framework with approximation results.
+Complex domains are handled either by learning a deformation onto a uniform latent grid (Geo-FNO)~\citep{li2023fourier}, by coupling graph and Fourier operators through a signed-distance representation of the shape (GINO)~\citep{li2023geometry}, or by message passing on the simulation mesh itself~\citep{pfaff2021learning}.
+Transformer operators replace the softmax by a linear-complexity attention~\citep{katharopoulos2020transformers}: the Galerkin transformer reads it as a Petrov--Galerkin projection~\citep{cao2021choose}, GNOT adds heterogeneous normalised attention and geometric gating for irregular meshes~\citep{hao2023gnot}, and Transolver attends over learned slices of mesh points~\citep{wu2024transolver}.
+Our trunk belongs to this last family, with quadrature weights playing the role of the mass.
+These models regress the solution field, or a scalar functional of it, at the mesh points.
+Ours does not: the network emits a \emph{basis} of $m$ vector fields, and the fields and frequencies are produced by a finite-element Rayleigh--Ritz step, so the output inherits the structure of the discrete problem (\cref{sec:method}).
+
+\paragraph{Learning eigenvalue problems and subspaces.}
+Neural eigensolvers parametrise eigenfunctions and minimise a variational or fixed-point objective for \emph{one} operator.
+Spectral inference networks learn the leading eigenfunctions of a linear operator by stochastic bilevel optimisation~\citep{pfau2019spectral}, and NeuralEF does so for kernels without an explicit orthogonalisation step~\citep{deng2022neuralef}.
+The Deep Ritz method minimises an energy, with eigenvalue problems among its examples~\citep{e2018deep}; \citet{han2020solving} use a semigroup fixed-point loss in high dimension, and \citet{benshaul2023deep} learn the lowest eigenpairs of self-adjoint differential operators without supervision, with an error bound.
+Closer to our setting, Deep Eigenspace Network learns the eigen\emph{subspace} of a parametric non-self-adjoint problem and recovers eigenpairs with a Rayleigh--Ritz step~\citep{li2026deep}, and FEENet predicts coefficients in a finite-element eigenfunction basis computed per geometry~\citep{li2026finite}.
+For electromagnetic resonators, supervised networks map the parameters of dielectric-loaded cylindrical cavities to the resonant frequency and mode coefficients~\citep{lewis2022machine}, and a physics-informed network targets the lowest mode of a single 3D RF cavity with a soft divergence-free loss~\citep{shali2024dfsnet}.
+We differ in three respects: the operator is amortised over a family of 3D geometries; the learned object is a basis that is projected onto the discretely divergence-free subspace and fed to Rayleigh--Ritz, so spurious zero modes are excluded by construction rather than penalised; and the Ritz values are upper bounds of the discrete eigenvalues (\cref{prop:upper-bound}).
+
+\paragraph{Physics-informed and finite-element-coupled learning.}
+Physics-informed networks add the PDE residual to the loss~\citep{raissi2019physics}, and the physics-informed neural operator combines coarse-resolution data with a residual at higher resolution~\citep{li2024physics}.
+Constraints enforced only through the loss are not guaranteed to hold at inference.
+Several works therefore couple learning to a mesh: hybrid FEM--NN models embed a network in a finite-element model and differentiate through the solve~\citep{mitusch2021hybrid}; FEONet predicts finite-element coefficients and trains on the weak-form residual~\citep{lee2025finite}; and a data-driven exterior calculus keeps the discrete conservation structure exact while learning the metric~\citep{trask2022enforcing}.
+In electromagnetics, FNO surrogates have been trained for scattering and inverse design~\citep{augenstein2023neural}.
+To our knowledge none of these targets the Maxwell eigenproblem on conforming high-order $H(\mathrm{curl})$ spaces on curved meshes, where the constraint is the kernel of the curl.
+
+\paragraph{Maxwell eigenproblems and Nédélec elements.}
+Curl-conforming elements~\citep{nedelec1980mixed} remove the spurious modes of nodal discretisations of the cavity problem~\citep{bossavit1990solving}; their analysis (discrete compactness, spurious-free convergence) is treated in~\citep{boffi2000fortin,caorsi2001spurious}, in the monograph of~\citet{monk2003finite} and in the surveys of~\citet{hiptmair2002finite} and~\citet{boffi2010finite}.
+Hierarchical high-order bases with the local complete sequence property~\citep{schoberl2005high} and curved (isoparametric) elements make the geometry error small; we use them through NGSolve and Netgen~\citep{schoberl2014cpp11,schoberl1997netgen}.
+Our contribution here is not a new element but the observation that the standard kernel-projection and min--max structure of this theory can be placed \emph{behind} a neural network.
+
+\paragraph{RF cavity simulation and design.}
+SUPERFISH solves axisymmetric cavities in 2D~\citep{halbach1976superfish}; CST Studio Suite is a widely used commercial 3D code; Omega3P of the ACE3P suite is a parallel higher-order Nédélec eigensolver for accelerator cavities~\citep{lee2009omega3p,ko2010advances}; and Palace is an open-source finite-element code with eigenmode analysis~\citep{awslabs2023palace}.
+Shape optimisation of superconducting cavities calls such solvers in a loop and reduces their cost with sensitivity analysis~\citep{kranjcevic2019constrained}.
+Machine learning in accelerator science has mostly produced surrogates of beam-dynamics simulations~\citep{edelen2020machine} (see also the community overview~\citep{edelen2018opportunities}); for cavities, recent networks map a low-dimensional elliptical-cell parametrisation to scalar observables and back~\citep{yaker2026neural}.
+Our model instead predicts the modes themselves, with fields and the derived figures of merit, for a general geometry given by a mesh.
+
+\paragraph{Multi-fidelity learning.}
+Multi-fidelity methods combine few expensive and many cheap evaluations, from autoregressive Gaussian processes~\citep{kennedy2000predicting} (surveyed by \citet{peherstorfer2018survey}) to composite networks~\citep{meng2020composite} and multi-fidelity DeepONets, which learn a low-fidelity operator and a correction~\citep{lu2022multifidelity,howard2023multifidelity}.
+Neural operators are also trained on coarse data and applied at higher resolution~\citep{li2021fourier,li2024physics}.
+In these works the low-fidelity data are an auxiliary signal that a second network corrects.
+Here the low-fidelity label is the discrete eigenpair of the model's own space, which is exactly what the Ritz layer approximates, so low-fidelity labels can serve as the main training target (\cref{sec:multifidelity}).

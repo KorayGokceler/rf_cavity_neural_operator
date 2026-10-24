@@ -1,0 +1,157 @@
+\section{Problem formulation and discretisation}\label{sec:formulation}
+
+\subsection{The cavity eigenproblem}\label{sec:03-eigenproblem}
+% src: docs/20 §8, docs/19 §6.1, AGENTS.md
+Let $\Omega\subset\R^3$ be a connected, bounded cavity with a perfectly conducting (PEC) wall $\bdry$ and vacuum
+($\varepsilon_0,\mu_0$) inside. The time-harmonic resonances of the lossless cavity are the pairs
+$(\E,k)$ with
+\begin{equation}\label{eq:03-strong}
+  \curl\curl\,\E = k^2\,\E \ \text{ in } \Omega,\qquad \mathbf n\times\E=\mathbf 0 \ \text{ on } \bdry,
+  \qquad k=\omega/c_0 ,
+\end{equation}
+where $c_0=\SI{299792458}{m/s}$ % src: src/qoi/operators.py C0
+and $f=\omega/2\pi$ is the resonant frequency. In weak form, find $\E\in\Hcurl\setminus\{0\}$ and $\lambda=k^2$ with
+\begin{equation}\label{eq:03-weak}
+  (\curl\E,\curl\mathbf v)_\Omega=\lambda\,(\E,\mathbf v)_\Omega\qquad\forall\,\mathbf v\in\Hcurl ,
+\end{equation}
+the wall condition $\mathbf n\times\E=\mathbf 0$ being essential. The curl--curl form is
+only semi-definite. Its kernel in $\Hcurl$ is
+$\ker(\curl)=\nabla H^1_0(\Omega)\oplus\mathcal H$, the gradients of $H^1_0$ functions plus the
+finite-dimensional space $\mathcal H$ of harmonic Dirichlet fields, of dimension $b_2$ (the number of wall
+components beyond the first, i.e.\ one per floating conductor; each is the gradient of a potential that is constant on
+that component). % src: docs/20 §8, docs/19 §6.1
+Handles of $\Omega$ ($b_1>0$) add nothing to this kernel in the $\E$ formulation, which is why we use $\E$
+and not $\Hf$ (for $\Hf$ the harmonic fields caused by handles are not gradients and cannot be removed by a gradient
+projection). % src: docs/19 §6.1, AGENTS.md invariants
+The kernel is infinite-dimensional, and eigenvalue~$0$ has infinite multiplicity. The physical resonances are the
+positive eigenvalues $0<\lambda_1\le\lambda_2\le\dots$ with eigenfields that are divergence free and
+$L^2$-orthogonal to $\nabla H^1_0\oplus\mathcal H$. This matters for learning: any
+learned approximation of the fields contains gradient components. These components have vanishing energy $(\curl\cdot,\curl\cdot)$ and
+a non-vanishing mass, so they produce Rayleigh quotients near~$0$, i.e.\ spurious modes, unless they are
+removed explicitly (\cref{sec:03-discrete}).
+
+\subsection{Conforming discretisation on curved meshes}\label{sec:03-discrete}
+% src: docs/28 §2, docs/29 §1, src/data_gen/highorder.py field_operators / solve_modes
+Let $\mathcal T_h$ be a tetrahedral mesh whose elements are images $T=F_T(\hat T)$ of the reference tetrahedron under
+polynomial maps of degree $q$ (the \emph{curve order}; $q=3$ throughout, % src: docs/29 §1 (--curve 3), field_labels.DEFAULTS curve=3
+so the geometry is iso- or super-parametric for $p\le 3$), obtained from a CAD description of the cavity
+\citep{schoberl1997netgen}. $\Vh$ is the conforming Nédélec space of the first kind \citep{nedelec1980mixed} of order $p$ on
+$\mathcal T_h$, mapped with the covariant Piola transform
+($\mathbf v|_T=DF_T^{-\top}\hat{\mathbf v}\circ F_T^{-1}$) and with zero tangential trace on $\bdry$. We index it as in NGSolve
+\citep{schoberl2014ngsolve}: $p=0$ is the lowest-order (Whitney) element, and $\Vh$ contains the complete polynomials of degree $p$
+and the gradients of the Lagrange space of degree $p+1$; its basis is the hierarchical basis with the local
+complete-sequence property of \citet{schoberl2005high}. Let $\Sh$ be the $H^1_0$-conforming space of order $p+1$ on the same
+curved mesh, extended by one function per additional wall component (equal to $1$ on that component and $0$ on the others, see
+\cref{sec:03-eigenproblem}). Then $\nabla\Sh\subset\Vh$ and $\curl\nabla\Sh=0$; the discrete de~Rham sequence is exact \citep{monk2003finite,arnold2006finite}, so $\nabla\Sh$ is exactly the kernel of
+the curl in $\Vh$. In this paper $p=2$ is the space of the model and $p=3$ the space of the reference labels. % src: docs/29 §1
+Let $n$ be the number of free (non-wall) DOFs of $\Vh$, and let
+\begin{equation}\label{eq:03-matrices}
+  \Kmat_{ij}=(\curl\mathbf w_j,\curl\mathbf w_i),\quad
+  \Mmat_{ij}=(\mathbf w_j,\mathbf w_i),\quad
+  \Gmat:\ \text{coefficients of }\Sh\mapsto\text{DOFs of }\nabla\varphi\in\Vh,\quad
+  \Kp=\Gmat^{\top}\Mmat\Gmat ,
+\end{equation}
+with $\{\mathbf w_i\}$ the basis of $\Vh$. $\Kmat$ is symmetric positive semi-definite, $\Mmat$ and $\Kp$
+are symmetric positive definite, and $\Kmat\Gmat=0$. The Galerkin discretisation of \eqref{eq:03-weak} is the generalised eigenproblem
+\begin{equation}\label{eq:03-gev}
+  \Kmat\,\mathbf x=\lambda\,\Mmat\,\mathbf x ,
+\end{equation}
+whose null space is $\operatorname{range}\Gmat$. The physical part of the spectrum lives on the
+\emph{discretely divergence-free} subspace
+\begin{equation}\label{eq:03-proj}
+  W_h=\{\mathbf v\in\Vh:\ (\mathbf v,\nabla\varphi)=0\ \ \forall\varphi\in\Sh\}
+  =\operatorname{range}\Pmat,\qquad
+  \Pmat=\mathsf I-\Gmat\,\Kp^{-1}\Gmat^{\top}\Mmat ,
+\end{equation}
+the $\Mmat$-orthogonal complement of $\operatorname{range}\Gmat$ ($\Pmat$ is the $\Mmat$-orthogonal projector onto it).
+The \emph{discrete eigenvalues} $\lambda_{h,1}\le\lambda_{h,2}\le\dots$ are the positive eigenvalues of \eqref{eq:03-gev}, i.e.\ the
+eigenvalues of $\Kmat$ restricted to $W_h$ with respect to the mass inner product. They depend on $(\mathcal T_h,q,p)$ and not
+on any learned quantity. Because $W_h\not\subset\{\operatorname{div}=0\}$, the $\lambda_{h,k}$ are not ordered with respect to the exact
+$\lambda_k$: for lowest-order elements on the calibration problems of the data pipeline the discrete frequencies approach the exact ones
+from below, e.g.\ the pillbox TM$_{010}$ frequency deviates by $-0.75\%$ to $-0.05\%$ as the mesh-size parameter of that study is reduced from $0.20$ to $0.05$. % src: docs/19 §6.3 table (TM010 E column)
+They converge to $\lambda_k$ under mesh refinement or order elevation by discrete compactness
+\citep{monk2003finite,boffi2010finite}. The upper-bound statements of this paper (\cref{sec:method}) are
+therefore always relative to $\lambda_{h,k}$ of the space in which the Ritz step runs, never to $\lambda_k$.
+
+\paragraph{Normalisation and frequencies.}
+% src: src/data/dataset_converter_3d.py normalise(); src/data_gen/highorder.py field_operators; src/data/field_dataset.py check_labels
+All operators are assembled on the normalised geometry $\boldsymbol\xi=(\mathbf x-\mathbf c)/s$, where $\mathbf c$ is the volume
+centroid and $s$ the largest absolute coordinate deviation of a mesh vertex from $\mathbf c$ (``scale''). The
+eigenvalues of \eqref{eq:03-gev} are then $\lambda=s^2k^2$, and
+\begin{equation}\label{eq:03-freq}
+  f_k=\frac{c_0\sqrt{\lambda_k}}{2\pi\,s}.
+\end{equation}
+Eigenvectors are $\Mmat$-normalised; they are defined up to sign, and up to an orthogonal transformation within an eigenspace of
+multiplicity larger than one (near-degenerate clusters occur frequently in symmetric cavities).
+
+\paragraph{One integration rule for all forms.}
+% src: docs/28 §2 numerical note; src/data_gen/highorder.py volume_measure, solve_modes
+On curved elements the integrands are rational functions, and NGSolve chooses the quadrature rule of each form from its own
+integrand. Assembling $\curl\mathbf u\cdot\curl\mathbf v-\sigma\,\mathbf u\cdot\mathbf v$ as a single form then
+gives a matrix that differs from $\Kmat-\sigma\Mmat$ (assembled from separate forms) by $3\times10^{-4}$ on a pillbox
+at $p=2$, which biased the shift-and-invert eigenvalues by $4\times10^{-5}$. We therefore evaluate every
+form (stiffness, mass, the potential-space stiffness that equals $\Kp$, shifted operators) with one explicit tetrahedral rule of degree $2p+4$,
+independent of the integrand. % src: highorder.volume_measure(order, bonus=4)
+With a single rule, the discrete operators of \eqref{eq:03-matrices} are mutually consistent: the eigenvalues then agree with a dense
+solve of \eqref{eq:03-gev} to $10^{-13}$, % src: docs/28 §2
+and $\Kp$ assembled as the stiffness of $\Sh$ equals $\Gmat^\top\Mmat\Gmat$ to $10^{-15}$, % src: highorder.solve_modes comment
+so $\Pmat$ is an exact $\Mmat$-orthogonal projector. This is an invariant of the pipeline: within one space, all operators share the mesh, the geometry order, the polynomial order and the rule.
+
+\subsection{Figures of merit}\label{sec:03-qoi}
+% src: docs/24 §0.2, §1.1–§1.5; src/qoi/operators.py figures_of_merit, surface_resistance; src/data_gen/highorder.py mode_qoi
+Accelerator-physics quantities are functionals of a mode. We use peak (not RMS) phasors with time dependence $e^{j\omega t}$, so that
+$\Hf=(j/\omega\mu_0)\curl\E$, and the lossless field with a small surface resistance $R_s$ for perturbative wall loss.
+Every quantity is reported for a mode scaled to stored energy $U=\SI{1}{J}$ (as CST does), so amplitude and sign of $\E$ drop out:
+\begin{align}
+  U&=\tfrac12\varepsilon_0\!\int_\Omega|\E|^2\,dV=\tfrac12\mu_0\!\int_\Omega|\Hf|^2\,dV, &
+  P_c&=\tfrac12R_s\!\oint_{\bdry}|\mathbf n\times\Hf|^2\,dS, \notag\\
+  \Qz&=\frac{\omega U}{P_c}, &
+  G&=\Qz R_s=\frac{\omega\mu_0\int|\Hf|^2dV}{\oint|\mathbf n\times\Hf|^2dS}, \label{eq:03-q}\\
+  V_{\mathrm{acc}}&=\Bigl|\int_\ell \E\!\cdot\!\mathbf d\;e^{\,j\omega t/(\beta c_0)}\,dt\Bigr|, &
+  T&=\frac{V_{\mathrm{acc}}}{\int_\ell|\E\!\cdot\!\mathbf d|\,dt}, \notag\\
+  \Eacc&=\frac{V_{\mathrm{acc}}}{\Lacc}, &
+  \RoQ&=\frac{V_{\mathrm{acc}}^2}{\omega U},\quad R_{\mathrm{sh}}=\frac{V_{\mathrm{acc}}^2}{P_c}=\RoQ\,\Qz, \label{eq:03-rq}\\
+  \Epk&=\max_{\bdry}|\E|, &
+  \Bpk&=\mu_0\max_{\bdry}|\Hf|=\max_{\bdry}\frac{|\curl\E|}{\omega}. \notag
+\end{align}
+Here $R_s=\sqrt{\pi f\mu_0/\sigma}$ is the skin-effect surface resistance at the mode's own frequency, with
+$\sigma=\SI{5.8e7}{S/m}$ (copper) by default; $\Qz\propto 1/R_s$ while $G$, $\RoQ$, $T$ and the peak ratios do not depend on the wall material. $\ell$ is the beam
+axis, $\mathbf d$ its unit tangent and $t$ the arc length coordinate along it; the particle velocity is
+$\beta c_0$ with $\beta=1$. % src: docs/24 §0.2, §1.1
+The modulus makes $V_{\mathrm{acc}}$ independent of the time origin and of the axial origin, and $T\in[0,1]$ because the denominator is
+$\int|E_\parallel|$ and not $|\int E_\parallel|$ (this is also the right normalisation for modes whose axial field
+changes sign). Finally $\Epk/\Eacc$ (dimensionless) and $\Bpk/\Eacc$ in $\si{\milli\tesla\per(\mega\volt\per\metre)}$ are the usual dimensionless peak-field ratios. % src: docs/24 §1.3, §1.5
+We follow the \emph{linac} convention, $\RoQ=V_{\mathrm{acc}}^2/(\omega U)$ and $R_{\mathrm{sh}}=V_{\mathrm{acc}}^2/P_c$
+\citep{wangler2008rf,padamsee2008rf}; the circuit convention (parallel RLC, $P=V^2/2R$) halves both, and $\Qz$, $G$, $T$ and the peak ratios are the same in both. % src: docs/24 §1.4
+
+\paragraph{Beam axis and accelerating length.}
+% src: docs/24 §0.2, §1.3; src/qoi/operators.py beam_axis, acceleration_length
+All geometry families are built with the beam along $z$, and the default axis is the line $x=y=0$. Exceptions are fixed by the family:
+for the half-wave coaxial resonator the beam crosses the coaxial line along $x$ at mid-length, and for the
+ridged and plain boxes the axis is placed through the gap, respectively the centre of the box. $\Lacc$ is the \emph{inner} length of the cavity along the
+beam axis with beam pipes excluded: the sum of the cell lengths for elliptical cavities, the cell length for pillbox-type cells, the tank length for spoke
+and drift-tube structures, the outer diameter for the half-wave resonator and the box length for boxes. For
+families without a beam it is the chord of the axis inside~$\Omega$, and then $\RoQ$ is a defined functional and not an accelerator figure. The axis
+and $\Lacc$ follow the nominal geometry parameters, so on smoothly deformed samples they are those of the undeformed shape. % src: docs/24 §1.3 (limitation)
+
+\paragraph{Consistency with the eigenpair.}
+For a discrete eigenpair, $\tfrac12\mu_0\!\int|\Hf|^2$ computed from $\E$ and the eigenfrequency equals $\tfrac12\varepsilon_0\!\int|\E|^2$ exactly,
+because $\omega^2=c_0^2\lambda/s^2$ with $\lambda$ the Rayleigh quotient. % src: docs/24 §1.2
+For a field and a frequency that do not form an eigenpair, the two energies differ by the Rayleigh-quotient mismatch. We therefore take $U$
+from $\E$ and use the frequency explicitly in $\Hf=(j/\omega\mu_0)\curl\E$, i.e.\ in $P_c$, $\Bpk$ and $\Qz$.
+
+On high-order fields the functionals are evaluated directly from the polynomial fields: the wall integrals and the peak values use the values of the adjacent
+volume element at the wall quadrature points (for $\E\in\Hcurl$, a plain boundary evaluation yields only the tangential trace, which vanishes
+on a PEC wall). % src: highorder.mode_qoi docstring
+Wall-dependent quantities ($\Qz$, $G$, $\Epk$, $\Bpk$) are much more sensitive to element quality than frequencies, so the mesh quality of the curved
+elements enters the data pipeline (\cref{sec:data}). % src: docs/29 §2.2
+
+\subsection{What a model must produce}\label{sec:03-targets}
+For a geometry $\Omega$ with its curved mesh, the task is the map
+$\Omega\mapsto\bigl(\{f_k\}_{k=1}^{\nmodes},\ \{\mathbf u_k\}_{k=1}^{\nmodes}\bigr)$: the $\nmodes$ lowest
+resonant frequencies and the $\nmodes$ fields as coefficient vectors $\mathbf u_k\in\R^{n}$ in $\Vh$, normalised with $\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$,
+with $\mathbf u_k\in W_h$ (no gradient content) and a Rayleigh quotient equal to the associated frequency through \eqref{eq:03-freq}. The figures of merit
+\eqref{eq:03-q}--\eqref{eq:03-rq} are then \emph{not} separate outputs: they are fixed functionals of $(f_k,\mathbf u_k)$ and the geometry
+(axis, $\Lacc$, wall), evaluated with the operators of the same space. Since $\mathbf u_k$ is only determined up to sign and, in a cluster, up to rotation within the eigenspace,
+accuracy has to be measured by quantities invariant under these ambiguities (frequency errors, and subspace distances in the $\Mmat$-norm for clusters).
+The method of \cref{sec:method} gives, by construction, outputs that satisfy these constraints for the space in which it runs.

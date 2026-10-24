@@ -412,7 +412,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 
 | 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | bitti (§3.8): transfer 253→29 s, Kp formu, erken ret; kalan: çözücü (TRUBA ölçümü, Pardiso) |
 | 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | bitti (§3.7): özellikler H5'te, hazır devrikler, CG tamponları, işçi iş parçacığı; operatör önbelleği ve Kp Cholesky ölçüldü, alınmadı |
-| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | bitti (docs/34 §8): LF eğitimi eşit maliyette HF'den iyi; LF mesh'i = HF model mesh'i. Açık: kontrollü ince ayar / karışık eğitim, hibrit mod |
+| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | bitti (docs/34 §8): LF eğitimi eşit ya da düşük maliyette en az HF kadar iyi (tek koşu); LF mesh'i = HF model mesh'i. Açık: kontrollü ince ayar / karışık eğitim, hibrit mod |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.

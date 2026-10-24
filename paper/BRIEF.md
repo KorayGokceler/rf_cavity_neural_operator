@@ -22,8 +22,9 @@ Rayleigh–Ritz step returns frequencies and fields. Consequences that the paper
    mesh split), validated against analytic pillbox solutions; measured cost reductions.
 5. **Low-fidelity training:** one p2 solve on the model mesh (LF) costs 4.3× less than an adaptive p3 label
    (HF), differs from it by 0.004–0.047 % in frequency and 0.08–0.32 % (M-norm) in field, and a model trained
-   on LF labels is *better* on held-out HF geometries than one trained on HF labels of equal or higher cost
-   (docs/34 §8). The LF→HF gap of the model is 0.02 percentage points.
+   on LF labels is at least as accurate on held-out HF geometries as one trained on HF labels of equal or higher
+   label cost, and slightly better with more LF geometries (docs/34 §8; single runs, small differences; per
+   geometry LF 40 beats HF 8 on 3 of 6, excluding the outlier geometry 27: HF 8 1.11 %, LF 24 1.14 %, LF 40 1.06 %). The LF→HF gap of the model is 0.02 percentage points.
 
 Honest scope (must be stated, not hidden): all training runs are small (CPU, ≤40 training geometries, one
 geometry family `pillbox_pipes`, a 64-dim 2-block trunk); absolute errors (1–2 % frequency) reflect an

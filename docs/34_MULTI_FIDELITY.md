@@ -1,7 +1,7 @@
 # 34 — Çoklu doğruluk: düşük doğruluklu etiketle eğitim, yüksek doğruluklu veride çıkarım
 
 > Durum: kod ve ölçümler hazır (dal `claude/field-model`, açık iş 13). **§8: eşit maliyetli deney** — LF ile eğitilen
-> model, aynı ya da daha düşük etiket maliyetinde HF ile eğitilenden HF test geometrilerinde daha iyi; LF→HF boşluğu
+> model, aynı ya da daha düşük etiket maliyetinde HF ile eğitilen kadar iyi (LF 40'ta biraz daha iyi); LF→HF boşluğu
 > 0,02 puan. LF etiketleri artık HF'nin model mesh'inde üretiliyor (§8.1). Tüm eğitimler CPU'da, küçük model, tek
 > aile (`pillbox_pipes`): sayılar yöntemin tavanını değil, etiket türünün etkisini ölçer.
 > Bağlam: docs/28 (model), docs/29 (etiketler), docs/30 (uyarlamalı etiketler), docs/31 §3.
@@ -231,9 +231,12 @@ python scripts/eval_fidelity.py --ckpt lf_best.ckpt --data hf.h5 --spaces native
 | C2 | LF 40 | 1704 | 15 × 40 | **1,37 / 1,00 / 5,30** | **0,045** |
 | D | C2 + HF 8 ince ayar (5 × 40, `lr 3e-4`) | 1704 + 1242 | +200 | 1,13 / 0,82 / 4,41 | 0,039 |
 
-- **Ana sonuç: LF ile eğitmek daha iyi.**
-  - B2'nin etiket maliyeti A'dan %20 düşük, testte biraz daha iyi.
-  - C2 (maliyet 1,4 kat) A ile aynı öğrenme oranı programında koştu ve 6 geometrinin 5'inde A'dan iyi.
+- **Ana sonuç: LF ile eğitmek en az HF kadar iyi; daha çok LF geometri biraz daha iyi.** Her kol tek bir eğitim
+  koşusu (tohum tekrarı yok); farklar küçük.
+  - B2'nin etiket maliyeti A'dan %20 düşük; ortalama hatası A'dan düşük (%1,55 / %1,66), ama bu fark çoğunlukla aykırı
+    geometri 27'den geliyor. 27 hariç ortalama: A %1,11, B2 %1,14, C2 %1,06.
+  - C2 (maliyet 1,4 kat) A ile aynı öğrenme oranı programında koştu. 6 geometrinin 3'ünde (24, 27, 29) A'dan iyi,
+    diğer üçünde 0,01–0,06 puan geride.
     Geometri başına ortalama hata: A 0,74 / 1,18 / 1,24 / 4,44 / 0,92 / 1,46; C2 0,66 / 1,23 / 1,25 / 2,93 / 0,98 / 1,17.
 - **LF→HF boşluğu:** aynı tahminlerin LF etiketlerine göre hatası, HF'ye göre olandan yalnız 0,02 puan düşük
   (C2: %1,35 ve %1,37). LF ile eğitilen model HF verisinde, LF verisindeki kadar iyi.
