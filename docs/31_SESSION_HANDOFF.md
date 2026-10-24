@@ -275,6 +275,10 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b, 2a bitti; 1c ölçüldü (kod gerekmiyor); 3a GPU ölçümüne kadar ertelendi; sırada GPU ölçümü (Colab) ve 2b |
 | 10 | Geometri ve etiket düzeltmeleri (docs/33 §12). Kalan: yeni aileler (qwr, rfd, dtl_cell, gun, büyük açıklıklı eliptik), spoke uç duvarı ve dtl yarım tüpleri, composite'in dönüşümü, doğrulama seti (§8). TRUBA `TEST=1` koşuları artık `_v2` etiketleriyle. | Claude Code oturumu | `claude/field-model` | düzeltmeler bitti; yeni aileler sahibin sıra kararını bekliyor |
 
+| 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | sürüyor |
+| 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | sürüyor |
+| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | sürüyor |
+
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
 
