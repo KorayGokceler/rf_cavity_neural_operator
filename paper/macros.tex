@@ -1,4 +1,9 @@
 % Shared notation (paper/BRIEF.md §3). Use these macros; do not redefine them in a section.
+\makeatletter
+% \X_{..} after a macro that already carries a subscript joins the two: \Mdiv_{ij} -> M_{div,ij}.
+\newcommand{\@joinsub}[2]{\@ifnextchar_{\@joinsub@{#1}{#2}}{#1_{#2}}}
+\def\@joinsub@#1#2_#3{#1_{#2,#3}}
+\makeatother
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\Omegac}{\Omega}                       % cavity volume
 \newcommand{\bdry}{\partial\Omega}                 % PEC wall
@@ -11,22 +16,22 @@
 \newcommand{\Kmat}{\mathsf{K}}                     % curl-curl stiffness
 \newcommand{\Mmat}{\mathsf{M}}                     % mass
 \newcommand{\Gmat}{\mathsf{G}}                     % discrete gradient (potentials -> H(curl) DOFs)
-\newcommand{\Kp}{\mathsf{K}_p}                     % G^T M G
+\makeatletter\DeclareRobustCommand{\Kp}{\@joinsub{\mathsf{K}}{p}}\makeatother                     % G^T M G
 \newcommand{\Pmat}{\mathsf{P}}                     % kernel projection
 \newcommand{\Vmat}{\mathsf{V}}                     % learned basis in DOFs, n x m
 \newcommand{\Cmat}{\mathsf{C}}                     % fixed point-values -> DOF map
-\newcommand{\Mdiv}{\mathsf{M}_{\mathrm{div}}}
-\newcommand{\Av}{\mathsf{A}_V}
+\makeatletter\DeclareRobustCommand{\Mdiv}{\@joinsub{\mathsf{M}}{\mathrm{div}}}\makeatother
+\makeatletter\DeclareRobustCommand{\Av}{\@joinsub{\mathsf{A}}{V}}\makeatother
 \newcommand{\ndof}{n}
 \newcommand{\nbasis}{m}                            % width of the learned basis
 \newcommand{\nmodes}{K}                            % number of predicted modes
-\newcommand{\lamh}{\lambda_{h}}                    % discrete eigenvalue
-\newcommand{\Qz}{Q_0}
+\makeatletter\DeclareRobustCommand{\lamh}{\@joinsub{\lambda}{h}}\makeatother  % discrete eigenvalue; \lamh_k -> lambda_{h,k}
+\makeatletter\DeclareRobustCommand{\Qz}{\@joinsub{Q}{0}}\makeatother
 \newcommand{\RoQ}{R/Q}
-\newcommand{\Epk}{E_{\mathrm{pk}}}
-\newcommand{\Bpk}{B_{\mathrm{pk}}}
-\newcommand{\Eacc}{E_{\mathrm{acc}}}
-\newcommand{\Lacc}{L_{\mathrm{acc}}}
+\makeatletter\DeclareRobustCommand{\Epk}{\@joinsub{E}{\mathrm{pk}}}\makeatother
+\makeatletter\DeclareRobustCommand{\Bpk}{\@joinsub{B}{\mathrm{pk}}}\makeatother
+\makeatletter\DeclareRobustCommand{\Eacc}{\@joinsub{E}{\mathrm{acc}}}\makeatother
+\makeatletter\DeclareRobustCommand{\Lacc}{\@joinsub{L}{\mathrm{acc}}}\makeatother
 \newcommand{\LF}{\mathrm{LF}}
 \newcommand{\HF}{\mathrm{HF}}
 \newcommand{\relLtwo}{\mathrm{rel\text{-}L^2}}
