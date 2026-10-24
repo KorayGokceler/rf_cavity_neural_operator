@@ -41,7 +41,7 @@ It predicts $m$ vector fields $\bm\psi_1,\dots,\bm\psi_m$ on the geometry; a fix
   \draw[darr] (b) -| ($(P.north)+(0.55,0)$);
   \draw[darr] (b) -| ($(R.north)+(0.55,0)$);
 \end{tikzpicture}}
-\caption{Pipeline of the model. Shaded boxes are learned; grey boxes are fixed and depend on the mesh only (dashed arrows: the operators of the mesh). The trunk and the head see only points, so the weights can be run on any conforming space (\cref{rem:04-space}). The figures of merit (dashed box) are evaluated from the predicted fields by the functionals of \cref{sec:formulation} and are not part of the loss in this work.}
+\caption{Pipeline of the model. Shaded boxes are learned; grey boxes are fixed and depend on the mesh only (dashed arrows: its operators). The network sees only points, so the weights can be run on any conforming space (\cref{rem:04-space}). The figures of merit (dashed box) are evaluated from the predicted fields with the functionals of \cref{sec:formulation} and are not part of the loss.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -50,8 +50,8 @@ It predicts $m$ vector fields $\bm\psi_1,\dots,\bm\psi_m$ on the geometry; a fix
 Let $\mathcal T_h$ be the curved mesh of $\Omega$ with $N_t$ elements and $\Vh$ the Nédélec space of order $p$ on it.
 The tokens are the $N=N_t\,n_q$ quadrature points $\bm x_q$ of a reference rule of degree $2p$ on every element, $n_q=14$ at $p=2$ and $n_q=24$ at $p=3$.
 % src: src/data_gen/highorder.py _quadrature (IntegrationRule(TET, 2*order)); n_q = 14, 24 checked with NGSolve 6.2; docs/34 §4.2
-Vertices are not used because coarse curved meshes can have no interior vertex; in single-sample overfitting, vertex tokens with barycentric interpolation stopped at a relative eigenvalue error of $0.8$--$1.1\times10^{-4}$ ($p=2$) against $10^{-6}$--$9\times10^{-6}$ for quadrature-point tokens (\cref{sec:experiments}).
-% src: docs/28 §3 (0.8-1.1e-4 after 2000 steps vs 1e-6 - 9e-6 after 1250 steps, p = 2)
+Vertex tokens fail on coarse curved meshes, which can have no interior vertex (\cref{sec:experiments}).
+% src: docs/28 §2, §3
 Each token carries nine features computed on the curved geometry in normalised coordinates: position, wall distance, unit vector to the nearest wall point, point volume (quadrature weight over its maximum) and the torsion function $\chi$ ($-\Delta\chi=1$ in $\Omega$, $\chi=0$ on $\partial\Omega$, solved in the order-$(p+1)$ $H^1_0$ space on the same mesh, normalised by its maximum).
 % src: src/data_gen/highorder.py point_features, wall_features; docs/28 §2
 
@@ -72,8 +72,8 @@ Width, depth, number of heads, basis width $m$, number of modes $K$ and Fourier 
 
 The point values become DOFs of $\Vh$ through a fixed linear map in two stages.
 \emph{(i) Element fit.}
-Let $\mathbb P_p$ be the polynomials of degree $\le p$ in the reference coordinates ($n_\ell=\binom{p+3}{3}$), $\Phi_t\in\R^{n_q\times n_\ell}$ a basis evaluated at the quadrature points of element $t$ and $\mathsf W_t=\mathrm{diag}(|\det J_t(\hat{\bm x}_q)|\,\hat w_q)$.
-Each Cartesian component of $\bm\psi_j$ is fitted by weighted least squares, $\bm a_{t,c,j}=\mathsf F_t\bm\psi_{t,c,j}$ with $\mathsf F_t=(\Phi_t^{\!\top}\mathsf W_t\Phi_t)^{-1}\Phi_t^{\!\top}\mathsf W_t$, which reproduces every element of $\mathbb P_p$ (the normal matrix is invertible; $n_q\ge n_\ell$: $14\ge10$ at $p=2$, $24\ge20$ at $p=3$).
+Let $\Phi_t\in\R^{n_q\times n_\ell}$ be a basis of the polynomials of degree $\le p$ ($n_\ell=\binom{p+3}{3}\le n_q$: $10\le14$ at $p=2$, $20\le24$ at $p=3$) evaluated at the quadrature points of element $t$, and $\mathsf W_t=\mathrm{diag}(|\det J_t(\hat{\bm x}_q)|\,\hat w_q)$.
+Each Cartesian component of $\bm\psi_j$ is fitted by weighted least squares, $\bm a_{t,c,j}=\mathsf F_t\bm\psi_{t,c,j}$ with $\mathsf F_t=(\Phi_t^{\!\top}\mathsf W_t\Phi_t)^{-1}\Phi_t^{\!\top}\mathsf W_t$, which reproduces polynomials of degree $\le p$.
 % src: src/data_gen/highorder.py field_operators (P = solve(A, Phi^T W), W = detJ*wq); n_l = dim P_p = 10, 20
 \emph{(ii) Interpolation into $\Vh$.}
 A fixed sparse operator $\Cmat$ maps the element-wise polynomial field to $\Vh$.
@@ -103,7 +103,7 @@ by $\Kmat\Gmat=0$ and $\Kp\mathsf Z=\mathsf B$ (a Schur complement).
 $\Pmat\Vmat$ is the $\Mmat$-orthogonal projection of $\Vmat$ onto the discretely divergence-free subspace $W_h=\{\bm v\in\Vh:\bm v^{\!\top}\Mmat\Gmat=0\}$; neither Gram matrix requires it to be formed.
 $\Kp=\Gmat^{\!\top}\Mmat\Gmat$ is symmetric positive definite.
 
-$\mathsf Z$ is computed by Jacobi-preconditioned conjugate gradients, batched over samples and over the $m$ right-hand sides, each (sample, column) pair with its own step sizes, until $\|\mathsf r_j\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column, $\tau=10^{-8}$ (checked every ten iterations; at most $3000$ iterations, with a warning if reached).
+$\mathsf Z$ is computed by Jacobi-preconditioned conjugate gradients, batched over samples and right-hand sides with separate step sizes per column, until $\|\mathsf r_j\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column, $\tau=10^{-8}$ (at most $3000$ iterations, with a warning if reached).
 % src: src/models/hcurl.py _pcg (check_every=10, thr = tol*||rhs||); configs/field_3d.yaml (kp_tol 1e-8, kp_maxiter 3000)
 The solve runs in float64; in float32 the iteration did not converge and $\Mdiv$ was off by about $79\,\%$ in a test (we attribute this to cancellation in the Schur complement).
 % src: src/models/hcurl.py project_basis comment ("float32 CG does not converge (M_div off by ~79%, docs/21 B3)"); AGENTS.md invariants
@@ -113,7 +113,7 @@ Since $\mathsf B\mapsto\mathsf Z$ is the symmetric operator $\Kp^{-1}$, its back
 \subsection{Rank-revealing Rayleigh--Ritz layer}\label{sec:04-ritz}
 
 The Ritz problem $\Av c=\theta\,\Mdiv c$ on $\spn(\Pmat\Vmat)$ is degenerate exactly when a combination $\Vmat c$ is a pure gradient: then $\Pmat\Vmat c=0$ and both $\Mdiv c$ and $\Av c$ vanish.
-A ridge would give such directions an arbitrary $\theta$ inside the spectrum, and the losses of \cref{sec:04-loss} do not see gradient content, so we reveal the rank instead.
+A ridge would give them an arbitrary $\theta$ inside the spectrum, so we reveal the rank instead.
 Let $\mathsf D=\mathrm{diag}(\Vmat^{\!\top}\Mmat\Vmat)^{-1/2}$ and $\mathsf D\Vmat^{\!\top}\Mmat\Vmat\mathsf D+\varepsilon_{\rm M}\mathsf I=\mathsf L\mathsf L^{\!\top}$, $\varepsilon_{\rm M}=10^{-8}$.
 The eigenvalues $\mu_i\in[0,1]$ of $\mathsf L^{-1}\mathsf D\Mdiv\mathsf D\mathsf L^{-\top}=\mathsf Q\,\mathrm{diag}(\mu)\mathsf Q^{\!\top}$ are the divergence-free mass fractions of the whitened directions.
 Directions with $\mu_i\le\tau_{\rm drop}=10^{-6}$ are discarded; with the $r'$ remaining ones, $\mathsf W=\mathsf L^{-\top}\mathsf Q_{\rm kept}\mu_{\rm kept}^{-1/2}$ and
@@ -123,7 +123,7 @@ Directions with $\mu_i\le\tau_{\rm drop}=10^{-6}$ are discarded; with the $r'$ r
 % src: src/models/hcurl.py projected_eigh (mass_ridge 1e-8, drop_tol 1e-6); docs/20 §2
 The discarded directions receive $\theta=+\infty$ (a large finite number) and sort last.
 The $K$ smallest values give $f_k=c_0\sqrt{\theta_k}/(2\pi s)$, with $s$ the length scale of the normalised coordinates (eigenvalues scale as $s^{-2}$), and the $\Mmat$-orthonormal fields $\E_k=\Pmat\Vmat c_k$.
-Both symmetric eigendecompositions use a backward pass in which the factor $1/(\lambda_j-\lambda_i)$ of the standard eigenvector gradient~\cite{ionescu2015matrix,seeger2017autodiff} is replaced by the Lorentzian-broadened $\Delta/(\Delta^2+\varepsilon_{\rm b})$, $\varepsilon_{\rm b}=10^{-4}$, because cavities have (near-)degenerate dipole and quadrupole pairs.
+In the backward pass of both eigendecompositions the factor $1/(\lambda_j-\lambda_i)$ of the standard eigenvector gradient~\cite{ionescu2015matrix,seeger2017autodiff} is replaced by $\Delta/(\Delta^2+\varepsilon_{\rm b})$, $\varepsilon_{\rm b}=10^{-4}$, since cavities have (near-)degenerate mode pairs.
 % src: src/models/layers.py BroadenedEigh; configs/field_3d.yaml (eig_broadening 1e-4)
 
 \subsection{Upper-bound guarantee}\label{sec:04-bound}
@@ -156,8 +156,7 @@ Hence no spurious zero mode occurs and $f_k\ge f_{h,k}$ for every network weight
 
 \emph{Step 2.} Since $\mathsf L^{-1}\mathsf D\Mdiv\mathsf D\mathsf L^{-\top}=\mathsf Q\,\mathrm{diag}(\mu)\,\mathsf Q^{\!\top}$, the matrix $\mathsf W$ satisfies $\mathsf W^{\!\top}\mathsf D\Mdiv\mathsf D\mathsf W=\mathsf I_{r'}$ (the ridge only enters $\mathsf L$).
 With $\mathsf Y=\mathsf D\mathsf W$ and \eqref{eq:04-proj}, $(\Pmat\Vmat\mathsf Y)^{\!\top}\Mmat(\Pmat\Vmat\mathsf Y)=\mathsf Y^{\!\top}\Mdiv\mathsf Y=\mathsf I_{r'}$: the columns of $\Pmat\Vmat\mathsf Y$ are $\Mmat$-orthonormal, hence independent, and span $U'\subset\spn(\Pmat\Vmat)$ with $\dim U'=r'$.
-The matrix in \eqref{eq:04-ritz} is $\mathsf Y^{\!\top}\Av\mathsf Y=(\Pmat\Vmat\mathsf Y)^{\!\top}\Kmat(\Pmat\Vmat\mathsf Y)$, the Gram matrix of $\Kmat$ in an $\Mmat$-orthonormal basis of $U'$.
-Its eigenvalues are therefore the Rayleigh--Ritz values on $U'$~\cite{parlett1998symmetric}, and by Courant--Fischer on $U'$
+The matrix in \eqref{eq:04-ritz} is $\mathsf Y^{\!\top}\Av\mathsf Y=(\Pmat\Vmat\mathsf Y)^{\!\top}\Kmat(\Pmat\Vmat\mathsf Y)$, the Gram matrix of $\Kmat$ in an $\Mmat$-orthonormal basis of $U'$, so its eigenvalues are the Rayleigh--Ritz values on $U'$~\cite{parlett1998symmetric} and
 \[
   \theta_k=\min_{\substack{S\subset U'\\ \dim S=k}}\ \max_{0\ne\bm v\in S}\frac{\bm v^{\!\top}\Kmat\bm v}{\bm v^{\!\top}\Mmat\bm v}.
 \]
@@ -168,7 +167,7 @@ Its eigenvalues are therefore the Rayleigh--Ritz values on $U'$~\cite{parlett199
 The proposition concerns the \emph{discrete} eigenvalues of the space the model runs in.
 Since $\lamh_k\to\lambda_k$ as the space is enriched~\cite{boffi2010finite}, but $\theta_k\ge\lamh_k$ does not imply $\theta_k\ge\lambda_k$, we make no claim about the exact eigenvalue (in the label comparisons of \cref{sec:multifidelity} the order-two eigenvalues exceeded the order-three ones by $0.004$--$0.047\,\%$ in frequency).
 % src: docs/34 §8.1 (frequency LF/HF - 1 = +0.004 ... +0.047 %)
-Two consequences feed the losses: if $\Pmat\Vmat$ has full column rank, $\sum_{i\le m}\theta_i^{-1}\le\sum_{i\le m}\lamh_i^{-1}$ with equality iff $\spn(\Pmat\Vmat)$ is spanned by the $m$ lowest eigenvectors (the left side is $\mathrm{tr}(\Av^{-1}\Mdiv)$); and the Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors in $\spn(\Pmat\Vmat)$~\cite{boffi2010finite}.
+Two consequences feed the losses: if $\Pmat\Vmat$ has full column rank, $\sum_{i\le m}\theta_i^{-1}\le\sum_{i\le m}\lamh_i^{-1}$ with equality iff $\spn(\Pmat\Vmat)$ is the span of the $m$ lowest eigenvectors; and $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors~\cite{boffi2010finite}.
 
 \begin{remark}[Inexact projection]\label{rem:04-inexact}
 The proposition is exact only for an exact $\mathsf Z$; CG returns $\tilde{\mathsf Z}$ with a residual of relative size $\tau$.
@@ -180,16 +179,14 @@ We do not bound $\bar\eta$ a priori, so the bound is rigorous in exact arithmeti
 
 \begin{remark}[Space independence]\label{rem:04-space}
 The network sees only points, features and quadrature weights, and the Ritz layer needs only $\Kmat,\Mmat,\Gmat,\Kp$ and the maps $\Cmat,\mathsf F$ of the space in which it runs; \cref{prop:upper-bound} does not depend on how $\Vmat$ was produced.
-The same weights can therefore be evaluated on another conforming space (order three on the same mesh, or a uniformly refined mesh) by rebuilding these operators, and the Ritz values are upper bounds of the discrete eigenvalues of \emph{that} space; measured margin $\ge+0.009\,\%$ in every case (\cref{sec:experiments}).
+The same weights can therefore be run on another conforming space (order three on the same mesh, or a refined mesh) by rebuilding these operators, and the Ritz values then bound the discrete eigenvalues of \emph{that} space; measured margin $\ge+0.009\,\%$ (\cref{sec:experiments}).
 % src: docs/34 §4.2
-Accuracy does not improve in the larger space, since the learned fields are the same smooth fields and the token density ($24$ instead of $14$ points per element at order three) differs from training.
-% src: docs/34 §4.2 ("Doğruluk iyileşmiyor")
 \end{remark}
 
 \subsection{Losses}\label{sec:04-loss}
 
 Let $\mathsf T=[t_1,\dots,t_{n_{\rm tgt}}]$ be the stored target fields on $\Vh$ (label eigenvectors projected onto the model space, \cref{sec:data}) and, for $\mathsf N\in\{\Mmat,\Kmat\}$, let $\mathsf G_{\mathsf N}$ be the $\mathsf N$-Gram matrix of $[\Pmat\Vmat\,|\,\mathsf T]$.
-It is assembled without forming $\Pmat\Vmat$ and without a second CG solve: the $\Pmat\Vmat$ block is $\Mdiv$ or $\Av$, the cross blocks are $\Vmat^{\!\top}\Mmat\mathsf T-\mathsf Z^{\!\top}\Gmat^{\!\top}\Mmat\mathsf T$ and $\Vmat^{\!\top}\Kmat\mathsf T$, valid for any $\mathsf T$.
+It is assembled without forming $\Pmat\Vmat$ and without a second CG solve: the $\Pmat\Vmat$ block is $\Mdiv$ or $\Av$, and the cross blocks are $\Vmat^{\!\top}\Mmat\mathsf T-\mathsf Z^{\!\top}\Gmat^{\!\top}\Mmat\mathsf T$ and $\Vmat^{\!\top}\Kmat\mathsf T$.
 
 \paragraph{Span loss.}
 With $\Pi_{\mathsf N}$ the $\mathsf N$-orthogonal projector onto $\spn(\Pmat\Vmat)$ (a Cholesky solve of the Jacobi-scaled Gram matrix with relative ridge $10^{-9}$), the uncaptured fraction of target $t_k$ is $r_k^{\mathsf N}=1-\|\Pi_{\mathsf N}t_k\|_{\mathsf N}^2/\|t_k\|_{\mathsf N}^2\in[0,1]$ and
@@ -198,7 +195,7 @@ With $\Pi_{\mathsf N}$ the $\mathsf N$-orthogonal projector onto $\spn(\Pmat\Vma
 \end{equation}
 % src: src/training/lightning_module.py span_residual, _span_terms (span_norm both, span_root true, span_ridge 1e-9, eps 1e-8)
 $\sqrt{r_k^{\Mmat}}$ and $\sqrt{r_k^{\Kmat}}$ are the relative best-approximation errors in the mass and energy norms; the square root keeps the gradient from vanishing as the span becomes accurate.
-$\mathcal L_{\rm span}$ is invariant under invertible recombination of the columns of $\Vmat$ and under sign changes and rotations in degenerate target clusters, so it needs no eigenvalue matching or cluster detection.
+$\mathcal L_{\rm span}$ is invariant under recombination of the columns of $\Vmat$ and under sign changes and rotations in degenerate target clusters, so it needs no eigenvalue matching.
 
 \paragraph{Other terms.}
 The self-supervised term $\mathcal L_{\rm ss}=-\log\mathrm{tr}(\Av^{-1}\Mdiv)=-\log\sum_i\theta_i^{-1}$ needs no labels and, by the first consequence of \cref{prop:upper-bound}, is bounded below by $-\log\sum_{i\le m}\lamh_i^{-1}$, with equality for the lowest-$m$ eigenspace; it uses the projected mass, so gradient content cannot lower it (without projection the compliance exploded by more than $10^3$ in a test).
@@ -209,9 +206,7 @@ The total is $\sum_{\rm t}\alpha_{\rm t}\mathcal L_{\rm t}$ with weights $(\alph
 A loss on the figures of merit exists in the code but is disabled for this model.
 
 \paragraph{Fidelity weights.}
-Every sample carries the fidelity of its label, $\mathrm{fid}\in\{\LF,\HF\}$ (\cref{sec:multifidelity}).
-With per-sample values $\ell_b$ of a term, a batch of size $B$ uses $\frac1B\sum_b\omega_{\mathrm{fid}(b)}\ell_b$ for the span term and $\frac1B\sum_b\omega_{\mathrm{fid}(b)}\beta_{\mathrm{fid}(b)}\ell_b$ for the frequency term: $\omega=(\omega_\LF,\omega_\HF)$ weights both and $\beta$ acts on the frequency term only, because $\HF$ frequencies can lie below the lowest value the order-two Ritz layer can reach whereas $\LF$ frequencies are its own discrete eigenvalues.
-The defaults are $\omega=\beta=(1,1)$.
+The span term of a sample is multiplied by $\omega_{\mathrm{fid}}$ and its frequency term by $\omega_{\mathrm{fid}}\beta_{\mathrm{fid}}$, where $\mathrm{fid}\in\{\LF,\HF\}$ is the fidelity of its label (\cref{sec:multifidelity}); the defaults are $\omega=\beta=(1,1)$.
 % src: docs/34 §2, configs/field_3d.yaml (fidelity_weights, fidelity_freq_scale), src/training/lightning_module.py _compute_loss_3d, _span_terms
 
 \subsection{Cost}\label{sec:04-cost}
