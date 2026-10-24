@@ -7,3 +7,4 @@ main.pdf
 *.fdb_latexmk
 *.fls
 *.toc
+figures/*.png
