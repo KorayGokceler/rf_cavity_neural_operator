@@ -5,14 +5,18 @@ directly. It maps the geometry, represented by the quadrature points of a curved
 basis of vector fields; a fixed linear map turns the basis into degrees of freedom of a second-order N\'ed\'elec
 space, a kernel projection removes the discrete gradients, and a Rayleigh--Ritz step returns the modes. In exact
 arithmetic the predicted eigenvalues are upper bounds of the discrete eigenvalues of whichever conforming space
-the model runs in, and no spurious zero modes arise. A single geometry can be fitted to a relative eigenvalue
-error of $10^{-6}$--$9\times10^{-6}$. % src: docs/28 §3
+the model runs in; with the implemented iterative projection the bound holds up to a relative error of the
+order of the solver tolerance (about $10^{-8}$), which we verify a posteriori, and no spurious zero modes
+arise. % src: docs/35 §2
 We build an adaptive third-order label generator on curved meshes, validated against analytic pillbox modes
 (relative frequency error $6\times10^{-7}$ at 157k degrees of freedom), % src: docs/31 §1
 and show that low-fidelity labels---one second-order solve on the mesh the model uses---cost $2.8$--$4.3\times$
 less than third-order labels on that mesh and differ from them by at most $0.047\,\%$ in frequency and
 $0.32\,\%$ in field. % src: docs/34 §8.1
 In a small single-run study on one cavity family, models trained on low-fidelity labels were comparable in
-accuracy on held-out geometries to models trained on third-order labels of similar cost, and their errors
-against the two label types differ by $0.02$ percentage points. Because the label difference is far smaller
-than the present model error, the study does not yet probe the regime in which the label type matters. % src: docs/34 §8.2
+accuracy to models trained on third-order labels of similar cost; the number of training geometries, not the
+label fidelity, decided the accuracy. % src: docs/34 §8.2, docs/35 §3
+At this scale the operator has no advantage over a Gaussian process on the six geometry parameters
+($1.0\,\%$ against $1.4\,\%$ mean frequency error with 40 training geometries) or over a direct first- or
+second-order finite-element solve, which is faster and more accurate; we discuss where the approach could
+pay off. % src: docs/35 §3
