@@ -413,6 +413,11 @@ def qoi_api():
     return importlib.import_module("src.qoi")
 
 
+def geom_params_of(attrs):
+    """The family's geom_params [m] of an H5 sample group (attrs['geom_params'] JSON; {} when absent)."""
+    return json.loads(attrs.get("geom_params", "{}"))
+
+
 def qoi_metadata(n_failed=0):
     """metadata['qoi'] of a PKL with QoI labels (§0.4)."""
     return {"labels": list(qoi_api().QOI_LABELS), **QOI_LABEL_SETTINGS,
@@ -435,7 +440,8 @@ def qoi_operators_of(geom, M=None, **kw):
                                         np.asarray(geom["tets"], dtype=np.int64),
                                         np.asarray(geom["edges"], dtype=np.int64),
                                         float(geom["scale"]), center, M=M, **kw)
-    ops["L_acc"] = op.acceleration_length(st, prm)
+    L = op.acceleration_length(st, prm)
+    ops["L_acc"] = ops["L_axis"] if L is None else L / ops["scale"]     # normalised, like L_axis
     return ops
 
 
@@ -539,7 +545,7 @@ class RFCavity3DConverter:
                 n_modes = len(freqs) if n_modes is None else min(n_modes, len(freqs))
                 geom, M = extract_geometry_3d(grp["nodes"][:], grp["tets"][:])
                 geom["shape_type"] = str(grp.attrs.get("shape_type", "unknown"))
-                geom["params"] = json.loads(grp.attrs.get("geom_params", "{}"))
+                geom["params"] = geom_params_of(grp.attrs)
                 # freq of mode K+1 [GHz]: f_next ≈ f_K means the K-mode cut splits a degenerate cluster
                 geom["freq_next"] = float(grp.attrs.get("freq_next", np.nan))
                 rows, sign = h5_edges_to_canonical(grp["edges"][:], geom["n_nodes"], geom["edges"])

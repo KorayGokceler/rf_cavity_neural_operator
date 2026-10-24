@@ -209,7 +209,7 @@ def create_app(service=None, datasets=None):
         chk = G.check(nodes, tets)
         vid, tri = G.surface(nodes, tets)
         rec = {'nodes': nodes, 'tets': tets, 'vid': vid, 'tri': tri, 'source': source,
-               'family': (extra or {}).get('family', ''), 'check': chk}
+               'family': (extra or {}).get('family', ''), 'params': (extra or {}).get('params'), 'check': chk}
         if prepared:
             rec.update(prepared)
         gid = geoms.put(rec)

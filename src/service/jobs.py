@@ -43,15 +43,19 @@ def family_blocks(tsv=None):
     return out
 
 
+TAG_VERSION = "v2"      # generator output version (cluster/truba/config.sh DATA_VERSION): bump when a seed's
+                        # geometry or labels change, so old and new shards never share a dataset folder
+
+
 def tag_of(mesh_size, n_modes):
-    """Dataset tag of the TRUBA layout (cluster/truba/config.sh): E_ms<mesh>_k<modes>_v2."""
-    return f"E_ms{mesh_size:g}_k{int(n_modes)}_v2"
+    """Dataset tag of the TRUBA layout (cluster/truba/config.sh): E_ms<mesh>_k<modes>_<version>."""
+    return f"E_ms{mesh_size:g}_k{int(n_modes)}_{TAG_VERSION}"
 
 
 def field_tag_of(mesh_size, n_modes, label_order=3, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
-    """Field-label tag of cluster/truba/config.sh: F_p<label>p<model>_ms<mesh>_k<modes>_mf<fillet>_v2, + _1s for
+    """Field-label tag of cluster/truba/config.sh: F_p<label>p<model>_ms<mesh>_k<modes>_mf<fillet>_<version>, + _1s for
     one-solve labels and _sharp for unrounded geometries (neither may mix with the defaults under one tag)."""
-    tag = (f"F_p{int(label_order)}p{int(model_order)}_ms{mesh_size:g}_k{int(n_modes)}_mf{min_fillet:g}_v2"
+    tag = (f"F_p{int(label_order)}p{int(model_order)}_ms{mesh_size:g}_k{int(n_modes)}_mf{min_fillet:g}_{TAG_VERSION}"
            + ("" if adapt else "_1s") + ("" if round_edges else "_sharp"))
     return tag.replace("_ms0.1_", "_ms0.10_")            # as config.sh's literal MESH_SIZE=0.10
 
@@ -297,7 +301,7 @@ class JobManager:
                 os.replace(dest + '.part', dest)
                 job.outputs.append(dest)
                 if os.path.isdir(step_local):                    # STEP files next to the shards
-                    step_dir = os.path.join(os.path.dirname(os.path.dirname(h5_dir)), 'step', p['family'])
+                    step_dir = os.path.join(self.gen_root, p['tag'], 'step', p['family'])
                     os.makedirs(step_dir, exist_ok=True)
                     for f in os.listdir(step_local):
                         shutil.move(os.path.join(step_local, f), os.path.join(step_dir, f))

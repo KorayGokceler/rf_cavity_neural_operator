@@ -165,12 +165,10 @@ def _check_reload(vol_bytes, shape, curve, deform, model_order, ndof):
 
 def _beam_axis(shape_type, mesh, params=None):
     """(axis_dir, axis_point, L_acc) of mode_qoi for the family (src.qoi.operators)."""
-    from src.qoi.operators import acceleration_length, beam_axis
+    from src.qoi.operators import acceleration_length, axis_line, beam_axis
     X = np.array([tuple(p.p) for p in mesh.ngmesh.Points()])
-    ax = beam_axis(shape_type, X, 1.0, np.zeros(3), params)
-    d = ax.get("axis_dir", "z")
-    return (np.eye(3)["xyz".index(d)] if isinstance(d, str) else np.asarray(d, float),
-            np.asarray(ax.get("axis_point", (0.0, 0.0, 0.0)), float), acceleration_length(shape_type, params))
+    d, p0 = axis_line(**beam_axis(shape_type, X, 1.0, np.zeros(3), params))
+    return d, p0, acceleration_length(shape_type, params)
 
 
 def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, sharp_edges=0, params=None):
@@ -253,7 +251,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
                       "jacobian_ratio": float(ho.jacobian_ratio(model_mesh)),
                       "maxh": float(s["maxh_factor"] * h), "t_curved_mesh": t1 - t0, "t_labels": t2 - t1,
                       "sharp_edges": int(sharp_edges), **adapt_attrs,
-                      "axis_dir": np.asarray(axis[0], float), "axis_point": np.asarray(axis[1], float),
+                      "axis_dir": axis[0], "axis_point": axis[1],
                       "axis_dt": float(q["axis_dt"]), "L_acc": float(np.nan if axis[2] is None else axis[2])}}
 
 

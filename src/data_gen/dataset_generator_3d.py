@@ -34,7 +34,6 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -805,36 +804,34 @@ def generate_sample_data(s_id):
                 gmsh.clear()
             except Exception:
                 pass
-    tmp = tempfile.mkdtemp() if getattr(ARGS, "step_dir", None) else None     # CAD for the STEP copy
-    try:
-        g = mesh_sample(s_id, cad_path=tmp and os.path.join(tmp, "solid.brep"))
-        nodes, tets, shape_type, params, h, volume, t_mesh = (
-            g[k] for k in ("nodes", "tets", "shape_type", "params", "h", "volume", "t_mesh"))
-        t0 = time.perf_counter()
-        A = assemble_n0(nodes, tets)
-        k = ARGS.n_eigen_modes
-        vals, vecs, info = solve_e_modes(A, k + 1)
-        t_solve = time.perf_counter() - t0
-        _save_step(g, s_id)
-        return {
-            "id": s_id, "nodes": np.ascontiguousarray(A["mesh"].p.T), "tets": np.ascontiguousarray(A["mesh"].t.T),
-            "edges": A["edges"], "e_edges": vecs[:, :k],
-            "freqs": eigenvalues_to_ghz(vals[:k]),
-            "freq_next": float(eigenvalues_to_ghz(vals[k])), "shape_type": shape_type, "geom_params": params,
-            "div_residual": info["div_residual"], "mesh_h": float(h), "volume": float(volume),
-            "t_mesh": t_mesh, "t_solve": t_solve, "n_bnd_components": int(g["topo"]["n_bnd_components"]),
-            "betti1": int(g["topo"]["betti1"]), "size": (len(A["mesh"].p.T), len(A["edges"])),
-        }
-    except Exception as e:
-        print(f"Error generating sample {s_id}: {e}")
-        return None
-    finally:
-        if tmp:
-            shutil.rmtree(tmp, ignore_errors=True)
+    with tempfile.TemporaryDirectory() as tmp:                     # CAD for the STEP copy (--step_dir)
         try:
-            gmsh.clear()
-        except Exception:
-            pass
+            g = mesh_sample(s_id, cad_path=os.path.join(tmp, "solid.brep") if getattr(ARGS, "step_dir", None) else None)
+            nodes, tets, shape_type, params, h, volume, t_mesh = (
+                g[k] for k in ("nodes", "tets", "shape_type", "params", "h", "volume", "t_mesh"))
+            t0 = time.perf_counter()
+            A = assemble_n0(nodes, tets)
+            k = ARGS.n_eigen_modes
+            vals, vecs, info = solve_e_modes(A, k + 1)
+            t_solve = time.perf_counter() - t0
+            _save_step(g, s_id)
+            return {
+                "id": s_id, "nodes": np.ascontiguousarray(A["mesh"].p.T), "tets": np.ascontiguousarray(A["mesh"].t.T),
+                "edges": A["edges"], "e_edges": vecs[:, :k],
+                "freqs": eigenvalues_to_ghz(vals[:k]),
+                "freq_next": float(eigenvalues_to_ghz(vals[k])), "shape_type": shape_type, "geom_params": params,
+                "div_residual": info["div_residual"], "mesh_h": float(h), "volume": float(volume),
+                "t_mesh": t_mesh, "t_solve": t_solve, "n_bnd_components": int(g["topo"]["n_bnd_components"]),
+                "betti1": int(g["topo"]["betti1"]), "size": (len(A["mesh"].p.T), len(A["edges"])),
+            }
+        except Exception as e:
+            print(f"Error generating sample {s_id}: {e}")
+            return None
+        finally:
+            try:
+                gmsh.clear()
+            except Exception:
+                pass
 
 
 def _save_step(g, s_id):

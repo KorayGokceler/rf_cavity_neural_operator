@@ -10,10 +10,11 @@ Every value is validated (numbers by range, names by pattern) and shell-quoted, 
 variables that differ from cluster/truba/config.sh's defaults are written, so the line stays short
 and the cluster-side defaults stay the single source of truth.  Nothing here touches the cluster.
 """
-import os
 import re
 import shlex
 import subprocess
+
+from src.service.jobs import field_tag_of, tag_of
 
 ACTIONS = ("all", "dataset", "train", "status", "setup")
 TRAIN_FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "composite", "freeform",
@@ -232,12 +233,10 @@ def build_command(req):
     if v["TAG"]:
         tag = v["TAG"]
     elif labels == "field":
-        tag = (f"F_p{v['LABEL_ORDER']}p{v['MODEL_ORDER']}_ms{_fmt(v['MESH_SIZE'])}_k{v['N_STORE']}"
-               f"_mf{v['MIN_FILLET'] or '0.05'}_v2" + ("" if v["ADAPT"] else "_1s")      # one-solve labels
-               + ("" if v["ROUND_EDGES"] else "_sharp"))                                 # other geometries
+        tag = field_tag_of(v["MESH_SIZE"], v["N_STORE"], v["LABEL_ORDER"], v["MODEL_ORDER"],
+                           float(v["MIN_FILLET"] or 0.05), adapt=bool(v["ADAPT"]), round_edges=bool(v["ROUND_EDGES"]))
     else:
-        tag = f"E_ms{_fmt(v['MESH_SIZE'])}_k{v['N_STORE']}_v2"
-    tag = tag.replace("_ms0.1_", "_ms0.10_")            # MESH_SIZE left at config.sh's literal 0.10
+        tag = tag_of(v["MESH_SIZE"], v["N_STORE"]).replace("_ms0.1_", "_ms0.10_")   # config.sh's literal 0.10
     if v["TEST"]:
         tag += "_test"
 

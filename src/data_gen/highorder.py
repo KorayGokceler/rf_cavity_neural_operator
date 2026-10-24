@@ -429,7 +429,8 @@ def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), L_acc=No
         raw["U"][j] = 0.5 * EPS0 * Integrate(InnerProduct(g, g), mesh, order=order)
         sw = Integrate(InnerProduct(ct, ct) * ds("wall", bonus_intorder=order), mesh)
         raw["P"][j] = 0.5 * Rs[j] / (w[j] * MU0) ** 2 * sw
-        Ez = ez[j] = evaluate(g, loc_ax) @ d
+        ez[j] = evaluate(g, loc_ax) @ d
+        Ez = ez[j]
         raw["V"][j] = np.abs((q * Ez * np.exp(1j * w[j] * tt / (beta * C0))).sum())
         raw["V0"][j] = (q * np.abs(Ez)).sum()
         raw["E"][j] = np.linalg.norm(np.asarray(Eb(mips)).reshape(-1, 3)[on_wall], axis=1).max()

@@ -231,9 +231,11 @@ def half_cell_wall(Req, Riris, L, A, B, a, b, n=24):
         d = P2(s) - P1(t)
         return [cross(T1(t), T2(s)) / (a * A), cross(T1(t), d) / (a * L)]
 
+    bounds = ([1e-3, -np.pi / 2 + 1e-3], [np.pi - 1e-3, np.pi / 2])
     for x0 in _TANGENT_STARTS:                            # the first start finds nearly every cell
-        sol = least_squares(res, x0, bounds=([1e-3, -np.pi / 2 + 1e-3], [np.pi - 1e-3, np.pi / 2]),
-                            xtol=1e-15, ftol=1e-15, gtol=1e-15)   # the default 1e-8 stops above the 1e-9 test
+        sol = least_squares(res, x0, bounds=bounds)
+        if 1e-9 < np.max(np.abs(sol.fun)) < 1e-5:        # default tolerances stop just above the 1e-9 test
+            sol = least_squares(res, sol.x, bounds=bounds, xtol=1e-15, ftol=1e-15, gtol=1e-15)
         t, s = sol.x
         d = P2(s) - P1(t)
         if np.max(np.abs(sol.fun)) > 1e-9 or d @ T1(t) <= 0 or cross(d, ci - P1(t)) * cross(d, ce - P1(t)) >= 0:
@@ -308,7 +310,7 @@ def draw_elliptical(rng, n_cells=None):
             if rng.uniform() < 0.6:                        # end half-cell differs (as in real structures:
                 for k, lo, hi in END_CELL_RANGES:          # thinner iris ellipse, larger iris)
                     end[k] = mid[k] * rng.uniform(lo, hi)
-            w = _valid_half(end)
+            w = w_mid if end == mid else _valid_half(end)
             halves[e], walls[e] = (end, w) if w is not None else (dict(mid), w_mid)
         n = int(n_cells if n_cells is not None else rng.choice(N_CELLS, p=P_CELLS))
         p = {k: mid[k] for k in HALF_KEYS}

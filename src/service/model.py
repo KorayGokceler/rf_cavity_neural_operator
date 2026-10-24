@@ -144,7 +144,7 @@ def build_solution(geom, M, U, f_ghz, source, eta=None, qoi_kw=None, ops=None):
     E, H = physical_fields(geom, M, U, f)
     return {'source': source, 'n_edges': int(len(geom['edges'])), 'modes': modes,
             'axis_length_mm': float(ops['L_axis'] * geom['scale'] * 1e3),
-            'L_acc_mm': float((ops.get('L_acc') or ops['L_axis'] * geom['scale']) * 1e3),
+            'L_acc_mm': float(ops['L_acc'] * geom['scale'] * 1e3),
             '_geom': geom, '_M': M, '_U': U, '_f': f, '_E': E, '_H': H, '_ops': ops,
             '_axis': axis_values(geom, M, U, f, ops),
             '_zeta_mm': np.asarray(ops['zeta']) * geom['scale'] * 1e3}

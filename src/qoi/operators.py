@@ -124,7 +124,7 @@ def wall_loss_matrix(X, tets, edges, bf=None, basis=None):
 
 # ─────────────────────────── beam axis ─────────────────────────
 
-def _axis_line(axis_xy=(0.0, 0.0), axis_dir=None, axis_point=None):
+def axis_line(axis_xy=(0.0, 0.0), axis_dir=None, axis_point=None):
     """(unit direction d, physical point p) of the beam axis: default the line (x, y) = axis_xy
     along z; axis_dir 'x' | 'y' | 'z' or a 3-vector, axis_point a physical point on it [m]."""
     if axis_dir is None:
@@ -143,13 +143,13 @@ def axis_operator(X, tets, edges, scale, center, n_axis=401, axis_xy=(0.0, 0.0),
                   axis_dir=None, axis_point=None):
     """Axis sampling: midpoints ζ_p of n_axis equal cells over the extent of the mesh along the beam
     axis (default: the physical line (x, y) = axis_xy along z; or axis_dir / axis_point, see
-    _axis_line), located in the mesh; q_p = Δζ inside, 0 outside.
+    axis_line), located in the mesh; q_p = Δζ inside, 0 outside.
     Returns (Az CSR [P×Ne], zeta [P], q [P], L_axis).  Az rows: the axial component of the Whitney
     field at the point."""
     X = np.asarray(X, dtype=np.float64)
     tets = np.asarray(tets, dtype=np.int64)
     dof, loc, vol, grads, curls = _local_basis(X, tets, edges) if basis is None else basis
-    d, p = _axis_line(axis_xy, axis_dir, axis_point)
+    d, p = axis_line(axis_xy, axis_dir, axis_point)
     pn = (p - np.asarray(center, dtype=np.float64).reshape(3)) / float(scale)
     perp = pn - (pn @ d) * d                                  # foot of the axis through the origin
     t = X @ d
@@ -192,18 +192,14 @@ def acceleration_length(shape_type, params):
     pillbox / re-entrant cells, the tank for spoke / dtl, the outer diameter for hwr.  None (→ axis
     chord) for families without a beam (composite, freeform, junction, coax_qw) or without params."""
     st, p = str(shape_type), params or {}
-    try:
-        if st in ("elliptical", "elliptical_long"):
-            return p["e1_L"] + p["e2_L"] + 2 * (p["n_cells"] - 1) * p["L"]
-        key = {"pillbox_pipes": "Lc", "reentrant": "Lc", "pillbox_port": "Lc", "spoke": "Lt", "dtl": "Lt",
-               "ridged_box": "a", "box": "d", "calib_box": "d"}.get(st)
-        if key is not None:
-            return float(p[key])
-        if st == "hwr":
-            return 2 * float(p["Ro"])
-    except KeyError:
-        pass
-    return None
+    if st in ("elliptical", "elliptical_long"):
+        e1, e2, n, L = (p.get(k) for k in ("e1_L", "e2_L", "n_cells", "L"))
+        return None if None in (e1, e2, n, L) else e1 + e2 + 2 * (n - 1) * L
+    if st == "hwr":
+        return 2 * p["Ro"] if "Ro" in p else None
+    key = {"pillbox_pipes": "Lc", "reentrant": "Lc", "pillbox_port": "Lc", "spoke": "Lt", "dtl": "Lt",
+           "ridged_box": "a", "box": "d", "calib_box": "d"}.get(st)
+    return None if p.get(key) is None else float(p[key])
 
 
 # ─────────────────────────── surface fields ────────────────────
@@ -335,8 +331,8 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
 
     Rs [Ω] scalar or [K] overrides the copper model R_s = √(π f μ0/σ) (σ = sigma) at each mode's own
     f; beta the particle velocity (transit phase ω z/(βc)); L_acc [m] the accelerating length
-    (default: ops['L_acc'] when set, see acceleration_length, else the axis chord inside Ω,
-    ops['L_axis']·s); convention 'linac' (R/Q = V²/(ωU),
+    (default: ops['L_acc']·s, the normalised length qoi_operators_of sets from acceleration_length,
+    else the axis chord inside Ω, ops['L_axis']·s); convention 'linac' (R/Q = V²/(ωU),
     R_sh = V²/P_c) or 'circuit' (both halved).
     Returns dict {key: float64 ndarray [K]} for QOI_KEYS (K = 1 for a 1-D U).
     """
@@ -363,7 +359,7 @@ def qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=SIGMA_CU, beta=1.0, L_acc=None, c
     Pc_raw = 0.5 * Rs / (w * MU0) ** 2 * uSu
     V_raw, V0_raw = s * Vc, s * V0
     Epk_raw, Bpk_raw = ep, hp / (w * s)
-    L = L_acc if L_acc is not None else (ops.get("L_acc") or ops["L_axis"] * s)
+    L = L_acc if L_acc is not None else ops.get("L_acc", ops["L_axis"]) * s
     return figures_of_merit(f, Rs, U_raw, Pc_raw, V_raw, V0_raw, Epk_raw, Bpk_raw, L, convention)
 
 
