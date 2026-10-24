@@ -52,7 +52,7 @@ The tokens are the $N=N_t\,n_q$ quadrature points $\bm x_q$ of a reference rule 
 % src: src/data_gen/highorder.py _quadrature (IntegrationRule(TET, 2*order)); n_q = 14, 24 checked with NGSolve 6.2; docs/34 §4.2
 Vertices are not used because coarse curved meshes can have no interior vertex; in single-sample overfitting, vertex tokens with barycentric interpolation stopped at a relative eigenvalue error of $0.8$--$1.1\times10^{-4}$ ($p=2$) against $10^{-6}$--$9\times10^{-6}$ for quadrature-point tokens (\cref{sec:experiments}).
 % src: docs/28 §3 (0.8-1.1e-4 after 2000 steps vs 1e-6 - 9e-6 after 1250 steps, p = 2)
-Each token carries nine features computed on the curved geometry in normalised coordinates: the position, the distance to the wall, the unit vector to the nearest wall point, the point volume (quadrature weight divided by its maximum) and the torsion function $\chi$ ($-\Delta\chi=1$ in $\Omega$, $\chi=0$ on $\partial\Omega$, solved in the $H^1_0$ space of order $p+1$ on the same mesh and normalised by its maximum).
+Each token carries nine features computed on the curved geometry in normalised coordinates: position, wall distance, unit vector to the nearest wall point, point volume (quadrature weight over its maximum) and the torsion function $\chi$ ($-\Delta\chi=1$ in $\Omega$, $\chi=0$ on $\partial\Omega$, solved in the order-$(p+1)$ $H^1_0$ space on the same mesh, normalised by its maximum).
 % src: src/data_gen/highorder.py point_features, wall_features; docs/28 §2
 
 Let $\gamma(\bm x)=\sqrt{2/d_{\rm f}}\,[\cos(\mathsf B_{\rm F}\bm x),\sin(\mathsf B_{\rm F}\bm x)]$ be a random Fourier feature map with a frozen Gaussian matrix~\cite{rahimi2007random,tancik2020fourier}.
@@ -174,7 +174,7 @@ Two consequences feed the losses: if $\Pmat\Vmat$ has full column rank, $\sum_{i
 \begin{remark}[Inexact projection]\label{rem:04-inexact}
 The proposition is exact only for an exact $\mathsf Z$.
 CG returns $\tilde{\mathsf Z}=\mathsf Z+\delta$ with $\rho=\Kp\delta$, $\|\rho_{:,j}\|\le\tau\|\mathsf B_{:,j}\|$.
-\emph{The numerator is unaffected:} $\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$, so the computed field $\tilde{\Pmat}\Vmat=\Pmat\Vmat-\Gmat\delta$ has the curl energy of the exact projection; its residual gradient component carries none.
+\emph{The numerator is unaffected:} $\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$, so the residual gradient component $-\Gmat\delta$ of the computed field $\tilde{\Pmat}\Vmat$ carries no curl energy.
 \emph{The denominator is perturbed:} the layer uses $\tilde{\mathsf M}_{\rm div}=\Vmat^{\!\top}\Mmat\Vmat-\mathsf B^{\!\top}\tilde{\mathsf Z}=\Mdiv+\mathsf E$, $\mathsf E=-\mathrm{sym}(\mathsf Z^{\!\top}\rho)$.
 For a coefficient vector $c$, $c^{\!\top}\mathsf Ec=-\langle\Gmat\mathsf Zc,\Gmat\delta c\rangle_{\Mmat}$, and $\Gmat\mathsf Zc$ is the $\Mmat$-projection of $\Vmat c$ onto $\mathrm{range}\,\Gmat$, hence
 \[
@@ -192,7 +192,7 @@ Floating-point rounding is not covered by the argument.
 
 \begin{remark}[Space independence]\label{rem:04-space}
 The network sees only points, features and quadrature weights, and the Ritz layer needs only $\Kmat,\Mmat,\Gmat,\Kp$ and the maps $\Cmat,\mathsf F$ of the space in which it runs; \cref{prop:upper-bound} does not depend on how $\Vmat$ was produced.
-The same weights can therefore be evaluated on another conforming space, e.g.\ order three on the same mesh or a uniformly refined mesh, by rebuilding these operators, and the Ritz values are upper bounds of the discrete eigenvalues of \emph{that} space; this was measured with margin $\ge+0.009\,\%$ in every case (\cref{sec:experiments}).
+The same weights can therefore be evaluated on another conforming space (order three on the same mesh, or a uniformly refined mesh) by rebuilding these operators, and the Ritz values are upper bounds of the discrete eigenvalues of \emph{that} space; measured margin $\ge+0.009\,\%$ in every case (\cref{sec:experiments}).
 % src: docs/34 §4.2
 Accuracy does not improve in the larger space, since the learned fields are the same smooth fields and the token density ($24$ instead of $14$ points per element at order three) differs from training.
 % src: docs/34 §4.2 ("Doğruluk iyileşmiyor")
@@ -224,23 +224,19 @@ A loss on the figures of merit exists in the code but is disabled for this model
 
 \paragraph{Fidelity weights.}
 Every sample carries the fidelity of its label, $\mathrm{fid}\in\{\LF,\HF\}$ (\cref{sec:multifidelity}).
-With per-sample values $\ell_b$ of a term, a batch of size $B$ uses $\frac1B\sum_b\omega_{\mathrm{fid}(b)}\ell_b$ for the span term and $\frac1B\sum_b\omega_{\mathrm{fid}(b)}\beta_{\mathrm{fid}(b)}\ell_b$ for the frequency term: $\omega=(\omega_\LF,\omega_\HF)$ weights both, and $\beta=(\beta_\LF,\beta_\HF)$ acts on the frequency term only, because $\HF$ frequencies can lie below the lowest value the order-two Ritz layer can reach, whereas $\LF$ frequencies are the discrete eigenvalues of the model space itself.
-The defaults are $\omega=\beta=(1,1)$, i.e.\ no reweighting.
+With per-sample values $\ell_b$ of a term, a batch of size $B$ uses $\frac1B\sum_b\omega_{\mathrm{fid}(b)}\ell_b$ for the span term and $\frac1B\sum_b\omega_{\mathrm{fid}(b)}\beta_{\mathrm{fid}(b)}\ell_b$ for the frequency term: $\omega=(\omega_\LF,\omega_\HF)$ weights both and $\beta$ acts on the frequency term only, because $\HF$ frequencies can lie below the lowest value the order-two Ritz layer can reach whereas $\LF$ frequencies are its own discrete eigenvalues.
+The defaults are $\omega=\beta=(1,1)$.
 % src: docs/34 §2, configs/field_3d.yaml (fidelity_weights, fidelity_freq_scale), src/training/lightning_module.py _compute_loss_3d, _span_terms
 
 \subsection{Cost}\label{sec:04-cost}
 
-The trunk costs $O(Nd^2L)$ time and $O(Nd)$ memory, linear in the number of tokens.
-Gradient checkpointing (recomputing the encoder and each attention and feed-forward half in the backward pass) lowered the peak process memory of training from $9.9$ to $3.8$\,GB with bit-identical gradients.
+The trunk costs $O(Nd^2L)$ time and $O(Nd)$ memory, linear in the number of tokens; with gradient checkpointing (recomputing the encoder and each attention and feed-forward half in the backward pass) the peak process memory of training fell from $9.9$ to $3.8$\,GB with bit-identical gradients.
 % src: docs/28 §4 (training memory: 9.9 GB -> 3.8 GB, gradients bit-identical)
-The mesh-dependent part dominates: a CG iteration costs $O(\mathrm{nnz}(\Kp)\,m)$ in float64, the iteration count grows roughly like $h^{-1}$ (in the lowest-order variant from $60$ to $170$ iterations while the edge count grew from $2\,053$ to $47\,919$), and the backward pass adds one more solve.
+The mesh-dependent part dominates: a CG iteration costs $O(\mathrm{nnz}(\Kp)\,m)$ in float64, the iteration count grows roughly like $h^{-1}$ (in the lowest-order variant from $60$ to $170$ iterations while the edge count grew from $2\,053$ to $47\,919$), and the backward pass adds one more solve; the $m\times m$ Ritz layer is negligible.
 % src: docs/20 §5 (PCG iterations 60 ... 170 for N_e 2053 ... 47919)
-The Ritz layer, on $m\times m$ matrices, is negligible.
-On a curved pillbox-with-pipes mesh of $10.5$k tetrahedra, order two has $112$k DOFs, $41$k potentials and $148$k tokens, and order three $282$k DOFs, $100$k potentials and $253$k tokens; the operators ($25$M and $105$M non-zeros in total) take $7$--$10$\,s and $37$\,s to assemble on one thread.
-% src: docs/28 §4 table (netgen curvaturesafety 2: 10.5k tets, p2 112k DOF / 41k potentials / 148k tokens / 25M nnz / 7-10 s; p3 282k / 100k / 253k / 105M / 37 s)
+On a curved pillbox-with-pipes mesh of $10.5$k tetrahedra, order two has $112$k DOFs, $41$k potentials and $148$k tokens, and order three $282$k DOFs, $100$k potentials and $253$k tokens; assembling the operators takes $7$--$10$\,s and $37$\,s on one thread.
+% src: docs/28 §4 table (netgen curvaturesafety 2: 10.5k tets, p2 112k DOF / 41k potentials / 148k tokens / 7-10 s; p3 282k / 100k / 253k / 37 s)
 For a mesh of $13$k tetrahedra ($183$k tokens, order two) on four CPU threads we measured $4.2$\,s for operator assembly, $0.34$\,s for batch collation and about $22$\,s per training step.
 % src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads)
-The operators are rebuilt per sample, not stored: they would take about $0.4$\,GB per sample at order two, against $1.4$\,MB for the curved mesh.
-% src: docs/28 §4 Storage (1.4 MB per sample; ~0.4 GB per sample at p2)
-Order three is impractical for training on a CPU at these sizes.
-% src: docs/28 §4 ("p3 is impractical for training")
+Operators are rebuilt per sample rather than stored, since they would take about $0.4$\,GB per sample at order two against $1.4$\,MB for the curved mesh, and order three is impractical for training on a CPU at these sizes.
+% src: docs/28 §4 Storage and Options (1.4 MB per sample; ~0.4 GB per sample at p2; "p3 is impractical for training")

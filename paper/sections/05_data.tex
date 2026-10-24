@@ -77,22 +77,18 @@ On two pillbox-with-pipes model meshes $\text{proj\_err}$ was $0.18$--$0.54\,\%$
 This is the frequency of the projected field \emph{target}; the floor of the model space itself, the discrete order-two eigenvalue, was within $0.033\,\%$ of the order-three frequencies on the four geometries of \cref{sec:multifidelity}.
 % src: docs/30 §5 (proj_err 1.8e-3–5.4e-3; Rayleigh quotients of projected HF modes 4e-4–8.6e-3, meshes of 11300 and 13052 tets); docs/34 §4.1 (FE floor ≤ 0.033 %); EDITOR_NOTES note 2
 
-Each geometry is stored as the Netgen mesh file of the model mesh, the BREP of the meshed shape, the frequencies, the projected fields (single precision, wall rows zero), the figures of merit, the axial field, and the wall-distance token features of \cref{sec:method}; about \SI{9}{MB} for ten modes.
+Each geometry is stored as the Netgen mesh file of the model mesh and the BREP of the meshed shape, with the frequencies, projected fields (single precision), figures of merit, axial field and the wall-distance token features of \cref{sec:method}: about \SI{9}{MB} for ten modes.
 % src: docs/29 §1, §4
 Mesh generation is not bit-reproducible, so the stored mesh is the record of a sample.
-A mesh repaired by bisection keeps a refinement hierarchy whose DOF numbering differs from that of the saved-and-reloaded mesh (in one case $116\,322$ vs.\ $115\,704$ order-two DOFs).
-Meshes are therefore rebuilt through a file round trip before storage; the generator fails a sample whose reloaded space has a different DOF count, and the loader recomputes the Rayleigh quotients of the stored fields with the rebuilt operators and rejects the sample if they differ by more than a relative $10^{-5}$.
-Eigenvalues on reloaded meshes agree with the originals to $10^{-14}$.
+A mesh repaired by bisection keeps a refinement hierarchy whose DOF numbering differs from that of the reloaded mesh (in one case $116\,322$ vs.\ $115\,704$ order-two DOFs), so meshes are rebuilt through a file round trip before storage; the generator fails a sample whose reloaded space has a different DOF count, and the loader rejects a sample whose stored fields have Rayleigh quotients differing by more than a relative $10^{-5}$ under the rebuilt operators.
 % src: docs/29 §3.3, §6; docs/30 §5 (single_level, _check_reload)
 
 \subsection{Figures of merit}\label{sec:05-qoi}
 
 Figures of merit follow \cref{sec:formulation} and are evaluated directly from the order-three fields (copper, $\sigma=\SI{5.8e7}{S/m}$, $U=\SI{1}{J}$, wall fields from the adjacent volume element); $\Epk$ and $\Bpk$ are maxima over wall integration points.
 The beam axis is the $z$-axis for the revolved families, the $x$-axis through mid-length for the coaxial resonator and through the ridge gap for the ridged box.
-The accelerating length $\Lacc$ excludes the beam pipes (cell lengths for elliptical cavities, the cell for pillbox and re-entrant cells, the tank for spoke and drift-tube linac, the outer diameter for the coaxial resonator, the box length for the ridged box; otherwise the axis chord).
-The chord, used in an earlier version everywhere, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
+The accelerating length $\Lacc$ excludes the beam pipes (the sum of the cell lengths for elliptical cavities, the cell for pillbox and re-entrant cells, the tank for spoke and drift-tube linac; the axis chord where there is no beam axis); the chord, used everywhere in an earlier version, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
 Velocity $\beta=1$ is the default, but the axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any $\beta$ without a new solve.
-On deformed samples the axis and $\Lacc$ are taken from the nominal geometry.
 % src: docs/24 §1.1, §1.3; highorder.py mode_qoi; docs/33 §2.1, §2.2, §12
 
 \subsection{Validation}\label{sec:05-validation}
@@ -100,7 +96,7 @@ On deformed samples the axis and $\Lacc$ are taken from the nominal geometry.
 The whole label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
 The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs ($157$k vs.\ $173$k) but raises the $\RoQ$ error from $1.6\cdot10^{-6}$ to $1.2\cdot10^{-5}$, still far inside the target.
 The $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
-The pillbox is smooth, so uniform refinement is near-optimal there; adaptivity pays on cells with fillets and pipes: on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate in frequency, $\Qz$ and $\RoQ$ than the single-solve default with fewer tets (errors against each case's finest level).
+The pillbox is smooth, so uniform refinement is near-optimal there; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than the single-solve default with fewer tets (against its own finest level).
 $\Bpk$ converges slowest: it changed by $4\,\%$ between the two finest levels of a pillbox cell with pipes at a 400k-DOF limit.
 We have not yet cross-validated against an independent production solver.
 % src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row)
@@ -125,8 +121,8 @@ adaptive, volume + wall & 5961 & 157k & $6.1\cdot10^{-7}$ & $-3.4\cdot10^{-5}$ &
 
 \subsection{Cost per sample and generator speed-ups}\label{sec:05-cost}
 
-In the controlled experiments (four samples, 150k-DOF budget, two single-thread workers on a shared four-core VM) a high-fidelity label including meshing took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}, $163$k--$328$k label DOFs); a later matched measurement gave a cost ratio of $4.3$ to one order-two solve on the same model mesh (\cref{sec:multifidelity}).
-A pillbox cell with pipes at a 450k-DOF budget takes \SI{433}{s} on two threads; the eigensolver is now about $90\,\%$ of a sample.
+In the controlled experiments (four samples, 150k-DOF budget, single-thread workers on a shared four-core VM) a high-fidelity label including meshing took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}); a later matched measurement gave a cost ratio of $4.3$ to one order-two solve on the same model mesh (\cref{sec:multifidelity}).
+A sample at a 450k-DOF budget takes \SI{433}{s} on two threads, of which the eigensolver is about $90\,\%$.
 % src: docs/34 §3 (172.5, 119.9, 208.7, 125.7 s), §8.1 (4.3); docs/31 §3.8 (433 s); docs/30 §6 (90 %)
 The generator was optimised without changing the labels (frequencies unchanged to $2\cdot10^{-15}$, figures of merit to $\le7\cdot10^{-10}$ at 150k DOFs): the transfer to the model mesh fell from \SI{253.5}{s} to \SI{29.4}{s} and a 450k-DOF sample from \SI{664}{s} to \SI{433}{s} (\cref{sec:A05-speedup}).
 % src: docs/31 §3.8

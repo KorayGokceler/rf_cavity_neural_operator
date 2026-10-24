@@ -61,21 +61,21 @@ On identical meshes, the $\LF$ frequency exceeds the $\HF$ one by $0.004$--$0.04
 mode that falls outside the span of the six $\LF$ modes has an $M$-norm of $0.08$--$0.32\,\%$ for modes 0--3; the
 model's own error is $10$--$50$ times larger than these differences.
 % src: docs/34 §8.1 (freq +0.004–+0.047 %; field 0.08–0.32 %; 10–50×)
-Quantities determined by the wall behave differently. \Cref{tab:06-diff} gives the differences for mode 0 of four
-geometries, measured on the earlier meshes, where the $\LF$ and $\HF$ meshes coincided for only one of the four geometries; the
-values therefore mix the effect of the fidelity with that of the mesh and were not repeated on identical meshes.
+Quantities determined by the wall behave differently (\cref{tab:06-diff}). These values were measured on the earlier
+meshes, where the $\LF$ and $\HF$ meshes coincided for only one of the four geometries, so they mix the effect of the
+fidelity with that of the mesh; they were not repeated on identical meshes.
 % src: docs/34 §3 (table; LF/HF tet counts differ for ids 5, 10, 13)
 
 \begin{table}[t]
 \centering
-\caption{Differences of $\LF$ and $\HF$ labels for the same geometry. The first two rows are on identical meshes;
-the remaining rows are for mode 0 of four geometries on the earlier, partly different meshes (relative difference
-$\LF$ against $\HF$). Wall-dominated quantities differ much more than frequency, field and \RoQ.}
+\caption{Relative difference of $\LF$ and $\HF$ labels (mode 0, four geometries), measured on the earlier meshes, which
+coincided for only one geometry. Wall-dominated quantities differ much more than $\RoQ$.}
 \label{tab:06-diff}
 \small
 \begin{tabular}{@{}lc@{}}
 \toprule
 Quantity & Range \\
+\midrule
 $\RoQ$ & $|\Delta|\le 0.04\,\%$ \\ % src: docs/34 §3 table (−0.005, +0.001, −0.039, +0.003 %)
 $\Qz$ & $-0.76$ to $-1.37\,\%$ \\ % src: docs/34 §3 table
 $\Epk/\Eacc$ & $-28$ to $+6.2\,\%$ \\ % src: docs/34 §3 table (+6.2, −28, −4.2, −13.6 %)
