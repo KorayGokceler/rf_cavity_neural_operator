@@ -50,12 +50,12 @@ def build_mesh(name, args):
     elif name == "shell":
         geo = Sphere((0, 0, 0), 0.1) - Sphere((0, 0, 0), 0.04)
         geo.faces.name = "wall"
-        mesh = Mesh(OCCGeometry(geo).GenerateMesh(maxh=0.06))
+        mesh = Mesh(OCCGeometry(geo).GenerateMesh(maxh=0.08, curvaturesafety=args.other_cs))
         k2 = None
     elif name == "annulus":
         geo = Cylinder(Axes((0, 0, 0), Z), r=0.1, h=0.1) - Cylinder(Axes((0, 0, -0.01), Z), r=0.04, h=0.12)
         geo.faces.name = "wall"
-        mesh = Mesh(OCCGeometry(geo).GenerateMesh(maxh=0.05))
+        mesh = Mesh(OCCGeometry(geo).GenerateMesh(maxh=0.08, curvaturesafety=args.other_cs))
         k2 = None
     elif name == "pipes":
         import h5py
@@ -133,6 +133,7 @@ def main():
                     choices=["pillbox", "shell", "annulus", "pipes"])
     ap.add_argument("--curve", type=int, default=2)
     ap.add_argument("--pillbox_maxh", type=float, default=0.05, help="0.05 is the mesh of tests/test_field_model.py")
+    ap.add_argument("--other_cs", type=float, default=1.0, help="netgen curvaturesafety of shell / annulus")
     ap.add_argument("--rel_tol", type=float, default=1e-10, help="kernel = eigenvalues below rel_tol * max")
     ap.add_argument("--max_dense", type=int, default=9000, help="skip meshes with more free DOFs")
     ap.add_argument("--pipes_h5", default=None)
