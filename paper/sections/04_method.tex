@@ -74,7 +74,7 @@ Defaults are $d=128$, $L=4$, $4$ heads, $m=24$, $K=6$ and a $64$-dimensional Fou
 The point values become DOFs of $\Vh$ through a fixed linear map in two stages.
 \emph{(i) Element fit.}
 Let $\mathbb P_p$ be the polynomials of degree $\le p$ in the reference coordinates ($n_\ell=\binom{p+3}{3}$), $\Phi_t\in\R^{n_q\times n_\ell}$ a basis evaluated at the quadrature points of element $t$ and $\mathsf W_t=\mathrm{diag}(|\det J_t(\hat{\bm x}_q)|\,\hat w_q)$.
-Each Cartesian component of $\bm\psi_j$ is fitted by weighted least squares, $\bm a_{t,c,j}=\mathsf F_t\bm\psi_{t,c,j}$ with $\mathsf F_t=(\Phi_t^{\!\top}\mathsf W_t\Phi_t)^{-1}\Phi_t^{\!\top}\mathsf W_t$, which is exact on $\mathbb P_p$ since $n_q\ge n_\ell$ ($14\ge10$ at $p=2$, $24\ge20$ at $p=3$).
+Each Cartesian component of $\bm\psi_j$ is fitted by weighted least squares, $\bm a_{t,c,j}=\mathsf F_t\bm\psi_{t,c,j}$ with $\mathsf F_t=(\Phi_t^{\!\top}\mathsf W_t\Phi_t)^{-1}\Phi_t^{\!\top}\mathsf W_t$, which reproduces every element of $\mathbb P_p$ (the normal matrix is invertible; $n_q\ge n_\ell$: $14\ge10$ at $p=2$, $24\ge20$ at $p=3$).
 % src: src/data_gen/highorder.py field_operators (P = solve(A, Phi^T W), W = detJ*wq); n_l = dim P_p = 10, 20
 \emph{(ii) Interpolation into $\Vh$.}
 A fixed sparse operator $\Cmat$ maps the element-wise polynomial field to $\Vh$.

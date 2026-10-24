@@ -2,7 +2,7 @@
 
 A parametric generator draws a CAD solid; a curved tetrahedral mesh is built on it; the lowest $\nmodes$ modes are computed in $H(\mathrm{curl})$ of order three with adaptive remeshing (high-fidelity labels, $\HF$); and the fields are projected onto the order-two space of a smaller model mesh on which the network operates.
 Geometry is built with OpenCascade~\cite{opencascade} through gmsh~\cite{geuzaine2009gmsh}; meshing, curving and all finite-element solves use Netgen~\cite{schoberl1997netgen} and NGSolve~\cite{schoberl2014cpp11}.
-The eigenproblem is the closed-cavity problem of \cref{sec:formulation} in the $\E$ formulation, which admits cavities with handles and floating conductors; beam pipes are capped by flat PEC walls.
+Beam pipes are capped by flat PEC walls, and the $\E$ formulation of \cref{sec:formulation} admits cavities with handles and floating conductors.
 % src: AGENTS.md invariants (E formulation only); docs/19 §6.1; docs/19 §2 (pipes capped)
 
 \subsection{Geometry families}\label{sec:05-geometry}
@@ -16,7 +16,7 @@ Parameters are drawn uniformly, the first 64 draws of sample $i$ from the $i$-th
 \paragraph{Elliptical half-cells.}
 A half-cell joins an iris ellipse and an equator ellipse by their common tangent; the wall must have non-decreasing radius, and mildly re-entrant walls (up to $105^\circ$) are admitted (details in \cref{sec:A05-halfcell}).
 The ranges were widened until all $14$ published reference half-cells that we compiled (TESLA~\cite{aune2000superconducting}, low-loss and ICHIRO~\cite{juntong2009highgradient}, and others listed in the appendix) were accepted, four of which an earlier solver tolerance had rejected.
-Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the earlier rules); rejected draws are replaced, so no sample is lost but the distribution is truncated.
+Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the earlier rules); rejected draws are replaced.
 % src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %), §11, §3.1
 
 \paragraph{Fillet floor.}
@@ -28,7 +28,7 @@ Every drawn corner radius is therefore raised to at least $0.05$ times the cavit
 
 Netgen generates tetrahedra (curvature safety $2$, grading $0.5$) and bends them onto the CAD surfaces to geometry order three.
 Element quality is the ratio of the minimum to the maximum Jacobian determinant over each element ($\le0$: folded).
-Frequencies hardly depend on it, wall quantities strongly: on one pillbox cell with pipes a 9k-tet mesh with minimum ratio $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and peaks off by $100$--$1600\times$, whereas at 16k tets and ratio $0.069$ the $\Qz$ error was $2\cdot10^{-6}$ (reference: the locally repaired 18k-tet mesh, ratio $0.35$).
+Frequencies hardly depend on it, wall quantities strongly: on one pillbox cell with pipes a 9k-tet mesh with minimum ratio $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and peaks off by $100$--$1600\times$, against a locally repaired 18k-tet reference mesh (ratio $0.35$).
 % src: docs/29 §2.2 table
 
 Meshes are accepted at a ratio of at least $0.05$; elements below $0.1$ are bisected and re-curved (about $+5\,\%$ tets), and only if that fails is the mesh regenerated with doubled curvature safety (about $3\times$ the tets).
@@ -45,8 +45,7 @@ With $\mathcal R$ the averaging interpolation into the continuous vector Lagrang
 \eta_{\mathrm{wall},T}^2 &= \sum_{k=1}^{\nmodes}\Bigl(\frac{\int_{\partial T\cap\bdry}|\curl\E_k-\mathcal R\curl\E_k|^2}{\int_{\bdry}|\curl\E_k|^2}+\frac{\int_{\partial T\cap\bdry}|\E_k-\mathcal R\E_k|^2}{\int_{\bdry}|\E_k|^2}\Bigr).
 \end{align*}
 % src: docs/30 §2; adaptive.py indicator
-The volume term estimates the relative eigenvalue error, which is second order in the field error.
-Wall loss and surface peaks are first order in the field error at the wall, hence the separately normalised wall term; at the accuracy targets both terms are of order $10^{-6}$ and are added with equal weight.
+The volume term estimates the relative eigenvalue error (second order in the field error); wall loss and surface peaks are first order in the field error at the wall, hence the separately normalised wall term, and the two are added with equal weight since both are of order $10^{-6}$ at the targets.
 % src: docs/30 §2
 
 \paragraph{Remeshing instead of bisection.}
@@ -82,7 +81,7 @@ A mesh repaired by bisection keeps a refinement hierarchy whose DOF numbering di
 \subsection{Figures of merit}\label{sec:05-qoi}
 
 Figures of merit follow \cref{sec:formulation} and are evaluated directly from the order-three fields (copper, $\sigma=\SI{5.8e7}{S/m}$, $U=\SI{1}{J}$, wall fields from the adjacent volume element); $\Epk$ and $\Bpk$ are maxima over wall integration points.
-The beam axis is the $z$-axis for the revolved families, the $x$-axis through mid-length for the coaxial resonator and through the ridge gap for the ridged box.
+The beam axis is the $z$-axis for the revolved families (a family-specific line for the coaxial resonator and ridged box).
 The accelerating length $\Lacc$ excludes the beam pipes (the sum of the cell lengths for elliptical cavities, the cell for pillbox and re-entrant cells, the tank for spoke and drift-tube linac; the axis chord where there is no beam axis); the chord, used everywhere in an earlier version, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
 Velocity $\beta=1$ is the default, but the axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any $\beta$ without a new solve.
 % src: docs/24 §1.1, §1.3; highorder.py mode_qoi; docs/33 §2.1, §2.2, §12
@@ -91,7 +90,7 @@ Velocity $\beta=1$ is the default, but the axial field is stored, so $V_{acc}$, 
 
 The whole label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
 The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs, at the price of a larger (still far inside the target) $\RoQ$ error; the $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
-The pillbox is smooth, so uniform refinement is near-optimal there; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than the single-solve default with fewer tets (against its own finest level).
+The pillbox is smooth, so uniform refinement is near-optimal there; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than a single solve with fewer tets.
 $\Bpk$ converges slowest: it changed by $4\,\%$ between the two finest levels of a pillbox cell with pipes at a 400k-DOF limit.
 We have not yet cross-validated against an independent production solver.
 % src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row)
