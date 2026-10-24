@@ -5,11 +5,8 @@ the designer needs the mode frequencies, the fields and the derived figures of m
 the unloaded quality factor $\Qz$, the shunt impedance $\RoQ$, and the
 peak-field ratios $\Epk/\Eacc$ and $\Bpk/\Eacc$ that limit the achievable gradient.
 Each design iteration changes the shape and needs a new three-dimensional eigenvalue solve on a curved geometry.
-Axisymmetric codes \citep{halbach1976superfish} are cheap but cover only part of the design space;
-general three-dimensional design relies on finite-element eigensolvers such as the ACE3P suite \citep{ko2010advances} or commercial tools such as CST Studio Suite,
-whose cost per geometry grows with the mesh resolution needed for accurate figures of merit.
-A surrogate that returns frequencies, fields and figures of merit directly from the geometry would shorten the loop,
-provided it can be trusted at the accuracy of the solver it replaces.
+Axisymmetric codes \citep{halbach1976superfish} cover only part of the design space; three-dimensional design relies on finite-element eigensolvers such as ACE3P \citep{ko2010advances} or CST Studio Suite, whose cost per geometry grows with the mesh resolution needed for accurate figures of merit.
+A surrogate returning frequencies, fields and figures of merit from the geometry would shorten this loop if it can be trusted at solver accuracy.
 
 Neural operators \citep{lu2021learning,li2021fourier,kovachki2023neural}, which learn the map from a PDE's input to its solution, are natural candidates.
 Applying them directly to the Maxwell eigenproblem $\curl\curl\,\E=k^2\E$ in $\Omega$ with $\mathbf{n}\times\E=0$ on $\partial\Omega$ is problematic for three reasons.
@@ -20,38 +17,37 @@ produces spurious modes at or near zero frequency \citep{hiptmair2002finite,boff
 Third, a network that outputs values on a fixed grid or degrees of freedom is tied to one discretisation, whereas eigenvalue accuracy depends on the mesh and the polynomial order.
 
 \paragraph{Approach.}
-We therefore do not ask the network for the modes themselves.
-The network maps the geometry to a \emph{learned basis} of $m$ vector fields ($m$ is the basis width; $K\le m$ denotes the number of predicted modes).
+We therefore do not ask the network for the modes themselves: it maps the geometry to a \emph{learned basis} of $m$ vector fields ($m$ is the basis width; $K\le m$ denotes the number of predicted modes).
 A fixed linear map takes the basis to the degrees of freedom of a conforming high-order N\'ed\'elec space \citep{nedelec1980mixed} of order $p$ on a curved (isoparametric) mesh,
 the basis is projected onto the discretely divergence-free subspace (the kernel projection, a float64 conjugate-gradient solve),
 and a Rayleigh--Ritz step in the projected span returns the $K$ lowest frequencies and the fields.
 The network is trained mainly to place the true modes inside the span of the basis; the Ritz step, not a regression head, computes frequencies and fields, and as a Galerkin projection it obeys min--max.
-We implement it with NGSolve and Netgen \citep{schoberl1997netgen,schoberl2014cpp11}.
+It is built on NGSolve and Netgen \citep{schoberl1997netgen,schoberl2014cpp11}.
 
 \paragraph{Contributions.}
 \begin{enumerate}
   \item \textbf{A neural operator with a discrete eigenvalue bound.}
   In exact arithmetic every predicted eigenvalue bounds from above the corresponding nonzero discrete eigenvalue of the space in which the model runs, and the kernel projection excludes spurious zero modes (\cref{sec:method}, \cref{prop:upper-bound}).
   The implemented projection is an inexact conjugate-gradient solve; for it the bound holds up to a relative perturbation $\bar\eta\approx(1\text{--}3)\,\tau_{\mathrm{CG}}$ (about $10^{-8}$ at the shipped tolerance), verified a posteriori. % src: docs/35 §2
-  In a stress test on two geometries, plain-bound violations occurred only for bases with a large gradient admixture, at most $1.5\times10^{-8}$ relative, and the a posteriori bound held in every run with $\bar\eta<1$; % src: docs/35 §2
+  In a stress test on two geometries, violations of the plain bound occurred only for gradient-rich bases (at most $1.5\times10^{-8}$ relative) and the a posteriori bound held whenever $\bar\eta<1$; % src: docs/35 §2
   the rank assumption behind the projection was verified on 15 small cases. % src: docs/35 §1
-  In the main held-out study every prediction stayed above the discrete eigenvalue of its space (smallest margin \SI{0.47}{\percent}). % src: docs/34 §8.2
-  The bound is relative to the discrete, not the exact, eigenvalue and does not certify mode identity.
+  In the main held-out study all predictions stayed above the discrete eigenvalue (smallest margin \SI{0.47}{\percent}). % src: docs/34 §8.2
+  It is relative to the discrete, not the exact, eigenvalue and does not certify mode identity.
   \item \textbf{Independence of the discretisation space.}
-  The same weights run unchanged on a $p=3$ space and on a mesh refined once ($8\times$ tetrahedra); all predicted eigenvalues lay above the FE eigenvalue of the evaluated space. % src: docs/34 §4.2
-  Accuracy does not improve there (error up by \numrange{0.2}{0.7} percentage points), which we attribute, untested, to the learned basis. % src: docs/34 §4.2, referee E6
+  The same weights run unchanged on a $p=3$ space and on a once-refined mesh ($8\times$ tetrahedra), with all predicted eigenvalues above the FE eigenvalue of that space. % src: docs/34 §4.2
+  Accuracy does not improve there (error up by \numrange{0.2}{0.7} percentage points), which we attribute (untested) to the learned basis. % src: docs/34 §4.2, referee E6
   \item \textbf{Single-sample representation capacity.}
-  Fitting one 179-tetrahedron sample to its own $p=2$ label reaches a relative eigenvalue error of \numrange{1e-6}{9e-6}; this shows the representation can express the modes, not that it generalises. % src: docs/28 §3
+  Fitting one 179-tetrahedron sample to its own $p=2$ label gives a relative eigenvalue error of \numrange{1e-6}{9e-6}: the representation can express the modes (not shown: generalisation). % src: docs/28 §3
   \item \textbf{A validated label generator.}
-  An adaptive $p=3$ generator on curved meshes (\cref{sec:data}) reproduces an analytic smooth pillbox (no pipes or fillets) to \num{6e-7} in frequency, \num{3e-5} in $\Qz$, \num{1e-5} in $\RoQ$, \num{2e-4} in $\Epk$ and \num{4e-4} in $\Bpk$ at \num{157000} degrees of freedom. % src: docs/31 §1
+  An adaptive $p=3$ generator on curved meshes (\cref{sec:data}) reproduces an analytic smooth pillbox (no pipes or fillets) to \num{6e-7} in frequency and \numrange{1e-5}{4e-4} in $\Qz$, $\RoQ$, $\Epk$ and $\Bpk$ at \num{157000} degrees of freedom. % src: docs/31 §1 (Q0 3e-5, R/Q 1e-5, Epk 2e-4, Bpk 4e-4)
   Removing repeated work cut one \num{450000}-DOF label from \SI{664}{s} to \SI{433}{s}. % src: docs/31 §3.8
   \item \textbf{Low-fidelity labels on the model mesh.}
-  A low-fidelity (LF) label is one $p=2$ solve on the model mesh. The high-fidelity (HF) label used in all training experiments is one $p=3$ solve on the same start mesh, projected to $p=2$; the adaptive path is not exercised by these experiments (\cref{sec:multifidelity}). % src: referee E2, EDITOR_NOTES_2 decision 3
-  An LF label is $2.8$--$4.3\times$ cheaper (the range reflects machine load; $4.0\times$ in a re-measurement) % src: docs/34 §8.1, docs/35 §5
+  A low-fidelity (LF) label is one $p=2$ solve on the model mesh; the high-fidelity (HF) label of all training experiments is one $p=3$ solve on the same mesh, projected to $p=2$ (the adaptive path is not exercised; \cref{sec:multifidelity}). % src: referee E2, EDITOR_NOTES_2 decision 3
+  An LF label is $2.8$--$4.3\times$ cheaper (machine-load dependent) % src: docs/34 §8.1, docs/35 §5
   and differs from the HF label by \SIrange{0.004}{0.047}{\percent} in frequency and \SIrange{0.08}{0.32}{\percent} (mass norm) in the field subspace; % src: docs/34 §8.1
   the model's errors against LF and against HF labels differ by only $0.02$ percentage points. % src: docs/34 §8.2
   In an equal-cost comparison on six held-out HF geometries, LF-trained and HF-trained models reached comparable accuracy (\cref{tab:equal-cost}); a Gaussian process on the geometry parameters is equally insensitive to fidelity, and at this scale the number of training geometries decided the accuracy. % src: docs/34 §8.2, docs/35 §3a
-  The label difference is one to two orders of magnitude below the model error, runs are single, and fidelity and geometry count change together, so the study does not probe the regime where label type should matter. % src: referee E1
+  The label difference is one to two orders of magnitude below the model error, runs are single, and fidelity and geometry count change together: the study does not probe the regime where label type should matter. % src: referee E1
 \end{enumerate}
 
 \paragraph{Scope.}
@@ -59,8 +55,7 @@ This is a method-and-pipeline paper with small-scale evidence: CPU training, at 
 Frequency errors of \SIrange{1}{2}{\percent} reflect an under-trained model; the figure-of-merit loss is off; fine-tuning and mixed LF+HF training were inconclusive (\cref{sec:experiments}).
 On this single six-parameter family, simple baselines match or beat the model: a Gaussian process on the geometry parameters has a mean frequency error of \SI{1.01}{\percent} against \SI{1.37}{\percent} for the model with 40 LF geometries (\SI{1.64}{\percent} against \SI{1.55}{\percent} with 24; the model is better, by $2.3\times$, only with 8), and plain FE solves dominate the model in cost and accuracy (a $p=2$ solve on a coarser curved mesh: \SI{5.65}{s} and \SI{0.037}{\percent}, against \SI{8.3}{s} and \SIrange{1.4}{1.7}{\percent}). % src: docs/35 §3a, §3b
 We therefore claim neither an accuracy nor a speed advantage here.
-Possible benefits (geometries without a shared low-dimensional parametrisation, fields and figures of merit with guaranteed ordering, warm starts for large FE solves, larger meshes) are hypotheses for future work (\cref{sec:discussion}).
+Possible benefits (geometries without a shared parametrisation, fields with guaranteed ordering, warm starts, larger meshes) are hypotheses for future work (\cref{sec:discussion}).
 
 \paragraph{Outline.}
-\Cref{sec:related} reviews related work; \cref{sec:formulation} states the eigenproblem; \cref{sec:method} gives the model and the bound;
-\cref{sec:data} and \cref{sec:multifidelity} cover the label generator and the two fidelities; \cref{sec:experiments} reports the experiments; \cref{sec:discussion} discusses limitations and future work.
+\Cref{sec:related} reviews related work, \cref{sec:formulation} states the problem, \cref{sec:method} gives the model and the bound, \cref{sec:data,sec:multifidelity} the labels, \cref{sec:experiments} the experiments, and \cref{sec:discussion} limitations and future work.

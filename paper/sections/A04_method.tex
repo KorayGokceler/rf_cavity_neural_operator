@@ -34,10 +34,104 @@ The returned field $\tilde{\Pmat}\Vmat c$ has the same numerator and the larger 
 
 \paragraph{How small is $\bar\eta$?}
 The bound shows $\bar\eta\lesssim C\,\tau/\mu_{\min}$, where $\mu_{\min}\ge\tau_{\rm drop}$ is the smallest divergence-free fraction among the kept directions and $C$ collects the conversion between the Euclidean residual norm and the $\Kp^{-1}$ and $\Mmat$ norms, which depends on the mesh.
-With $\tau=10^{-8}$ and $\tau_{\rm drop}=10^{-6}$ the ratio $\tau/\mu_{\min}$ can be as large as $10^{-2}$ before $C$, so $\bar\eta<1$ is not guaranteed a priori and the Ritz values could in principle fall by about a percent below $\lamh_k$ for a kept direction at the threshold.
-Discarding directions with small $\mu$ limits this, but does not make it negligible; tightening $\tau$ or raising $\tau_{\rm drop}$ would.
-The trained models of \cref{sec:experiments} have errors of $0.6$--$3\,\%$ and are far from this regime, so their margins say nothing about it, and floating-point rounding is not covered either.
-% TODO pass 3: stress test of the bound (exact-eigenvector bases with noise at 1e-8, random bases, near-gradient mixtures; tau in {1e-4, 1e-6, 1e-8}; report min over modes of theta/lambda_h - 1) and the a posteriori eta-bar of the evaluation runs, in this subsection
+A priori, $\tau/\mu_{\min}$ can be as large as $10^{-2}$ before $C$ at $\tau=10^{-8}$ and $\tau_{\rm drop}=10^{-6}$, so $\bar\eta<1$ is not guaranteed.
+In practice $\bar\eta$ can be computed after the fact: with $\mathsf Z$ from a direct solve of $\Kp$ it is the largest absolute eigenvalue of $\mathsf W^{\!\top}\mathsf D\,\delta\mathsf M\,\mathsf D\mathsf W$ on the kept Ritz subspace ($\mathsf W^{\!\top}\mathsf D\Mdiv\mathsf D\mathsf W=\mathsf I$), and \cref{sec:A04-stress} reports it for synthetic bases.
+There $\bar\eta\approx(1\text{--}3)\,\tau$, i.e.\ the divergence-free fraction of the kept directions is far above $\tau_{\rm drop}$ except for the adversarial pure-gradient basis at $\tau=10^{-4}$.
+Floating-point rounding is not covered by this argument.
+
+\subsection{Rank check of assumption (A)}\label{sec:A04-rank}
+
+\cref{tab:A04-rank} lists the check of (A) (\cref{eq:03-A}) for the operators of the model (free DOFs only, dense generalised eigenproblem): $\dim\ker\Kmat$ equals $\operatorname{rank}\Gmat$, equals $\operatorname{rank}\Kp$, equals the number of interior $H^1$ DOFs of order $p+1$ plus the extra wall potentials, in all $15$ cases.
+The zero eigenvalues are at most $4\times10^{-16}$ of the largest, the first nonzero one at least $2.7\times10^{-4}$, so the threshold ($10^{-10}$) is not delicate; the kernel vectors lie in $\mathrm{range}\,\Gmat$ to $7\times10^{-14}$ (M-norm).
+The smallest nonzero eigenvalue agrees with the label solver's to $10^{-13}$.
+The meshes are small (at most $6312$ free DOFs) because the check is dense; the production meshes are not covered, except indirectly by $\Kmat\Gmat=0$ in the test suite.
+% src: docs/35 §1 (command, setup, table, limitations)
+
+\begin{table}[t]
+\centering
+\caption{Rank check of assumption (A). Meshes curved at geometry order $2$ (the pipeline uses order $3$); ``annulus'' is a solid torus ($b_1=1$), which adds no kernel in the E formulation, and the shell has two wall components (one extra potential). $\dim\ker\Kmat=\operatorname{rank}\Gmat=\operatorname{rank}\Kp$ in every row. ``Zero'': largest kernel eigenvalue relative to the largest eigenvalue; ``first'': smallest nonzero one; ``dist'': largest $\Mmat$-norm of the part of a kernel vector outside $\mathrm{range}\,\Gmat$.}
+\label{tab:A04-rank}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lrrrrrccc@{}}
+\toprule
+mesh & tets & $p$ & free DOFs & $\dim\ker\Kmat$ & interior $+$ extra & zero & first & dist \\
+\midrule
+pillbox & 109 & 1 & 116 & 58 & $58+0$ & $3.4\!\times\!10^{-16}$ & $3.3\!\times\!10^{-2}$ & $1.7\!\times\!10^{-15}$ \\
+pillbox & 109 & 2 & 672 & 282 & $282+0$ & $3.2\!\times\!10^{-16}$ & $7.5\!\times\!10^{-3}$ & $6.0\!\times\!10^{-15}$ \\
+pillbox & 109 & 3 & 1996 & 781 & $781+0$ & $3.2\!\times\!10^{-16}$ & $2.9\!\times\!10^{-3}$ & $1.1\!\times\!10^{-14}$ \\
+pillbox & 179 & 1 & 220 & 113 & $113+0$ & $3.6\!\times\!10^{-16}$ & $2.2\!\times\!10^{-2}$ & $2.4\!\times\!10^{-15}$ \\
+pillbox & 179 & 2 & 1185 & 508 & $508+0$ & $3.3\!\times\!10^{-16}$ & $5.2\!\times\!10^{-3}$ & $6.3\!\times\!10^{-15}$ \\
+pillbox & 179 & 3 & 3436 & 1367 & $1367+0$ & $3.4\!\times\!10^{-16}$ & $2.0\!\times\!10^{-3}$ & $1.4\!\times\!10^{-14}$ \\
+shell & 139 & 1 & 184 & 93 & $92+1$ & $3.9\!\times\!10^{-16}$ & $2.5\!\times\!10^{-2}$ & $4.2\!\times\!10^{-15}$ \\
+shell & 139 & 2 & 963 & 414 & $413+1$ & $3.3\!\times\!10^{-16}$ & $5.7\!\times\!10^{-3}$ & $8.6\!\times\!10^{-15}$ \\
+shell & 139 & 3 & 2756 & 1103 & $1102+1$ & $3.2\!\times\!10^{-16}$ & $2.1\!\times\!10^{-3}$ & $3.9\!\times\!10^{-14}$ \\
+annulus & 78 & 1 & 76 & 38 & $38+0$ & $3.5\!\times\!10^{-16}$ & $7.7\!\times\!10^{-2}$ & $1.2\!\times\!10^{-15}$ \\
+annulus & 78 & 2 & 462 & 192 & $192+0$ & $3.0\!\times\!10^{-16}$ & $1.3\!\times\!10^{-2}$ & $4.4\!\times\!10^{-15}$ \\
+annulus & 78 & 3 & 1392 & 540 & $540+0$ & $2.2\!\times\!10^{-16}$ & $3.9\!\times\!10^{-3}$ & $1.1\!\times\!10^{-14}$ \\
+pillbox with pipes & 316 & 1 & 436 & 229 & $229+0$ & $2.4\!\times\!10^{-16}$ & $4.2\!\times\!10^{-3}$ & $7.3\!\times\!10^{-15}$ \\
+pillbox with pipes & 316 & 2 & 2220 & 969 & $969+0$ & $1.4\!\times\!10^{-16}$ & $7.7\!\times\!10^{-4}$ & $3.1\!\times\!10^{-14}$ \\
+pillbox with pipes & 316 & 3 & 6312 & 2547 & $2547+0$ & $1.4\!\times\!10^{-16}$ & $2.7\!\times\!10^{-4}$ & $7.2\!\times\!10^{-14}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Stress test of the bound under the inexact projection}\label{sec:A04-stress}
+
+The Ritz layer of \cref{sec:04-ritz} was fed synthetic bases on a stored label geometry whose exact discrete eigenpairs are known (test geometry 24: $4818$ tetrahedra, $51\,105$ DOFs, $18\,662$ potentials; geometry 27: $6315$ tetrahedra, $69\,645$ DOFs), with $m=12$ columns, $K=4$ and the configuration-file defaults except the CG tolerance $\tau$.
+The bases are: (a) the four exact eigenvectors plus eight random columns; (b) the same with relative noise $\epsilon\in\{0,10^{-8},10^{-6},10^{-4}\}$ on the eigenvectors; (c) twelve random columns; (d) the exact eigenvectors plus a gradient $\Gmat r$ of mass fraction $\gamma=\|g\|^2/(\|u\|^2+\|g\|^2)$, plus eight random columns; (g) the four eigenvectors plus eight pure-gradient columns.
+We report $\min_k(\theta_k/\lamh_k-1)$ over four modes and three seeds, the number of violations ($<-10^{-12}$) out of $12$, the a posteriori $\bar\eta$ of \cref{sec:A04-inexact}, the number of discarded directions, and the number of spurious Ritz values ($\theta<0.5\,\lamh_1$) of $\spn(\Vmat)$ without the projection.
+The stored eigenvectors are float32, i.e.\ already ``exact plus $6\times10^{-8}$ noise'', so margins at $\epsilon=0$ are $\pm10^{-14}$ rather than $0$.
+
+\begin{table}[t]
+\centering
+\caption{Stress test, test geometry 24 (three seeds, four modes): smallest margin $\theta_k/\lamh_k-1$ and, after the slash, the number of violations out of $12$, for the CG tolerance $\tau$; the shipped value is $10^{-8}$. Bases (a) and (d) with $\gamma\le10^{-6}$ are at rounding level for every $\tau$ and omitted; (b) with noise $\epsilon\le10^{-6}$ is at rounding level or above, with $\epsilon=10^{-4}$ it gives $+10^{-6}$, and (c) gives $+2.8\times10^{2}$. ``Spurious'': Ritz values of $\spn(\Vmat)$ below $0.5\,\lamh_1$ without the projection (with the projection the count is $0$ for $\tau\le10^{-6}$).}
+\label{tab:A04-stress}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+basis & $\tau=10^{-4}$ & $10^{-6}$ & $10^{-8}$ & $10^{-10}$ & spurious \\
+\midrule
+(a) exact $+$ random & $-5\!\times\!10^{-15}$/0 & $-2\!\times\!10^{-14}$/0 & $-2\!\times\!10^{-15}$/0 & $-4\!\times\!10^{-14}$/0 & 0 \\
+(d) $\gamma=10^{-4}$ & $-7.3\!\times\!10^{-11}$/3 & $-7.7\!\times\!10^{-13}$/0 & $-4.5\!\times\!10^{-14}$/0 & $-3.8\!\times\!10^{-13}$/0 & 0 \\
+(d) $\gamma=10^{-2}$ & $-7.7\!\times\!10^{-9}$/8 & $-6.6\!\times\!10^{-11}$/4 & $-1.3\!\times\!10^{-12}$/1 & $-2.7\!\times\!10^{-13}$/0 & 0 \\
+(d) $\gamma=0.5$ & $-7.5\!\times\!10^{-7}$/7 & $-2.6\!\times\!10^{-9}$/6 & $-2.0\!\times\!10^{-11}$/4 & $-6.1\!\times\!10^{-13}$/0 & 1 \\
+(d) $\gamma=0.9$ & $-6.2\!\times\!10^{-6}$/4 & $-2.6\!\times\!10^{-8}$/6 & $-6.1\!\times\!10^{-10}$/5 & $-5.7\!\times\!10^{-12}$/2 & 4 \\
+(d) $\gamma=0.99$ & $-7.4\!\times\!10^{-5}$/4 & $-4.5\!\times\!10^{-7}$/3 & $-6.6\!\times\!10^{-9}$/6 & $-1.4\!\times\!10^{-10}$/5 & 4 \\
+(g) pure gradient & $-1.0$/12 & $+3\!\times\!10^{-14}$/0 & $+3\!\times\!10^{-14}$/0 & $+3\!\times\!10^{-14}$/0 & 8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{A posteriori perturbation $\bar\eta$ and CG iterations of the stress test. Maximum over bases (a)--(d) for geometry 24 (geometry 27 in parentheses), and $\bar\eta$ for the pure-gradient basis (g).}
+\label{tab:A04-eta}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & $\tau=10^{-4}$ & $10^{-6}$ & $10^{-8}$ & $10^{-10}$ \\
+\midrule
+max $\bar\eta$, (a)--(d) & $2.5\!\times\!10^{-4}$ ($3.7\!\times\!10^{-4}$) & $2.5\!\times\!10^{-6}$ ($2.0\!\times\!10^{-6}$) & $2.6\!\times\!10^{-8}$ ($2.8\!\times\!10^{-8}$) & $2.8\!\times\!10^{-10}$ ($4.3\!\times\!10^{-10}$) \\
+$\bar\eta$, (g) & $1.0$ & $3\!\times\!10^{-24}$ & $4\!\times\!10^{-25}$ & $4\!\times\!10^{-25}$ \\
+max CG iterations & 80 (50) & 120 (90) & 160 (120) & 200 (150) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Reading.}
+(i) With an exact projection (sparse direct $\Kp^{-1}$) the smallest margin over all bases except random is $-2.3\times10^{-13}$ (geometry 24) and $-2.9\times10^{-13}$ (geometry 27): no violation at the $10^{-12}$ level.
+(ii) With the inexact CG projection the plain bound is violated only for bases with a gradient admixture, and the violation grows with $\gamma$ and $\tau$; at the shipped $\tau$ it is at most $1.5\times10^{-8}$ ($\gamma=0.99$), $2\times10^{-11}$--$1.4\times10^{-10}$ at $\gamma=0.5$ and $1.3\times10^{-12}$ at $\gamma=10^{-2}$ (geometry 24; the ranges are over both geometries), and at $\tau=10^{-4}$ up to $8.0\times10^{-5}$.
+A trained basis has a gradient mass fraction of about $0.5$--$0.6$ before projection (the lowest-order variant measured $0.59$), so the $\gamma=0.5$ row is the relevant one.
+(iii) The violation never exceeds $\bar\eta$, and the a posteriori guarantee $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$ held in all $156+104$ runs (geometries 24 and 27) with $\bar\eta<1$, i.e.\ all except the $3+2$ runs of the pure-gradient basis at $\tau=10^{-4}$.
+(iv) The discarding rule works when the residual gradient left by CG has mass fraction $(C\tau)^2<\tau_{\rm drop}=10^{-6}$: at $\tau=10^{-4}$ only $4$--$5$ of the $8$ pure-gradient directions are discarded, the others enter the Ritz problem with $\theta\approx0$ ($\bar\eta=1$, margin $-100\,\%$, guarantee void), whereas at $\tau\le10^{-6}$ all $8$ are discarded.
+(v) Without the projection, eight pure-gradient columns give eight Ritz values at $\theta\approx0$ and the admixtures $\gamma=0.9,0.99$ give four spurious values; with the projection the count is $0$ for $\tau\le10^{-6}$.
+White-noise bases (random padding, basis (c)) do not produce spurious values even without the projection, because their curl energy is large: the projection matters for smooth, gradient-rich bases.
+% src: docs/35 §2 (command, setup, both tables, further facts i-vi, reading); scripts/paper/check_ritz_bound.py
+\paragraph{Limitations.}
+Two geometries of one family, one preconditioner (Jacobi), the iteration cap $3000$ never reached; the bases are synthetic (trained bases have a continuum of $\mu$ values, and the pure-gradient and exact-plus-gradient rows are adversarial extremes); $\bar\eta$ is evaluated over the whole kept subspace, which is conservative; mode identity is not tested.
 
 \subsection{Cost and default configuration}\label{sec:A04-cost}
 
