@@ -1,187 +1,141 @@
 \section{Dataset generation}\label{sec:data}
 
-Training data are produced geometry by geometry.
 A parametric generator draws a CAD solid; a curved tetrahedral mesh is built on it; the lowest $\nmodes$ modes are computed in $H(\mathrm{curl})$ of order three with adaptive remeshing (high-fidelity labels, $\HF$); and the fields are projected onto the order-two space of a smaller model mesh on which the network operates.
-Geometry is built with the OpenCascade kernel~\cite{opencascade} through gmsh~\cite{geuzaine2009gmsh}; meshing, curving and the finite-element solves use Netgen~\cite{schoberl1997netgen} and NGSolve~\cite{schoberl2014cpp11}.
-All eigenproblems are the closed-cavity problem of \cref{sec:formulation} (beam pipes are capped by flat PEC walls), in the $\E$ formulation, which admits cavities with handles (non-zero first Betti number) and floating conductors.
-% src: AGENTS.md invariants (E formulation only); docs/19 §6.1
+Geometry is built with OpenCascade~\cite{opencascade} through gmsh~\cite{geuzaine2009gmsh}; meshing, curving and all finite-element solves use Netgen~\cite{schoberl1997netgen} and NGSolve~\cite{schoberl2014cpp11}.
+The eigenproblem is the closed-cavity problem of \cref{sec:formulation} in the $\E$ formulation, which admits cavities with handles and floating conductors; beam pipes are capped by flat PEC walls.
+% src: AGENTS.md invariants (E formulation only); docs/19 §6.1; docs/19 §2 (pipes capped)
 
 \subsection{Geometry families}\label{sec:05-geometry}
 
-The generator has eight families that are built as CAD solids and are used for field labels (\cref{tab:05-families}): multi-cell elliptical cavities, re-entrant (nose-cone) cells, pillbox cells with beam pipes, ridged rectangular cavities, constructive-solid-geometry composites, half-wave coaxial resonators, spoke cavities and drift-tube-linac tanks.
-A ninth free-form family exists only for the lowest-order data path (it has no CAD solid), and five further families (plain box, quarter-wave coaxial, pillbox with side ports, 6--9-cell elliptical chains, junction boxes) are kept out of distribution for testing.
-The controlled experiments of \cref{sec:experiments} use a single family (pillbox cells with beam pipes).
-Every parameter is drawn uniformly from the ranges in \cref{tab:05-families}; with Sobol' sampling the first 64 uniform draws of sample $i$ (family index and shape parameters) are taken from the $i$-th point of one scrambled Sobol' sequence~\cite{sobol1967distribution} (SciPy~\cite{virtanen2020scipy}), later re-draws from a pseudo-random stream.
-% src: src/data_gen/dataset_generator_3d.py _sample_rng (qmc.Sobol d=64, scramble=True); docs/19 §2 (Sobol sampling); families: FAMILIES minus freeform for labels=field (parse_args)
-An optional smooth random deformation $x\mapsto x+\delta(x)$ (3--8 sinusoidal waves, Lipschitz constant of $\delta$ scaled below one so the map is injective) is applied to the mesh nodes of a fraction of the samples; it is switched off in the experiments of this paper.
-% src: docs/19 §2 (g3 table: deformation); docs/34 §3 (--deform_prob 0)
+Eight families with CAD solids are used for field labels (\cref{tab:05-families}).
+A free-form family exists only for the lowest-order data path (no CAD solid), and five further families (plain box, quarter-wave coaxial, pillbox with side ports, 6--9-cell elliptical chains, junction boxes) are held out of distribution.
+The controlled experiments of \cref{sec:experiments} use one family (pillbox cells with pipes).
+% src: dataset_generator_3d.py FAMILIES, parse_args (discrete families dropped for labels=field); cavity_shapes.OOD_FAMILIES; BRIEF §1
+Parameters are drawn uniformly; with Sobol' sampling the first 64 draws of sample $i$ (family and shape parameters) come from the $i$-th point of one scrambled Sobol' sequence~\cite{sobol1967distribution,virtanen2020scipy}, later re-draws from a pseudo-random stream.
+An optional smooth random deformation of the mesh nodes (3--8 sinusoidal waves, Lipschitz constant below one so that the map stays injective) is available and switched off in our experiments.
+% src: dataset_generator_3d.py _sample_rng (qmc.Sobol d=64, scramble=True); docs/19 §2 (deformation); docs/34 §3 (--deform_prob 0)
 
 \begin{table}[t]
 \centering
-\caption{Geometry families with CAD solids used for field labels and their main parameters (uniform ranges; $\beta$ is the relative cell length for low-velocity cells). Corner radii are subject to the fillet floor of \cref{sec:05-fillet}.}
+\caption{Families with CAD solids used for field labels: main parameters (uniform ranges, $\beta$ = relative cell length). Corner radii obey the fillet floor.}
 \label{tab:05-families}
 \small
-\begin{tabular}{@{}l p{0.75\linewidth}@{}}
+\begin{tabular}{@{}l p{0.78\linewidth}@{}}
 \toprule
 Family & Main parameters \\
 \midrule
-elliptical & 1--5 cells ($p=0.35,0.25,0.2,0.1,0.1$); $R_{eq}\in[40,110]$\,mm, $R_{iris}/R_{eq}\in[0.25,0.42]$, $L/R_{eq}\in[0.45,0.65]\,\beta$ ($\beta\in[0.5,0.95]$ for 25\,\% of draws), $A/L\in[0.6,0.9]$, $B/A\in[0.6,1.3]$, $a/L\in[0.12,0.35]$, $b/a\in[0.65,1.9]$; 30\,\% anchored to TESLA/LL/ICHIRO; 35\,\% with 1--3 radial port stubs on the beam pipes \\
+elliptical & 1--5 cells; $R_{eq}\in[40,110]$\,mm, $R_{iris}/R_{eq}\in[0.25,0.42]$, $L/R_{eq}\in[0.45,0.65]\beta$, $A/L\in[0.6,0.9]$, $B/A\in[0.6,1.3]$, $a/L\in[0.12,0.35]$, $b/a\in[0.65,1.9]$; $\beta<1$ in 25\,\%, TESLA/LL/ICHIRO anchors in 30\,\%, port stubs in 35\,\% \\
 re-entrant & $R\in[30,70]$\,mm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.10,0.25]$, nose gap $g/L_c\in[0.15,0.75]$, cone angle $-25^\circ\ldots35^\circ$ \\
-pillbox, pipes & $R\in[30,60]$\,mm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.12,0.35]$, pipe length $[1.5,4]\,r_p$ \\
-ridged box & $a\in[40,100]$, $b\in[30,80]$, $d\in[20,60]$\,mm; 1--2 ridges; 40\,\% with beam pipes; all edges rounded \\
-composite & body (cylinder or ellipsoid) $R_0\in[25,50]$\,mm, 1--4 attached cylinders or ellipsoids (depth $\le2$), 0--2 ellipsoidal dents \\
-half-wave coaxial & $R_o\in[30,60]$, $L\in[80,200]$\,mm, $r_i/R_o\in[0.2,0.5]$; 50\,\% tapered inner conductor, 50\,\% transverse beam port \\
-spoke & tank $R_t\in[50,100]$\,mm, 1--2 spokes (circular or elliptic section), 60\,\% with a beam bore \\
+pillbox, pipes & $R\in[30,60]$\,mm, $L_c/R\in[0.4,1.6]$, $r_p/R\in[0.12,0.35]$ \\
+ridged box & $a\in[40,100]$, $b\in[30,80]$, $d\in[20,60]$\,mm; 1--2 ridges; optional beam pipes \\
+composite & cylinder or ellipsoid body ($R_0\in[25,50]$\,mm), 1--4 attached primitives, 0--2 dents \\
+half-wave coaxial & $R_o\in[30,60]$, $L\in[80,200]$\,mm, $r_i/R_o\in[0.2,0.5]$; optional taper and transverse port \\
+spoke & tank $R_t\in[50,100]$\,mm, 1--2 spokes, optional beam bore \\
 drift-tube linac & tank $R_t\in[50,100]$\,mm, $L_c/R_t\in[0.5,0.9]$, 1--3 drift tubes on stems \\
 \bottomrule
 \end{tabular}
-% src: src/data_gen/cavity_shapes.py draw_elliptical/_draw_half, build_reentrant, build_pillbox_pipes, build_ridged_box, build_composite, build_hwr, build_spoke, build_dtl; docs/19 §2, §6.4
+% src: cavity_shapes.py draw_elliptical, _draw_half, build_reentrant, build_pillbox_pipes, build_ridged_box, build_composite, build_hwr, build_spoke, build_dtl; docs/19 §2
 \end{table}
 
 \paragraph{Elliptical half-cells.}
-A half-cell is the standard construction: an iris ellipse $(a,b)$ and an equator ellipse $(A,B)$ joined by their common tangent line, found by a least-squares solve with five starting points and tolerances $10^{-15}$.
-A wall is accepted if the radius does not decrease along it and, if it is re-entrant, its angle to the beam axis is at most $105^\circ$ and it stays at least $0.05\,R_{eq}$ from the iris plane.
-End half-cells differ from the mid-cell with probability $0.6$ (ratios to the mid-cell: $L\times[0.9,1.1]$, $A\times[0.9,1.2]$, $B\times[0.85,1.4]$, $a,b\times[0.5,1.05]$, iris radius $\times[1,1.35]$).
-Real designs enter as sampling centres only (perturbed by $\pm10\,\%$ per parameter and rescaled); the labels always come from the finite-element solve.
-The ranges were widened so that all $14$ published reference half-cells that we compiled are accepted (TESLA mid-cell and both end cups~\cite{aune2000superconducting}, the low-loss and ICHIRO cells~\cite{juntong2009highgradient}, NLSF and NLSF-RE, the Cornell ERL mid-cell and both ends, FCC-ee C3794, C3795 mid-cell and end cell, and FCCUROS5); four were rejected by the earlier solver tolerance and overlap rule.
-Not all of these dimensions could be checked against full texts, so we treat them as plausible reference shapes rather than as authoritative design data.
-% src: docs/33 §12 "Ölçülenler" (14 half-cells all accepted, four rejected before); docs/33 §11 (full texts not readable; some dimensions only from an open-source design code); docs/33 §3.1; cavity_shapes.py half_cell_wall, ANCHORS, END_CELL_RANGES
-Of random mid-cells ($\beta=1$) drawn with the new rules, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the previous rules and ranges); rejected draws are replaced, so no sample is lost, but the accepted distribution is truncated.
-% src: docs/33 §12 (65.1 %, 50 %); docs/33 §3.1 (rejected draws are re-drawn)
-The stubs on the pipes are evanescent for the stored modes and act as a symmetry-breaking perturbation, not as couplers.
-% src: docs/19 §2 (elliptical row); docs/33 §3.1 "Kuplör portları"
+A half-cell joins an iris ellipse $(a,b)$ and an equator ellipse $(A,B)$ by their common tangent line (least-squares solve, five starting points, tolerance $10^{-15}$).
+A wall is accepted if the radius does not decrease along it and, for a re-entrant wall, its angle to the beam axis is at most $105^\circ$ and it stays at least $0.05\,R_{eq}$ from the iris plane.
+End half-cells differ from the mid-cell with probability $0.6$ (e.g.\ iris radius $\times[1,1.35]$, $a,b\times[0.5,1.05]$).
+Published designs enter as sampling centres only (perturbed by $\pm10\,\%$ and rescaled); labels always come from the finite-element solve.
+The ranges were widened until all $14$ published reference half-cells that we compiled were accepted: the TESLA mid-cell and both end cups~\cite{aune2000superconducting}, the low-loss and ICHIRO cells~\cite{juntong2009highgradient}, NLSF and NLSF-RE, the Cornell ERL mid-cell and both ends, FCC-ee C3794, C3795 (mid and end) and FCCUROS5.
+Four of them were rejected by the earlier solver tolerance and overlap rule.
+Several of these dimensions could not be checked against full texts, so we treat them as plausible reference shapes, not as authoritative design data.
+Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the earlier rules); rejected draws are replaced, so no sample is lost but the distribution is truncated.
+% src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %); docs/33 §11 (full texts unavailable, some dimensions only from an open-source design code); cavity_shapes.py half_cell_wall, END_CELL_RANGES, MAX_WALL_ANGLE, WEB_MIN
 
-\paragraph{Fillet floor.}\label{sec:05-fillet}
-A fillet radius far below the cavity size forces a curved mesh to many sub-millimetre elements (netgen sizes an element on a curved face as about radius over \emph{curvaturesafety}) while it changes the frequencies little.
-Every drawn corner radius is therefore raised to at least $0.05$ times the characteristic size of the cavity (never above the builder's feasible maximum); re-entrant edges left by boolean operations (port, bore and pipe junctions, vacuum angle above $\approx198^\circ$) are rounded with the same rule.
-% src: dataset_generator_3d.py parse_args: min_fillet default 0.05 for field labels (parse_args); docs/30 §3 (re-entrant edge detection: more than 55 % of a circle in vacuum, i.e. 0.55*360 = 198 deg)
-For pillbox cells with pipes ($R=\SI{57}{\mm}$, $r_p=\SI{17}{\mm}$, curvaturesafety~2) the floor changes the element count from 45k (floor $0.02$, iris radius \SI{1.2}{\mm}) to 30k, 25k and 18k (floors $0.04$, $0.06$, $0.08$).
-% src: docs/29 §2.1 table
-Small fillets are thus the main driver of element count: the ridged box, with fillets along every box edge, needed 38k--89k tets in four draws, whereas spoke cavities, with few small features, needed 5.2k--7.8k.
-% src: docs/29 §2.4 (4 Sobol draws per family, 5 % floor, curvaturesafety 2, before adaptive refinement)
-Where OpenCascade cannot round an edge the solid is kept and its surface peaks are later stored as NaN (\cref{sec:05-qoi}); when a rounded solid cannot be meshed without folded elements, the same draw is labelled with sharp edges instead of being discarded.
-% src: docs/30 §3
+\paragraph{Fillet floor.}
+A corner radius far below the cavity size forces a curved mesh into many tiny elements (netgen sizes an element on a curved face as about radius over curvature safety) while changing frequencies little.
+Every drawn corner radius is therefore raised to at least $0.05$ times the cavity size (never above the builder's feasible maximum), and re-entrant edges left by boolean operations (port, bore and pipe junctions) are rounded with the same rule; where this fails the solid keeps its sharp edges and its surface peaks are stored as NaN.
+For pillbox cells with pipes ($R=\SI{57}{mm}$, $r_p=\SI{17}{mm}$) floors of $0.02$, $0.04$, $0.06$, $0.08$ (iris radius \SI{1.2}{mm}--\SI{4.5}{mm}) give $45$k, $30$k, $25$k and $18$k tets.
+Small fillets thus drive the element count: four draws of the ridged box, which has fillets along every edge, gave $38$k--$89$k tets, four draws of the spoke family $5.2$k--$7.8$k (curvature safety 2, before adaptive refinement).
+% src: dataset_generator_3d.py min_fillet default 0.05 (labels=field); docs/29 §2.1 table and §2.4; docs/30 §3 (rounding, NaN peaks)
 
 \subsection{Curved meshes}\label{sec:05-mesh}
 
-Netgen generates the tetrahedra with maximum size three times the size rule of the lowest-order pipeline, curvature safety $2$ and grading $0.5$ (grading $0.8$ folds elements), then bends them onto the exact CAD surfaces to geometry order three.
-Element quality is measured by the ratio of the minimum to the maximum Jacobian determinant over the integration points of each element (a ratio $\le0$ is a folded element).
-It hardly affects frequencies but strongly affects wall quantities, since those depend on first derivatives at the boundary (\cref{tab:05-quality}).
-Meshes are accepted at a ratio of at least $0.05$; elements below $0.1$ are bisected locally and re-curved (up to three passes, about $+5\,\%$ elements), and only if this fails is the mesh regenerated with doubled curvature safety (about $3\times$ the elements).
-% src: docs/29 §2.2 (defaults, accept 0.05, repair below 0.1, passes, +5 %, 3x)
-Two families whose box booleans leave sliver faces (ridged box, drift-tube linac) are first healed by OpenCascade; sewing and solid-making are disabled because they delete revolved solids.
-% src: docs/29 §2.3
-Draws exceeding $30\,000$ tets are rejected immediately after mesh generation and re-drawn.
-% src: docs/29 §2.2, field_labels.py DEFAULTS max_elements; docs/31 §3.8
+Netgen generates tetrahedra (curvature safety $2$, grading $0.5$) and bends them onto the CAD surfaces to geometry order three.
+The element quality is the ratio of the minimum to the maximum Jacobian determinant over each element's integration points ($\le0$: folded).
+Frequencies hardly depend on it, wall quantities strongly: on one pillbox cell with pipes (8\,\% fillet floor) a mesh with 9k tets and a minimum ratio of $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and surface peaks off by $100$--$1600\times$; at 16k tets and ratio $0.069$ the errors were $10^{-6}$ in frequency and $2\cdot10^{-6}$ in $\Qz$ (reference: the locally repaired 18k-tet mesh, ratio $0.35$); a mesh at curvature safety $1$ folded.
+% src: docs/29 §2.2 table
 
-\begin{table}[t]
-\centering
-\caption{Effect of element quality on one pillbox cell with pipes (8\,\% fillet floor, order-3 labels); errors against the locally repaired mesh. Peak error is the factor by which the surface peaks are off.}
-\label{tab:05-quality}
-\small
-\begin{tabular}{@{}lrrccc@{}}
-\toprule
-Mesh & Tets & Min.\ det-$J$ ratio & Frequency & $\Qz$ (TM$_{010}$) & Peaks \\
-\midrule
-curvature safety 1.5 & 9k & 0.010 & $10^{-5}$ & $-50\,\%$ & $100$--$1600\times$ off \\
-curvature safety 2 & 16k & 0.069 & $10^{-6}$ & $2\cdot10^{-6}$ & $2\cdot10^{-7}$ \\
-curvature safety 2, repaired & 18k & 0.35 & \multicolumn{3}{c}{reference} \\
-curvature safety 1 & 4k & $<0$ (folded) & \multicolumn{3}{c}{unusable} \\
-\bottomrule
-\end{tabular}
-% src: docs/29 §2.2 table (peaks for the curvature safety 2 row: isolated modes)
-\end{table}
+Meshes are accepted at a ratio of at least $0.05$; elements below $0.1$ are bisected and re-curved (three passes, about $+5\,\%$ tets), and only if that fails the mesh is regenerated with doubled curvature safety (about $3\times$ the tets).
+Draws with more than $30\,000$ tets are rejected and re-drawn.
+% src: docs/29 §2.2 (defaults, thresholds, repair), §2.3 (healing), field_labels.py DEFAULTS max_elements 30000
+
 
 \subsection{Adaptive order-three labels}\label{sec:05-adaptive}
 
-On each mesh the $\nmodes$ lowest modes and one extra are computed in the full $H_0(\mathrm{curl})$ space of order three with its own discrete gradient: shift-invert Arnoldi~\cite{lehoucq1998arpack} with negative shift, a sparse Cholesky factorisation of the shifted operator, and the kernel projection after every solve.
-Modes have unit $L^2$ norm, so $\int|\curl\E_k|^2=\lambda_k$.
-Let $\mathcal R$ denote the averaging interpolation into the continuous vector Lagrange space of the same order; the jumps of the discrete fields serve as error indicator, in the spirit of recovery estimators~\cite{zienkiewicz1987simple}:
+On each mesh the $\nmodes$ lowest modes (plus one) are computed in $H_0(\mathrm{curl})$ of order three by shift-invert Arnoldi iteration~\cite{lehoucq1998arpack} with the kernel projection after every solve; modes have unit $L^2$ norm, so $\int|\curl\E_k|^2=\lambda_k$.
+With $\mathcal R$ the averaging interpolation into the continuous vector Lagrange space of the same order, the jumps of the discrete fields serve as error indicator, in the spirit of recovery estimators~\cite{zienkiewicz1987simple}:
 \begin{align*}
 \eta_{\mathrm{vol},T}^2 &= \sum_{k=1}^{\nmodes}\frac{\|\curl\E_k-\mathcal R\curl\E_k\|_T^2+\lambda_k\|\E_k-\mathcal R\E_k\|_T^2}{\lambda_k},\\
 \eta_{\mathrm{wall},T}^2 &= \sum_{k=1}^{\nmodes}\Bigl(\frac{\int_{\partial T\cap\bdry}|\curl\E_k-\mathcal R\curl\E_k|^2}{\int_{\bdry}|\curl\E_k|^2}+\frac{\int_{\partial T\cap\bdry}|\E_k-\mathcal R\E_k|^2}{\int_{\bdry}|\E_k|^2}\Bigr).
 \end{align*}
-% src: docs/30 §2; src/data_gen/adaptive.py indicator (wall denominators: ds("wall") integrals of |curl g|^2 and |g|^2)
+% src: docs/30 §2; adaptive.py indicator
 The volume term estimates the relative eigenvalue error, which is second order in the field error.
-The figures of merit are first order in the field error near the wall (wall loss $\propto\int|H_t|^2$, surface peaks), hence the separately normalised wall term; at the accuracy targets both terms are of order $10^{-6}$ and are added with equal weight.
+Wall loss and surface peaks are first order in the field error at the wall, hence the separately normalised wall term; at the accuracy targets both terms are of order $10^{-6}$ and are added with equal weight.
 % src: docs/30 §2
 
 \paragraph{Remeshing instead of bisection.}
-Bisection of marked elements on curvature-graded meshes has a closure that explodes: marking 200 of 8109 tets of a pillbox cell with pipes produced a $29$k-tet mesh ($105$ new tets per marked tet) and exhausted memory twice.
+Bisection of marked elements on curvature-graded meshes has a closure that explodes: marking 200 of 8109 tets of a pillbox cell with pipes produced $29$k tets ($105$ new per marked tet).
 Each iteration therefore builds a new mesh from an error-equidistributing size field,
-\[
-h_{\mathrm{new},T}=h_T\Bigl(\rho\,\overline{\eta^2}/\eta_T^2\Bigr)^{1/(2p)},\qquad \rho=0.25,\quad h_{\mathrm{new}}/h\in[0.3,1],
-\]
-passed to Netgen as local size restrictions at the element centroids ($\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$, $p$ the polynomial order).
-Restrictions accumulate over iterations (the smallest request wins), because rebuilding from the latest field alone oscillates.
-The predicted element count matched Netgen's within $15\,\%$; if it exceeds the DOF budget the field is scaled up uniformly, and curved elements with a Jacobian ratio below $0.05$ get half the local size.
-The start mesh is coarser than the single-solve default (curvature safety $1.5$, falling back to $2$ if elements fold).
-% src: docs/30 §4 (105 new per marked, formula, rho=0.25, clip [0.3,1], accumulation, 15 %, 0.05 -> halved, cs 1.5 fallback 2); adaptive.py mesh_remesher/size_field
-For comparison, the legacy Dörfler-marking bisection path ($\theta=0.5$) remains in the code only as an option.
-% src: adaptive.py DEFAULTS theta, adaptive_modes
+$h_{\mathrm{new},T}=h_T\bigl(\rho\,\overline{\eta^2}/\eta_T^2\bigr)^{1/(2p)}$ with $\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$, $\rho=0.25$, $h_{\mathrm{new}}/h\in[0.3,1]$ and $p$ the polynomial order, passed to Netgen as local size restrictions at the element centroids.
+The restrictions accumulate over iterations (rebuilding from the latest field alone oscillates); the predicted element count matched Netgen's within $15\,\%$ and is scaled down uniformly if it exceeds the DOF budget.
+The start mesh is coarse (curvature safety $1.5$, falling back to $2$ if elements fold).
+% src: docs/30 §4; adaptive.py mesh_remesher, size_field
 
 \paragraph{Stopping.}
-Refinement stops when, between two consecutive levels (at least two solves), (i) the relative change of the cluster-mean frequency is below $10^{-6}$ and (ii) the relative changes of cluster-mean $\Qz$ and $G$, the summed $\RoQ$ (clusters with $\RoQ$ above $1\,\%$ of the largest only) and the maximum $\Epk$, $\Bpk$ are below $10^{-3}$; nearly degenerate modes (relative spacing $<10^{-3}$) are grouped so that the criterion is invariant to rotations inside a degenerate pair.
-Otherwise it stops when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}) or after eight levels.
-Surface peaks are left out of the criterion on samples with unrounded sharp edges.
-% src: docs/30 §1, §6; adaptive.py DEFAULTS (tol_f 1e-6, tol_q 1e-3, min_iter 2, rq_floor 1e-2, cluster_rel 1e-3, max_iter 8, max_ndof 900000), invariant_qoi, adaptive_modes (peaks flag)
-These criteria compare successive levels, not the error against a converged reference.
-The targets are frequency $\le10^{-5}$, $\Qz$, $G$, $\RoQ$ $\le0.2\,\%$, and $\Epk/\Eacc$, $\Bpk/\Eacc$ $\le1\,\%$, and are checked against closed forms in \cref{sec:05-validation}.
-% src: docs/30 §1 table
-A DOF budget can bind early: in the controlled experiments the budget of 150k label DOFs was exhausted after the first order-three solve, so the high-fidelity label there is a single order-three solve on the start mesh.
-% src: docs/34 §3 (adapt_iters = 1, adapt_stop = budget, max_ndof 150000, pillbox cells with pipes)
+Refinement stops when, between two consecutive levels (at least two solves), the relative change of the cluster-mean frequency is below $10^{-6}$ and the relative changes of cluster-mean $\Qz$ and $G$, summed $\RoQ$ (clusters with $\RoQ$ above $1\,\%$ of the largest) and maximum $\Epk$, $\Bpk$ are below $10^{-3}$; near-degenerate modes (spacing $<10^{-3}$) are grouped so the test does not depend on the rotation inside a pair.
+Otherwise it stops when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}) or after eight levels; peaks are left out for samples with sharp edges.
+The criterion compares successive levels and is not an error bound; the targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked against closed forms in \cref{sec:05-validation}.
+A budget can bind early: in our controlled experiments the 150k-DOF budget was exhausted after the first order-three solve, so the high-fidelity label there is one order-three solve on the start mesh.
+% src: docs/30 §1, §6; adaptive.py DEFAULTS, invariant_qoi, adaptive_modes; docs/34 §3 (adapt_iters = 1, adapt_stop = budget)
 
 \subsection{Label mesh, model mesh and storage}\label{sec:05-transfer}
 
-The \emph{label mesh} is the finest adaptive level; it supplies frequencies, figures of merit and the order-three fields.
-The \emph{model mesh} is the finest level with at most $10\,000$ tets; the network and its order-two operators live there, which bounds the per-geometry operator size at about $10^5$ DOFs.
-If the start mesh already exceeds the budget it is the model mesh and the label mesh is finer; if the final mesh fits, both coincide.
-% src: docs/30 §5 and §6 (model_max_elements default 10000, about 100k DOF per geometry)
-Order-two functions are nested in order-three ones on one mesh, so there the $L^2$ projection $\mathsf M_{22}\mathsf u_2=\mathsf M_{23}\mathsf u_3$ is the exact best approximation.
-On a coarser model mesh the label fields are evaluated at the model mesh's $216$ integration points per tet (located in the label mesh once, for all modes) and projected with $\mathsf M_2\mathsf u_2=\int \mathbf v_2\cdot\E_3$.
-For each mode we store the projection error $\text{proj\_err}=\|\E_3-\E_2\|_{L^2}/\|\E_3\|_{L^2}$ (the share of the label field outside the model space) and the Rayleigh quotient of the projected field in the model space.
-On two pillbox-with-pipes model meshes the former was $0.18$--$0.54\,\%$, and the Rayleigh quotients lie above the order-three frequencies by $0.04$--$0.9\,\%$, which is the floor a Ritz layer in this space cannot go below (frequency targets stay the order-three values).
-% src: docs/30 §5 (216 points/tet, M2 u2 = ∫ v2·E3, proj_err 1.8e-3–5.4e-3, p2 floor 4e-4–8.6e-3 measured on pillbox_pipes meshes of 11300 and 13052 tets, mesh size 0.2); docs/31 §1
-Wall rows of the projected fields are exactly zero.
+The \emph{label mesh} is the finest adaptive level and supplies frequencies, figures of merit and the order-three fields.
+The \emph{model mesh} is the finest level with at most $10\,000$ tets (about $10^5$ order-two DOFs per geometry); if the start mesh already exceeds this it is the model mesh, and if the final mesh fits both coincide.
+% src: docs/30 §5, §6 (model_max_elements 10000, about 100k DOF)
+On one mesh the order-two space is nested in the order-three space, so the $L^2$ projection is the exact best approximation; on a coarser model mesh the label fields are evaluated at the model mesh's $216$ integration points per tet (located once for all modes) and projected, $\mathsf M_2\mathsf u_2=\int\mathbf v_2\cdot\E_3$.
+We store, per mode, $\text{proj\_err}=\|\E_3-\E_2\|/\|\E_3\|$ and the Rayleigh quotient of $\E_2$ in the model space.
+On two pillbox-with-pipes model meshes $\text{proj\_err}$ was $0.18$--$0.54\,\%$ and the Rayleigh quotients exceeded the order-three frequencies by $0.04$--$0.9\,\%$, a floor that a Ritz layer in this space cannot go below.
+% src: docs/30 §5 (proj_err 1.8e-3–5.4e-3; p2 floor 4e-4–8.6e-3 on meshes of 11300 and 13052 tets), docs/31 §1
 
-Each geometry is stored as the Netgen mesh file of the model mesh, the BREP of the meshed shape (and the deformation map, if any), the frequencies, the projected fields (single precision, wall rows zero), the figures of merit, the field on the beam axis, the Rayleigh quotients and projection errors, and the wall-dependent token features of \cref{sec:method}; about \SI{9}{MB} per geometry for ten modes at order two.
-% src: docs/29 §1, §3.4 (qfeat_wall), §4 (about 9 MB per geometry at p2, 10 modes)
-Mesh generation is not bit-reproducible (threaded surface meshing), so the stored mesh, not the seed, is the record of a sample.
-% src: docs/29 §6
-Loading must reproduce the numbering of the degrees of freedom exactly.
-A mesh repaired by bisection keeps its refinement hierarchy in NGSolve and numbers the bisected parents' edges and faces: in one case the repaired mesh gave $116\,322$ order-two DOFs and the same mesh after saving and loading $115\,704$, so stored fields did not fit the rebuilt space.
-Meshes are therefore rebuilt through a file round trip before storage; the generator rebuilds every stored model mesh once and fails the sample if the DOF count differs, and the dataset loader recomputes the Rayleigh quotients of the stored fields with the rebuilt operators and rejects the sample if they differ from the stored ones by more than a relative $10^{-5}$.
-Eigenvalues on the reloaded meshes agree with the originals to $10^{-14}$.
-% src: docs/30 §5 (116322 vs 115704, single_level, _check_reload), docs/29 §3.3 (rtol 1e-5, 1e-14)
+Each geometry is stored as the Netgen mesh file of the model mesh, the BREP of the meshed shape, the frequencies, the projected fields (single precision, wall rows zero), the figures of merit, the axial field, and the wall-distance token features of \cref{sec:method}; about \SI{9}{MB} for ten modes.
+% src: docs/29 §1, §4
+Mesh generation is not bit-reproducible, so the stored mesh is the record of a sample.
+A mesh repaired by bisection keeps a refinement hierarchy whose DOF numbering differs from that of the saved-and-reloaded mesh (in one case $116\,322$ vs.\ $115\,704$ order-two DOFs).
+Meshes are therefore rebuilt through a file round trip before storage; the generator fails a sample whose reloaded space has a different DOF count, and the loader recomputes the Rayleigh quotients of the stored fields with the rebuilt operators and rejects the sample if they differ by more than a relative $10^{-5}$.
+Eigenvalues on reloaded meshes agree with the originals to $10^{-14}$.
+% src: docs/29 §3.3, §6; docs/30 §5 (single_level, _check_reload)
 
-\subsection{Figures of merit and conventions}\label{sec:05-qoi}
+\subsection{Figures of merit}\label{sec:05-qoi}
 
-Figures of merit are computed from the order-three fields (copper walls, $\sigma=\SI{5.8e7}{S/m}$, normalised to $U=\SI{1}{J}$, definitions of \cref{sec:formulation}); wall fields are evaluated from the adjacent volume element, since the boundary trace of an $H(\mathrm{curl})$ field is only tangential.
-$\Epk$ and $\Bpk$ are maxima over wall integration points (order eight), so the maximum itself is sampled.
-% src: docs/24 §1.1 (σ, U = 1 J); highorder.py mode_qoi (wall_order=8, BoundaryFromVolumeCF)
-The beam axis is the $z$-axis through the origin for the revolved families, the $x$-axis through the mid-length for the coaxial resonator, and the $x$-axis through the middle of the ridge gap (where the beam pipes sit) for the ridged box.
-The accelerating length $\Lacc$ excludes the beam pipes: the sum of the cell lengths for elliptical cavities, the cell length for pillbox and re-entrant cells, the tank length for spoke and drift-tube-linac cavities, the outer diameter for the coaxial resonator and the box length for the ridged box; families without a beam axis use the axis chord inside the cavity.
-Using the chord everywhere, as an earlier version did, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median of $1.2$--$2.4\times$ over the families, and an axis through a rounded box edge gave $\RoQ\approx0$.
-% src: docs/24 §1.3 (beam axis, L_acc list, chord fallback); docs/33 §2.1, §2.2, §12
-The velocity $\beta=1$ is the default, but the axial field is stored at $2001$ points, so $V_{acc}$, $T$ and $\RoQ$ follow at any $\beta$ without a new solve.
-% src: docs/24 §1.3; highorder.py mode_qoi (n_axis=2001); docs/33 §2.5
-Peaks of samples with unrounded sharp edges are stored as NaN. On deformed samples axis and $\Lacc$ are taken from the nominal parameters.
-% src: docs/30 §3; docs/24 §1.3 (limitation)
+Figures of merit follow \cref{sec:formulation} and are evaluated directly from the order-three fields (copper, $\sigma=\SI{5.8e7}{S/m}$, $U=\SI{1}{J}$, wall fields from the adjacent volume element); $\Epk$ and $\Bpk$ are maxima over wall integration points.
+The beam axis is the $z$-axis for the revolved families, the $x$-axis through mid-length for the coaxial resonator and through the ridge gap for the ridged box.
+The accelerating length $\Lacc$ excludes the beam pipes (cell lengths for elliptical cavities, the cell for pillbox and re-entrant cells, the tank for spoke and drift-tube linac, the outer diameter for the coaxial resonator, the box length for the ridged box; otherwise the axis chord).
+The chord, used in an earlier version everywhere, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
+Velocity $\beta=1$ is the default, but the axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any $\beta$ without a new solve.
+On deformed samples the axis and $\Lacc$ are taken from the nominal geometry.
+% src: docs/24 §1.1, §1.3; highorder.py mode_qoi; docs/33 §2.1, §2.2, §12
 
 \subsection{Validation}\label{sec:05-validation}
 
-We check the whole label path (remeshing, order-three solve, figures of merit) against closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$, six lowest modes; TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
-The wall term in the indicator reduces the $\Qz$ and $\Bpk$ errors about threefold relative to the volume term alone at slightly fewer DOFs ($157$k vs.\ $173$k), at the price of a larger $\RoQ$ error ($1.2\cdot10^{-5}$ vs.\ $1.6\cdot10^{-6}$), which is still far inside the target.
-The $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points, not because of field error.
-The pillbox is smooth, so uniform refinement is near-optimal there; the benefit of adaptivity is seen on cells with fillets and pipes.
-On one ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate in frequency, $\Qz$ and $\RoQ$ than the single-solve default with fewer tets ($8.2$k vs.\ $9.4$k), and on a pillbox cell with pipes the third adaptive level ($13.8$k tets) reduced the $\Qz$ error from $4.5\cdot10^{-4}$ to $6.6\cdot10^{-5}$ relative to a $8.1$k-tet single solve (errors measured against each case's finest level, since no closed form exists).
-$\Bpk$ is the slowest quantity: it differed by $4\,\%$ between the two finest levels of the pillbox cell with pipes at a 400k-DOF limit, so its reference has not converged there.
-We have no cross-validation against an independent production solver yet.
-% src: docs/30 §2 (table, wall-term text, Epk stall); docs/30 §4 (comparison with finest level; Bpk 4 %; 2-6x for elliptical, but for the pillbox only old-vs-adaptive); docs/31 §1 (157k DOF row); docs/30 header (large-scale references still to come)
+The whole label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
+The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs ($157$k vs.\ $173$k) but raises the $\RoQ$ error from $1.6\cdot10^{-6}$ to $1.2\cdot10^{-5}$, still far inside the target.
+The $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
+The pillbox is smooth, so uniform refinement is near-optimal there; adaptivity pays on cells with fillets and pipes: on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate in frequency, $\Qz$ and $\RoQ$ than the single-solve default with fewer tets (errors against each case's finest level).
+$\Bpk$ converges slowest: it changed by $4\,\%$ between the two finest levels of a pillbox cell with pipes at a 400k-DOF limit.
+We have not yet cross-validated against an independent production solver.
+% src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row)
 
 \begin{table}[t]
 \centering
-\caption{Relative errors of the label path on the analytic copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$, order three). The frequency column is the maximum over the six lowest modes; the others refer to TM$_{010}$. Targets: $10^{-5}$ for frequency, $2\cdot10^{-3}$ for $\Qz$ and $\RoQ$, $10^{-2}$ for the peaks.}
+\caption{Relative errors of the label path on the analytic copper pillbox (order three). Frequency: maximum over six modes; other columns: TM$_{010}$. Targets: $10^{-5}$, $2\cdot10^{-3}$ ($\Qz$, $\RoQ$), $10^{-2}$ (peaks).}
 \label{tab:05-validation}
 \small
 \begin{tabular}{@{}lrrccccc@{}}
@@ -190,35 +144,27 @@ Refinement & Tets & DOFs & $f$ & $\Qz$ & $\RoQ$ & $\Epk/\Eacc$ & $\Bpk/\Eacc$ \\
 \midrule
 uniform & 992 & 28k & $1.1\cdot10^{-5}$ & $-1.9\cdot10^{-4}$ & $1.6\cdot10^{-4}$ & $-3.6\cdot10^{-4}$ & $5.0\cdot10^{-4}$ \\
 uniform & 7936 & 210k & $2.2\cdot10^{-7}$ & $-7.5\cdot10^{-6}$ & $8.1\cdot10^{-7}$ & $-1.9\cdot10^{-4}$ & $1.8\cdot10^{-4}$ \\
-adaptive, volume term only & 6668 & 173k & $1.9\cdot10^{-6}$ & $-9.2\cdot10^{-5}$ & $1.6\cdot10^{-6}$ & $-1.9\cdot10^{-4}$ & $1.2\cdot10^{-3}$ \\
+adaptive, volume only & 6668 & 173k & $1.9\cdot10^{-6}$ & $-9.2\cdot10^{-5}$ & $1.6\cdot10^{-6}$ & $-1.9\cdot10^{-4}$ & $1.2\cdot10^{-3}$ \\
 adaptive, volume + wall & 5961 & 157k & $6.1\cdot10^{-7}$ & $-3.4\cdot10^{-5}$ & $1.2\cdot10^{-5}$ & $-2.1\cdot10^{-4}$ & $3.9\cdot10^{-4}$ \\
 \bottomrule
 \end{tabular}
-% src: docs/30 §1 (targets), §2 (table); scripts/validate_field_labels.py TARGETS; the 157k-DOF row also docs/31 §1
+% src: docs/30 §1 (targets), §2 (table); scripts/validate_field_labels.py TARGETS
 \end{table}
 
 \subsection{Cost per sample and generator speed-ups}\label{sec:05-cost}
 
-An order-three label costs minutes per geometry on a few cores.
-In the controlled experiments (four samples, DOF budget 150k, two workers with one thread each on a shared four-core VM) the high-fidelity label including mesh generation took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}; $163$k--$328$k label DOFs), while a later matched measurement gave a cost ratio of $4.3$ to a single order-two solve on the same model mesh (\cref{sec:multifidelity}).
-A pillbox cell with pipes at a 450k-DOF budget takes \SI{433}{s} on two threads; a single non-adaptive label of $18$k tets ($495$k DOFs, ten modes) took \SI{140}{s} on four threads with \SI{5.1}{GB} peak memory.
-Peak memory at the default 900k-DOF budget is about \SI{12}{GB} per sample.
-% src: docs/34 §3 (4 samples: 172.5, 119.9, 208.7, 125.7 s -> mean 157 s; DOFs 163k–328k; setup), docs/34 §8.1 (HF/LF = 4.3); docs/31 §3.8 (433 s); docs/29 §4 (140 s, 5.1 GB, 495k DOF); docs/30 §6 (12 GB)
-After the optimisations below the eigensolver (assembly, factorisation, shift-invert iterations) is about $90\,\%$ of a sample.
-% src: docs/30 §6 cost (after docs/31 §3.8)
-
-\Cref{tab:05-speedup} lists the generator speed-ups measured on the same samples before and after each change.
-The largest single item was the transfer to the model mesh, which searched every model integration point in the label mesh again for every form and mode; the points are now located once and the values of all modes placed on an integration-rule space.
-The discrete-gradient stiffness $\Kp=\Gmat^{\top}\Mmat\Gmat$ is assembled as the gradient--gradient form on the potential space instead of through a sparse triple product (same matrix to a relative $9\cdot10^{-16}$).
-Oversized draws are now rejected immediately after mesh generation, and a finer curvature safety is no longer tried after a mesh was already too large.
-The labels do not change: for the pillbox cell with pipes at 150k DOFs, frequencies differ by $1.6\cdot10^{-15}$, $\Qz$ and $G$ by $7\cdot10^{-14}$, $\RoQ$ and the peaks by at most $7\cdot10^{-10}$, and the stored fields' subspace by $\sin\theta\le1.3\cdot10^{-7}$ (single precision); at 450k DOFs the frequency difference is $2\cdot10^{-15}$, $\Qz$ $8\cdot10^{-13}$, $\RoQ$ $6.7\cdot10^{-9}$ and the field subspace $8\cdot10^{-6}$, the latter limited by the Arnoldi tolerance of $10^{-10}$ rather than by the transfer (alone $3.5\cdot10^{-14}$).
+In the controlled experiments (four samples, 150k-DOF budget, two single-thread workers on a shared four-core VM) a high-fidelity label including meshing took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}, $163$k--$328$k label DOFs); a later matched measurement gave a cost ratio of $4.3$ to one order-two solve on the same model mesh (\cref{sec:multifidelity}).
+A pillbox cell with pipes at a 450k-DOF budget takes \SI{433}{s} on two threads; the eigensolver is now about $90\,\%$ of a sample.
+% src: docs/34 §3 (172.5, 119.9, 208.7, 125.7 s), §8.1 (4.3); docs/31 §3.8 (433 s); docs/30 §6 (90 %)
+\Cref{tab:05-speedup} lists measured speed-ups.
+The largest was the transfer to the model mesh, which re-searched every model integration point in the label mesh for every form and mode; points are now located once.
+The gradient stiffness $\Kp$ is assembled as a gradient--gradient form on the potential space instead of a sparse triple product (same matrix to a relative $9\cdot10^{-16}$), and oversized draws are rejected right after mesh generation.
+The labels are unchanged: at 150k DOFs frequencies differ by $1.6\cdot10^{-15}$, $\Qz$ and $G$ by $7\cdot10^{-14}$, $\RoQ$ and peaks by at most $7\cdot10^{-10}$; at 450k DOFs the field subspace differs by $8\cdot10^{-6}$, limited by the Arnoldi tolerance, whereas the transfer alone differs by $3.5\cdot10^{-14}$.
 % src: docs/31 §3.8 (all numbers in this paragraph and in the table)
-Further attempts did not pay off: looser Arnoldi tolerances saved few iterations, and a direct solver from the MKL library factorised $2$--$3.4\times$ faster but gave no net gain up to $\approx330$k DOFs because it solves slower; it was not measured at 900k DOFs.
-% src: docs/31 §3.8 "Denenip alınmayanlar"
 
 \begin{table}[t]
 \centering
-\caption{Measured effect of the generator optimisations (same sample, same machine; two values are two runs).}
+\caption{Generator speed-ups (same sample and machine; two values are two runs).}
 \label{tab:05-speedup}
 \small
 \begin{tabular}{@{}lrr@{}}
@@ -229,9 +175,9 @@ transfer to model mesh (16.6k label tets $\to$ 8.9k model tets, 430k label DOFs)
 pillbox cell with pipes, 450k-DOF budget (two levels) & 664 & 433 \\
 pillbox cell with pipes, 150k-DOF budget (one level) & 150 / 121 & 112 / 115 \\
 elliptical, 150k-DOF budget, first draw rejected & 104 / 112 & 75.5 \\
-rejected oversized elliptical draw & 29 & 12 \\
+rejected oversized draw & 29 & 12 \\
 assembly of $\Kp$ & 4.4--6 & 0.34 \\
 \bottomrule
 \end{tabular}
-% src: docs/31 §3.8 tables "Önce"/"Sonra" and findings
+% src: docs/31 §3.8
 \end{table}
