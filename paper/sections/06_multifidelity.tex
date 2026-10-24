@@ -36,14 +36,14 @@ quality of the projected target rather than of the floor itself.
 
 \subsection{The shared start mesh}\label{sec:06-mesh}
 
-Comparing or mixing the two fidelities is only meaningful on the same mesh. The adaptive path starts from the curved
+Mixing the two fidelities is meaningful only on the same mesh. The adaptive path starts from the curved
 mesh with the first of a list of curvature-safety settings (the coarser $1.5$ first, the default $2.0$ as a fallback
 when elements fold) and does not retry a finer setting after a mesh that exceeds the element limit; the $\LF$ path
 uses the same rule.
 % src: src/data_gen/field_labels.py start_mesh; docs/34 §8.1
 Our first $\LF$ generator used the finer setting only and produced meshes up to $1.9$ times larger than the $\HF$
-model meshes; an observation that the $\LF$ mesh ``does not shrink'' was a misdiagnosis caused by this mismatch
-(details in \cref{sec:A06-meshes}).
+model meshes (\cref{sec:A06-meshes}); an earlier observation that the $\LF$ mesh ``does not shrink'' was a
+misdiagnosis caused by this mismatch.
 % src: docs/34 §8.1 (1.2–1.9×), §3 (corrected in §8.1)
 With the shared rule the meshes are identical to the $\HF$ model meshes on 8 of 8 training and 6 of 6 test geometries,
 the mean size over 40 $\LF$ samples drops from 9404 to 7639 tetrahedra ($-19\,\%$), and the cost ratio
@@ -86,7 +86,7 @@ $\Bpk/\Eacc$ & $+5.4$ to $+8.1\,\%$ \\ % src: docs/34 §3 table
 
 Hence $\LF$ labels suffice for frequencies, volume fields and $\RoQ$ (differences well below the model error), whereas
 $\Qz$ and the surface peaks need $\HF$ labels. The quantity-of-interest loss is disabled for the field model in this
-study, so the experiments of \cref{sec:experiments} do not test the wall-dominated quantities.
+study, so the experiments of \cref{sec:experiments} do not test wall quantities.
 % src: docs/34 §3 (conclusion), qoi_weight = 0 for field3d
 
 \subsection{Training mechanics}\label{sec:06-train}
@@ -106,8 +106,7 @@ frequencies lie below the floor of the model space; all default to one (no weigh
 separately.
 % src: docs/34 §2
 Three further mechanisms serve a scarce $\HF$ set: extra $\HF$ files that always enter the training split and never the
-validation or test split (the frequency normalisation then comes from the training split, or from these files if the
-split is empty); repetition of the $\HF$ geometries of the training split a given number of times per epoch; and
+validation or test split; repetition of the $\HF$ geometries of the training split a given number of times per epoch; and
 initialisation from the weights of a checkpoint, with fresh optimiser state and epoch counter, for fine-tuning an
 $\LF$-trained model. A sweep of the fidelity scales and of the repetition count was not carried out, and the benefit of
 mixed or fine-tuned training was not established at this scale (\cref{sec:experiments,sec:discussion}).

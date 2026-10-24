@@ -10,13 +10,11 @@ The eigenproblem is the closed-cavity problem of \cref{sec:formulation} in the $
 Eight families with CAD solids are used for field labels: multi-cell elliptical cavities, re-entrant (nose-cone) cells, pillbox cells with beam pipes, ridged rectangular cavities, constructive-solid-geometry composites, half-wave coaxial resonators, spoke cavities and drift-tube-linac tanks (parameter ranges in \cref{sec:A05-families}); five further families are held out of distribution.
 The controlled experiments of \cref{sec:experiments} use one family (pillbox cells with pipes).
 % src: dataset_generator_3d.py FAMILIES, parse_args; cavity_shapes.OOD_FAMILIES; BRIEF §1
-Parameters are drawn uniformly; with Sobol' sampling the first 64 draws of sample $i$ (family and shape parameters) come from the $i$-th point of one scrambled Sobol' sequence~\cite{sobol1967distribution,virtanen2020scipy}, later re-draws from a pseudo-random stream.
-An optional smooth random deformation of the mesh nodes is available and switched off in our experiments.
+Parameters are drawn uniformly, the first 64 draws of sample $i$ from the $i$-th point of a scrambled Sobol' sequence~\cite{sobol1967distribution,virtanen2020scipy}; an optional smooth random deformation of the mesh is switched off in our experiments.
 % src: dataset_generator_3d.py _sample_rng (qmc.Sobol d=64, scramble=True); docs/19 §2 (deformation); docs/34 §3 (--deform_prob 0)
 
 \paragraph{Elliptical half-cells.}
 A half-cell joins an iris ellipse and an equator ellipse by their common tangent; the wall must have non-decreasing radius, and mildly re-entrant walls (up to $105^\circ$) are admitted (details in \cref{sec:A05-halfcell}).
-Published designs enter as sampling centres only; labels always come from the finite-element solve.
 The ranges were widened until all $14$ published reference half-cells that we compiled (TESLA~\cite{aune2000superconducting}, low-loss and ICHIRO~\cite{juntong2009highgradient}, and others listed in the appendix) were accepted, four of which an earlier solver tolerance had rejected.
 Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the earlier rules); rejected draws are replaced, so no sample is lost but the distribution is truncated.
 % src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %), §11, §3.1
@@ -52,7 +50,7 @@ Wall loss and surface peaks are first order in the field error at the wall, henc
 % src: docs/30 §2
 
 \paragraph{Remeshing instead of bisection.}
-Bisection of marked elements on curvature-graded meshes has a closure that explodes: marking 200 of 8109 tets of a pillbox cell with pipes produced $29$k tets ($105$ new per marked tet).
+Bisection of marked elements has a closure that explodes on curvature-graded meshes (200 of 8109 tets marked gave $29$k tets).
 Each iteration therefore builds a new mesh from an error-equidistributing size field,
 $h_{\mathrm{new},T}=h_T\bigl(\rho\,\overline{\eta^2}/\eta_T^2\bigr)^{1/(2p)}$ with $\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$, $\rho=0.25$, $h_{\mathrm{new}}/h\in[0.3,1]$ and $p$ the polynomial order, passed to Netgen as local size restrictions at the element centroids.
 The restrictions accumulate over iterations (rebuilding from the latest field alone oscillates), and the predicted element count (accurate to $15\,\%$) is kept within the DOF budget.
@@ -60,9 +58,8 @@ The start mesh is deliberately coarse; its selection rule is shared with the low
 % src: docs/30 §4; adaptive.py mesh_remesher, size_field
 
 \paragraph{Stopping.}
-Refinement stops when, between two consecutive levels (at least two solves), the relative change of the cluster-mean frequency is below $10^{-6}$ and the relative changes of cluster-mean $\Qz$ and $G$, summed $\RoQ$ (clusters with $\RoQ$ above $1\,\%$ of the largest) and maximum $\Epk$, $\Bpk$ are below $10^{-3}$ (near-degenerate modes are grouped).
-Otherwise it stops when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}) or after eight levels.
-The criterion compares successive levels and is not an error bound; the accuracy targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked against closed forms in \cref{sec:05-validation}.
+Refinement stops when, between two consecutive levels, the cluster-mean frequency changes by less than $10^{-6}$ (relative) and cluster-mean $\Qz$, $G$, summed $\RoQ$ and maximum $\Epk$, $\Bpk$ by less than $10^{-3}$ (near-degenerate modes are grouped), or when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}), or after eight levels.
+This compares successive levels and is not an error bound; the accuracy targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked against closed forms in \cref{sec:05-validation}.
 A budget can bind early: in our controlled experiments the 150k-DOF budget was exhausted after the first order-three solve, so the high-fidelity label there is one order-three solve on the start mesh.
 % src: docs/30 §1, §6; adaptive.py DEFAULTS, invariant_qoi, adaptive_modes; docs/34 §3 (adapt_iters = 1, adapt_stop = budget)
 
@@ -71,8 +68,7 @@ A budget can bind early: in our controlled experiments the 150k-DOF budget was e
 The \emph{label mesh} is the finest adaptive level and supplies frequencies, figures of merit and the order-three fields.
 The \emph{model mesh} is the finest level with at most $10\,000$ tets (about $10^5$ order-two DOFs per geometry); if the start mesh already exceeds this it is the model mesh, and if the final mesh fits both coincide.
 % src: docs/30 §5, §6 (model_max_elements 10000, about 100k DOF)
-On one mesh the order-two space is nested in the order-three space, so the $L^2$ projection is the exact best approximation; on a coarser model mesh the label fields are evaluated at the model mesh's $216$ integration points per tet (located once for all modes) and projected, $\mathsf M_2\mathsf u_2=\int\mathbf v_2\cdot\E_3$.
-We store, per mode, $\text{proj\_err}=\|\E_3-\E_2\|/\|\E_3\|$ and the Rayleigh quotient of $\E_2$ in the model space.
+The label fields are $L^2$-projected onto the order-two space of the model mesh, $\mathsf M_2\mathsf u_2=\int\mathbf v_2\cdot\E_3$ (exact best approximation on one mesh, where the spaces are nested; otherwise by evaluation at the model mesh's $216$ integration points per tet), and we store per mode $\text{proj\_err}=\|\E_3-\E_2\|/\|\E_3\|$ and the Rayleigh quotient of $\E_2$ in the model space.
 On two pillbox-with-pipes model meshes $\text{proj\_err}$ was $0.18$--$0.54\,\%$, and the Rayleigh quotients of the projected modes exceeded the order-three frequencies by $0.04$--$0.9\,\%$.
 This is the frequency of the projected field \emph{target}; the floor of the model space itself, the discrete order-two eigenvalue, was within $0.033\,\%$ of the order-three frequencies on the four geometries of \cref{sec:multifidelity}.
 % src: docs/30 §5 (proj_err 1.8e-3–5.4e-3; Rayleigh quotients of projected HF modes 4e-4–8.6e-3, meshes of 11300 and 13052 tets); docs/34 §4.1 (FE floor ≤ 0.033 %); EDITOR_NOTES note 2
@@ -94,8 +90,7 @@ Velocity $\beta=1$ is the default, but the axial field is stored, so $V_{acc}$, 
 \subsection{Validation}\label{sec:05-validation}
 
 The whole label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
-The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs ($157$k vs.\ $173$k) but raises the $\RoQ$ error from $1.6\cdot10^{-6}$ to $1.2\cdot10^{-5}$, still far inside the target.
-The $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
+The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs, at the price of a larger (still far inside the target) $\RoQ$ error; the $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
 The pillbox is smooth, so uniform refinement is near-optimal there; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than the single-solve default with fewer tets (against its own finest level).
 $\Bpk$ converges slowest: it changed by $4\,\%$ between the two finest levels of a pillbox cell with pipes at a 400k-DOF limit.
 We have not yet cross-validated against an independent production solver.

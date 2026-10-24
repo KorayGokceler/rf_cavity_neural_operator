@@ -8,7 +8,7 @@ It predicts $m$ vector fields $\bm\psi_1,\dots,\bm\psi_m$ on the geometry; a fix
 \resizebox{\linewidth}{!}{%
 \begin{tikzpicture}[
   font=\footnotesize,
-  box/.style={draw, rounded corners=2pt, align=center, text width=2.7cm, minimum height=1.25cm, inner sep=3pt},
+  box/.style={draw, rounded corners=2pt, align=center, text width=2.95cm, minimum height=1.25cm, inner sep=2pt},
   learned/.style={box, fill=blue!10},
   fixed/.style={box, fill=black!4},
   opt/.style={box, dashed},
@@ -16,20 +16,20 @@ It predicts $m$ vector fields $\bm\psi_1,\dots,\bm\psi_m$ on the geometry; a fix
   darr/.style={-{Stealth[length=4pt]}, dashed, gray!70!black}]
   % row 1: geometry -> mesh -> tokens -> network
   \node[fixed]   (geo)   at (0,0)    {geometry $\Omega$};
-  \node[fixed]   (mesh)  at (3.3,0)  {curved mesh, order $p$; $\Kmat,\Mmat,\Gmat,\Kp,\Cmat$};
-  \node[fixed]   (tok)   at (6.6,0)  {tokens: quadrature points $\bm x_q$, features, weights $w_q$};
-  \node[learned] (trunk) at (9.9,0)  {trunk: RFF, MLP, $L$ attention blocks};
-  \node[learned] (head)  at (13.2,0) {head: $\bm\psi_j(\bm x_q)\in\R^3$, $j\le m$};
+  \node[fixed]   (mesh)  at (3.5,0)  {curved mesh, order $p$; $\Kmat,\Mmat,\Gmat,\Kp,\Cmat$};
+  \node[fixed]   (tok)   at (7.0,0)  {tokens: quadrature points $\bm x_q$, features, weights $w_q$};
+  \node[learned] (trunk) at (10.5,0)  {trunk: RFF, MLP, $L$ attention blocks};
+  \node[learned] (head)  at (14.0,0) {head: $\bm\psi_j(\bm x_q)\in\R^3$, $j\le m$};
   \draw[arr] (geo) -- (mesh);
   \draw[arr] (mesh) -- (tok);
   \draw[arr] (tok) -- (trunk);
   \draw[arr] (trunk) -- (head);
   % row 2: fixed linear-algebra layer
   \node[fixed] (V)   at (0,-2.9)    {fit and interpolation $\Vmat=\Cmat\mathsf F\bm\psi$; wall DOFs $=0$};
-  \node[fixed] (P)   at (3.3,-2.9)  {kernel projection $\Pmat\Vmat$ (PCG, float64)};
-  \node[fixed] (R)   at (6.6,-2.9)  {Rayleigh--Ritz $\Av c=\theta\,\Mdiv c$};
-  \node[fixed] (out) at (9.9,-2.9)  {frequencies $f_k$, fields $\E_k$};
-  \node[opt]   (qoi) at (13.2,-2.9) {figures of merit from $\E_k$};
+  \node[fixed] (P)   at (3.5,-2.9)  {kernel projection $\Pmat\Vmat$ (PCG, float64)};
+  \node[fixed] (R)   at (7.0,-2.9)  {Rayleigh--Ritz $\Av c=\theta\,\Mdiv c$};
+  \node[fixed] (out) at (10.5,-2.9)  {frequencies $f_k$, fields $\E_k$};
+  \node[opt]   (qoi) at (14.0,-2.9) {figures of merit from $\E_k$};
   \draw[arr] (head.south) -- ++(0,-0.8) -| ($(V.north)+(-0.55,0)$);
   \draw[arr] (V) -- (P);
   \draw[arr] (P) -- (R);
