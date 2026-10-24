@@ -3,37 +3,41 @@
 \subsection{Inexact kernel projection}\label{sec:A04-inexact}
 
 \cref{prop:upper-bound} assumes that $\mathsf Z$ solves $\Kp\mathsf Z=\mathsf B$ exactly.
-The CG solve of \cref{sec:04-proj} returns $\tilde{\mathsf Z}=\mathsf Z+\delta$ with residual $\rho=\Kp\tilde{\mathsf Z}-\mathsf B=\Kp\delta$ and $\|\rho_{:,j}\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column.
+The CG solve of \cref{sec:04-proj} returns $\tilde{\mathsf Z}=\mathsf Z+\mathsf Z_{\rm err}$ with residual $\mathsf R=\Kp\tilde{\mathsf Z}-\mathsf B=\Kp\mathsf Z_{\rm err}$ and $\|\mathsf R_{:,j}\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column.
 
 \paragraph{The numerator is unaffected.}
 $\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly, and $\Kmat\Gmat=0$.
-The computed field is $\tilde{\Pmat}\Vmat=\Pmat\Vmat-\Gmat\delta$, so its curl energy equals that of the exact projection: the residual gradient component $-\Gmat\delta$ carries no curl energy.
+The computed field is $\tilde{\Pmat}\Vmat=\Pmat\Vmat-\Gmat\mathsf Z_{\rm err}$, so its curl energy equals that of the exact projection: the residual gradient component $-\Gmat\mathsf Z_{\rm err}$ carries no curl energy.
 
 \paragraph{The denominator is perturbed.}
 The Ritz layer uses $\tilde{\mathsf M}_{\rm div}=\Vmat^{\!\top}\Mmat\Vmat-\mathsf B^{\!\top}\tilde{\mathsf Z}$.
-Since $\mathsf B=\Kp\mathsf Z$, $\mathsf B^{\!\top}\delta=\mathsf Z^{\!\top}\rho$, hence
+Since $\mathsf B=\Kp\mathsf Z$, $\mathsf B^{\!\top}\mathsf Z_{\rm err}=\mathsf Z^{\!\top}\mathsf R$, hence
 \[
-  \tilde{\mathsf M}_{\rm div}=\Mdiv+\mathsf E,\qquad \mathsf E=-\mathrm{sym}(\mathsf Z^{\!\top}\rho).
+  \tilde{\mathsf M}_{\rm div}=\Mdiv+\delta\mathsf M,\qquad \delta\mathsf M=-\mathrm{sym}(\mathsf Z^{\!\top}\mathsf R).
 \]
-For a coefficient vector $c$, $c^{\!\top}\mathsf Ec=-(\mathsf Zc)^{\!\top}\Kp(\delta c)=-\langle\Gmat\mathsf Zc,\Gmat\delta c\rangle_{\Mmat}$.
-$\Gmat\mathsf Zc$ is the $\Mmat$-orthogonal projection of $\Vmat c$ onto $\mathrm{range}\,\Gmat$, so $\|\Gmat\mathsf Zc\|_{\Mmat}\le\|\Vmat c\|_{\Mmat}$, and $\|\Gmat\delta c\|_{\Mmat}^2=(\delta c)^{\!\top}\Kp(\delta c)=\|\rho c\|_{\Kp^{-1}}^2$.
+For a coefficient vector $c$, $c^{\!\top}\delta\mathsf M\,c=-(\mathsf Zc)^{\!\top}\Kp(\mathsf Z_{\rm err}c)=-\langle\Gmat\mathsf Zc,\Gmat\mathsf Z_{\rm err}c\rangle_{\Mmat}$.
+$\Gmat\mathsf Zc$ is the $\Mmat$-orthogonal projection of $\Vmat c$ onto $\mathrm{range}\,\Gmat$, so $\|\Gmat\mathsf Zc\|_{\Mmat}\le\|\Vmat c\|_{\Mmat}$, and $\|\Gmat\mathsf Z_{\rm err}c\|_{\Mmat}^2=\|\mathsf Rc\|_{\Kp^{-1}}^2$.
 With $c^{\!\top}\Mdiv c=\|\Pmat\Vmat c\|_{\Mmat}^2=\mu(c)\|\Vmat c\|_{\Mmat}^2$, where $\mu(c)\in[0,1]$ is the divergence-free mass fraction of $\Vmat c$,
 \[
-  \eta(c):=\frac{|c^{\!\top}\mathsf Ec|}{c^{\!\top}\Mdiv c}\ \le\ \frac{\|\rho c\|_{\Kp^{-1}}}{\mu(c)\,\|\Vmat c\|_{\Mmat}}.
+  \eta(c):=\frac{|c^{\!\top}\delta\mathsf M\,c|}{c^{\!\top}\Mdiv c}\ \le\ \frac{\|\mathsf Rc\|_{\Kp^{-1}}}{\mu(c)\,\|\Vmat c\|_{\Mmat}}\ \le\ \frac{\lambda_{\min}(\Kp)^{-1/2}\,\|\mathsf Rc\|_2}{\mu(c)\,\|\Vmat c\|_{\Mmat}}.
 \]
 
 \paragraph{Consequence for the Ritz values.}
 Let $\bar\eta=\sup\eta(c)<1$ over the coefficient subspace $\mathcal C$ kept by the Ritz layer.
 Then $c^{\!\top}\tilde{\mathsf M}_{\rm div}c\le(1+\bar\eta)\,c^{\!\top}\Mdiv c$ on $\mathcal C$, and $\Pmat\Vmat$ is injective there.
-Every computed Rayleigh quotient $c^{\!\top}\Av c/c^{\!\top}\tilde{\mathsf M}_{\rm div}c$ is therefore at least $(1+\bar\eta)^{-1}$ times the Rayleigh quotient of the exact field $\Pmat\Vmat c\in W_h$.
+Every computed Rayleigh quotient $c^{\!\top}\Av c/c^{\!\top}\tilde{\mathsf M}_{\rm div}c$ is therefore at least $(1+\bar\eta)^{-1}$ times the Rayleigh quotient of the exact field $\Pmat\Vmat c\in Z_h$.
 The argument of Step~3 of the proof, applied to $k$-dimensional subspaces of $\mathcal C$ and their images under $\Pmat\Vmat$, gives
 \[
   \tilde\theta_k\ \ge\ \lamh_k/(1+\bar\eta).
 \]
-An inexact solve can thus lower the Ritz values only by the relative amount $\bar\eta$.
-It is proportional to the CG residual and inversely proportional to the divergence-free fraction $\mu$, which is why directions with a tiny fraction are discarded rather than regularised.
-The returned field $\tilde{\Pmat}\Vmat c$ has the same numerator and the larger mass $c^{\!\top}\Mdiv c+\|\rho c\|_{\Kp^{-1}}^2$, so its own Rayleigh quotient is lowered by a relative amount of second order in the residual.
-We do not bound $\bar\eta$ a priori, and floating-point rounding is not covered by this argument.
+The returned field $\tilde{\Pmat}\Vmat c$ has the same numerator and the larger mass $c^{\!\top}\Mdiv c+\|\mathsf Rc\|_{\Kp^{-1}}^2$, so its own Rayleigh quotient is lowered by a relative amount of second order in the residual.
+
+\paragraph{How small is $\bar\eta$?}
+The bound shows $\bar\eta\lesssim C\,\tau/\mu_{\min}$, where $\mu_{\min}\ge\tau_{\rm drop}$ is the smallest divergence-free fraction among the kept directions and $C$ collects the conversion between the Euclidean residual norm and the $\Kp^{-1}$ and $\Mmat$ norms, which depends on the mesh.
+With $\tau=10^{-8}$ and $\tau_{\rm drop}=10^{-6}$ the ratio $\tau/\mu_{\min}$ can be as large as $10^{-2}$ before $C$, so $\bar\eta<1$ is not guaranteed a priori and the Ritz values could in principle fall by about a percent below $\lamh_k$ for a kept direction at the threshold.
+Discarding directions with small $\mu$ limits this, but does not make it negligible; tightening $\tau$ or raising $\tau_{\rm drop}$ would.
+The trained models of \cref{sec:experiments} have errors of $0.6$--$3\,\%$ and are far from this regime, so their margins say nothing about it, and floating-point rounding is not covered either.
+% TODO pass 3: stress test of the bound (exact-eigenvector bases with noise at 1e-8, random bases, near-gradient mixtures; tau in {1e-4, 1e-6, 1e-8}; report min over modes of theta/lambda_h - 1) and the a posteriori eta-bar of the evaluation runs, in this subsection
 
 \subsection{Cost and default configuration}\label{sec:A04-cost}
 
