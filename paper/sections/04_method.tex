@@ -132,14 +132,9 @@ In the backward pass of both eigendecompositions the factor $1/(\lambda_j-\lambd
 \subsection{Upper-bound guarantee}\label{sec:04-bound}
 
 Let $\lamh_1\le\lamh_2\le\dots$ be the positive eigenvalues of $\Kmat x=\lambda\Mmat x$ on $\Vh$, for the forms of \cref{sec:formulation} assembled with one explicit integration rule (so $\lamh_k$ depends on this rule, and $\Kmat\Gmat=0$ holds to rounding for the same rule); $f=c_0\sqrt\lambda/(2\pi s)$ is monotone in $\lambda$, so all statements hold for both.
-Let $Z_h=\{\bm v\in\Vh:\bm v^{\!\top}\Mmat\Gmat=0\}$ be the discretely divergence-free subspace of \cref{sec:formulation}.
-We assume:
-\begin{description}
-\item[(A)] $\ker\Kmat=\mathrm{range}\,\Gmat$ on $\Vh$, and $\Mmat$ is positive definite.
-\end{description}
-$\Kmat\Gmat=0$ gives only $\mathrm{range}\,\Gmat\subset\ker\Kmat$; (A) needs the reverse inclusion, a rank statement ($\dim\ker\Kmat$ equals the number of columns of $\Gmat$).
-It rests on the exactness of the discrete sequence $\Sh\xrightarrow{\ \nabla\ }\Vh\xrightarrow{\ \curl\ }$ of \cref{sec:formulation} (covariant Piola map)~\cite{monk2003finite,arnold2006finite}, not proved here for the curved meshes used.
-% TODO pass 3: rank check of (A): number of zero eigenvalues of K on V_h versus the number of columns of G on the meshes used (number to be inserted here, with the meshes it was run on)
+$Z_h$ is the discretely divergence-free subspace of \cref{sec:formulation}.
+We use assumption (A) of \cref{eq:03-A}, $\ker\Kmat=\mathrm{range}\,\Gmat$ on $\Vh$ (the rank form of discrete exactness; $\Kmat\Gmat=0$ gives only ``$\supset$''), and that $\Mmat$ is positive definite; it is not proved here for the curved meshes used.
+% TODO pass 3: rank check of (A): number of zero eigenvalues of K on V_h versus the number of columns of G (dim S_h + extra wall components) on the meshes used; insert the number and the meshes here
 Under (A), $\Vh=\ker\Kmat\oplus Z_h$ is an $\Mmat$-orthogonal splitting, $\Kmat$ is positive definite on $Z_h$, and the positive eigenvalues of the full problem are those of the pencil restricted to $Z_h$ (an eigenvector with $\lambda>0$ is $\Mmat$-orthogonal to $\ker\Kmat$ because $\bm g^{\!\top}\Mmat x=\lambda^{-1}\bm g^{\!\top}\Kmat x=0$).
 Courant--Fischer~\cite{parlett1998symmetric} gives
 \begin{equation}\label{eq:04-minmax}

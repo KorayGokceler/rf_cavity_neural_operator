@@ -16,7 +16,7 @@ shells: one extra potential), an annular cylinder (solid torus, b1 = 1), optiona
 mesh rebuilt from the BREP of a stored sample (--pipes_h5).
 
     python scripts/paper/check_assumption_a.py [--orders 1 2 3] [--geoms pillbox shell annulus pipes]
-        [--pipes_h5 lf_test.h5 --pipes_key sample_000024 --pipes_cs 0.4 --pipes_maxh 0.2] [--json out.json]
+        [--pillbox_maxh 0.05] [--pipes_h5 lf_test.h5 --pipes_key sample_000024 --pipes_cs 0.4 --pipes_maxh 0.2] [--json out.json]
 """
 import argparse
 import json
@@ -45,7 +45,7 @@ def build_mesh(name, args):
     if name == "pillbox":
         geo = Cylinder(Axes((0, 0, 0), Z), r=0.1, h=0.1)
         geo.faces.name = "wall"
-        mesh = Mesh(OCCGeometry(geo).GenerateMesh(maxh=0.05))
+        mesh = Mesh(OCCGeometry(geo).GenerateMesh(maxh=args.pillbox_maxh))
         k2 = (J01 / 0.1) ** 2
     elif name == "shell":
         geo = Sphere((0, 0, 0), 0.1) - Sphere((0, 0, 0), 0.04)
@@ -132,6 +132,7 @@ def main():
     ap.add_argument("--geoms", nargs="+", default=["pillbox", "shell", "annulus"],
                     choices=["pillbox", "shell", "annulus", "pipes"])
     ap.add_argument("--curve", type=int, default=2)
+    ap.add_argument("--pillbox_maxh", type=float, default=0.05, help="0.05 is the mesh of tests/test_field_model.py")
     ap.add_argument("--rel_tol", type=float, default=1e-10, help="kernel = eigenvalues below rel_tol * max")
     ap.add_argument("--max_dense", type=int, default=9000, help="skip meshes with more free DOFs")
     ap.add_argument("--pipes_h5", default=None)
