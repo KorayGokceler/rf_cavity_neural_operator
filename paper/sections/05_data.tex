@@ -73,13 +73,21 @@ The axial field is stored, so $T$ and $\RoQ$ follow at any velocity $\beta$.
 
 \subsection{Validation}\label{sec:05-validation}
 
-The adaptive label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
+The adaptive label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}; \cref{fig:05-modes} shows the two lowest modes of an $\HF$ label of the experimental family.
 This pillbox is smooth, without beam pipes or fillets, so the check validates the solver and the figures of merit but \emph{not} the labels of the experimental family (pillbox cells with pipes and fillets), for which no closed form exists.
 The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs, at the price of a larger (still far inside the target) $\RoQ$ error; the $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
 On a pillbox cell \emph{with} pipes, $\Bpk$ changed by $4\,\%$ between the two finest levels at a 400k-DOF limit, so the wall quantities of $\HF$ labels of that family are uncertain at the percent level.
 We have not yet cross-validated against an independent solver.
 % src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row); referee E2.3
 % TODO pass 3: none for 05 (no new results planned)
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/field_modes}
+\caption{Field magnitude $|\E|$ on the $y=0$ plane for modes 0 (TM$_{010}$-like, \SI{2.166}{GHz}) and 1 (TE$_{111}$-like dipole, \SI{2.492}{GHz}) of the $\HF$ label of test geometry 24 of the experiments (pillbox cell with pipes), normalised by the maximum on the plane; the stored order-two field is evaluated on the rebuilt curved mesh. The high values near the iris fillets in mode 0 are the surface peaks. Mode 1 belongs to a degenerate pair, so its orientation in the plane is arbitrary.}
+\label{fig:05-modes}
+\end{figure}
+% src: docs/35 §4 (field_modes.pdf: geometry 24, modes 0 and 1, 2.166 and 2.492 GHz)
 
 \begin{table}[t]
 \centering

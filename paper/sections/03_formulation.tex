@@ -44,7 +44,8 @@ $\curl\nabla\varphi=0$. This gives $\operatorname{range}\Gmat\subset\ker\Kmat$; 
   \textbf{(A)}\qquad \ker\Kmat=\operatorname{range}\Gmat\quad\text{on }\Vh ,
 \end{equation}
 i.e.\ $\dim\ker\Kmat=\dim\Sh$ (counting the extra wall-component functions). (A) is the rank form of exactness of the discrete de~Rham sequence at $\Vh$. With the covariant Piola map it holds when $\Sh$ is mapped by the plain pull-back and the basis of $\Vh$ contains
-the gradients of $\Sh$ exactly, as the complete-sequence basis does \citep{schoberl2005high,monk2003finite,arnold2006finite}; we do not prove it for the quadrature-defined forms on the curved elements used here. % TODO pass 3: rank check of (A): number of zero eigenvalues of K on V_h vs dim S_h + extra wall components, on the meshes used
+the gradients of $\Sh$ exactly, as the complete-sequence basis does \citep{schoberl2005high,monk2003finite,arnold2006finite}; we do not prove it for the quadrature-defined forms on the curved elements used here.
+We verified (A) numerically on 15 small curved-mesh cases (five meshes, $p=1,2,3$, among them a spherical shell with two wall components and a solid torus): in all of them $\dim\ker\Kmat=\operatorname{rank}\Gmat$ equals the number of interior $\Sh$ DOFs plus the extra wall potentials (\cref{tab:A04-rank}). % src: docs/35 §1
 The Galerkin discretisation of \eqref{eq:03-weak} is the generalised eigenproblem
 \begin{equation}\label{eq:03-gev}
   \Kmat\,\mathbf x=\lambda\,\Mmat\,\mathbf x ,

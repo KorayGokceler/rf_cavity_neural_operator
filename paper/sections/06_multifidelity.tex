@@ -49,10 +49,11 @@ With the shared rule the meshes are identical to the $\HF$ model meshes on 8 of 
 and the mean size over 40 $\LF$ samples drops from 9404 to 7639 tetrahedra ($-19\,\%$).
 The label-time ratio $\HF$/$\LF$ is then between $2.8$ and $4.3$, depending on the measurement conditions
 (\cref{tab:A06-cost}): $4.3$ on the eight training meshes (\SI{1242}{s} against \SI{291}{s}) under concurrent training
-load, $2.8$--$3.7$ on two geometries without load; it was $2.3$ with the earlier $\LF$ meshes. Because the $\HF$
+load, $2.8$--$3.7$ on two geometries without load, and $4.0$ on a later regeneration of the six test geometries; it
+was $2.3$ with the earlier $\LF$ meshes. Because the $\HF$
 label is a single order-3 solve, this is the cost of an order-3 against an order-2 solve on one mesh, not a comparison
 with a multi-level adaptive generator.
-% src: docs/34 §8.1 (8/8, 6/6, 9404→7639 −19 %, 1242 s/291 s = 4.3, 2.8–3.7 unloaded, old ratio 2.3); EDITOR_NOTES_2 decisions 3–4
+% src: docs/34 §8.1 (8/8, 6/6, 9404→7639 −19 %, 1242 s/291 s = 4.3, 2.8–3.7 unloaded, old ratio 2.3); docs/35 §5 (4.0); EDITOR_NOTES_2 decisions 3–4
 
 \subsection{How the labels differ}\label{sec:06-diff}
 
@@ -60,7 +61,11 @@ On identical meshes, the $\LF$ frequency exceeds the $\HF$ one by $0.004$--$0.04
 mode that falls outside the span of the six $\LF$ modes has an $M$-norm of $0.08$--$0.32\,\%$ for modes 0--3. The
 model's own errors (about $1$--$2\,\%$ in frequency and $4.5$--$5\,\%$ in the field, \cref{sec:experiments}) exceed
 these differences by one to two orders of magnitude, so the experiments of this paper cannot yet discriminate between
-the two label types; they do not probe the accuracy range in which the label type should matter.
+the two label types; they do not probe the accuracy range in which the label type should matter. A Gaussian process on the six geometry
+parameters is equally insensitive to the label type (mean frequency error $3.75\,\%$ when trained on 8 $\LF$ labels and
+$3.76\,\%$ on 8 $\HF$ labels), so at this scale the number of training geometries, not the label fidelity, decides
+the accuracy (\cref{sec:experiments}).
+% src: docs/35 §3a (GP on LF 8 vs HF 8: 3.75 vs 3.76 %)
 % src: docs/34 §8.1 (freq +0.004–+0.047 %; field 0.08–0.32 %; model error 10–50× larger), §8.2 (1.1–1.7 %, 0.045–0.050); EDITOR_NOTES_2 decision 2
 Quantities determined by the wall behave differently (\cref{tab:06-diff}). These values were measured on the earlier
 meshes, where the $\LF$ and $\HF$ meshes coincided for only one of the four geometries, so they mix the effect of the

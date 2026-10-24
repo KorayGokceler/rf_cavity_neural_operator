@@ -16,12 +16,13 @@ mismatched start rule, and the observation is recorded here as a pitfall.
 
 \paragraph{Cost ratio and its conditions.} The ratio of the label times $\HF$/$\LF$ depends on the geometries, on the
 mesh rule used for $\LF$ and on the machine load; \cref{tab:A06-cost} lists every measurement. The range $2.8$--$4.3$
-quoted in the paper refers to the rows with the shared start-mesh rule. The $\HF$ label is a single order-3 solve in all
+quoted in the paper refers to the rows with the shared start-mesh rule; the regenerated row
+(mesh plus label per sample, mean over the six test geometries) re-measures the ratio at $4.0$. The $\HF$ label is a single order-3 solve in all
 rows, so the ratio is that of an order-3 against an order-2 solve on one mesh.
 
 \begin{table}[t]
 \centering
-\caption{Label-time ratio $\HF$/$\LF$ under the stated conditions. Workers: two processes with one NGSolve thread each on
+\caption{Label-time ratio $\HF$/$\LF$ under the stated conditions. Workers: processes with one NGSolve thread each (two, or three in the regenerated row) on
 a shared 4-core VM; ``load'' means that training runs were active at the same time.}
 \label{tab:A06-cost}
 \small
@@ -31,6 +32,7 @@ Geometries, $\LF$ mesh rule & Conditions & $\HF$ [s] & $\LF$ [s] & Ratio \\
 \midrule
 8 training geometries, shared rule & workers, load & 1242 & 291 & 4.3 \\ % src: docs/34 §8.1
 6 test geometries, shared rule & workers, load & 779 & 190 & 4.1 \\ % src: docs/34 §8.1
+6 test geometries, shared rule, regenerated & 3 workers, 4-core VM, no other load stated & 173.5 & 43.3 & 4.0 \\ % src: docs/35 §5 (LF 3.4 s mesh + 39.9 s label, HF 3.2 s + 170.3 s per sample)
 2 geometries (ids 3, 24), shared rule & new container (NGSolve 6.2.2608), no load & --- & --- & 2.8--3.7 \\ % src: docs/34 §8.1 bullet 2
 8 training geometries, earlier $\LF$ meshes & not recorded separately\textsuperscript{a} & --- & --- & 2.3 \\ % src: docs/34 §8.1
 4 geometries, earlier $\LF$ meshes & first measurement, before generator speed-ups & 157 & 31 & $\approx 5$ \\ % src: docs/34 §3 (mean mesh + label), §5
