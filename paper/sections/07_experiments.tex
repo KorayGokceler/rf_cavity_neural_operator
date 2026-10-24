@@ -19,8 +19,8 @@ more than ten epochs). The loss is the span loss in the mass-plus-energy norm, w
 of \cref{sec:method} at their default weights; the figure-of-merit loss is switched off for the field model.
 Dropout is zero and no data augmentation is used.
 
-\emph{Data.} All geometries belong to the family \texttt{pillbox\_pipes} (pillbox cells with beam pipes) with fillet radius floored
-at $0.12$ (the minimum-fillet setting of the generator), drawn from a Sobol sequence with a fixed seed, so that identifier~$i$ is the same
+\emph{Data.} All geometries belong to the family \texttt{pillbox\_pipes} (pillbox cavities with pipes) with minimum-fillet
+parameter of the generator set to $0.12$, drawn from a Sobol sequence with a fixed seed, so that identifier~$i$ is the same
 geometry in the low- and the high-fidelity set (checked on four samples). Training uses identifiers 0--7 (HF, 8 geometries),
 0--23 (LF, 24) and 0--23 plus 30--45 (LF, 40); the six test geometries are identifiers 24--29 and
 carry HF labels. In the equal-cost experiment the stored model mesh of every test geometry has between
@@ -43,9 +43,8 @@ We first ask how accurately the architecture can represent the modes at all. \Cr
 pillbox (179 tetrahedra, span loss, width-64 two-block trunk, $\nbasis=12$, $\nmodes=4$). With vertex tokens and barycentric
 interpolation of the learned fields, the relative eigenvalue error saturates around $10^{-4}$, and is worse at order~3. With the quadrature-point
 tokens of \cref{sec:method} it reaches $10^{-6}$--$9\times10^{-6}$ in fewer steps. For comparison, the lowest-order
-Whitney model reaches a relative frequency floor of $2.4\times10^{-3}$ on similar cavities, in an earlier study of the lowest-order model
-\emph{on the same kind of cavities, not the same sample}; this is
-the representation error of the space that the quadrature-point tokens remove. A single-sample fit is of course a ceiling on capacity, not a generalisation result.
+Whitney (N0) model has a relative frequency floor of $2.4\times10^{-3}$ on the same kind of cavities (not the same sample).
+A single-sample fit measures representational capacity, not generalisation.
 
 \begin{table}[t]
 \centering\small
@@ -78,16 +77,16 @@ same eight meshes is $4.3$ (\cref{sec:multifidelity}). Arm~D continues C2 for 20
 \caption{Equal-cost comparison on the six HF test geometries (identifiers 24--29). Frequency errors are absolute relative errors against the HF label, in percent, summarised over the six geometries and the modes; field error is the mass-norm relative $L^2$ error averaged over modes 0--2. One training run per arm. Arm~D has no valid control (see text).}
 \label{tab:equal-cost}
 % src: docs/34 §8.2 (table)
-\begin{tabular}{llrrrrc}
+\begin{tabular}{llrrrrrc}
 \toprule
-Arm & Training labels & Label cost [s] & Steps & \multicolumn{3}{c}{$|\Delta f|$ [\%] mean / median / max} \\
+Arm & Training labels & Label cost [s] & Steps & \multicolumn{3}{c}{$|\Delta f|$ [\%]} & field $\relLtwo$\\
 \cmidrule(lr){5-7}
- & & & & mean & median / max & field $\relLtwo$\\
+ & & & & mean & median & max & \\
 \midrule
-A  & HF, 8 geometries  & 1242 & 600 & 1.66 & 1.11 / 8.11 & 0.050\\
-B2 & LF, 24 geometries & 997  & 600 & 1.55 & 1.06 / 6.57 & 0.046\\
-C2 & LF, 40 geometries & 1704 & 600 & \textbf{1.37} & \textbf{1.00 / 5.30} & \textbf{0.045}\\
-D  & C2, then HF 8 fine-tune & 1704 + 1242 & 600 + 200 & 1.13 & 0.82 / 4.41 & 0.039\\
+A  & HF, 8 geometries  & 1242 & 600 & 1.66 & 1.11 & 8.11 & 0.050\\
+B2 & LF, 24 geometries & 997  & 600 & 1.55 & 1.06 & 6.57 & 0.046\\
+C2 & LF, 40 geometries & 1704 & 600 & \textbf{1.37} & \textbf{1.00} & \textbf{5.30} & \textbf{0.045}\\
+D  & C2, then HF 8 fine-tune & 1704 + 1242 & 600 + 200 & 1.13 & 0.82 & 4.41 & 0.039\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -128,9 +127,6 @@ $0.004$--$0.047\%$, and the HF mode lies outside the six-mode LF space by only $
 with the smallest margin $+0.47\%$ (equal-cost study), consistent with \cref{prop:upper-bound}. In the earlier studies of this section the smallest
 margins were $+0.006\%$ and $+0.009\%$ (\cref{sec:07-first,sec:07-transfer}).
 % src: docs/34 §8.2 (+0.47 %), §4.1 (+0.006 %), §4.2 (+0.009 %)
-Because the HF label frequencies lie below the order-2 floor by at most $0.033\%$ (\cref{sec:07-first}),
-a positive error against the HF label here also implies a positive gap to the discrete eigenvalue.
-% src: docs/34 §4.1 (FE floor <= 0.033 %)
 
 \paragraph{Fine-tuning and mixed training are inconclusive.} Arm~D is better than C2 in \cref{tab:equal-cost} (mean error $1.37\%\to1.13\%$), but we cannot attribute the gain to the HF labels. The control run (same
 starting point, same 200 steps, LF data only) was lost when the container restarted before its test evaluation; on the three validation geometries it reached a frequency error of $0.031$\,GHz and field error $0.046$,
@@ -151,7 +147,7 @@ A first fine-tuning test with two HF geometries (8 more epochs, lr $3\times10^{-
 from $1.83\%$ and $1.76\%$ to $1.50\%$ and $1.50\%$ for the control, against $1.73\%$ and $1.50\%$ with the HF fine-tune; the gain came from the additional training, not from the HF labels.
 % src: docs/34 §4.3 (table)
 This is the control that is missing for arm~D above, and it suggests, though it does not prove, that the improvement of D is due to the extra steps. The HF information that fine-tuning could add is in the wall-dependent quantities
-(Q$_0$, surface peaks) whose loss term is switched off in these runs.
+($\Qz$, surface peaks) whose loss term is switched off in these runs.
 
 \subsection{Transfer to other spaces}\label{sec:07-transfer}
 
@@ -197,8 +193,7 @@ We do not claim a speed advantage at this scale. The potential benefit is at lar
 
 % src: docs/31 §3.6, §3.7; docs/28 §4
 Training on curved high-order meshes is dominated by work that does not depend on the learned parameters. \Cref{tab:07-engineering} lists the reductions we measured, all of which leave the computed quantities unchanged: the training loss, the input tensors and all 76 parameter gradients are
-bit-identical to the previous code on both test geometries, with the single exception of the wall-distance and torsion features, which are identical for 182\,728 of 182\,728 entries on the geometry on which this was measured, and
-differ by at most $6\times10^{-8}$ in 7 of $1.33\times10^{6}$ entries on a 95k-tetrahedron mesh. Timings are single-thread CPU times on a loaded machine, repeatable to about $1\%$ between runs, wall-clock numbers vary by about $30\%$.
+bit-identical to the previous code on both test geometries. (The one exception is a faster torsion-feature solver, whose float32 output was unchanged in all 182\,728 entries on one geometry but differed by at most $6\times10^{-8}$ in 7 of $1.33\times10^{6}$ entries on a 95k-tetrahedron mesh.) Timings are single-thread CPU times on a loaded machine, repeatable to about $1\%$ between runs, wall-clock numbers vary by about $30\%$.
 % src: docs/31 §3.7 ("bit düzeyinde aynı", 76 gradients, two samples), §3.6 (torsion CG), measurement notes
 
 \begin{table}[t]
