@@ -192,6 +192,8 @@ python scripts/eval_fidelity.py --ckpt lf_best.ckpt --data hf.h5 --spaces native
   başlıyor, eleman katlanırsa 2,0'a düşüyor. Sonuç: LF mesh'leri HF model mesh'lerinden 1,2–1,9 kat büyüktü (6 test
   geometrisinde 5,9k–12,1k tet, HF'de 4,8k–10,0k). LF hem pahalıydı hem de eğitimdeki mesh dağılımı çıkarımdakinden
   farklıydı.
+- Yeni konteynerde (ngsolve 6.2.2608) kimlik 3 ve 24 için LF ve HF mesh'i yine aynı. Tet sayıları sürüm farkıyla biraz
+  değişti (kimlik 3: 6754, önce 6925); LF etiketi 2,8–3,7 kat hızlı (eğitim yükü yokken).
 - `--curvaturesafety 1,5` tek başına yetmiyor: 1,5'te katlanan geometrilerde LF yolu daha ince bir mesh'le yeniden
   deniyordu (ör. kimlik 3: 13,7k tet; HF 2,0'a düşüp 6,9k).
 - **Değişiklik:** `field_labels.start_mesh` (uyarlamalı yolun başlangıç mesh'i seçimi, ayrı fonksiyon). `--no_adapt` ve
