@@ -219,7 +219,7 @@ class FieldDataset(Dataset):
         self.active_geoms = [int(i) for i in parts.get(split, parts["test"])]
         if split == "train" and int(hf_repeat) > 1:
             self.active_geoms += [i for i in self.active_geoms if fids[i] == HF] * (int(hf_repeat) - 1)
-        tr = np.concatenate([freqs[i][:self.n_modes] for i in parts["train"]]) if n_tr else \
+        tr = np.concatenate([freqs[i][:self.n_modes] for i in parts["train"]]) if len(parts["train"]) else \
             np.concatenate([fq[:self.n_modes] for fq in freqs])
         self.stats = {"mean": float(tr.mean()), "std": float(tr.std() if tr.std() > 0 else 1.0)}
         self.geom_to_samples = {i: [i] for i in range(len(index))}          # train.py's empty-split message

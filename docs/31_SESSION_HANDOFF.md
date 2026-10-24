@@ -355,6 +355,10 @@ ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyon
   sınır), alan rel-L2 0,03–0,07; hata p2 tabanından (≤ 0,033 %) değil modelden. Aynı ağırlıklarla p3 ve 8 kat ince
   mesh'te çıkarım çalışıyor (Ritz üst sınırı korunuyor) ama doğruluk 0,2–0,6 puan kötüleşiyor.
 - 2 HF örnekle ince ayar, aynı epoch sayısında yalnız LF kontrolüne göre kazanç vermedi.
+- **Eşit maliyetli deney (docs/34 §8):** 6 HF test geometrisinde |f| hata ortalaması: HF 8 (etiket 1242 s) %1,66,
+  LF 24 (997 s) %1,55, LF 40 (1704 s) %1,37; alan rel-L2 0,050 / 0,046 / 0,045. LF→HF boşluğu 0,02 puan; Ritz üst
+  sınırı korunuyor. LF etiketleri artık HF'nin model mesh'inde (`field_labels.start_mesh`): 8/8 aynı mesh, −%19 tet,
+  HF/LF maliyeti 4,3 kat (önce 2,3). Aynı mesh'te LF–HF alan farkı M-normunda %0,08–0,32.
 - Birleşik kodla `train.py --fast_dev_run` (`data_path` = 19 LF geometri, `train_extra` = 4 HF, `hf_repeat 2`,
   `fidelity_weights [1,2]`) train/val/test adımlarını çalıştırıyor. 15 GB'lık makinede `num_workers 8` yükleyici
   işçilerini bellek yetmezliğinden öldürüyor; 1 işçiyle sorunsuz. TRUBA'da işçi sayısını düğüm belleğine göre seçin.
@@ -408,7 +412,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 
 | 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | bitti (§3.8): transfer 253→29 s, Kp formu, erken ret; kalan: çözücü (TRUBA ölçümü, Pardiso) |
 | 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | bitti (§3.7): özellikler H5'te, hazır devrikler, CG tamponları, işçi iş parçacığı; operatör önbelleği ve Kp Cholesky ölçüldü, alınmadı |
-| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | kod + ölçüm bitti (docs/34); hibrit mod denenmedi; ölçekli LF+HF eğitim açık |
+| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | bitti (docs/34 §8): LF eğitimi eşit maliyette HF'den iyi; LF mesh'i = HF model mesh'i. Açık: kontrollü ince ayar / karışık eğitim, hibrit mod |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.

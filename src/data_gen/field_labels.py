@@ -71,6 +71,23 @@ def curved_mesh(cad_path, h, deform=None, s=None):
     return mesh, shape
 
 
+def start_mesh(cad_path, h, deform, s, css):
+    """Curved mesh at the first curvaturesafety of css that neither folds elements nor exceeds max_elements
+    → (mesh, shape, cs); a finer value is not tried after a too-large mesh."""
+    err, too_fine = None, np.inf
+    for cs in dict.fromkeys(css):
+        if cs >= too_fine:                            # a finer curvaturesafety only has more tets
+            continue
+        try:
+            mesh, shape = curved_mesh(cad_path, h, deform, {**s, "curvaturesafety": cs, "retries": 0})
+            return mesh, shape, cs
+        except ho.TooManyElements as e:
+            err, too_fine = e, cs
+        except RuntimeError as e:                     # folded elements
+            err = e
+    raise err
+
+
 def project_to_model(mesh, label, model_order, unit_norm=False):
     """M-orthogonal projection of the label modes (solve_modes result: fes, gfs) onto
     HCurl(model_order) of the same mesh → (U [n_model, K], proj_err [K], rq_model [K], fes_model).
@@ -233,19 +250,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
     adapt_attrs = {}
     if s["adaptive"]:
         from src.data_gen import adaptive as ad
-        err, too_fine = None, np.inf
-        for cs in dict.fromkeys((s["adapt_cs"], s["curvaturesafety"])):
-            if cs >= too_fine:                        # a finer curvaturesafety only has more tets
-                continue
-            try:
-                mesh, shape = curved_mesh(cad_path, h, deform, {**s, "curvaturesafety": cs, "retries": 0})
-                break
-            except ho.TooManyElements as e:
-                err, too_fine = e, cs
-            except RuntimeError as e:                 # folded elements at the coarse start
-                err = e
-        else:
-            raise err
+        mesh, shape, cs = start_mesh(cad_path, h, deform, s, (s["adapt_cs"], s["curvaturesafety"]))
         t1 = time.perf_counter()
         ne0 = mesh.ne
         axis = _beam_axis(shape_type, mesh, params)
@@ -266,7 +271,10 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
                        "adapt_cs": float(cs), "est_rel_f": last["est_rel_f"], "est_rel_wall": last["est_rel_wall"],
                        "adapt_df": last.get("df", np.nan), "adapt_dq": last.get("dq", np.nan)}
     else:
-        mesh, shape = curved_mesh(cad_path, h, deform, s)
+        if s["label_order"] == s["model_order"]:          # low-fidelity labels: the adaptive path's start mesh
+            mesh, shape, _ = start_mesh(cad_path, h, deform, s, (s["adapt_cs"], s["curvaturesafety"]))
+        else:
+            mesh, shape = curved_mesh(cad_path, h, deform, s)
         t1 = time.perf_counter()
         lab = ho.solve_modes(mesh, n_modes + 1, order=s["label_order"], max_ndof=s["max_ndof"])
         axis = _beam_axis(shape_type, mesh, params)

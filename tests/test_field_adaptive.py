@@ -246,3 +246,24 @@ def test_too_many_tets_is_rejected_before_curving_and_not_retried_with_a_finer_m
     with pytest.raises(ho.TooManyElements):
         fl.label_sample(brep, 0.02, "pillbox", 2, settings={"adapt_cs": 1.5, "curvaturesafety": 2.0})
     assert calls == [1.5]                                   # cs 2 only has more tets
+
+
+def test_low_fidelity_labels_start_from_the_adaptive_paths_mesh(tmp_path, monkeypatch):
+    """--no_adapt with label_order == model_order (LF, docs/34) meshes like the adaptive path (adapt_cs, then
+    curvaturesafety when that folds), so LF and HF samples of a geometry share the model mesh."""
+    from src.data_gen import field_labels as fl
+    calls = []
+
+    def folds(cad_path, h, deform, s):
+        calls.append((s["curvaturesafety"], s["retries"]))
+        raise RuntimeError("folded elements")
+
+    monkeypatch.setattr(fl, "curved_mesh", folds)
+    lf = {"adaptive": False, "label_order": 2, "model_order": 2, "adapt_cs": 1.5, "curvaturesafety": 2.0}
+    for settings, expected in ((lf, [(1.5, 0), (2.0, 0)]), ({**lf, "adaptive": True}, [(1.5, 0), (2.0, 0)]),
+                               ({**lf, "label_order": 3}, [(2.0, 1)])):        # p3 without adaptivity: unchanged
+        calls.clear()
+        with pytest.raises(RuntimeError, match="folded"):
+            fl.label_sample(str(tmp_path / "s.brep"), 0.02, "pillbox", 2, settings=settings)
+        assert calls == expected
+

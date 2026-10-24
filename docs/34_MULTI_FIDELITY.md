@@ -1,8 +1,9 @@
 # 34 — Çoklu doğruluk: düşük doğruluklu etiketle eğitim, yüksek doğruluklu veride çıkarım
 
-> Durum: kod ve ölçümler hazır (dal `claude/field-model`, açık iş 13). Ölçekli eğitim yapılmadı: tüm eğitim
-> sonuçları CPU'da, 14 eğitim geometrili küçük bir modelle alındı ve model **az eğitilmiş**. Sayılar bu yüzden
-> yöntemin tavanını değil, etiket doğruluğunun etkisini ölçmek içindir.
+> Durum: kod ve ölçümler hazır (dal `claude/field-model`, açık iş 13). **§8: eşit maliyetli deney** — LF ile eğitilen
+> model, aynı ya da daha düşük etiket maliyetinde HF ile eğitilenden HF test geometrilerinde daha iyi; LF→HF boşluğu
+> 0,02 puan. LF etiketleri artık HF'nin model mesh'inde üretiliyor (§8.1). Tüm eğitimler CPU'da, küçük model, tek
+> aile (`pillbox_pipes`): sayılar yöntemin tavanını değil, etiket türünün etkisini ölçer.
 > Bağlam: docs/28 (model), docs/29 (etiketler), docs/30 (uyarlamalı etiketler), docs/31 §3.
 
 ## 1. Soru ve tanımlar
@@ -26,6 +27,8 @@
 | `src/data_gen/dataset_generator_3d.py` | `--curvaturesafety` (varsayılan değişmez). Ölçümde mesh boyutunu değiştirmedi (§3), yine de ucuz LF için ileride gerekebilir. |
 | `scripts/eval_fidelity.py` | Bir checkpoint'i H5'teki geometrilerde üç uzayda değerlendirir: `native` (saklı model mesh'i, HF etiketler), `p3` (aynı mesh, HCurl p3, p3 çözümüne karşı), `refine` (mesh bir kez düzgün inceltilir). Frekans hatası HF etikete ve değerlendirilen uzayın FE özdeğerine karşı, alan rel-L2, süreler. |
 | `tests/test_field_labels.py` | `test_multi_fidelity_items_split_and_loss_weights`: sınıflandırma, `train_extra` / `hf_repeat`, ağırlıklı span terimi. |
+| `src/data_gen/field_labels.py` | `start_mesh`: uyarlamalı yolun başlangıç mesh'i (`adapt_cs`, katlanırsa `curvaturesafety`); LF (`--no_adapt`, `label_order == model_order`) de bunu kullanıyor (§8.1). |
+| `src/data/field_dataset.py` | Frekans normalizasyonu train bölünmesinden; bölünme boşsa (`train_ratio 0`) `train_extra` geometrilerinden (önceden val/test dosyasından alınıyordu). |
 
 ## 3. Veri ve maliyet
 
@@ -44,7 +47,8 @@ HF: kimlik 3, 5, 10, 13. Üretim: 2 işçi × 1 NGSolve iş parçacığı, 4 çe
 - Örnek başına maliyet oranı HF / LF ≈ **5**. Tüm 24 LF örnek 8 dk, 4 HF örnek 5,5 dk sürdü.
 - HF'de `--max_ndof 150000` bütçesi ilk p3 çözümünden sonra doluyor (`adapt_iters = 1`, `adapt_stop = budget`):
   bu aile ve bu bütçede "HF" = başlangıç mesh'inde (curvaturesafety 1,5) p3 çözümü. Etiket mesh'i model mesh'i ile aynı.
-- **LF "ucuz" olsun diye mesh küçülmüyor:** `--curvaturesafety 1,0 / 1,5 / 2,0`, `--maxh_factor 3 / 8` aynı tet
+- **Düzeltildi (§8.1):** aşağıdaki "mesh küçülmüyor" gözlemi yanlış teşhisti; LF yolu HF'nin başlangıç mesh'i yerine
+  `curvaturesafety 2,0` kullanıyordu. **Eski gözlem:** LF "ucuz" olsun diye mesh küçülmüyor: `--curvaturesafety 1,0 / 1,5 / 2,0`, `--maxh_factor 3 / 8` aynı tet
   sayısını verdi; boyutu pervazlar ve borular belirliyor (docs/28 §4). `--min_fillet 0,05 → 0,12` yalnız
   8,2k–26,6k'yı 6,7k–15,6k tete indirdi. Kazanç p2 / p3 farkından geliyor (DOF ≈ 2,5 kat daha az, adaptif döngü yok).
   Bu yüzden LF'nin 0,05 pervazlı 16 örneklik ilk denemesi (8k–26k tet) örnek başına 123 s sürdü; ucuz LF için
@@ -179,3 +183,74 @@ python scripts/eval_fidelity.py --ckpt lf_best.ckpt --data hf.h5 --spaces native
 ```
 
 `lf_train.h5` / `hf_*.h5`: `pp_lf.h5` ve `pp_hf.h5`'nin kimliğe göre bölünmüş kopyaları (h5py ile `copy`).
+
+## 8. Eşit maliyetli deney: LF ile eğit, HF'de çıkarım (2026-10-24)
+
+### 8.1 LF etiketleri HF'nin model mesh'inde
+
+- Önceki LF yolu (`--no_adapt`) mesh'i `curvaturesafety 2,0` ile kuruyordu. Uyarlamalı (HF) yol ise `adapt_cs 1,5` ile
+  başlıyor, eleman katlanırsa 2,0'a düşüyor. Sonuç: LF mesh'leri HF model mesh'lerinden 1,2–1,9 kat büyüktü (6 test
+  geometrisinde 5,9k–12,1k tet, HF'de 4,8k–10,0k). LF hem pahalıydı hem de eğitimdeki mesh dağılımı çıkarımdakinden
+  farklıydı.
+- `--curvaturesafety 1,5` tek başına yetmiyor: 1,5'te katlanan geometrilerde LF yolu daha ince bir mesh'le yeniden
+  deniyordu (ör. kimlik 3: 13,7k tet; HF 2,0'a düşüp 6,9k).
+- **Değişiklik:** `field_labels.start_mesh` (uyarlamalı yolun başlangıç mesh'i seçimi, ayrı fonksiyon). `--no_adapt` ve
+  `label_order == model_order` olduğunda LF de onu kullanıyor. Uyarlamalı yol ve uyarlamasız p3 değişmedi.
+  Test: `test_low_fidelity_labels_start_from_the_adaptive_paths_mesh`.
+- **Ölçüm:**
+  - LF mesh'i, HF model mesh'iyle bayt düzeyinde aynı: 8/8 eğitim, 6/6 test geometrisi. HF'de `max_ndof 150000`
+    bütçesi tek adımda doluyor, model mesh'i = başlangıç mesh'i. Daha büyük bütçede HF model mesh'i inceltilmiş bir
+    seviye olabilir.
+  - 40 LF örnekte ortalama 9404 → 7639 tet (−%19).
+- **Maliyet** (aynı 8 mesh; 2 işçi × 1 iş parçacığı, 4 çekirdek, eşzamanlı eğitim yükü altında): HF 1242 s, LF 291 s,
+  yani **HF/LF = 4,3**. 6 test geometrisinde HF 779 s, LF 190 s (4,1 kat). Eski LF mesh'leriyle oran 2,3'tü.
+- **Etiket farkı, aynı mesh'te:**
+  - frekans LF/HF − 1 = +0,004 – +0,047 %;
+  - alan: HF modunun LF'nin 6 modluk uzayı dışında kalan kısmı, M-normunda, modlar 0–3: **%0,08–0,32**.
+  - Modelin hatası bunun 10–50 katı.
+
+### 8.2 Deney
+
+- **Veri:** `pillbox_pipes`, `--min_fillet 0.12 --seed 0 --sampling sobol --deform_prob 0`.
+  - HF eğitim: kimlik 0–7.
+  - LF eğitim: kimlik 0–23 (LF 24) ve 0–23 + 30–45 (LF 40).
+  - Test: kimlik 24–29, HF etiketli; aynı mesh'lerde LF etiketleri de var.
+- **Model:** §4'teki model; `lr 1e-3`, `custom_cosine` (10 epoch sabit, sonra kosinüs), batch 1, 1 iş parçacığı.
+- **Adım sayısı:** her kolda 600 adım. HF 8 için `hf_repeat 5`, yani epoch başına 40 öğe.
+- **Değerlendirme:**
+  - `last.ckpt` (checkpoint seçimi yok), `scripts/eval_fidelity.py`, saklı mesh, p2.
+  - Val = test geometrilerinin 3'ü; yalnız izleme için kullanıldı.
+  - Kurulum: `data_path` = test dosyası, `train_ratio 0`, eğitim verisi `train_extra` (glob ya da dizin).
+
+| kol | eğitim verisi | etiket maliyeti [s] | adım | \|f hatası\| ort. / medyan / maks. [%] | alan rel-L2 (mod 0–2) |
+|---|---|---|---|---|---|
+| A | HF 8 | 1242 | 15 × 40 | 1,66 / 1,11 / 8,11 | 0,050 |
+| B2 | LF 24 | 997 | 25 × 24 | 1,55 / 1,06 / 6,57 | 0,046 |
+| C2 | LF 40 | 1704 | 15 × 40 | **1,37 / 1,00 / 5,30** | **0,045** |
+| D | C2 + HF 8 ince ayar (5 × 40, `lr 3e-4`) | 1704 + 1242 | +200 | 1,13 / 0,82 / 4,41 | 0,039 |
+
+- **Ana sonuç: LF ile eğitmek daha iyi.**
+  - B2'nin etiket maliyeti A'dan %20 düşük, testte biraz daha iyi.
+  - C2 (maliyet 1,4 kat) A ile aynı öğrenme oranı programında koştu ve 6 geometrinin 5'inde A'dan iyi.
+    Geometri başına ortalama hata: A 0,74 / 1,18 / 1,24 / 4,44 / 0,92 / 1,46; C2 0,66 / 1,23 / 1,25 / 2,93 / 0,98 / 1,17.
+- **LF→HF boşluğu:** aynı tahminlerin LF etiketlerine göre hatası, HF'ye göre olandan yalnız 0,02 puan düşük
+  (C2: %1,35 ve %1,37). LF ile eğitilen model HF verisinde, LF verisindeki kadar iyi.
+- **Ritz üst sınırı korunuyor:** tüm tahminler, o uzayın FE özdeğerinin üstünde (en az +%0,47).
+- **İnce ayar (D) açık bir soru:**
+  - Testte C2'ye göre %1,37 → %1,13 iyileşti.
+  - Kontrol D0 (aynı başlangıç, aynı 200 adım, yalnız LF 40) val'de 0,031 GHz / alan 0,046 verdi; D'de 0,029 / 0,052.
+  - D0'ın test değerlendirmesi konteyner yeniden başlatılınca kayboldu. İyileşmenin HF'den mi ek eğitimden mi
+    geldiği ayrılamadı (§4.3 de fark göstermemişti).
+- **Geçersiz ve eksik kollar:**
+  - LF 40 + HF 8 karışık 8 × 80 adım: öğrenme oranı hiç düşmedi (8 < 10 sabit epoch), %1,95; karşılaştırmaya alınmadı.
+  - Aynı programla LF 32 + HF 8 kolu yeniden başlatmada epoch 6'da kayboldu.
+- **Aykırı geometri:** örnek 27 her kolda en kötü (%2,9–4,4); nedeni incelenmedi.
+- **Çıkarım süresi** (1 iş parçacığı): operatör 5 s + ileri geçiş 3,3 s; aynı uzayda FE çözümü 18 s.
+
+### 8.3 Öneri
+
+- **Veri:** HF bütçesini LF örnek sayısına çevirin. Aynı maliyete ~4 kat geometri düşer.
+  Komut: `--labels field --no_adapt --label_order 2 --model_order 2`.
+- **HF örnekleri** test ve doğrulama için ve QoI kaybı field3d'de açıldığında duvar büyüklükleri (Q0, tepe değerleri) için.
+- **Ölçekte yapılacak:** karışık eğitim ve ince ayar, doğru programla (`max_epochs` > 10 ya da sabit faz kısaltılarak),
+  bir kontrol koluyla birlikte; `fidelity_freq_scale` / `hf_repeat` taraması.
