@@ -44,17 +44,15 @@ element limit.
 The first version of our $\LF$ generator used the finer setting only. On six test geometries this gave meshes
 $1.2$--$1.9$ times larger than the $\HF$ model meshes ($5.9$k--$12.1$k against $4.8$k--$10.0$k tetrahedra), so the
 cheap labels were more expensive than necessary and the mesh distribution at training differed from that at
-inference. Switching to the coarser setting alone did not suffice, because on geometries where it folds elements
-the $\LF$ path re-meshed more finely whereas the adaptive path fell back to the default.
+inference. Merely switching to the coarser setting did not suffice, because the two paths then handled folded elements differently.
 % src: docs/34 §8.1 (1.2–1.9×, 5.9k–12.1k vs 4.8k–10.0k; cs 1.5 alone insufficient)
 An earlier measurement had concluded that the $\LF$ mesh does not shrink whichever meshing parameter is varied;
 this was a misdiagnosis caused by the mismatched start rule, and a pitfall worth recording.
 % src: docs/34 §3 (corrected in §8.1)
 Reusing the start-mesh rule gave meshes identical to the $\HF$ model meshes on 8 of 8 training and 6 of 6 test
 geometries, reduced the mean size over 40 $\LF$ samples from 9404 to 7639 tetrahedra ($-19\,\%$), and raised the
-cost ratio $\HF$/$\LF$ from $2.3$ to $4.3$ (\SI{1242}{s} against \SI{291}{s} on the same eight meshes; two workers
-with one thread each on a 4-core machine under concurrent training load; $4.1$ on the six test geometries,
-\SI{779}{s} against \SI{190}{s}).
+cost ratio $\HF$/$\LF$ from $2.3$ to $4.3$ (\SI{1242}{s} against \SI{291}{s} on the same eight meshes, two workers on a shared 4-core machine under
+concurrent training load; $4.1$ on the six test geometries).
 % src: docs/34 §8.1 (8/8, 6/6, 9404→7639 −19 %, 1242 s/291 s = 4.3, old ratio 2.3, 779/190 s)
 With the budget used here (at most 150\,000 label DOFs) the first order-3 solve exhausts the budget, so the
 ``adaptive'' $\HF$ label is a single order-3 solve on the start mesh; with a larger budget the $\HF$ model mesh may
@@ -94,18 +92,15 @@ $\Bpk/\Eacc$ & $+5.4$ to $+8.1\,\%$ \\ % src: docs/34 §3 table
 \end{tabular}
 \end{table}
 
-The conclusion is the expected one. Frequencies, volume fields and \RoQ{} are matched by $\LF$ labels to well
-below the model error, whereas $\Qz$, the corresponding wall-loss quantities and the surface peaks are not, and
-need $\HF$ labels. Since the quantity-of-interest loss is disabled for the field model in this study, the model
-is not trained on the wall-dominated quantities and the experiments of \cref{sec:experiments} do not test
-them.
+Hence $\LF$ labels suffice for frequencies, volume fields and $\RoQ$ (differences well below the model error), whereas
+$\Qz$ and the surface peaks need $\HF$ labels. The quantity-of-interest loss is disabled for the field model in this
+study, so the experiments of \cref{sec:experiments} do not test the wall-dominated quantities.
 % src: docs/34 §3 (conclusion), qoi_weight = 0 for field3d
 
 \subsection{Training mechanics}\label{sec:06-train}
 
-Each sample carries a fidelity flag derived from the metadata of its file: a label produced with adaptivity, or
-with a label order above the model order, is $\HF$; a single solve of the model order is $\LF$. Files of both kinds can
-therefore be mixed freely.
+Each sample carries a fidelity flag derived from its file metadata: a label produced with adaptivity, or with a label
+order above the model order, is $\HF$; a single solve of the model order is $\LF$. Files of both kinds can be mixed.
 % src: src/data/field_dataset.py label_fidelity
 The span and frequency terms of the loss of \cref{sec:method} are weighted per sample,
 \begin{equation}
@@ -114,17 +109,14 @@ The span and frequency terms of the loss of \cref{sec:method} are weighted per s
   \qquad \varphi_b\in\{\LF,\HF\},
 \end{equation}
 % src: src/training/lightning_module.py (fidelity_weights → w, fidelity_freq_scale → s; w_freq = w_fid * scale)
-with fidelity weights $w_\LF,w_\HF$ and an extra scale $s_\LF,s_\HF$ on the frequency term alone, the latter because
-$\HF$ frequencies lie below the floor of the model space; the other terms are unchanged. All weights default to one,
-which reproduces training without fidelity weighting. When a batch contains both fidelities, frequency and field
-errors are logged separately per fidelity.
+with fidelity weights $w_\LF,w_\HF$ and an extra scale $s_\LF,s_\HF$ on the frequency term alone, since $\HF$
+frequencies lie below the floor of the model space; all default to one (no weighting). Per-fidelity errors are logged
+separately.
 % src: docs/34 §2
-Three further mechanisms serve a scarce $\HF$ set. Additional files of $\HF$ samples can be supplied that always
-enter the training split and never the validation or test split; the frequency normalisation is then computed from
-the training split (or from these files if the split is empty). $\HF$ geometries of the training split can be
-repeated a given number of times per epoch. Finally, training can be initialised from the weights of a
-checkpoint, with a fresh optimiser state and epoch counter, for fine-tuning an $\LF$-trained model on $\HF$ samples.
-% src: docs/34 §2 (train_extra, hf_repeat, --init_from, frequency normalisation)
-A sweep of the fidelity scales and of the repetition count was not carried out, and the benefit of mixed or
-fine-tuned training was not established at the scale of this study (\cref{sec:experiments,sec:discussion}).
-% src: docs/34 §4.3, §6, §8.2 (sweep listed as open; mixed and fine-tune runs inconclusive)
+Three further mechanisms serve a scarce $\HF$ set: extra $\HF$ files that always enter the training split and never the
+validation or test split (the frequency normalisation then comes from the training split, or from these files if the
+split is empty); repetition of the $\HF$ geometries of the training split a given number of times per epoch; and
+initialisation from the weights of a checkpoint, with fresh optimiser state and epoch counter, for fine-tuning an
+$\LF$-trained model. A sweep of the fidelity scales and of the repetition count was not carried out, and the benefit of
+mixed or fine-tuned training was not established at this scale (\cref{sec:experiments,sec:discussion}).
+% src: docs/34 §2 (train_extra, hf_repeat, --init_from, frequency normalisation); §4.3, §6, §8.2 (sweep open; mixed and fine-tune runs inconclusive)

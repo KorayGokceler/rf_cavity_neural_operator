@@ -36,7 +36,7 @@ Only CPU timings exist; the GPU path has not been run. % src: docs/31 §3.2, §3
 \subsection{Future work}\label{sec:08-future}
 
 \paragraph{Hybrid inference.}
-The predicted subspace can start a preconditioned eigensolver such as LOBPCG~\cite{knyazev2001toward} on the target space, so that accuracy is guaranteed by the solver and speed by the model.
+The predicted subspace can serve as the starting block of the LOBPCG eigensolver~\cite{knyazev2001toward} on the target space: accuracy is then guaranteed by the solver and speed comes from the model.
 In a preliminary measurement with our label solver at about $3.6\times10^5$ degrees of freedom, a warm start from the previous adaptive level reached an eigenvalue error of $1.9\times10^{-8}$ in 10 iterations (\SI{36}{s}), whereas a cold start needed 40 iterations (\SI{123}{s}) for $1.7\times10^{-8}$; the direct solve took \SI{175}{s}, and the warm-start time excludes a \SI{26}{s} set-up and the mode transfer. % src: docs/31 §3.4 (358k DOF)
 Whether a model subspace is as good a start is untested; we expect a gain only when the solve takes minutes and the model's initial error is at most about \SI{0.1}{\percent}. % src: docs/34 §6
 

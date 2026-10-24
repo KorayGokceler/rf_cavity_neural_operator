@@ -24,7 +24,7 @@ identifiers 24--29 with HF labels; their model meshes have 4.8k--10.0k tetrahedr
 from the label space, and to test \cref{prop:upper-bound}, it is also formed against the finite-element eigenvalue of the evaluated space, $f_k^{\mathrm{model}}/f_k^{\mathrm{FE}}-1$.
 The field error is the relative $L^2$ error in the mass norm against the finite-element mode of the evaluated space, minimised over the sign for an isolated mode,
 and the relative distance between target and predicted subspace inside a cluster of near-degenerate modes. It is averaged over modes 0--2: the fourth mode is not yet learned
-(field error $0.07$--$1.3$ in the first study below; cause not investigated). Models are evaluated from the last checkpoint, without checkpoint selection, on the stored mesh in the order-2 space.
+(field error $0.07$--$1.3$ in the study of \cref{sec:A07-first}; cause not investigated). Models are evaluated from the last checkpoint, without checkpoint selection, on the stored mesh in the order-2 space.
 
 \subsection{Representation accuracy}\label{sec:07-floor}
 % src: docs/28 §3
@@ -99,7 +99,7 @@ An earlier, smaller study (14 LF training geometries, evaluation on four HF geom
 
 \subsection{Transfer to other spaces}\label{sec:07-transfer}
 % src: docs/34 §4.2
-The Ritz layer uses only $\Kmat,\Mmat,\Gmat,\Kp$ of the space it is given, so the trained weights can be evaluated in another conforming space without retraining. \Cref{tab:07-transfer} does this for the model of the first study:
+The Ritz layer uses only $\Kmat,\Mmat,\Gmat,\Kp$ of the space it is given, so the trained weights can be evaluated in another conforming space without retraining. \Cref{tab:07-transfer} does this for the model of the earlier study (\cref{sec:A07-first}):
 the native order-2 space, order~3 on the same mesh, and, for geometry~5, order~2 on the once uniformly refined mesh.
 
 \begin{table}[t]
