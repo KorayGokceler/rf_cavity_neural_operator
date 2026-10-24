@@ -282,6 +282,70 @@ geometride daha fazla olması beklenir (ölçülmedi).
 **Açık kalan:** gövde (dikkat ve FFN) adımın ~%75'i; `copy_` (adımın ~%10'u) einsum'un yeniden yerleşimlerinden
 geliyor, düzeni değiştirmek bit eşitliğini bozar. GPU'da ölçülmedi.
 
+### 3.8 Etiket üretiminin hızı: iki kez yapılan işler (açık iş 11)
+
+Ölçüm: örnek başına aşama tablosu, 2 iş parçacığı, tohum 7, `--threads 2`. Geçici zamanlayıcılar commit
+edilmedi (betik: scratchpad `datagen-speed/prof_gen.py`). Makine paylaşımlı (yük 3–5); tablolarda iki koşu var.
+
+**Önce (pillbox_pipes, `--max_ndof 450000`, 664 s, 2 seviye 235k + 430k DOF):**
+
+| aşama | süre |
+|---|---|
+| CAD + yuvarlama + gmsh hacim mesh'i + topoloji sertifikası + eğri netgen mesh | 0,2 + 0,3 + 1,3 s |
+| `solve_modes` seviye 0 (235k DOF): montaj 11,5 / ayrıştırma 19,9 / ARPACK 64,5 | 98 s |
+| `mode_qoi` + `indicator` + `size_field` + yeniden mesh (seviye 0) | 1,3 + 11,4 + 0,1 + 1,6 s |
+| `solve_modes` seviye 1 (430k DOF): montaj 26,3 / ayrıştırma 106 / ARPACK 141 | 277 s |
+| `mode_qoi` + `indicator` (seviye 1) | 1,9 + 17,5 s |
+| **`transfer_to_model`** (16,6k tet etiket → 8,9k tet model mesh'i) | **253,5 s** |
+| `_mesh_bytes`, `_check_reload`, BREP, H5 yazımı | < 0,3 s toplam |
+
+**Bulgular.**
+- `transfer_to_model` model mesh'inin her entegrasyon noktasını (tet başına 216, 1,9M nokta) her form ve her mod için
+  etiket mesh'inde yeniden arıyordu. Noktalar bir kez aranıyor, değerler `IntegrationRuleSpace`'e konuyor:
+  **253,5 → 29,4 s** (kalan: arama ~6 µs/nokta ≈ 9 s, 6 mod değerlendirmesi ≈ 7 s; arama tek iş parçacıklı).
+  Eşitlik: aynı alanlarda eski ve yeni dönüşüm 227,8 s ve 25,6 s; U farkı 3,5e-14 (göreli), rq 2,8e-15, proj_err 9e-12.
+  Birim test eski formülle karşılaştırıyor. Tepe bellek +0,85 GB (8k tet model mesh'i, 1,7M nokta).
+- `Kp = GᵀMG` scipy üçlü çarpımı ve `tolist()` ile NGSolve'a çevriliyordu: 4,4–6 s her çözümde. H1(p+1) üzerinde
+  `∇φ·∇ψ` formu aynı matrisi veriyor (serbest blokta göreli 9e-16) ve 0,34 s: montaj 8,5 → 4,9 s (158k), 20,5/11,2 → 6,0/7,6 s (235k).
+  `_diag_mean`: `np.add.at` kalktı.
+- Reddedilen eliptik çizim (`max_elements`): cs 1,5 ağı 36 353 tet (> 30 000) idi, yine de 3 bozulma onarım turu (9 s)
+  ve cs 2 ile 10,6 s'lik ikinci bir mesh (53 502 tet) üretiliyordu. Artık üretimden hemen sonra reddediliyor ve daha ince cs
+  denenmiyor (daha ince cs daha çok tet verir): reddedilen çizim 29 → 12 s.
+- `project_to_model` (aynı mesh): etiket modları `solve_modes`'tan aynı kuralla birim normlu geliyor, norm integralleri
+  atlandı: 11,1–11,3 → 6,9–7,4 s (235k), 5,0 → 3,3 s (158k).
+
+**Sonra:**
+
+| örnek | önce | sonra |
+|---|---|---|
+| pillbox_pipes `--max_ndof 450000` | 664 s | 433 s (transfer 253→29, montaj 11,5+26,3 → 6,7+15,3) |
+| pillbox_pipes `--max_ndof 150000` (tek seviye) | 150 s / 121 s | 112 s / 115 s (montaj 20,5/11,2 → 6,0/7,6; proje 11,2 → 7,1) |
+| elliptical `--max_ndof 150000` (ilk çizim reddediliyor) | 104 s / 112 s | 75,5 s (reddedilen çizim 29 → 12; montaj 11,3 → 4,5; proje 5,5 → 3,3) |
+
+Ayrıştırma ve ARPACK aşamaları değişmedi; koşular arasındaki oynama (örn. ARPACK 59–74 s) makine yükünden.
+
+**Eşitlik.** Üç örnekte de `vol` ve `brep` baytları aynı. pillbox_pipes 150k: frekans 1,6e-15, Q0/G 7e-14, R/Q ve tepe değerleri
+≤ 7e-10, `rq_model` 3e-14, `u_model` küme alt uzayı sin θ ≤ 1,3e-7 (float32). Aynı kodun iki koşusu arasındaki fark da aynı büyüklükte
+(7e-10, 1,4e-7). 450k: frekans 2e-15, Q0 8e-13, R/Q 6,7e-9, `u_model` alt uzayı 8e-6 (ARPACK tolerance 1e-10 özvektörü ~1e-5'e kadar
+belirler; dönüşüm tek başına 3,5e-14). `validate_field_labels.py --max_ndof 300000`: PASS.
+
+**Denenip alınmayanlar (ölçümle).**
+- ARPACK: `tol` 1e-10 → 1e-8: 78 → 74 iterasyon, → 1e-6: 60. `ncv` 40: 89. `n_extra` 4 → 1: 72. σ = −0,03·λ₁: 61 iterasyon (−%22) ama λ₁ ilk seviyede bilinmiyor; ~%10 kazanç, alınmadı.
+  `M·x` çarpımı çok iş parçacıklı değil (30 ms, TaskManager fark etmiyor). Bir ARPACK adımı 0,42 s: Ainv 0,19 + projeksiyon 0,10 + 3 M çarpımı 0,09.
+- İndikatör (9–18 s/seviye): duvar terimi `ds("wall")` ile 0,65 → 0,03 s olur ama kural farklı (toplam 3,5e-5 sapma) → boyut alanı, dolayısıyla mesh değişirdi. Tek integralde birleştirme ve `Compile()` kazandırmadı. Alınmadı.
+- gmsh hacim mesh'i + topoloji sertifikası: 0,1–0,9 s/çizim (< %1). Deformasyon haritası düğümlerin sınır kutusundan çiziliyor, o yüzden kalktığında deforme örnekler değişir. Bırakıldı.
+- `_check_reload`: 0,1–0,3 s; yüklenen mesh artık token özellikleri için kullanılıyor (§3.7). Bırakıldı. `_mesh_bytes`: 0,03 s.
+- Sıcak başlatmalı LOBPCG (§3.4): mesh'ler arası aktarım artık ucuz (yukarıdaki yöntemle), ama yeni mesh'te L2 izdüşümü 216 nokta × 16,6k tet yeniden arama + 11 mod
+  değerlendirmesi ≈ 60 s ve BDDC kurulumu 26 s; kazanç en iyi durumda son seviyenin ARPACK'ının yarısı (~%10 örnek başına), özvektör kümeleri ve gradyan çekirdeği için ayrı iş. Yapılmadı.
+- MKL Pardiso (`pip install mkl`, NGSolve kendi sarmalayıcısı ya da pypardiso, SPD, METIS): ayrıştırma NGSolve'un sparsecholesky'sinden 2–3,4× hızlı
+  (158k: 3,2 → 1,5 s; 235k: 16,1 → 6,0 s; 312k: 26,6 → 8,75 s; 326k: 35,9 → 10,5 s, 2 iş parçacığı) ama çözüm 0,11–0,49 s yerine 0,19–0,75 s (pypardiso her çağrıda A'yı hashliyor).
+  ARPACK'ta 78 çözüm var: ≤ 330k DOF'ta net kazanç ≈ 0. 900k DOF'ta (sparsecholesky ayrıştırması bu boyutta dakikalar) yerel ctypes sarmalayıcısıyla kazanç olabilir;
+  bu sanal makinede (15 GB) 900k çalıştırılamadığı için ölçülemedi. TRUBA'da denenmeli (açık iş). NGSolve'un kendi `pardiso` sarmalayıcısı sekiz iş parçacığını sabitliyor ve MDO sırası kullanıyor: 158k'da 6,2 s / 0,67 s (daha kötü); `pardisospd` hata −1 verdi.
+
+**Açık.** Çözücü artık örneğin %90'ı. Sıradakiler: (1) TRUBA'da MAX_NDOF 900k ile ayrıştırma/ARPACK dağılımını ölçmek ve yerel MKL Pardiso denemesi;
+(2) transfer içindeki nokta aramasını çok iş parçacıklı yapmak (~9 s); (3) deforme mesh'lerde `mesh(x,y,z)` noktaların ~%11'ini bulamıyor (SetDeformation
+ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyonlu (`--deform_prob > 0`) alan etiketlerinde `proj_err` ölçülmeli.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -329,7 +393,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 9 | Eğitim ve çıkarım maliyeti (§3.6). Sıra: Faz 0 ölçüm betiği, 1a operatörler, 1b collate, 2a aktivasyon kontrol noktası; sonra 1c önbellek, 3a Kp Cholesky, 2b bf16; en son 2c token azaltma, 1d özellikleri H5'e yazma (üretici: sahibin onayı gerekli). | Claude Code oturumu | `claude/field-model` | sürüyor: 0, 1a, 1b, 2a bitti; 1c ölçüldü (kod gerekmiyor); 3a GPU ölçümüne kadar ertelendi; sırada GPU ölçümü (Colab) ve 2b |
 | 10 | Geometri ve etiket düzeltmeleri (docs/33 §12). Kalan: yeni aileler (qwr, rfd, dtl_cell, gun, büyük açıklıklı eliptik), spoke uç duvarı ve dtl yarım tüpleri, composite'in dönüşümü, doğrulama seti (§8). TRUBA `TEST=1` koşuları artık `_v2` etiketleriyle. | Claude Code oturumu | `claude/field-model` | düzeltmeler bitti; yeni aileler sahibin sıra kararını bekliyor |
 
-| 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | sürüyor |
+| 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | bitti (§3.8): transfer 253→29 s, Kp formu, erken ret; kalan: çözücü (TRUBA ölçümü, Pardiso) |
 | 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | bitti (§3.7): özellikler H5'te, hazır devrikler, CG tamponları, işçi iş parçacığı; operatör önbelleği ve Kp Cholesky ölçüldü, alınmadı |
 | 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | sürüyor |
 
