@@ -26,6 +26,7 @@ Araştırma ve inceleme kayıtları (tarihsel; kararların gerekçesi burada, ko
 | [21_3D_REVIEW_PHYSICS](21_3D_REVIEW_PHYSICS.md) | fizik / sayısal analiz incelemesi ve bulguları |
 | [22_3D_REVIEW_MODEL](22_3D_REVIEW_MODEL.md) | model / eğitim kodu incelemesi ve bulguları |
 | [33_GEOMETRY_REVIEW](33_GEOMETRY_REVIEW.md) | geometri ailelerinin literatürle karşılaştırılması (2026-10): etiket tanımı sorunları, aile aile değerlendirme, yeni aileler, deformasyon, doğrulama seti, sahibin kararları |
+| [34_MULTI_FIDELITY](34_MULTI_FIDELITY.md) | çoklu doğruluk: düşük doğruluklu (p2, tek çözüm) etiketle eğitim, yüksek doğruluklu (p3) veride ve daha ince mesh / p3 uzayında çıkarım; maliyet ve etiket farkı ölçümleri, `Fidelity` / `fidelity_weights` / `train_extra` / `--init_from`, `scripts/eval_fidelity.py` |
 | [research/2026-10_geometry](research/2026-10_geometry/README.md) | docs/33'ün ham malzemesi: dört araştırma raporu (İngilizce), kaynak listeleri ve sayıları üreten betikler |
 
 2D model (GNOT, SpectralNO, 2D eigenspace operator) ve onun belgeleri (eski 00–17) ile H-alanı formülasyonu

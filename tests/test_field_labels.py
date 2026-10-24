@@ -178,3 +178,42 @@ def test_truba_one_line_run_dry_run(tmp_path):
     r = subprocess.run(["bash", "cluster/truba/run.sh", "train", "NOT-A-VAR=1", "--dry-run"], cwd=REPO, env=env,
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 2
+
+
+def test_multi_fidelity_items_split_and_loss_weights(field_h5, tmp_path):
+    """docs/34: Fidelity comes from the H5 attrs (adaptive / p3 labels = HF, label_order == model_order without
+    adaptivity = LF), train_extra geometries only ever go to the train split, hf_repeat lists the HF ones more
+    often, and the per-sample loss weights scale the span term per sample."""
+    from src.data.field_dataset import HF, LF, label_fidelity
+    from src.training.lightning_module import CavityLightning
+    kw = dict(train_ratio=0.5, val_ratio=0.25)
+    ds = FieldDataset(str(field_h5), split="train", **kw)
+    assert set(ds.fidelities) == {HF} and int(ds[0]["Fidelity"]) == HF
+    assert label_fidelity({"label_order": 2, "model_order": 2}) == LF
+    assert label_fidelity({"label_order": 2, "model_order": 2, "adapt_iters": 1}) == HF
+    assert label_fidelity({"label_order": 3, "model_order": 2}) == HF
+    extra = tmp_path / "extra.h5"
+    with h5py.File(field_h5, "r") as src, h5py.File(extra, "w") as dst:
+        for k in src:
+            src.copy(src[k], dst, name=k)
+    tr = FieldDataset(str(field_h5), split="train", train_extra=str(extra), **kw)
+    va = FieldDataset(str(field_h5), split="val", train_extra=str(extra), **kw)
+    te = FieldDataset(str(field_h5), split="test", train_extra=str(extra), **kw)
+    assert len(tr) == len(ds) + 4 and len(va) == 1 and len(te) == 1
+    assert all(g >= 4 for g in tr.active_geoms[len(ds):]) and all(g < 4 for g in va.active_geoms + te.active_geoms)
+    rep = FieldDataset(str(field_h5), split="train", hf_repeat=3, **kw)
+    assert len(rep) == 3 * len(ds)
+    assert int(field_collate([ds[0], ds[1]])["Fidelity"].sum()) == 2
+    # per-sample weights of the span term: a zero weight removes a sample, equal weights change nothing
+    mod = CavityLightning(val_dim=9, num_field_modes=2, model_type="field3d", selfsup_weight=0.0, ortho_weight=0.0)
+    torch.manual_seed(0)
+    m, n = 3, 2
+    A = torch.randn(2, m + n, m + n, dtype=torch.float64)
+    G_M = A @ A.transpose(1, 2) + torch.eye(m + n, dtype=torch.float64)
+    G_A = G_M * 0.5 + torch.eye(m + n, dtype=torch.float64)
+    plain = mod._span_terms(G_M, G_A, m, "train")
+    one = mod._span_terms(G_M, G_A, m, "train", torch.ones(2, dtype=torch.float64))
+    assert torch.allclose(plain, one)
+    only0 = mod._span_terms(G_M[:1], G_A[:1], m, "train")
+    w0 = mod._span_terms(G_M, G_A, m, "train", torch.tensor([2.0, 0.0], dtype=torch.float64))
+    assert torch.allclose(w0, only0)                       # mean_b(w_b l_b) = (2 l_0 + 0) / 2

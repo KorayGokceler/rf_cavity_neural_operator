@@ -346,6 +346,16 @@ belirler; dönüşüm tek başına 3,5e-14). `validate_field_labels.py --max_ndo
 (2) transfer içindeki nokta aramasını çok iş parçacıklı yapmak (~9 s); (3) deforme mesh'lerde `mesh(x,y,z)` noktaların ~%11'ini bulamıyor (SetDeformation
 ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyonlu (`--deform_prob > 0`) alan etiketlerinde `proj_err` ölçülmeli.
 
+### 3.9 Çoklu doğruluk (açık iş 13, ayrıntı docs/34)
+
+- `pillbox_pipes` (pervaz tabanı 0,12), aynı 4 geometri: LF (p2, tek çözüm) 31 s, HF (p3, `max_ndof 150000`) 157 s
+  → örnek başına ~5 kat. Frekans farkı LF/HF − 1: +0,004 – +0,04 %; R/Q ≤ 0,04 %; Q0 −0,8 – −1,4 %;
+  E_pk −4 – −28 %, B_pk +5 – +8 %. Mesh boyutu `curvaturesafety` / `maxh_factor` ile küçülmüyor.
+- LF ile eğitilen (14 geometri, 30 epoch) küçük model HF geometrilerde: frekans hatası %0,6–3,0 (hep üst
+  sınır), alan rel-L2 0,03–0,07; hata p2 tabanından (≤ 0,033 %) değil modelden. Aynı ağırlıklarla p3 ve 8 kat ince
+  mesh'te çıkarım çalışıyor (Ritz üst sınırı korunuyor) ama doğruluk 0,2–0,6 puan kötüleşiyor.
+- 2 HF örnekle ince ayar, aynı epoch sayısında yalnız LF kontrolüne göre kazanç vermedi.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -395,7 +405,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 
 | 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | bitti (§3.8): transfer 253→29 s, Kp formu, erken ret; kalan: çözücü (TRUBA ölçümü, Pardiso) |
 | 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | bitti (§3.7): özellikler H5'te, hazır devrikler, CG tamponları, işçi iş parçacığı; operatör önbelleği ve Kp Cholesky ölçüldü, alınmadı |
-| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | sürüyor |
+| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | kod + ölçüm bitti (docs/34); hibrit mod denenmedi; ölçekli LF+HF eğitim açık |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
