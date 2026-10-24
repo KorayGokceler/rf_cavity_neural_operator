@@ -64,8 +64,7 @@ The embedding is $\bm h^0_q=\mathrm{MLP}([\gamma(\bm x_q)\,\Vert\,\bm y_q])$ wit
 the linear attention of Katharopoulos et al.~\cite{katharopoulos2020transformers} with a weight on every key.
 The weights $w_q\propto|\det J|\,\hat w_q$ are the quadrature weights of the mesh, normalised to $\sum_qw_q=1$, and $\varepsilon_{\rm att}=10^{-6}$.
 % src: src/models/layers.py LinearAttention (eps=1e-6), mass_weights; src/data/field_dataset.py (Area = quadrature weights)
-Both sums are quadratures of $\int\mathcal S\,\Theta_v\bm h\,\mathrm d\bm y$ and $\int\mathcal S\,\mathrm d\bm y$ for the separable kernel $\mathcal S$: a global integral operator evaluated with the mesh's own quadrature (an interpretation shared with the Galerkin-type attention of Cao~\cite{cao2021choose}), whose value changes under refinement by quadrature error only.
-Forming $\sum_q w_q\phi(\Theta_k\bm h_q)(\Theta_v\bm h_q)^{\!\top}$ once makes a block cost $O(Nd^2)$ for embedding dimension $d$.
+Both sums are quadratures of $\int\mathcal S\,\Theta_v\bm h\,\mathrm d\bm y$ and $\int\mathcal S\,\mathrm d\bm y$ for the separable kernel $\mathcal S$: a global integral operator evaluated with the mesh's own quadrature (cf.\ the Galerkin-type attention of Cao~\cite{cao2021choose}); forming $\sum_q w_q\phi(\Theta_k\bm h_q)(\Theta_v\bm h_q)^{\!\top}$ once makes a block cost $O(Nd^2)$ for embedding dimension $d$.
 The head is a two-layer MLP, $\bm\psi_{1..m}(\bm x_q)=\mathrm{head}([\bm h^L_q\,\Vert\,\gamma(\bm x_q)])\in(\R^3)^m$; it does not depend on the numbering of mesh entities, so the $\bm\psi_j$ are geometric fields.
 Width, depth, number of heads, basis width $m$, number of modes $K$ and Fourier dimension are hyperparameters; the configuration-file defaults are larger than the sizes used for all reported results, which are stated in \cref{sec:experiments} (defaults: \cref{sec:A04-cost}).
 
@@ -73,7 +72,7 @@ Width, depth, number of heads, basis width $m$, number of modes $K$ and Fourier 
 
 The point values become DOFs of $\Vh$ through a fixed linear map in two stages.
 \emph{(i) Element fit.}
-Let $\Phi_t\in\R^{n_q\times n_\ell}$ be a basis of the polynomials of degree $\le p$ ($n_\ell=\binom{p+3}{3}\le n_q$: $10\le14$ at $p=2$, $20\le24$ at $p=3$) evaluated at the quadrature points of element $t$, and $\bm\Lambda_t=\mathrm{diag}(|\det J_t(\hat{\bm x}_q)|\,\hat w_q)$.
+Let $\Phi_t\in\R^{n_q\times n_\ell}$ be a basis of the polynomials of degree $\le p$ ($n_\ell=\binom{p+3}{3}$: $10$ at $p=2$, $20$ at $p=3$) at the quadrature points of element $t$, and $\bm\Lambda_t=\mathrm{diag}(|\det J_t(\hat{\bm x}_q)|\,\hat w_q)$.
 Each Cartesian component of $\bm\psi_j$ is fitted by weighted least squares, $\bm a_{t,c,j}=\mathsf F_t\bm\psi_{t,c,j}$ with $\mathsf F_t=(\Phi_t^{\!\top}\bm\Lambda_t\Phi_t)^{-1}\Phi_t^{\!\top}\bm\Lambda_t$, which reproduces polynomials of degree $\le p$.
 % src: src/data_gen/highorder.py field_operators (P = solve(A, Phi^T W), W = detJ*wq); n_l = dim P_p = 10, 20
 \emph{(ii) Interpolation into $\Vh$.}
@@ -104,7 +103,7 @@ by $\Kmat\Gmat=0$ and $\Kp\mathsf Z=\mathsf B$ (a Schur complement).
 $\Pmat\Vmat$ is the $\Mmat$-orthogonal projection of $\Vmat$ onto the discretely divergence-free subspace $Z_h=\{\bm v\in\Vh:\bm v^{\!\top}\Mmat\Gmat=0\}$; neither Gram matrix requires it to be formed.
 $\Kp=\Gmat^{\!\top}\Mmat\Gmat$ is symmetric positive definite.
 
-$\mathsf Z$ is computed by Jacobi-preconditioned conjugate gradients, batched over samples and right-hand sides with separate step sizes per column, until $\|\mathsf r_j\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column, $\tau=10^{-8}$ (at most $3000$ iterations, with a warning if reached).
+$\mathsf Z$ is computed by Jacobi-preconditioned conjugate gradients, batched over samples and right-hand sides, until $\|\mathsf r_j\|_2\le\tau\|\mathsf B_{:,j}\|_2$ for every column, $\tau=10^{-8}$ (at most $3000$ iterations, with a warning if reached).
 % src: src/models/hcurl.py _pcg (check_every=10, thr = tol*||rhs||); configs/field_3d.yaml (kp_tol 1e-8, kp_maxiter 3000)
 The solve runs in float64; in float32 the CG iteration did not converge within its iteration cap and $\Mdiv$ was off by about $79\,\%$ in a test.
 % src: src/models/hcurl.py project_basis comment ("float32 CG does not converge (M_div off by ~79%, docs/21 B3)"); AGENTS.md invariants; referee M5 (CG hit the 2000-iteration cap)
@@ -172,11 +171,9 @@ The matrix in \eqref{eq:04-ritz} is $\mathsf Y^{\!\top}\Av\mathsf Y=(\Pmat\Vmat\
 \end{proof}
 
 \paragraph{What the proposition does not give.}
-(i) The bound is index-wise: $\theta_k\ge\lamh_k$ says nothing about \emph{which} mode $\theta_k$ approximates; if the span misses a physical mode, a later eigenvalue fills its index and still satisfies the bound.
-There is no accuracy bound either; accuracy is measured (\cref{sec:experiments}).
-(ii) Any Rayleigh--Ritz method in $Z_h$ has this property; what is specific here is that it holds for arbitrary network output, so training cannot violate it.
-(iii) It is relative to the \emph{discrete} eigenvalue of the space the model runs in.
-Since $\lamh_k\to\lambda_k$ as the space is enriched~\cite{boffi2010finite} but $\lamh_k-\lambda_k$ has no guaranteed sign, we make no claim about the exact eigenvalue (in the label comparisons of \cref{sec:multifidelity} the order-two eigenvalues exceeded the order-three ones by $0.004$--$0.047\,\%$ in frequency).
+(i) The bound is index-wise and gives no mode identity: if the span misses a physical mode, a later eigenvalue fills its index and still satisfies it; there is no accuracy bound either (accuracy is measured, \cref{sec:experiments}).
+(ii) Every Rayleigh--Ritz method in $Z_h$ has this property; what is specific here is that it holds for arbitrary network output, so training cannot violate it.
+(iii) It is relative to the \emph{discrete} eigenvalue of the space the model runs in: since $\lamh_k\to\lambda_k$ as the space is enriched~\cite{boffi2010finite} but $\lamh_k-\lambda_k$ has no guaranteed sign, we make no claim about the exact eigenvalue (in the label comparisons of \cref{sec:multifidelity} the order-two eigenvalues exceeded the order-three ones by $0.004$--$0.047\,\%$ in frequency).
 % src: docs/34 §8.1 (frequency LF/HF - 1 = +0.004 ... +0.047 %)
 The Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors~\cite{boffi2010finite}, which the span loss below minimises.
 
@@ -189,11 +186,9 @@ In the equal-cost study the smallest margin $f_{\rm model}/f_{\rm FE}-1$ over al
 % TODO pass 3: stress test of the bound (exact-eigenvector bases with noise, random bases, near-gradient mixtures, tau in {1e-4, 1e-6, 1e-8}) and the a posteriori eta-bar of the evaluation runs
 \end{remark}
 
-\begin{remark}[Space independence]\label{rem:04-space}
-The network sees only points, features and quadrature weights, and the Ritz layer needs only $\Kmat,\Mmat,\Gmat,\Kp$ and the maps $\Cmat,\mathsf F$ of the space in which it runs; \cref{prop:upper-bound} does not depend on how $\Vmat$ was produced.
-The same weights can therefore be run on another conforming space (order three on the same mesh, or a refined mesh) by rebuilding these operators, and the Ritz values then bound the discrete eigenvalues of \emph{that} space; in the transfer study all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space (\cref{sec:experiments}).
+\paragraph{Space independence.}\label{rem:04-space}
+The network sees only points, features and quadrature weights, and the Ritz layer needs only $\Kmat,\Mmat,\Gmat,\Kp$ and the maps $\Cmat,\mathsf F$ of the space it runs in, so the same weights can be run on another conforming space (order three on the same mesh, or a refined mesh) by rebuilding these operators; the Ritz values then bound the discrete eigenvalues of \emph{that} space (in the transfer study all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space, \cref{sec:experiments}).
 % src: docs/34 §4.2 (no number quoted: units slip in the doc)
-\end{remark}
 
 \subsection{Losses}\label{sec:04-loss}
 
@@ -222,6 +217,6 @@ The span term of a sample is multiplied by $\omega_{\mathrm{fid}}$ and its frequ
 
 \subsection{Cost}\label{sec:04-cost}
 
-The trunk costs $O(Nd^2L)$ per geometry, linear in the number of tokens; the mesh-dependent float64 CG solves (forward and backward) dominate, with a cost that grows with the DOF count and roughly like $h^{-1}$ in iterations, and operators are rebuilt per sample rather than stored.
-On a $13$k-tetrahedron mesh ($183$k tokens, order two) one training step of the default-size model (not the one of the experiments) took about $22$\,s on four CPU threads, and order three is impractical for training on a CPU; operator sizes and timings are in \cref{sec:A04-cost}.
+The trunk costs $O(Nd^2L)$ per geometry, linear in the number of tokens; the float64 CG solves (forward and backward) dominate and operators are rebuilt per sample.
+One training step on a $13$k-tetrahedron mesh ($183$k tokens, order two) took about $22$\,s on four CPU threads for the default-size model (not the one of the experiments); sizes and timings are in \cref{sec:A04-cost}.
 % src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads: step ~22 s); docs/28 §4 ("p3 is impractical for training")

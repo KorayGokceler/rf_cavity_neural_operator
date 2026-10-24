@@ -26,7 +26,7 @@ The generator default for field labels is $0.05$; \emph{the experiments use $0.1
 \subsection{Curved meshes}\label{sec:05-mesh}
 
 Netgen generates tetrahedra (curvature safety $2$, grading $0.5$) and bends them onto the CAD surfaces to geometry order three.
-Element quality, the ratio of the minimum to the maximum Jacobian determinant over an element ($\le0$: folded), hardly affects frequencies but strongly affects wall quantities: on one pillbox cell with pipes a 9k-tet mesh with minimum ratio $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and peaks off by $100$--$1600\times$ against a locally repaired 18k-tet reference (ratio $0.35$).
+Element quality, the ratio of the minimum to the maximum Jacobian determinant over an element ($\le0$: folded), hardly affects frequencies but strongly affects wall quantities: on one pillbox cell with pipes a 9k-tet mesh with minimum ratio $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and peaks off by $100$--$1600\times$.
 Meshes below a ratio of $0.05$ are rejected, distorted elements are repaired locally, and draws with more than $30\,000$ tets are re-drawn (\cref{sec:A05-mesh}).
 % src: docs/29 §2.2 table, defaults, thresholds, repair, §2.3 (healing); field_labels.py DEFAULTS max_elements 30000
 
@@ -43,7 +43,7 @@ The volume term estimates the relative eigenvalue error (second order in the fie
 % src: docs/30 §2
 
 \paragraph{Remeshing and stopping.}
-Bisection of marked elements has a closure that explodes on curvature-graded meshes (200 of 8109 tets marked gave $29$k tets), so each iteration instead builds a new mesh from an error-equidistributing size field (new size $h_e(\gamma\,\overline{\eta^2}/\eta_e^2)^{1/(2p)}$ on element $e$, with $\eta_e^2$ the sum of the two terms, $\gamma=0.25$, $p$ the order), passed to Netgen as accumulating size restrictions (\cref{sec:A05-mesh}).
+Bisection explodes on curvature-graded meshes (marking 200 of 8109 tets gave $29$k tets), so each iteration builds a new mesh from an error-equidistributing size field (new size $h_e(\gamma\,\overline{\eta^2}/\eta_e^2)^{1/(2p)}$ on element $e$, with $\eta_e^2$ the sum of the two terms, $\gamma=0.25$, $p$ the order), passed to Netgen as accumulating size restrictions (\cref{sec:A05-mesh}).
 The start mesh is deliberately coarse; its selection rule is shared with the low-fidelity labels (\cref{sec:multifidelity}).
 Refinement stops when cluster-mean frequency and figures of merit change by less than $10^{-6}$ and $10^{-3}$ (relative) between two levels, when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}), or after eight levels.
 This compares successive levels and is not an error bound; the accuracy targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked in \cref{sec:05-validation}.
@@ -68,7 +68,7 @@ Because mesh generation is not bit-reproducible, the stored mesh is the record o
 
 Figures of merit follow \cref{sec:formulation} and are evaluated directly from the order-three fields (copper, $\sigma=\SI{5.8e7}{S/m}$, $U=\SI{1}{J}$, wall fields from the adjacent volume element); $\Epk$ and $\Bpk$ are maxima over wall integration points.
 The beam axis and the accelerating length $\Lacc$ (beam pipes excluded) are family-specific (\cref{sec:A03-qoi}); using the axis chord for $\Lacc$, as an earlier version did, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
-The axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any velocity $\beta$ without a new solve.
+The axial field is stored, so $T$ and $\RoQ$ follow at any velocity $\beta$.
 % src: docs/24 §1.1, §1.3; highorder.py mode_qoi; docs/33 §2.1, §2.2, §12
 
 \subsection{Validation}\label{sec:05-validation}
