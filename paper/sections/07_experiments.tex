@@ -7,8 +7,7 @@ Every training arm is a single run (one seed); no confidence intervals are avail
 
 \paragraph{Setup.}
 % src: docs/34 §3, §4, §7, §8.2; configs/field_3d.yaml (random_seed 42, loss weights, kp_tol, drop_tol); src/training/lightning_module.py (custom_cosine, AdamW)
-Everything ran on a shared four-core cloud VM without a GPU, often next to other jobs, so wall-clock times scatter noticeably.
-\Cref{tab:07-hyper} lists the configuration; the model is that of \cref{sec:method}.
+Everything ran on a shared four-core cloud VM without a GPU, often next to other jobs, so wall-clock times scatter. \Cref{tab:07-hyper} lists the configuration; the model is that of \cref{sec:method}.
 
 \begin{table}[t]
 \centering\small
@@ -49,7 +48,7 @@ Frequency statistics include all four predicted modes (0--3); field statistics u
 % src: docs/28 §3
 \Cref{tab:07-overfit} fits one curved pillbox (179 tetrahedra) to its own order-2 labels with a width-64 two-block trunk, $\nbasis=12$, $\nmodes=4$. With vertex tokens and barycentric interpolation
 the eigenvalue error saturates near $10^{-4}$ (worse at order~3); with the quadrature-point tokens of \cref{sec:method} it reaches $10^{-6}$--$9\times10^{-6}$ in fewer steps.
-This is a capacity test on one training sample, not a generalisation result. The lowest-order Whitney (N0) model was reported at a frequency error of $2.4\times10^{-3}$ on similar cavities, but that is the error of the space against the exact solution on a different sample, so it is not a like-for-like comparison and we draw no conclusion from it.
+This is a capacity test on one training sample, not a generalisation result. The $2.4\times10^{-3}$ reported for the lowest-order Whitney model on similar cavities is the error of that space against the exact solution on a different sample, so it is not comparable and we draw no conclusion from it.
 
 \begin{table}[t]
 \centering\small
@@ -139,7 +138,7 @@ With the model this far from the labels, the study does not probe the regime in 
 on the three validation geometries it had a mean absolute frequency error of $0.031$\,GHz and a field error of $0.046$, against $0.029$\,GHz and $0.052$ for D, a mixed signal. Two further runs are excluded: a mixed LF-40 plus HF-8 run with $8\times80$ steps never entered its decay phase
 (eight epochs is fewer than the ten-epoch constant phase) and reached $1.95\%$, and a mixed LF-32 plus HF-8 run with the same schedule was lost on restart at epoch~6.
 % src: docs/34 §8.2 (invalid and lost arms)
-We make no claim about fine-tuning or mixed training. An earlier, smaller study (14 LF training geometries, evaluation on four HF geometries; \cref{sec:A07-first}) found frequency errors of $0.63$--$3.02\%$ on HF geometries, all positive, an order-2 floor within $0.033\%$ of the HF labels (so the error is the model's), and no gain from a fine-tune with a proper control: the improvement ($1.8\%\to1.5\%$) came from the extra epochs.
+We make no claim about fine-tuning or mixed training. In an earlier, smaller study (\cref{sec:A07-first}), a fine-tune with a proper control gave no gain from HF labels: the improvement ($1.8\%\to1.5\%$) came from the extra epochs.
 % src: docs/34 §4.1, §4.3
 
 \subsection{Transfer to other spaces}\label{sec:07-transfer}
@@ -185,4 +184,4 @@ Any benefit lies in larger spaces, on a GPU where the network share would shrink
 \subsection{Training-path engineering}\label{sec:07-engineering}
 % src: docs/31 §3.6, §3.7; docs/28 §4
 Removing repeated, parameter-independent work (stored wall features, a transpose prepared once per geometry, preallocated buffers in the projection solve) cut the single-thread training step of the 8931-tetrahedron pillbox from $40.7$ to $32.4$\,s ($-20\%$); activation checkpointing reduced the peak memory of a 13k-tetrahedron step from $9.9$ to $3.8$\,GB at an unchanged step time on CPU.
-The results are unchanged (details, a smaller gain on a smaller cell and the options not adopted: \cref{sec:A07-engineering}); no GPU timing was made.
+Results are unchanged (details: \cref{sec:A07-engineering}); no GPU timing was made.
