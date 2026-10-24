@@ -1,0 +1,34 @@
+% Shared notation (paper/BRIEF.md §3). Use these macros; do not redefine them in a section.
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Omegac}{\Omega}                       % cavity volume
+\newcommand{\bdry}{\partial\Omega}                 % PEC wall
+\newcommand{\E}{\mathbf{E}}
+\newcommand{\Hf}{\mathbf{H}}
+\newcommand{\curl}{\nabla\times}
+\newcommand{\Hcurl}{H_0(\mathrm{curl};\Omega)}
+\newcommand{\Vh}{V_h}                              % discrete H(curl) space (Nedelec, order p, curved mesh)
+\newcommand{\Sh}{S_h}                              % discrete H^1_0 potential space, order p+1
+\newcommand{\Kmat}{\mathsf{K}}                     % curl-curl stiffness
+\newcommand{\Mmat}{\mathsf{M}}                     % mass
+\newcommand{\Gmat}{\mathsf{G}}                     % discrete gradient (potentials -> H(curl) DOFs)
+\newcommand{\Kp}{\mathsf{K}_p}                     % G^T M G
+\newcommand{\Pmat}{\mathsf{P}}                     % kernel projection
+\newcommand{\Vmat}{\mathsf{V}}                     % learned basis in DOFs, n x m
+\newcommand{\Cmat}{\mathsf{C}}                     % fixed point-values -> DOF map
+\newcommand{\Mdiv}{\mathsf{M}_{\mathrm{div}}}
+\newcommand{\Av}{\mathsf{A}_V}
+\newcommand{\ndof}{n}
+\newcommand{\nbasis}{m}                            % width of the learned basis
+\newcommand{\nmodes}{K}                            % number of predicted modes
+\newcommand{\lamh}{\lambda_{h}}                    % discrete eigenvalue
+\newcommand{\Qz}{Q_0}
+\newcommand{\RoQ}{R/Q}
+\newcommand{\Epk}{E_{\mathrm{pk}}}
+\newcommand{\Bpk}{B_{\mathrm{pk}}}
+\newcommand{\Eacc}{E_{\mathrm{acc}}}
+\newcommand{\Lacc}{L_{\mathrm{acc}}}
+\newcommand{\LF}{\mathrm{LF}}
+\newcommand{\HF}{\mathrm{HF}}
+\newcommand{\relLtwo}{\mathrm{rel\text{-}L^2}}
+\DeclareMathOperator{\spn}{span}
+\DeclareMathOperator{\diag}{diag}
