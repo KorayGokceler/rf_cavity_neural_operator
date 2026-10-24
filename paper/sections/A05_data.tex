@@ -63,6 +63,15 @@ Between two consecutive levels (at least two solves) the relative change of the 
 Peaks are left out of the test for samples with sharp edges.
 % src: adaptive.py DEFAULTS, invariant_qoi, adaptive_modes; docs/30 §6
 
+\subsection{Reload consistency}\label{sec:A05-reload}
+
+A mesh repaired by bisection keeps a refinement hierarchy in NGSolve, whose topology still numbers the bisected parents' edges and faces.
+On one pillbox cell with pipes the repaired mesh gave $116\,322$ order-two DOFs and the same mesh after saving and loading $115\,704$, so stored fields did not fit the rebuilt space.
+Meshes are therefore rebuilt through a file round trip before storage (eigenvalues on reloaded meshes agree with the originals to $10^{-14}$).
+The accelerating length $\Lacc$ is the sum of the cell lengths for elliptical cavities, the cell for pillbox and re-entrant cells, the tank for spoke and drift-tube linac cavities, the outer diameter for the coaxial resonator and the box length for the ridged box (otherwise the axis chord); the beam axis is the $x$-axis through mid-length for the coaxial resonator and through the ridge gap for the ridged box.
+On deformed samples the axis and $\Lacc$ come from the nominal geometry.
+% src: docs/30 §5; docs/29 §3.3; docs/24 §1.3, §1.3 (limitation)
+
 \subsection{Generator speed-ups}\label{sec:A05-speedup}
 
 \Cref{tab:A05-speedup} lists the measured speed-ups of the label generator.

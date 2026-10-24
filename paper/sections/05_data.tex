@@ -70,16 +70,15 @@ This is the frequency of the projected field \emph{target}; the floor of the mod
 
 Each geometry is stored as the Netgen mesh file of the model mesh and the BREP of the meshed shape, with the frequencies, projected fields (single precision), figures of merit, axial field and the wall-distance token features of \cref{sec:method}: about \SI{9}{MB} for ten modes.
 % src: docs/29 §1, §4
-Mesh generation is not bit-reproducible, so the stored mesh is the record of a sample.
-A mesh repaired by bisection keeps a refinement hierarchy whose DOF numbering differs from that of the reloaded mesh (in one case $116\,322$ vs.\ $115\,704$ order-two DOFs), so meshes are rebuilt through a file round trip before storage; the generator fails a sample whose reloaded space has a different DOF count, and the loader rejects a sample whose stored fields have Rayleigh quotients differing by more than a relative $10^{-5}$ under the rebuilt operators.
+Because mesh generation is not bit-reproducible, the stored mesh is the record of a sample, and loading must reproduce its DOF numbering exactly: the generator rebuilds every stored mesh through a file round trip and fails a sample whose DOF count differs, and the loader rejects a sample whose stored fields have different Rayleigh quotients (relative $10^{-5}$) under the rebuilt operators (\cref{sec:A05-reload}).
 % src: docs/29 §3.3, §6; docs/30 §5 (single_level, _check_reload)
 
 \subsection{Figures of merit}\label{sec:05-qoi}
 
 Figures of merit follow \cref{sec:formulation} and are evaluated directly from the order-three fields (copper, $\sigma=\SI{5.8e7}{S/m}$, $U=\SI{1}{J}$, wall fields from the adjacent volume element); $\Epk$ and $\Bpk$ are maxima over wall integration points.
 The beam axis is the $z$-axis for the revolved families (a family-specific line for the coaxial resonator and ridged box).
-The accelerating length $\Lacc$ excludes the beam pipes (the sum of the cell lengths for elliptical cavities, the cell for pillbox and re-entrant cells, the tank for spoke and drift-tube linac; the axis chord where there is no beam axis); the chord, used everywhere in an earlier version, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
-Velocity $\beta=1$ is the default, but the axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any $\beta$ without a new solve.
+The accelerating length $\Lacc$ excludes the beam pipes (e.g.\ the sum of the cell lengths for elliptical cavities); the chord, used everywhere in an earlier version, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
+The axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any velocity $\beta$ without a new solve.
 % src: docs/24 §1.1, §1.3; highorder.py mode_qoi; docs/33 §2.1, §2.2, §12
 
 \subsection{Validation}\label{sec:05-validation}
@@ -88,7 +87,7 @@ The whole label path (remeshing, order-three solve, figures of merit) is compare
 The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs, at the price of a larger (still far inside the target) $\RoQ$ error; the $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
 The pillbox is smooth, so uniform refinement is near-optimal there; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than a single solve with fewer tets.
 $\Bpk$ converges slowest: it changed by $4\,\%$ between the two finest levels of a pillbox cell with pipes at a 400k-DOF limit.
-We have not yet cross-validated against an independent production solver.
+We have not yet cross-validated against an independent solver.
 % src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row)
 
 \begin{table}[t]

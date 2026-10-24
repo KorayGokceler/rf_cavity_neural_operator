@@ -1,1 +1,16 @@
-Abstract to be written.
+Predicting the resonant modes of three-dimensional radio-frequency (RF) cavities---their frequencies, electric
+fields and figures of merit such as $\Qz$, $\RoQ$ and the peak surface fields---normally requires one
+finite-element eigensolve per geometry. We present a neural operator that does not regress these quantities
+directly. It maps the geometry, represented by the quadrature points of a curved tetrahedral mesh, to a learned
+basis of vector fields; a fixed linear map turns the basis into degrees of freedom of a second-order N\'ed\'elec
+space, a kernel projection removes the discrete gradients, and a Rayleigh--Ritz step returns the modes. The
+predicted eigenvalues are therefore upper bounds of the discrete eigenvalues of whichever conforming space the
+model runs in, and no spurious zero modes arise. Single-sample fits reach relative eigenvalue errors of
+$10^{-6}$--$9\times10^{-6}$. % src: docs/28 §3
+We build an adaptive third-order label generator on curved meshes, validated against analytic pillbox modes
+(relative frequency error $6\times10^{-7}$ at 157k degrees of freedom), % src: docs/31 §1
+and show that low-fidelity labels---one second-order solve on the same model mesh---cost $4.3\times$ less
+while differing from the adaptive labels by at most $0.047\,\%$ in frequency and $0.32\,\%$ in field. % src: docs/34 §8.1
+In a controlled small-scale study on one cavity family, models trained on low-fidelity labels were at least as
+accurate on held-out high-fidelity geometries as models trained on high-fidelity labels of equal or higher
+cost, and their errors against low- and high-fidelity labels differ by $0.02$ percentage points. % src: docs/34 §8.2
