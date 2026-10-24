@@ -65,6 +65,33 @@ def test_field_samples_are_high_order_and_consistent(field_h5):
         assert g["u_model"].shape == (int(g.attrs["n_dof_model"]), K)
         assert g["qoi"].shape == (K, len(str(g.attrs["qoi_names"]).split(",")))
         assert float(g["qoi"][0, 0]) > 1e3                          # Q0 of the copper TM010 cell
+        assert g["qfeat_wall"].shape[0] == int(g.attrs["n_tets"]) and g["qfeat_wall"].shape[2] == 5
+        assert str(g.attrs["qfeat_columns"]) == "dist_to_boundary,dir_bnd_x,dir_bnd_y,dir_bnd_z,torsion"
+
+
+def test_stored_token_features_equal_the_computed_ones(field_h5, tmp_path):
+    """A file with qfeat_wall (generator) and the same file without it (older data, loader computes them)
+    give the same items bit for bit; scripts/add_field_features.py restores the stored array."""
+    from src.data_gen.field_labels import add_wall_features
+    old = tmp_path / "old.h5"
+    with h5py.File(field_h5, "r") as src, h5py.File(old, "w") as dst:
+        for k in src:
+            src.copy(src[k], dst, name=k)
+        for k in [k for k in dst if k.startswith("sample_")]:
+            del dst[k]["qfeat_wall"]
+    ds_new = FieldDataset(str(field_h5), split="train", train_ratio=1.0, val_ratio=0.0)
+    ds_old = FieldDataset(str(old), split="train", train_ratio=1.0, val_ratio=0.0)
+    for i in range(len(ds_new)):
+        a, b = ds_new[i], ds_old[i]
+        assert a.keys() == b.keys()
+        assert all(torch.equal(a[k], b[k]) for k in a if torch.is_tensor(a[k]))
+        assert all((a[k] != b[k]).nnz == 0 for k in ("K", "M", "G", "Kp", "C"))
+    assert add_wall_features(str(old), log=lambda *a: None) == len(ds_new)
+    assert add_wall_features(str(old), log=lambda *a: None) == 0               # already there: untouched
+    with h5py.File(field_h5, "r") as f1, h5py.File(old, "r") as f2:
+        for k in f1:
+            if k.startswith("sample_"):
+                assert np.array_equal(f1[k]["qfeat_wall"], f2[k]["qfeat_wall"])
 
 
 def test_field_dataset_rebuilds_the_labelled_mesh(field_h5, tmp_path):

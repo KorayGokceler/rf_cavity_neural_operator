@@ -494,7 +494,21 @@ def wall_shells(mesh):
     return sorted(shells, key=len, reverse=True)
 
 
-def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
+def _quadrature(mesh, order, quad_order=None):
+    """Element quadrature of the learned-field model: (ir, ref [nq, 3], wq [nq], mips, qx [Nt, nq, 3] physical
+    points, detJ [Nt, nq]) of the rule IntegrationRule(TET, quad_order or 2·order) on every element."""
+    from ngsolve import CF, TET, VOL, Det, IntegrationRule, specialcf, x, y, z
+    ir = IntegrationRule(TET, int(quad_order or 2 * order))
+    ref = np.array([tuple(pt) for pt in ir.points])[:, :3]
+    wq = np.array(list(ir.weights))
+    nt, nq = mesh.ne, len(wq)
+    mips = mesh.MapToAllElements(ir, VOL)
+    qx = np.asarray(CF((x, y, z))(mips)).reshape(nt, nq, 3)
+    detJ = np.abs(np.asarray(Det(specialcf.JacobianMatrix(3))(mips)).reshape(nt, nq))
+    return ir, ref, wq, mips, qx, detJ
+
+
+def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wall_feat=None):
     """Operators of the high-order learned-field Ritz (model option B, docs/28) on a curved mesh,
     on the NORMALISED geometry ξ = (x − center)/scale (λ_ξ = λ_x·scale²):
 
@@ -510,10 +524,12 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
         bary    [nq, 4]  their barycentric coordinates in the element's vertices `tets`
         X, tets          normalised vertices, tets (vertex order of `bary`)
     A learned vector field ψ evaluated at qx gives the HCurl DOFs  u = C · vec_t,c,l(P ψ).
+    qfeat [Nt, nq, 9] are the point features (point_features); wall_feat [Nt·nq, 5] or [Nt, nq, 5]
+    (wall_features_for_mesh, stored in the field H5) replaces their expensive part — the wall kd-tree
+    query and the torsion solve, ~1/3 of this function — and gives the same qfeat.
     """
     import scipy.sparse as sp
-    from ngsolve import (CF, HCurl, L2, TET, VOL, BilinearForm, Det, ElementId, GridFunction,
-                         IntegrationRule, TaskManager, VectorL2, curl, specialcf, x, y, z)
+    from ngsolve import HCurl, L2, VOL, BilinearForm, ElementId, GridFunction, TaskManager, VectorL2, curl
 
     fes = HCurl(mesh, order=order, dirichlet="wall")
     u, v = fes.TnT()
@@ -558,13 +574,8 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
     else:
         C = Cs[:, colmap].tocsr()
     C.sort_indices()                                          # canonical CSR, as field_collate builds
-    ir = IntegrationRule(TET, int(quad_order or 2 * order))
-    ref = np.array([tuple(pt) for pt in ir.points])[:, :3]
-    wq = np.array(list(ir.weights))
+    ir, ref, wq, mips, qx, detJ = _quadrature(mesh, order, quad_order)
     nq = len(wq)
-    mips = mesh.MapToAllElements(ir, VOL)
-    qx = np.asarray(CF((x, y, z))(mips)).reshape(nt, nq, 3)
-    detJ = np.abs(np.asarray(Det(specialcf.JacobianMatrix(3))(mips)).reshape(nt, nq))
     Phi = np.zeros((nt, nq, nl))
     g = GridFunction(sl)
     for li in range(nl):
@@ -577,7 +588,7 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
     bary = np.column_stack([ref, 1.0 - ref.sum(1)])
     # NGSolve's reference tet: vertices (1,0,0), (0,1,0), (0,0,1), (0,0,0) ↔ the element's vertices
     qxn = (qx - center) / s
-    feats = point_features(mesh, mips, qxn, W / s ** 3, center, s, order)
+    feats = point_features(mesh, mips, qxn, W / s ** 3, center, s, order, wall=wall_feat)
     return {"K": Ks, "M": Ms, "G": G, "Kp": Kp, "C": C, "P": P, "bnd": bnd,
             "qx": qxn, "qw": W / s ** 3, "qfeat": feats.reshape(nt, nq, -1), "bary": bary,
             "X": (Xv - center) / s, "tets": tets,
@@ -585,13 +596,15 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None):
             "n_dof": int(fes.ndof), "n_pot": int(G.shape[1])}
 
 
-def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8, torsion_maxiter=5000):
-    """Features of the quadrature points (normalised geometry), FEATURE_NAMES_3D order:
-    x, y, z, dist_to_boundary, dir_bnd_x/y/z (unit vector to the nearest wall point), point volume
-    (quadrature weight / max) and the torsion function (−Δw = 1, w = 0 on the wall, H1(order + 1)
-    on the curved mesh, / max) — exact on coarse curved meshes, where the vertex features of the
-    straight mesh degenerate (no interior vertices).  torsion_maxiter: CG iterations of the torsion
-    solve before it falls back to sparse Cholesky.  Returns [Nt·nq, 9] float32."""
+WALL_FEATURES = ("dist_to_boundary", "dir_bnd_x", "dir_bnd_y", "dir_bnd_z", "torsion")
+
+
+def wall_features(mesh, mips, qxn, center, scale, order=2, wall_order=8, torsion_maxiter=5000):
+    """The expensive columns of point_features, WALL_FEATURES order, float64 [Nt·nq, 5]: distance to the wall
+    and unit vector to the nearest wall point (kd-tree over the order-wall_order wall integration points) and
+    the torsion function (−Δw = 1, w = 0 on the wall, H1(order + 1) on the curved mesh, / max) — exact on coarse
+    curved meshes, where the vertex features of the straight mesh degenerate (no interior vertices).
+    torsion_maxiter: CG iterations of the torsion solve before it falls back to sparse Cholesky."""
     from scipy.spatial import cKDTree
     from ngsolve import (BND, CF, H1, TRIG, BilinearForm, GridFunction, IntegrationRule, LinearForm, Preconditioner,
                          TaskManager, grad, x, y, z)
@@ -620,5 +633,31 @@ def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8, to
         if cg.residuals and not cg.residuals[-1] <= 1e-12 * cg.residuals[0]:
             w.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
     tw = np.asarray(w(mips)).reshape(-1)
+    return np.column_stack([dist, direc, tw / max(tw.max(), 1e-30)])
+
+
+def wall_features_for_mesh(mesh, order=2, quad_order=None, scale=None, center=None):
+    """wall_features of the learned-field model's quadrature points of `mesh` as stored in the field H5
+    (float32 [Nt, nq, 5]); scale / center as in field_operators (the dataset's normalise).  The loader
+    gets field_operators(..., wall_feat=this) with the same qfeat as without it."""
+    Xv = np.array([tuple(p.p) for p in mesh.ngmesh.Points()], dtype=np.float64)
+    center = Xv.mean(0) if center is None else center
+    scale = float(np.max(np.abs(Xv - center))) if scale is None else float(scale)
+    _, _, wq, mips, qx, _ = _quadrature(mesh, order, quad_order)
+    wf = wall_features(mesh, mips, (qx - center) / scale, center, scale, order)
+    return wf.astype(np.float32).reshape(mesh.ne, len(wq), -1)
+
+
+def point_features(mesh, mips, qxn, qw, center, scale, order=2, wall_order=8, torsion_maxiter=5000, wall=None):
+    """Features of the quadrature points (normalised geometry), FEATURE_NAMES_3D order:
+    x, y, z, dist_to_boundary, dir_bnd_x/y/z (unit vector to the nearest wall point), point volume
+    (quadrature weight / max) and the torsion function (wall_features).  wall: the stored wall_features
+    (float32 [Nt·nq, 5] or [Nt, nq, 5]) instead of computing them — float32 of the float64 columns, so the
+    result is the same.  Returns [Nt·nq, 9] float32."""
+    P = qxn.reshape(-1, 3)
+    if wall is None:
+        wall = wall_features(mesh, mips, qxn, center, scale, order, wall_order, torsion_maxiter)
+    else:
+        wall = np.asarray(wall).reshape(len(P), len(WALL_FEATURES))
     qv = np.asarray(qw, dtype=np.float64).reshape(-1)
-    return np.column_stack([P, dist, direc, qv / qv.max(), tw / max(tw.max(), 1e-30)]).astype(np.float32)
+    return np.column_stack([P, wall[:, :4], qv / qv.max(), wall[:, 4]]).astype(np.float32)

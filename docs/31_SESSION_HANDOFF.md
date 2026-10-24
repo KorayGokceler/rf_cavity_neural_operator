@@ -228,6 +228,60 @@ karşılıyor, kod değişmedi.
 - **2b — bf16 karışık hassasiyet** (GPU).
 - **GPU ölçümü:** Colab'da `profile_field_step.py --device cuda`.
 
+### 3.7 Eğitim veri yolu: her epoch / adımda tekrarlanan işler (açık iş 12)
+
+Ölçüm düzeni. Örnekler: `pillbox_pipes` (8 931 tet, 125 034 token, 92 751 DOF; C 8,0M, K ve M 5,7M sıfır olmayan
+eleman) ve `elliptical` (5 719 tet, 80 066 token, 63 090 DOF). Makine üç ajanla paylaşıldı (yük ortalaması
+5–8, 4 çekirdek): duvar saati ölçümleri ±%30 oynuyor. Güvenilir olanlar **tek iş parçacığında CPU süresi**
+(`time.process_time`; tekrarlar arası ±%1; eski ve yeni ağaç ardışık koşuldu) ve aynı süreçte sıralı karşılaştırma.
+Eşitlik: eğitim adımının kaybı, girdi tensörleri ve 76 parametre gradyanının tamamı eski koddan (commit
+öncesi ağacın `archive` kopyası) **bit düzeyinde aynı**, iki örnekte de.
+
+**Neyin tekrarlandığı** (`field_operators`, pillbox, 2 iş parçacığı, sıcak, en iyi): token özellikleri
+(duvar kd-ağacı + torsiyon CG) 1,3–2,0 s, çağrının %35–45'i; `ConvertOperator` 0,55–0,9 s; K ve M montajı
+~0,55 s; kalanı (P, Kp, G, tet listeleri) ~0,5 s. Hepsi yalnız mesh'e bağlı, her epoch aynı sonucu veriyor.
+Eğitim adımında ise `torch.sparse.mm`'in geri geçişi CSR matrisi **her çağrıda** sıralayarak devriyor
+(`aten::sort` + `index_select`): C, M ve K için 0,5–0,7 s'er, adım başına ~2 s (63k DOF).
+
+**Yapılanlar:**
+
+| değişiklik | kazanç | eşitlik |
+|---|---|---|
+| Token özellikleri (`qfeat_wall`, 5 sütun) H5'e yazılıyor, yükleyici okuyor (`highorder.wall_features`, `field_labels.write_wall_features / add_wall_features`, `scripts/add_field_features.py`) | `FieldDataset.load` pillbox 4,24 → 2,67 s (1 iş parçacığı, CPU); 5,10 → 2,85 s CPU, 3,06 → 2,15 s duvar (2 iş parçacığı); elliptical 3,12 → 1,83 s CPU | `qfeat`, K, M, G, Kp, C, P, qx, qw bit düzeyinde aynı; sütunsuz eski H5 yüklenmeye devam ediyor |
+| `hcurl.spmm` geri geçişinde hazır devrik: `Cᵀ` item'da (yalnız eğitim bölmesi), K ve M tam simetrik (`SymmetricMK`), G ve Gt batch'te zaten var | devrik başına 0,54–0,69 s → 0,03 s (63k DOF); item +0,2 s, collate +0,08 s | gradyanlar bit düzeyinde aynı (`test_precomputed_transposes_give_bitwise_equal_gradients`) |
+| CG vektör güncellemeleri `out=` ile hazır tamponlara (`hcurl._pcg`) | CG süresi −%15–20 (24 sağ taraf, yüklü makinede 4,43 → 3,54 s) | X ve iterasyon sayısı bit düzeyinde aynı (`test_pcg_buffers_do_not_change_the_solution`) |
+| Dikkatte `(k·maske)·w` yerine `k·(w·maske)` (maske ∈ {0,1}): anahtar üzerinde tek geçiş | ≤ 0,2 s / adım (ölçüm gürültüsünde) | bit düzeyinde aynı |
+| DataLoader işçilerinde NGSolve 1 iş parçacığı (`loader_worker_init`, `train.py`) | 3 işçi / 4 çekirdek: 2,1–2,5 → 1,6 s / batch | operatörler 1, 2, 4 iş parçacığında bit düzeyinde aynı |
+
+**Sonuç** (tek iş parçacığı, CPU saniyesi):
+
+| | önce | sonra |
+|---|---|---|
+| pillbox: item + Cᵀ + collate | 4,40 s | 3,0–3,2 s |
+| pillbox: eğitim adımı (ileri + geri) | 40,7 s (11,9 + 28,8) | **32,4 s** (10,4 + 22,0), −%20 |
+| elliptical: item + collate | 2,97 s | 2,2 s |
+| elliptical: eğitim adımı | 20,1 s (5,9 + 14,1) | 19,0 s (5,5 + 13,6), −%5,5 |
+
+Kazanç token ve sıfır olmayan eleman sayısıyla büyüyor (pillbox elliptical'dan %20'ye karşı %5,5); 16k tetlik
+geometride daha fazla olması beklenir (ölçülmedi).
+
+**Ölçülüp alınmayanlar:**
+- **Daha küçük operatör önbelleği.** Pillbox'ta pickle 263 MB (K 65, M 65, C 92, Kp 17, P 9,5 MB). K ile M'nin deseni
+  aynı. Indeksler fark kodlanıp zlib-1 ile sıkışınca 5–40× küçülüyor (K 21,7 → 2,8; C 30,7 → 0,8 MB); K değerleri
+  4,4× (43 → 9,9 MB), C değerleri yalnız 1,5× (61 → 41 MB). Kayıpsız toplam ~78 MB, açma ~0,8 s. Yeniden kurma
+  özellikler okununca ~2 s. Geometri başına 78 MB'a karşılık ~1,2 s: değmiyor. float32 değerler gradyanı değiştirir
+  (K, M, C float64 kullanılıyor). Mevcut `dataset.cache_dir` aynen duruyor.
+- **Kp'nin geometri başına Cholesky'si** (NGSolve `sparsecholesky`, aynı Kp, 24 sağ taraf, tek iş parçacığı):
+  ayrıştırma 1,5–1,8 s, 24 çözüm 1,3 s; CG 2,6 s (130 iterasyon). Adım başına (ileri + geri) CG 5,2 s, Cholesky
+  ~4,2 s: %5. Yalnız CPU, NGSolve nesnesi ana süreçte yaşamalı. §3.6'daki karar geçerli.
+- **Geri geçiş CG'sini ileri çözümden başlatmak:** sağ taraf farklı (B̄ = Kp⁻¹Z̄, Z̄ ≠ B), ileri çözüm iyi bir başlangıç değil.
+- **CG toleransı:** 1e-8 → 1e-6: 130 → 90 iterasyon (−%30 CG), ama Z'nin göreli hatası 5e-8 → 8e-6; gradyanlar
+  değişir. Varsayılan değişmedi.
+- **Etiketten gelen sabit terimler** (`MT = M T`, `K T`, `GᵀMT`): adım başına ~50 ms, taşımaya değmez.
+
+**Açık kalan:** gövde (dikkat ve FFN) adımın ~%75'i; `copy_` (adımın ~%10'u) einsum'un yeniden yerleşimlerinden
+geliyor, düzeni değiştirmek bit eşitliğini bozar. GPU'da ölçülmedi.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -265,7 +319,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | # | iş | sahip | dal | durum |
 |---|---|---|---|---|
 | 1 | Pilot eğitim: 1–2 aile, birkaç yüz örnek. Öğrenme eğrisi ve aileler arası genelleme. | — | — | açık |
-| 2 | Veri hattı: token özelliklerini veri üretilirken H5'e yazmak (örnek başına −2,8 s); operatörleri yerel diske önbelleklemek ya da yüklenen örnekleri birkaç adım yeniden kullanmak. | — | — | açık |
+| 2 | Veri hattı: token özelliklerini veri üretilirken H5'e yazmak (örnek başına −2,8 s); operatörleri yerel diske önbelleklemek ya da yüklenen örnekleri birkaç adım yeniden kullanmak. | ajan "train-data-speed" | worktree → `claude/field-model` | özellikler yapıldı, önbellek değmedi: iş 12, §3.7 |
 | 3 | CG'yi eğitim grafiğinden çıkarmak: Kp'yi örnek başına bir kez Cholesky ile ayrıştırıp üçgensel çözüm. Alternatifler: p-multigrid ön koşullayıcı, tol 1e-6 denemesi. | — | — | açık |
 | 4 | TRUBA referans koşuları (`TEST=1`, `MAX_NDOF` 900k) ve örnek başına belleğin ölçümü (§3.4). | — | — | açık |
 | 5 | Alan modelini web arayüzüne bağlamak; README'yi alan modeline göre güncellemek. | — | — | açık |
@@ -276,7 +330,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 10 | Geometri ve etiket düzeltmeleri (docs/33 §12). Kalan: yeni aileler (qwr, rfd, dtl_cell, gun, büyük açıklıklı eliptik), spoke uç duvarı ve dtl yarım tüpleri, composite'in dönüşümü, doğrulama seti (§8). TRUBA `TEST=1` koşuları artık `_v2` etiketleriyle. | Claude Code oturumu | `claude/field-model` | düzeltmeler bitti; yeni aileler sahibin sıra kararını bekliyor |
 
 | 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | sürüyor |
-| 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | sürüyor |
+| 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | bitti (§3.7): özellikler H5'te, hazır devrikler, CG tamponları, işçi iş parçacığı; operatör önbelleği ve Kp Cholesky ölçüldü, alınmadı |
 | 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | sürüyor |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.

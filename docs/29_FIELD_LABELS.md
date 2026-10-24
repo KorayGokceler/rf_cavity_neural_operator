@@ -16,7 +16,7 @@ One curved mesh per geometry; two polynomial orders on it.
 | curved mesh | `highorder.netgen_mesh` | netgen at maxh = 3·h, curvaturesafety 2, grading 0.5, curved to order 3, local repair of distorted elements (§2.2) |
 | labels | `field_labels.label_sample` | HCurl **p3**: frequencies, fields, QoI computed directly from the p3 fields (`mode_qoi`) |
 | model space | `field_labels.project_to_model` | M-orthogonal projection of the p3 fields onto HCurl **p2** of the same mesh (nested spaces, so this is the exact best approximation) |
-| storage | `field_labels.write_field_group` | per geometry: netgen `.vol` + BREP of the meshed shape (+ deformation map), `freqs`, `u_model` (float32), `qoi`, `axis_t` / `axis_ez` (E_z along the beam axis at U = 1 J, float32: T and R/Q at any β), `rq_model`, `proj_err` |
+| storage | `field_labels.write_field_group` | per geometry: netgen `.vol` + BREP of the meshed shape (+ deformation map), `freqs`, `u_model` (float32), `qoi`, `axis_t` / `axis_ez` (E_z along the beam axis at U = 1 J, float32: T and R/Q at any β), `rq_model`, `proj_err`, `qfeat_wall` (float32 [Nt, nq, 5]: the wall-distance, direction and torsion columns of the token features, §3.4) |
 | dataset | `FieldDataset` | rebuilds the curved mesh exactly, assembles the p2 operators, checks the stored labels against them (§3.3) |
 | model | `CavityLightning(model_type='field3d')` | `EigenspaceOperatorField` (docs/28), same losses and metrics as the N0 model |
 
@@ -136,6 +136,23 @@ if they differ, for example because of a different curve order, deformation or D
 the test permutes the rows. `check_labels` (docs/28) is not used here: the projections are not
 eigenvectors of the p2 operators.
 
+### 3.4 Stored token features (`qfeat_wall`)
+
+The model's token features (`highorder.point_features`) have two expensive column groups: the distance
+and unit direction to the nearest wall point (kd-tree over the wall integration points) and the torsion
+function (an H1(p3) Poisson solve). They depend only on the stored model mesh, yet the dataset recomputed
+them for every sample in every epoch (1.3–2 s per 9k tets). The generator now stores them:
+
+- `qfeat_wall` [Nt, nq, 5] float32, columns `highorder.WALL_FEATURES` (attr `qfeat_columns`), computed on
+  the mesh reloaded from the stored `.vol` + BREP (`field_labels._check_reload`), i.e. the mesh the loader
+  sees. The other four feature columns (x, y, z, point volume) come from the quadrature of the rebuilt mesh
+  and are not stored. Size: 2.5 MB per 9k-tet geometry (gzip does not shrink float noise).
+- The dataset passes it to `field_operators(..., wall_feat=...)`; the resulting `qfeat` equals the
+  computed one bit for bit (`test_stored_token_features_equal_the_computed_ones`).
+- The stored array is optional: files written earlier have no `qfeat_wall` and keep loading (the columns are
+  computed). `python scripts/add_field_features.py data/field/*.h5` adds it to existing files without
+  touching the labels (1–1.5 s per sample).
+
 ## 4. Cost
 
 | | measured | at scale |
@@ -205,7 +222,8 @@ turns a form into the line to paste on a login node:
   train and test through `train.py`, but `--then-eval` is skipped for them.
 - No rotation augmentation for `field3d`: C and QP are built for the stored orientation.
 - `field_operators` took ~9.5 s per 13k-tet geometry (point features, scipy conversions,
-  `ConvertOperator`). It now takes ~4.2 s with bit-identical output (docs/31 §3.6).
+  `ConvertOperator`). It now takes ~4.2 s with bit-identical output (docs/31 §3.6), and ~2 s when the
+  token features are read from the H5 (§3.4, docs/31 §3.7).
 - Netgen meshing is not bit-reproducible across runs (threaded surface meshing). The stored mesh is
   the record, so the labels are reproducible from the H5, not from the seed.
 - The per-family numbers in §2.4 come from 4 draws each. The first TRUBA trial run (`TEST=1`) should

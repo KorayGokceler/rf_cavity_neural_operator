@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 
 from src.config import config_to_flat_dict, load_config
 from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate
-from src.data.field_dataset import FieldDataset, field_collate
+from src.data.field_dataset import FieldDataset, field_collate, loader_worker_init
 from src.training.lightning_module import CavityLightning, count_near_degenerate
 from src.training.progress import ProgressFile
 
@@ -167,7 +167,8 @@ def main():
     loader_kw = dict(collate_fn=field_collate if field3d else maxwell3d_collate, num_workers=tc.num_workers,
                      pin_memory=False,                   # sparse COO batches cannot be pinned
                      persistent_workers=tc.num_workers > 0,
-                     prefetch_factor=2 if tc.num_workers > 0 else None)
+                     prefetch_factor=2 if tc.num_workers > 0 else None,
+                     worker_init_fn=loader_worker_init if field3d and tc.num_workers > 0 else None)
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True, **loader_kw)
     val_loader = DataLoader(val_dataset, batch_size=tc.batch_size, **loader_kw)
     test_loader = DataLoader(test_dataset, batch_size=tc.batch_size, **loader_kw)

@@ -31,10 +31,30 @@ from src.models.layers import BroadenedEigh
 SPARSE_KEYS = ('M', 'K', 'G', 'Gt', 'Kp')
 
 
-def spmm(A: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
-    """Block-diagonal sparse A [B·R, B·C] @ padded X [B, C, m] → [B, R, m]."""
+class _SpMM(torch.autograd.Function):
+    """A @ X whose backward Aᵀ @ ḡ uses a transpose prepared once per geometry.  torch.sparse.mm's own
+    backward transposes the CSR matrix with a sort on every call (0.4–0.6 s for a 4–5M-nnz operator,
+    ~2 s of a 20 s training step; docs/31 §3.7).  The result is the same bit for bit: the prepared
+    transpose has sorted columns, as the sorted one does."""
+
+    @staticmethod
+    def forward(ctx, A, At, X):
+        ctx.At = At
+        return torch.sparse.mm(A, X)
+
+    @staticmethod
+    def backward(ctx, g):
+        return None, None, torch.sparse.mm(ctx.At, g.contiguous())
+
+
+def spmm(A: torch.Tensor, X: torch.Tensor, At: torch.Tensor = None) -> torch.Tensor:
+    """Block-diagonal sparse A [B·R, B·C] @ padded X [B, C, m] → [B, R, m].  At: Aᵀ in the same layout
+    (A itself when A is exactly symmetric); only the backward uses it."""
     B, C, m = X.shape
-    return torch.sparse.mm(A, X.reshape(B * C, m)).view(B, -1, m)
+    X = X.reshape(B * C, m)
+    if At is not None and X.requires_grad and torch.is_grad_enabled():
+        return _SpMM.apply(A, At, X).view(B, -1, m)
+    return torch.sparse.mm(A, X).view(B, -1, m)
 
 
 def bgram(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
@@ -45,29 +65,34 @@ def bgram(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
 def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10):
     """Jacobi-preconditioned CG for Kp X = rhs, rhs [B, Nv, m]; every (sample, column) has its own
     step sizes. Only the valid block (dinv > 0) is solved: rhs is restricted to it and X is 0
-    outside it (padding and the zero columns of G). Returns (X, iterations)."""
+    outside it (padding and the zero columns of G). Returns (X, iterations).
+
+    The vector updates write into preallocated buffers (`out=`): the same floating-point operations in
+    the same order as the plain expressions, so X is bit-identical, without a fresh 5–7 MB array per
+    operation (page faults dominate on a cold allocator)."""
     tiny = torch.finfo(rhs.dtype).tiny
     rhs = rhs * (dinv > 0).to(rhs.dtype)
     x = torch.zeros_like(rhs)
     r = rhs.clone()
     z = dinv * r
     p = z.clone()
+    tmp = torch.empty_like(rhs)
     rz = (r * z).sum(1, keepdim=True)
     thr = tol * rhs.norm(dim=1, keepdim=True)
     it, converged = 0, False
     for it in range(1, maxiter + 1):
         Ap = spmm(Kp, p)
-        pAp = (p * Ap).sum(1, keepdim=True)
+        pAp = torch.mul(p, Ap, out=tmp).sum(1, keepdim=True)
         alpha = torch.where(pAp > 0, rz / pAp.clamp(min=tiny), torch.zeros_like(pAp))
-        x.add_(alpha * p)
-        r.sub_(alpha * Ap)
+        x.add_(torch.mul(p, alpha, out=tmp))
+        r.sub_(torch.mul(Ap, alpha, out=tmp))
         if it % check_every == 0 and bool((r.norm(dim=1, keepdim=True) <= thr).all()):
             converged = True
             break
-        z = dinv * r
-        rz_new = (r * z).sum(1, keepdim=True)
+        torch.mul(dinv, r, out=z)
+        rz_new = torch.mul(r, z, out=tmp).sum(1, keepdim=True)
         beta = torch.where(rz > 0, rz_new / rz.clamp(min=tiny), torch.zeros_like(rz))
-        p = z + beta * p
+        torch.add(z, torch.mul(p, beta, out=tmp), out=p)
         rz = rz_new
     if not converged:
         warnings.warn(f"KpSolve: CG stopped at maxiter={maxiter} before reaching tol={tol:g}; "
@@ -99,6 +124,14 @@ def _sparse(batch, key, dtype):
     return A if A.dtype == dtype else A.to(dtype)
 
 
+def _transposes(batch, dt, M, K):
+    """(Mᵀ, Kᵀ, G) for the backward of spmm: M and K are exactly symmetric when the collate says so
+    (batch['SymmetricMK'], field_collate), G is the transpose of Gt; None = torch's own backward."""
+    sym = bool(batch.get('SymmetricMK', False))
+    G = _sparse(batch, 'G', dt) if batch.get('G', None) is not None else None
+    return (M if sym else None), (K if sym else None), G
+
+
 def project_basis(V, batch, tol=1e-8, maxiter=2000):
     """Kernel-projected Grams of a padded edge basis V [B, Ne, m] (float64).
 
@@ -111,21 +144,23 @@ def project_basis(V, batch, tol=1e-8, maxiter=2000):
     V = V.double()          # float32 CG does not converge (M_div off by ~79%, docs/21 B3)
     dt = V.dtype
     M, K, Gt, Kp = (_sparse(batch, k, dt) for k in ('M', 'K', 'Gt', 'Kp'))
+    Mt, Kt, G = _transposes(batch, dt, M, K)
     diag = batch['Kp_diag'].to(dt)
     dinv = torch.where(diag > 0, 1.0 / diag.clamp(min=1e-300), torch.zeros_like(diag)).unsqueeze(-1)
-    MV = spmm(M, V)
-    Bm = spmm(Gt, MV)                                        # GᵀMV [B, Nv, m]
+    MV = spmm(M, V, Mt)
+    Bm = spmm(Gt, MV, G)                                     # GᵀMV [B, Nv, m]
     Z = KpSolve.apply(Bm, Kp, dinv, tol, maxiter)
     M_V = bgram(V, MV)
     M_div = M_V - bgram(Bm, Z)
-    A_V = bgram(V, spmm(K, V))
+    A_V = bgram(V, spmm(K, V, Kt))
     sym = lambda A: 0.5 * (A + A.transpose(-1, -2))          # noqa: E731
     return {'A_V': sym(A_V), 'M_V': sym(M_V), 'M_div': sym(M_div), 'Z': Z}
 
 
 def projected(V, Z, batch):
     """PV = V − G Z  [B, Ne, m]."""
-    return V - spmm(_sparse(batch, 'G', V.dtype), Z)
+    Gt = batch.get('Gt', None)
+    return V - spmm(_sparse(batch, 'G', V.dtype), Z, None if Gt is None else _sparse(batch, 'Gt', V.dtype))
 
 
 def projected_eigh(M_V, M_div, A_V, K, mass_ridge=1e-8, drop_tol=1e-6, eig_broadening=1e-4):

@@ -172,3 +172,81 @@ def test_torsion_feature_falls_back_to_cholesky_when_cg_stalls(sample):
     f_ok = ho.point_features(*args)
     assert np.array_equal(f_ok, np.asarray(ops["qfeat"]).reshape(f_ok.shape))
     np.testing.assert_allclose(ho.point_features(*args, torsion_maxiter=2), f_ok, rtol=0, atol=1e-6)
+
+
+def test_stored_wall_features_give_the_same_operators(sample):
+    """wall_features_for_mesh (what the generator stores, the loader reads back) replaces the kd-tree and
+    torsion solve of field_operators: the same token features, bit for bit, and nothing else changes."""
+    mesh, ops, _, _ = sample
+    wf = ho.wall_features_for_mesh(mesh, order=2, scale=ops["scale"], center=ops["center"])
+    assert wf.dtype == np.float32 and wf.shape == (*ops["qx"].shape[:2], len(ho.WALL_FEATURES))
+    ops2 = ho.field_operators(mesh, order=2, scale=ops["scale"], center=ops["center"], wall_feat=wf)
+    assert np.array_equal(ops2["qfeat"], ops["qfeat"])
+    assert np.array_equal(ops2["qfeat"][..., 3:7], wf[..., :4])         # dist, direction
+    for k in ("K", "M", "G", "Kp", "C"):
+        assert (ops2[k] != ops[k]).nnz == 0
+    for k in ("P", "qx", "qw"):
+        assert np.array_equal(ops2[k], ops[k])
+
+
+def test_precomputed_transposes_give_bitwise_equal_gradients(sample):
+    """hcurl.spmm's backward with Cᵀ / G / Gt and the exactly symmetric K, M (field_collate) gives the
+    gradients of torch.sparse.mm's own backward, bit for bit (batch of 2: block-diagonal operators)."""
+    _, ops, r, Y = sample
+    f_ghz = r["f_hz"] / 1e9
+    batch = field_collate([field_item(ops, Y, f_ghz, with_ct=True)] * 2)
+    assert "Ct" in batch and batch["SymmetricMK"]
+    plain = {k: v for k, v in batch.items() if k not in ("Ct", "SymmetricMK")}
+    runs = []
+    for b in (batch, plain):
+        torch.manual_seed(0)
+        model = EigenspaceOperatorField(val_dim=9, embed_dim=32, n_layers=1, n_heads=2, n_basis=8, num_field_modes=K,
+                                        rff_dim=16, rff_length_scale=0.3)
+        model.freq_stats = {"mean": float(f_ghz.mean()), "std": 1.0}
+        out = model(b)
+        G_M, G_A, _ = hcurl_grams(out["basis"].double(), b["Y_field"].double(),
+                                  {"M_div": out["M_div"], "A_V": out["A_V"], "Z": out["Z"]}, b)
+        (span_residual(G_M, 8).mean() + span_residual(G_A, 8).mean() + out["eigenvalues"].mean()).backward()
+        runs.append({n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None})
+    assert runs[0].keys() == runs[1].keys() and len(runs[0]) > 0
+    for n in runs[0]:
+        assert torch.equal(runs[0][n], runs[1][n]), n
+
+
+def test_pcg_buffers_do_not_change_the_solution(sample):
+    """_pcg writes its vector updates into preallocated buffers: X and the iteration count are those of
+    the plain-expression CG, bit for bit."""
+    from src.models.hcurl import _pcg, spmm
+    _, ops, r, Y = sample
+    batch = field_collate([field_item(ops, Y, r["f_hz"] / 1e9)])
+    diag = batch["Kp_diag"]
+    dinv = torch.where(diag > 0, 1.0 / diag.clamp(min=1e-300), torch.zeros_like(diag)).unsqueeze(-1)
+    torch.manual_seed(1)
+    rhs = spmm(batch["Gt"], spmm(batch["M"], torch.randn(1, ops["n_dof"], 5, dtype=torch.float64)))
+
+    def reference(Kp, dinv, rhs, tol, maxiter, check_every=10):
+        tiny = torch.finfo(rhs.dtype).tiny
+        rhs = rhs * (dinv > 0).to(rhs.dtype)
+        x, r_ = torch.zeros_like(rhs), rhs.clone()
+        z = dinv * r_
+        p = z.clone()
+        rz = (r_ * z).sum(1, keepdim=True)
+        thr = tol * rhs.norm(dim=1, keepdim=True)
+        for it in range(1, maxiter + 1):
+            Ap = spmm(Kp, p)
+            pAp = (p * Ap).sum(1, keepdim=True)
+            alpha = torch.where(pAp > 0, rz / pAp.clamp(min=tiny), torch.zeros_like(pAp))
+            x.add_(alpha * p)
+            r_.sub_(alpha * Ap)
+            if it % check_every == 0 and bool((r_.norm(dim=1, keepdim=True) <= thr).all()):
+                break
+            z = dinv * r_
+            rz_new = (r_ * z).sum(1, keepdim=True)
+            beta = torch.where(rz > 0, rz_new / rz.clamp(min=tiny), torch.zeros_like(rz))
+            p = z + beta * p
+            rz = rz_new
+        return x, it
+
+    x0, it0 = reference(batch["Kp"], dinv, rhs, 1e-10, 3000)
+    x1, it1 = _pcg(batch["Kp"], dinv, rhs, 1e-10, 3000)
+    assert it0 == it1 > 10 and torch.equal(x0, x1)

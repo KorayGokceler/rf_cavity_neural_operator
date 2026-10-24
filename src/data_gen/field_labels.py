@@ -25,6 +25,10 @@ Storage (dataset_generator_3d --labels field, H5 group per geometry; read by loa
     axis_ez  [K, P]  E along the axis there [V/m] at U = 1 J (float32): T, V, R/Q at any β
     rq_model [K]     Rayleigh quotients of u_model in the model space [1/m²] (load-time check)
     proj_err [K]     ‖u₃ − E u₂‖_M / ‖u₃‖_M
+    qfeat_wall [Nt, nq, 5] float32  the wall-distance / torsion columns of the model's token features at the
+                     quadrature points of the stored model mesh (highorder.wall_features_for_mesh; attr
+                     qfeat_columns).  Optional: the loader computes them (~1.3–2 s per 9k tets) when absent;
+                     scripts/add_field_features.py adds them to existing files.
     attrs    labels='field', label_order, model_order, curve, n_tets, n_dof_model, n_dof_label, …
 """
 import os
@@ -181,11 +185,31 @@ def _mesh_from_bytes(vol_bytes, shape, curve, deform):
 
 def _check_reload(vol_bytes, shape, curve, deform, model_order, ndof):
     """The stored model mesh must rebuild the model space the fields were written in (FieldDataset and
-    the UI rebuild it from the .vol + BREP): a mismatch fails the sample here, not the training later."""
+    the UI rebuild it from the .vol + BREP): a mismatch fails the sample here, not the training later.
+    Returns the reloaded mesh (the one the loader sees)."""
     from ngsolve import HCurl
-    n = HCurl(_mesh_from_bytes(vol_bytes, shape, curve, deform), order=int(model_order), dirichlet="wall").ndof
+    mesh = _mesh_from_bytes(vol_bytes, shape, curve, deform)
+    n = HCurl(mesh, order=int(model_order), dirichlet="wall").ndof
     if n != ndof:
         raise RuntimeError(f"stored model mesh rebuilds HCurl(p{model_order}) with {n} DOFs, the fields have {ndof}")
+    return mesh
+
+
+def model_normalisation(mesh):
+    """(center, scale) of the model's normalised geometry for a (reloaded) model mesh: what FieldDataset
+    passes to highorder.field_operators."""
+    from src.data.dataset_converter_3d import normalise
+    Xv = np.array([tuple(p.p) for p in mesh.ngmesh.Points()], dtype=np.float64)
+    tets = np.array([[v.nr - 1 for v in el.vertices] for el in mesh.ngmesh.Elements3D()], dtype=np.int64)
+    _, center, scale = normalise(Xv, tets)
+    return center, scale
+
+
+def wall_feature_array(mesh, model_order):
+    """qfeat_wall of a model mesh as loaded from the H5 (highorder.wall_features_for_mesh with the
+    dataset's normalisation)."""
+    center, scale = model_normalisation(mesh)
+    return ho.wall_features_for_mesh(mesh, order=int(model_order), scale=scale, center=center)
 
 
 def _beam_axis(shape_type, mesh, params=None):
@@ -268,10 +292,11 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         shape.WriteBrep(brep)
         brep_bytes = open(brep, "rb").read()
     vol_bytes = _mesh_bytes(model_mesh)
-    _check_reload(vol_bytes, shape, s["curve"], deform, s["model_order"], U.shape[0])
+    reloaded = _check_reload(vol_bytes, shape, s["curve"], deform, s["model_order"], U.shape[0])
+    wall_feat = wall_feature_array(reloaded, s["model_order"])         # the training loader reads it back
     return {"vol": np.frombuffer(vol_bytes, np.uint8), "brep": np.frombuffer(brep_bytes, np.uint8),
             "deform": deform, "freqs": lab["f_hz"][:K] / 1e9, "freq_next": float(lab["f_hz"][K] / 1e9),
-            "u_model": U.astype(np.float32), "rq_model": rq, "proj_err": err,
+            "u_model": U.astype(np.float32), "rq_model": rq, "proj_err": err, "qfeat_wall": wall_feat,
             "qoi": np.column_stack([np.asarray(q[n], float) for n in QOI_LABELS]),
             "qoi_names": list(QOI_LABELS), "axis_t": q["axis_t"], "axis_ez": q["axis_ez"].astype(np.float32),
             "attrs": {"labels": "field", "label_order": int(s["label_order"]), "model_order": int(s["model_order"]),
@@ -298,12 +323,40 @@ def write_field_group(g, res):
     for k in ("rq_model", "proj_err"):
         g.create_dataset(k, data=np.asarray(res[k], float))
     g.create_dataset("qoi", data=res["qoi"])
+    if res.get("qfeat_wall") is not None:
+        write_wall_features(g, res["qfeat_wall"])
     g.create_dataset("axis_t", data=np.asarray(res["axis_t"], float))
     g.create_dataset("axis_ez", data=res["axis_ez"], **z)
     g.attrs["qoi_names"] = ",".join(res["qoi_names"])
     g.attrs["freq_next"] = float(res["freq_next"])
     for k, v in res["attrs"].items():
         g.attrs[k] = v
+
+
+def write_wall_features(g, wall_feat):
+    """Store qfeat_wall (docs/29): float32 [Nt, nq, 5], columns ho.WALL_FEATURES."""
+    g.create_dataset("qfeat_wall", data=np.asarray(wall_feat, np.float32), compression="gzip", compression_opts=4)
+    g.attrs["qfeat_columns"] = ",".join(ho.WALL_FEATURES)
+
+
+def add_wall_features(path, overwrite=False, log=print):
+    """Add qfeat_wall to every sample of a field-label H5 file that lacks it (rebuilds each model mesh
+    once; no label is touched).  Returns the number of samples written."""
+    import h5py
+    n = 0
+    with h5py.File(path, "r+") as f:
+        for key in sorted(k for k in f.keys() if k.startswith("sample_")):
+            g = f[key]
+            if "qfeat_wall" in g:
+                if not overwrite:
+                    continue
+                del g["qfeat_wall"]
+            t = time.perf_counter()
+            mesh, rec = read_field_group(g)
+            write_wall_features(g, wall_feature_array(mesh, rec["model_order"]))
+            n += 1
+            log(f"{path}/{key}: qfeat_wall {g['qfeat_wall'].shape} ({time.perf_counter() - t:.1f} s)")
+    return n
 
 
 def read_field_group(g):
@@ -323,5 +376,11 @@ def read_field_group(g):
            "qoi": np.asarray(g["qoi"], float), "qoi_names": str(g.attrs.get("qoi_names", "")).split(","),
            "freq_next": float(g.attrs.get("freq_next", np.nan)),
            "model_order": int(g.attrs["model_order"]), "label_order": int(g.attrs["label_order"]),
-           "shape_type": str(g.attrs.get("shape_type", ""))}
+           "shape_type": str(g.attrs.get("shape_type", "")), "wall_feat": None}
+    if "qfeat_wall" in g:                      # optional: files written before docs/31 §3.7 do not have it
+        cols = str(g.attrs.get("qfeat_columns", ""))
+        if cols != ",".join(ho.WALL_FEATURES):
+            raise ValueError(f"qfeat_wall columns '{cols}' differ from highorder.WALL_FEATURES; "
+                             "scripts/add_field_features.py --overwrite rewrites them")
+        rec["wall_feat"] = np.asarray(g["qfeat_wall"], np.float32)
     return mesh, rec
