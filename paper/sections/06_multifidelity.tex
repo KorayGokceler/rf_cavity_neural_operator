@@ -4,10 +4,8 @@ Multi-fidelity learning combines a few expensive, accurate samples with many che
 \citep{kennedy2000predicting,peherstorfer2018survey}; for neural surrogates this is usually realised by
 composite networks that correct a low-fidelity prediction with high-fidelity data
 \citep{meng2020composite,lu2022multifidelity,howard2023multifidelity}. Here the two fidelities are two
-\emph{label generators} for the same model, and the Ritz layer of \cref{sec:method} makes the cheap one
-unusually natural. This section defines the two label types, explains why the cheap one fits the model,
-quantifies how the labels differ, and describes the training mechanics. The training experiments are in
-\cref{sec:experiments}.
+\emph{label generators} for the same model, and the Ritz layer of \cref{sec:method} makes the cheap one natural.
+Training experiments are in \cref{sec:experiments}.
 
 \subsection{Two label fidelities}\label{sec:06-defs}
 
@@ -23,17 +21,18 @@ the $\HF$ projection residual, in contrast, is $0.10$--$0.42\,\%$ on the four ge
 % src: docs/34 §3 table (HF proj_err 0.10–0.42 %)
 
 \paragraph{Why $\LF$ labels suit this model.} The Ritz layer computes eigenpairs of the model space itself, so the
-frequencies it can attain are the discrete order-2 eigenvalues $\lamh$ of that space, and the Ritz values
-$\theta_k$ are bounded below by them (\cref{prop:upper-bound}). $\LF$ frequencies are exactly these discrete
-eigenvalues: the bound is tight at the label, and a perfect basis reproduces the label. An $\HF$ frequency is
-closer to the exact eigenvalue and therefore lies below what the order-2 space can represent. This floor was
-measured on two pillbox-with-pipes model meshes (11\,300 and 13\,052 tetrahedra) as $0.04$--$0.9\,\%$, taken from
-the Rayleigh quotients of the projected $\HF$ modes;
-% src: docs/30 §5 "Model-space frequency floor" (2.4e-3…8.6e-3, 3.7e-4…)
-on the four geometries used for the first transfer study, the order-2 eigenvalues themselves were within
-$0.033\,\%$ of the $\HF$ frequencies.
-% src: docs/34 §4.1 table (FE floor ≤ 0.021/0.033/0.009/0.017 %)
-In every measured case the $\LF$ frequency was larger than the $\HF$ one (below), in line with this ordering.
+frequencies it can attain are bounded below by the discrete order-2 eigenvalues $\lamh$ of that space
+(\cref{prop:upper-bound}); these eigenvalues are the floor of the model space. $\LF$ frequencies are exactly these
+eigenvalues, so the bound is tight at the label and a perfect basis reproduces it. An $\HF$ frequency is closer to
+the exact eigenvalue and lies below the floor: the order-2 eigenvalue exceeds it by at most $0.033\,\%$ on the four
+geometries of the first transfer study, and the $\LF$ frequency exceeds the $\HF$ one by $0.004$--$0.047\,\%$ on
+identical meshes (positive in every measured case).
+% src: docs/34 §4.1 table (FE floor ≤ 0.021/0.033/0.009/0.017 %); docs/34 §8.1 (+0.004–+0.047 %)
+The $\HF$ field target is a different matter: it is the projection of the order-3 modes onto the model space,
+and the Rayleigh quotients of these projected targets exceed the order-3 frequencies by $0.04$--$0.9\,\%$ (two
+pillbox-with-pipes model meshes of 11\,300 and 13\,052 tetrahedra), an upper bound of the floor and a measure of the
+quality of the projected target rather than of the floor itself.
+% src: docs/30 §5 "Model-space frequency floor" (2.4e-3…8.6e-3, 3.7e-4…); EDITOR_NOTES 2
 
 \subsection{The shared start mesh}\label{sec:06-mesh}
 
