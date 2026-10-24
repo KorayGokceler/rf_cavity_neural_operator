@@ -50,7 +50,7 @@ It predicts $m$ vector fields $\bm\psi_1,\dots,\bm\psi_m$ on the geometry; a fix
 Let $\mathcal T_h$ be the curved mesh of $\Omega$ with $N_t$ elements and $\Vh$ the Nédélec space of order $p$ on it.
 The tokens are the $N=N_t\,n_q$ quadrature points $\bm x_q$ of a reference rule of degree $2p$ on every element, $n_q=14$ at $p=2$ and $n_q=24$ at $p=3$.
 % src: src/data_gen/highorder.py _quadrature (IntegrationRule(TET, 2*order)); n_q = 14, 24 checked with NGSolve 6.2; docs/34 §4.2
-Vertex tokens are avoided because coarse curved meshes can have no interior vertex, where vertex features such as the torsion function are $0/0$ (\cref{sec:experiments} compares the two for a single sample).
+Vertex tokens are avoided because coarse curved meshes can have no interior vertex, where vertex features such as the torsion function are $0/0$.
 % src: docs/28 §2, §3
 Each token carries nine features on the curved geometry (normalised coordinates): position, wall distance, unit vector to the nearest wall point, point volume (quadrature weight over its maximum) and the torsion function $\chi$ ($-\Delta\chi=1$, $\chi=0$ on $\partial\Omega$, solved in the order-$(p+1)$ $H^1_0$ space on the same mesh, normalised by its maximum).
 % src: src/data_gen/highorder.py point_features, wall_features; docs/28 §2
@@ -211,8 +211,7 @@ The total is $\sum_{\rm t}\alpha_{\rm t}\mathcal L_{\rm t}$ with weights $(\alph
 % src: configs/field_3d.yaml (span_weight 1.0, selfsup_weight 0.01, ortho_weight 0.01, freq_weight 0.1)
 A loss on the figures of merit exists in the code but is disabled for this model.
 
-\paragraph{Fidelity weights.}
-The span term of a sample is multiplied by $\omega_{\mathrm{fid}}$ and its frequency term by $\omega_{\mathrm{fid}}\beta_{\mathrm{fid}}$, where $\mathrm{fid}\in\{\LF,\HF\}$ is the fidelity of its label (\cref{sec:multifidelity}); the defaults are $\omega=\beta=(1,1)$.
+Each sample's span term is multiplied by $\omega_{\mathrm{fid}}$ and its frequency term by $\omega_{\mathrm{fid}}\beta_{\mathrm{fid}}$, with $\mathrm{fid}\in\{\LF,\HF\}$ the fidelity of its label (\cref{sec:multifidelity}); the defaults are $\omega=\beta=(1,1)$.
 % src: docs/34 §2, configs/field_3d.yaml (fidelity_weights, fidelity_freq_scale), src/training/lightning_module.py _compute_loss_3d, _span_terms
 
 \subsection{Cost}\label{sec:04-cost}
