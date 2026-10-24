@@ -119,6 +119,9 @@ def parse_args(argv=None):
     p.add_argument("--maxh_factor", type=float, default=3.0,
                    help="field labels: netgen maxh = maxh_factor × the N0 mesh size h (curvature sets the "
                         "element size on curved faces).")
+    p.add_argument("--curvaturesafety", type=float, default=None,
+                   help="field labels: netgen curvaturesafety of the curved mesh (default 2.0; adaptive labels start at "
+                        "1.5). Smaller = coarser mesh: cheap low-fidelity labels (docs/34).")
     p.add_argument("--field_max_elements", type=int, default=30000,
                    help="field labels: curved meshes with more tets are re-drawn (training cost bound).")
     p.add_argument("--max_ndof", type=int, default=900000, help="field labels: label-space DOF guard (memory).")
@@ -769,7 +772,9 @@ def field_settings(args):
             "maxh_factor": float(args.maxh_factor), "max_elements": int(args.field_max_elements),
             "max_ndof": int(args.max_ndof), "adaptive": not getattr(args, "no_adapt", False),
             "tol_f": float(getattr(args, "tol_f", 1e-6)), "tol_q": float(getattr(args, "tol_q", 1e-3)),
-            "model_max_elements": int(getattr(args, "model_max_elements", 10000))}
+            "model_max_elements": int(getattr(args, "model_max_elements", 10000)),
+            **({"curvaturesafety": float(args.curvaturesafety), "adapt_cs": float(args.curvaturesafety)}
+               if getattr(args, "curvaturesafety", None) else {})}
 
 
 def generate_field_sample(s_id):

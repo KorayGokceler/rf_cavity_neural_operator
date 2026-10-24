@@ -30,6 +30,9 @@ def parse_args():
                    help="config overrides key=value (e.g. model.embed_dim=192)")
     p.add_argument("--fast_dev_run", action="store_true", help="one batch of train / val / test")
     p.add_argument("--resume", default=None, help="checkpoint to continue from (last.ckpt)")
+    p.add_argument("--init_from", default=None,
+                   help="checkpoint whose WEIGHTS start this run (fresh optimizer / schedule / epoch counter): "
+                        "fine-tune an LF-trained model on HF data (docs/34); --resume continues a run instead")
     p.add_argument("--qoi_weight", type=float, default=None,
                    help="training.qoi_weight: weight of the QoI log-ratio loss (0 = off)")
     p.add_argument("--qoi_terms", default=None,
@@ -105,7 +108,8 @@ def _datasets_field(dc, random_seed, feature_indices):
     """train / val / test FieldDataset (field-label H5 files: a path, glob, directory or list)."""
     kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
               feature_indices=feature_indices, cache_dir=getattr(dc, 'cache_dir', None),
-              n_modes=getattr(dc, 'n_modes', None))
+              n_modes=getattr(dc, 'n_modes', None), hf_repeat=getattr(dc, 'hf_repeat', 1),
+              train_extra=getattr(dc, 'train_extra', None))
     return tuple(FieldDataset(dc.data_path, split=s, **kw) for s in ('train', 'val', 'test'))
 
 
@@ -194,12 +198,16 @@ def main():
         qoi_weight=float(getattr(tc, 'qoi_weight', 0.0) or 0.0),
         qoi_terms=getattr(tc, 'qoi_terms', None) or ('Q0', 'R_over_Q_ohm', 'G_ohm'),
         qoi_peak_p=getattr(tc, 'qoi_peak_p', None), qoi_rq_floor=getattr(tc, 'qoi_rq_floor', 1e-2),
+        fidelity_weights=getattr(tc, 'fidelity_weights', None) or (1.0, 1.0),
+        fidelity_freq_scale=getattr(tc, 'fidelity_freq_scale', None) or (1.0, 1.0),
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
                       feature_indices=feature_indices, augment=augment, zero_gauge_features=bool(augment),
                       field=getattr(train_dataset, 'field', 'E'), qoi_ops=qoi_ops,
                       data_path=dc.data_path if field3d else None),
         model_type=model_type,
     )
+    if args.init_from:
+        model.load_state_dict(torch.load(args.init_from, map_location="cpu", weights_only=False)["state_dict"])
     if train_dataset.stats:              # z-scored frequency targets ↔ GHz
         model.freq_stats = train_dataset.stats
 

@@ -203,7 +203,8 @@ class CavityLightning(pl.LightningModule):
                  span_norm='both', span_root=True, span_ridge=1e-9, selfsup_form='compliance',
                  near_deg_threshold=0.05, near_deg_rel_threshold=None,
                  qoi_weight=0.0, qoi_terms=('Q0', 'R_over_Q_ohm', 'G_ohm'), qoi_peak_p=None,
-                 qoi_rq_floor=1e-2, data_cfg=None, model_type='eigenspace3d', **legacy):
+                 qoi_rq_floor=1e-2, fidelity_weights=(1.0, 1.0), fidelity_freq_scale=(1.0, 1.0),
+                 data_cfg=None, model_type='eigenspace3d', **legacy):
         """
         span_norm: 'mass' (L²), 'energy' (curl–curl, controls the Ritz eigenvalue error) or 'both'.
         span_root: use √residual (= best-approximation rel-L2, the metric) instead of the residual.
@@ -217,6 +218,10 @@ class CavityLightning(pl.LightningModule):
         qoi_peak_p: None = exact surface peaks in the loss, else a p-norm soft max.
         qoi_rq_floor: voltage-based quantities only count for modes whose FE R/Q exceeds
             qoi_rq_floor · max_k R/Q of the same geometry (non-accelerating modes: V ≈ 0).
+        fidelity_weights: (LF, HF) per-sample weights of the span and frequency terms of field3d batches
+            that carry item["Fidelity"] (FieldDataset, docs/34); the batch loss is mean_b(w_b · loss_b).
+        fidelity_freq_scale: (LF, HF) extra factors on the frequency term: LF frequencies are the discrete
+            eigenvalues of the model space (the Ritz values can reach them), HF ones lie below its floor.
         data_cfg: dataset settings at train time (split, seed, feature_indices, field ...), stored in
             the checkpoint so evaluation rebuilds the same split and inputs.
         model_type: 'eigenspace3d' (Whitney N0 edge model, Maxwell3DDataset) or 'field3d' (learned
@@ -259,6 +264,10 @@ class CavityLightning(pl.LightningModule):
         self.qoi_terms = _qoi_term_tuple(qoi_terms)
         self.qoi_peak_p = None if qoi_peak_p in (None, 0) else float(qoi_peak_p)
         self.qoi_rq_floor = float(qoi_rq_floor)
+        self.fidelity_weights = tuple(float(w) for w in fidelity_weights)
+        self.fidelity_freq_scale = tuple(float(w) for w in fidelity_freq_scale)
+        if len(self.fidelity_weights) != 2 or len(self.fidelity_freq_scale) != 2:
+            raise ValueError("fidelity_weights / fidelity_freq_scale: (LF, HF) pairs")
         if self.qoi_weight > 0 and not self.qoi_terms:
             raise ValueError("qoi_weight > 0 but qoi_terms is empty")
         self.freq_stats = None
@@ -285,7 +294,7 @@ class CavityLightning(pl.LightningModule):
         """Near-degenerate mode groups of one sample (metric, evaluation)."""
         return detect_clusters(f_true, self.near_deg_threshold, self.near_deg_rel_threshold, self.freq_stats)
 
-    def _span_terms(self, G_M, G_A, m, prefix):
+    def _span_terms(self, G_M, G_A, m, prefix, w=None):
         """NEO-style terms on the raw basis V (before Rayleigh–Ritz) from the mass / curl–curl
         Grams G_M, G_A [B, m+n, m+n] of [PV | T] (hcurl_grams; T = ALL stored target modes):
 
@@ -294,12 +303,14 @@ class CavityLightning(pl.LightningModule):
           selfsup −log tr(G_A⁻¹ G_M) = −log Σ 1/θ_i (label-free expected compliance) or
                   (1/m) Σ log θ_i ('logdet')
           ortho   off-diagonal mass correlations of V (_basis_conditioning_loss)
+        w [B]: per-sample weights of the span term (fidelity, docs/34); None = plain mean.
         Returns span_weight·span + selfsup_weight·selfsup + ortho_weight·ortho."""
         B = G_M.shape[0]
         r_M = span_residual(G_M, m, self.span_ridge)            # [B, n]
         r_A = span_residual(G_A, m, self.span_ridge)
         r = {'mass': r_M, 'energy': r_A, 'both': 0.5 * (r_M + r_A)}[self.span_norm]
-        loss_span = (torch.sqrt(r + 1e-8) if self.span_root else r).mean()
+        loss_span = torch.sqrt(r + 1e-8) if self.span_root else r
+        loss_span = loss_span.mean() if w is None else (loss_span.mean(-1) * w.to(loss_span.dtype)).mean()
 
         Gm_vv, Ga_vv = G_M[:, :m, :m], G_A[:, :m, :m]
         if self.selfsup_form == 'logdet':
@@ -351,12 +362,19 @@ class CavityLightning(pl.LightningModule):
         V, T = out['basis'], batch['Y_field']
         B, _, m = V.shape
         G_M, G_A, MT = hcurl_grams(V, T, out, batch)
-        total = self._span_terms(G_M, G_A, m, prefix)
+        fid = batch.get('Fidelity', None)                 # field3d, mixed LF / HF labels (docs/34)
+        w_fid = w_freq = None
+        if fid is not None:
+            fid = fid.reshape(-1).to(V.device)
+            w_fid = torch.tensor(self.fidelity_weights, device=V.device)[fid]
+            w_freq = w_fid * torch.tensor(self.fidelity_freq_scale, device=V.device)[fid]
+        total = self._span_terms(G_M, G_A, m, prefix, w_fid)
         K = out['field'].shape[-1]
         f_pred, f_true = out['freq'], batch['Y_freq'][:, :K]
         loss_freq = F.mse_loss(f_pred, f_true)
         if self.freq_weight > 0.0:
-            total = total + self.freq_weight * loss_freq.to(total.dtype)
+            lf = loss_freq if w_freq is None else ((f_pred - f_true) ** 2).mean(-1).mul(w_freq.to(f_pred.dtype)).mean()
+            total = total + self.freq_weight * lf.to(total.dtype)
         loss_qoi = self._qoi_terms_3d(batch, out, T[..., :K], f_pred, f_true, prefix)
         if loss_qoi is not None:
             total = total + self.qoi_weight * loss_qoi.to(total.dtype)
@@ -377,6 +395,19 @@ class CavityLightning(pl.LightningModule):
             grad_frac = 1.0 - (torch.diagonal(out['M_div'], dim1=-2, dim2=-1)
                                / torch.diagonal(out['M_V'], dim1=-2, dim2=-1).clamp(min=1e-300))
             self.log(f'{prefix}/freq_loss', loss_freq.float(), **kw)
+            if fid is not None and self.freq_stats:             # per-fidelity metrics
+                fp_g, ft_g = self._to_ghz(f_pred), self._to_ghz(f_true)
+                rel_b = ((fp_g - ft_g).abs() / ft_g.abs()).mean(-1)
+                for name, code in (('lf', 0), ('hf', 1)):
+                    sel = (fid == code).cpu()
+                    if bool(sel.any()):
+                        self.log(f'{prefix}/freq_rel_err_{name}', rel_b[sel.to(rel_b.device)].mean().float(),
+                                 **dict(kw, batch_size=int(sel.sum())))
+                        v = torch.isfinite(rl)[sel.to(rl.device)]
+                        n = int(v.sum())
+                        r_sel = rl[sel.to(rl.device)]
+                        self.log(f'{prefix}/field_rel_l2_{name}', torch.where(v, r_sel, torch.zeros_like(r_sel)).sum() / max(n, 1),
+                                 **dict(kw, batch_size=n))
             self.log(f'{prefix}/grad_frac', grad_frac.mean().float(), **kw)
             self.log(f'{prefix}/kp_cg_iters', float(KpSolve.last_iters), **kw)
             # NaN (split cluster) entries are excluded by weight, not by value:

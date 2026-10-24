@@ -30,6 +30,17 @@ from src.data.dataset_3d import _block_diag, _mask, default_qoi_names
 
 
 C0 = 299792458.0
+LF, HF = 0, 1          # label fidelity (docs/34): item["Fidelity"]
+
+
+def label_fidelity(attrs):
+    """HF (1) for adaptive or higher-order-than-model labels (p3 labels projected onto the p2 model space:
+    frequencies below the model space's floor), LF (0) for the model-space solve itself (label_order ==
+    model_order, one solve, no adaptivity: its frequencies are the discrete eigenvalues the Ritz values
+    are bounded below by).  From the H5 attrs the generator writes (adapt_iters, label_order, model_order)."""
+    if "adapt_iters" in attrs or int(attrs.get("label_order", 3)) > int(attrs.get("model_order", 2)):
+        return HF
+    return LF
 
 
 def check_labels(ops, Y_field, Y_freq, rtol=1e-8):
@@ -109,7 +120,7 @@ def field_collate(batch):
     if all("Y_field" in it for it in batch):
         out["Y_field"] = pad("Y_field")
         out["Y_freq"] = pad("Y_freq")
-    for k in ("FreqNext", "geom_id"):
+    for k in ("FreqNext", "geom_id", "Fidelity"):
         if all(k in it for it in batch):
             out[k] = torch.stack([it[k] for it in batch])
     if all("Y_qoi" in it for it in batch):
@@ -141,19 +152,32 @@ class FieldDataset(Dataset):
     data_path: one H5 file, a glob ("data/field/*.h5"), a directory or a list.  The split is by
     geometry (seeded permutation of the sorted (file, group) index).  cache_dir: keep the rebuilt
     operators on disk (pickle per geometry; ~0.5 GB per 16k-tet geometry at p2) instead of
-    reassembling them every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6)."""
+    reassembling them every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6).
+
+    Multi-fidelity (docs/34): every item carries Fidelity (LF 0 / HF 1, label_fidelity of the H5 attrs), so
+    files of both kinds can be mixed in data_path.  hf_repeat > 1 lists the HF geometries of the TRAIN split
+    that many times per epoch (few expensive HF samples among many cheap LF ones).  train_extra: more H5 files
+    (path / glob / directory / list) whose geometries all go to the train split, never to val / test (the HF
+    files of a mixed run: the held-out geometries come from data_path)."""
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,
-                 feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False):
+                 feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False,
+                 hf_repeat=1, train_extra=None):
         if augment:
             raise ValueError("FieldDataset: rotation augmentation is not supported (the DOF maps C, QP "
                              "are built for the stored orientation)")
         self.paths = _expand(data_path)
+        n_main_files = len(self.paths)
+        if train_extra:
+            self.paths = self.paths + [p for p in _expand(train_extra) if p not in self.paths]
         self.split, self.feature_indices, self.rq_rtol = split, feature_indices, float(rq_rtol)
         self.cache_dir = cache_dir
-        index, freqs, nxt, Ks, types = [], [], [], [], []
+        index, freqs, nxt, Ks, types, fids = [], [], [], [], [], []
         self.qoi_names = tuple(default_qoi_names())
-        for path in self.paths:
+        n_main = None
+        for i_file, path in enumerate(self.paths):
+            if i_file == n_main_files:
+                n_main = len(index)
             with h5py.File(path, "r") as f:
                 for key in sorted(k for k in f.keys() if k.startswith("sample_")):
                     g = f[key]
@@ -165,22 +189,28 @@ class FieldDataset(Dataset):
                     nxt.append(float(g.attrs.get("freq_next", np.nan)))
                     Ks.append(len(freqs[-1]))
                     types.append(str(g.attrs.get("shape_type", "")))
+                    fids.append(label_fidelity(g.attrs))
         if not index:
             raise ValueError(f"no samples in {self.paths}")
         self.n_modes = int(n_modes or min(Ks))
-        self.index, self._freqs, self._next, self.shape_types = index, freqs, nxt, types
-        n = len(index)
+        self.index, self._freqs, self._next, self.shape_types, self.fidelities = index, freqs, nxt, types, fids
+        n = len(index) if n_main is None else n_main            # train_extra geometries are outside the split
         perm = np.random.RandomState(random_seed).permutation(n)
         n_tr, n_va = int(n * train_ratio), int(n * val_ratio)
-        parts = {"train": perm[:n_tr], "val": perm[n_tr:n_tr + n_va], "test": perm[n_tr + n_va:]}
+        extra = np.arange(n, len(index))
+        parts = {"train": np.concatenate([perm[:n_tr], extra]).astype(int),
+                 "val": perm[n_tr:n_tr + n_va], "test": perm[n_tr + n_va:]}
         self.active_geoms = [int(i) for i in parts.get(split, parts["test"])]
+        if split == "train" and int(hf_repeat) > 1:
+            self.active_geoms += [i for i in self.active_geoms if fids[i] == HF] * (int(hf_repeat) - 1)
         tr = np.concatenate([freqs[i][:self.n_modes] for i in parts["train"]]) if n_tr else \
             np.concatenate([fq[:self.n_modes] for fq in freqs])
         self.stats = {"mean": float(tr.mean()), "std": float(tr.std() if tr.std() > 0 else 1.0)}
-        self.geom_to_samples = {i: [i] for i in range(n)}          # train.py's empty-split message
+        self.geom_to_samples = {i: [i] for i in range(len(index))}          # train.py's empty-split message
         self.field = "E"
+        n_hf = sum(fids[i] == HF for i in self.active_geoms)
         print(f"FieldDataset {split}: {len(self.active_geoms)} geometries × {self.n_modes} modes "
-              f"({len(self.paths)} files)")
+              f"({len(self.paths)} files; {len(self.active_geoms) - n_hf} LF, {n_hf} HF)")
 
     def __len__(self):
         return len(self.active_geoms)
@@ -247,6 +277,7 @@ class FieldDataset(Dataset):
         item["Y_freq"] = (item["Y_freq"] - m) / sd
         item["FreqNext"] = torch.tensor((self._next[g_id] - m) / sd, dtype=torch.float32)
         item["geom_id"] = torch.tensor([g_id], dtype=torch.long)
+        item["Fidelity"] = torch.tensor([self.fidelities[g_id]], dtype=torch.long)
         names = list(rec.get("qoi_names") or [])
         q = np.full((K, len(self.qoi_names)), np.nan, np.float32)
         for j, n in enumerate(self.qoi_names):

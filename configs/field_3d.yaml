@@ -25,6 +25,8 @@ dataset:
   val_ratio: 0.1
   random_seed: 42
   feature_indices: null         # null = all 9 point features (highorder.point_features)
+  train_extra: null             # multi-fidelity: more H5 files (HF) whose geometries all go to the train split
+  hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
 
 model:
   type: field3d
@@ -64,6 +66,14 @@ training:
   selfsup_form: compliance
   ortho_weight: 0.01
   freq_weight: 0.1
+
+  # Multi-fidelity (docs/34): files of different label fidelity can be mixed in dataset.data_path. Each item carries
+  # Fidelity (0 = LF: label_order == model_order, one solve; 1 = HF: adaptive / p3 labels, from the H5 attrs).
+  # Per-sample weights (LF, HF) of the span and frequency terms; batch loss = mean_b(w_b * loss_b).
+  fidelity_weights: [1.0, 1.0]
+  # Extra (LF, HF) factors on the frequency term only: LF frequencies are the model space's own discrete eigenvalues
+  # (reachable by the Ritz values), HF frequencies lie below its floor (docs/30: 0.04-0.9 %).
+  fidelity_freq_scale: [1.0, 1.0]
 
   qoi_weight: 0.0               # the QoI loss needs the N0 operators: not available for field3d
   qoi_metrics: false
