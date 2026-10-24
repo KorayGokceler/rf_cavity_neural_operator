@@ -24,14 +24,14 @@ In electromagnetics, FNO surrogates have been trained for scattering and inverse
 To our knowledge none of these targets the Maxwell eigenproblem on conforming high-order $H(\mathrm{curl})$ spaces on curved meshes, where the constraint is the kernel of the curl.
 
 \paragraph{Maxwell eigenproblems and Nédélec elements.}
-Curl-conforming elements~\citep{nedelec1980mixed} remove the spurious modes of nodal discretisations of the cavity problem~\citep{bossavit1990solving}; their analysis (discrete compactness, spurious-free convergence) is treated in~\citep{boffi2000fortin,caorsi2001spurious}, in the monograph of~\citet{monk2003finite} and in the surveys of~\citet{hiptmair2002finite} and~\citet{boffi2010finite}.
+Nodal discretisations of the cavity problem produce spurious modes~\citep{bossavit1990solving}; curl-conforming elements~\citep{nedelec1980mixed} avoid them, and their analysis (discrete compactness, spurious-free convergence) is treated in~\citep{boffi2000fortin,caorsi2001spurious}, in the monograph of~\citet{monk2003finite} and in the surveys of~\citet{hiptmair2002finite} and~\citet{boffi2010finite}.
 Hierarchical high-order bases with the local complete sequence property~\citep{schoberl2005high} and curved (isoparametric) elements make the geometry error small; we use them through NGSolve and Netgen~\citep{schoberl2014cpp11,schoberl1997netgen}.
 Our contribution here is not a new element but the observation that the standard kernel-projection and min--max structure of this theory can be placed \emph{behind} a neural network.
 
 \paragraph{RF cavity simulation and design.}
 SUPERFISH solves axisymmetric cavities in 2D~\citep{halbach1976superfish}; CST Studio Suite is a widely used commercial 3D code; Omega3P of the ACE3P suite is a parallel higher-order Nédélec eigensolver for accelerator cavities~\citep{lee2009omega3p,ko2010advances}; and Palace is an open-source finite-element code with eigenmode analysis~\citep{awslabs2023palace}.
 Shape optimisation of superconducting cavities calls such solvers in a loop and reduces their cost with sensitivity analysis~\citep{kranjcevic2019constrained}.
-Machine learning in accelerator science has mostly produced surrogates of beam-dynamics simulations~\citep{edelen2020machine} (see also the community overview~\citep{edelen2018opportunities}); for cavities, recent networks map a low-dimensional elliptical-cell parametrisation to scalar observables and back~\citep{yaker2026neural}.
+Machine learning in accelerator science has mostly produced surrogates of beam-dynamics simulations~\citep{edelen2020machine} (see also the community overview~\citep{edelen2018opportunities}); for cavities, a recent inverse-design network proposes elliptical-cell geometries from target observables~\citep{yaker2026neural}.
 Our model instead predicts the modes themselves, with fields and the derived figures of merit, for a general geometry given by a mesh.
 
 \paragraph{Multi-fidelity learning.}
