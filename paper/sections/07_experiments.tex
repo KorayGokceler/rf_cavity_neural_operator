@@ -7,25 +7,8 @@ Every training arm is a single run (one seed); no confidence intervals are avail
 
 \paragraph{Setup.}
 % src: docs/34 §3, §4, §7, §8.2; configs/field_3d.yaml (random_seed 42, loss weights, kp_tol, drop_tol); src/training/lightning_module.py (custom_cosine, AdamW)
-Everything ran on a shared four-core cloud VM without a GPU, often next to other jobs, so wall-clock times scatter. \Cref{tab:07-hyper} lists the configuration; the model is that of \cref{sec:method}.
+Everything ran on a shared four-core cloud VM without a GPU, often next to other jobs, so wall-clock times scatter. The model is that of \cref{sec:method} with embedding width 64, 2 attention blocks, 4 heads, basis width $\nbasis=12$ and $\nmodes=4$ predicted modes (labels store more). Training uses AdamW (learning rate $10^{-3}$, weight decay $10^{-4}$, gradient clipping 1), batch size 1, a learning rate that is constant for 10 epochs and then follows a cosine to $10^{-6}$, 600 steps per arm, one thread per run, seed 42, one run per arm; evaluation uses the last checkpoint. All settings are in \cref{tab:A07-hyper}.
 
-\begin{table}[t]
-\centering\small
-\caption{Configuration of the experiments (equal-cost study unless noted).}
-\label{tab:07-hyper}
-% src: docs/34 §4, §7, §8.2; configs/field_3d.yaml
-\begin{tabular}{p{0.24\linewidth}p{0.70\linewidth}}
-\toprule
-Model & embedding width 64, 2 attention blocks, 4 heads, basis width $\nbasis=12$, 32 random Fourier features, $\nmodes=4$ predicted modes (labels store more), order-2 space\\
-Optimiser & AdamW, learning rate $10^{-3}$, weight decay $10^{-4}$, gradient-norm clipping 1, batch size 1, no dropout, no augmentation\\
-Schedule & constant for 10 epochs, then cosine to $10^{-6}$ at the last epoch; 600 steps per arm (15 or 25 epochs); fine-tune arm D: 200 further steps at $3\times10^{-4}$\\
-Loss weights & $\alpha_{\mathrm{span}}=1$ (mass-plus-energy norm), $\alpha_{\mathrm{ss}}=\alpha_{\mathrm{ortho}}=0.01$, $\alpha_{\mathrm{freq}}=0.1$; frequency standardisation from the training split; figure-of-merit loss off\\
-Projection solve & CG tolerance $10^{-8}$, drop tolerance $10^{-6}$, float64\\
-Compute & 1 thread per run (earlier studies: 2); seed 42 (configuration default), one run per arm\\
-Evaluation & last checkpoint (no selection), stored model mesh, order-2 space\\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \emph{Data.} All geometries are of the family \texttt{pillbox\_pipes} (pillbox cavities with pipes), drawn from a fixed-seed Sobol sequence, so identifier~$i$ is the same
 geometry in the LF and HF sets (checked on four samples). The minimum-fillet parameter is $0.12$, whereas the generator default for field labels is $0.05$; this rounds the geometry and limits what the results say about sharper cavities.
@@ -38,33 +21,16 @@ LF meshes equal HF model meshes byte for byte for the 8 HF training and the 6 te
 
 \emph{Metrics.} The frequency error of mode~$k$ is $f_k^{\mathrm{model}}/f_k^{\HF}-1$ against the stored HF label; where the evaluated space differs
 from the label space, and to test \cref{prop:upper-bound}, it is also formed against the finite-element eigenvalue of the evaluated space, $f_k^{\mathrm{model}}/f_k^{\mathrm{FE}}-1$.
-The field error is the relative $L^2$ error in the mass norm against the finite-element mode of the evaluated space, minimised over the sign for an isolated mode,
-and the relative distance between target and predicted subspace inside a cluster of near-degenerate modes.
+The field error is the sign-minimised relative $L^2$ error in the mass norm against the finite-element mode of the evaluated space (a subspace distance inside a cluster of near-degenerate modes).
 Frequency statistics include all four predicted modes (0--3); field statistics use modes 0--2 only, because mode~3 is not yet learned
 (field error $0.07$--$1.3$ in the study of \cref{sec:A07-first}, cause not investigated), and its frequency errors are the largest of the four, so they inflate the frequency means.
 % src: docs/34 §4.1 (mode 3), §8.2 (statistics definition); EDITOR_NOTES_2 decision 11
 
 \subsection{Single-sample representation capacity}\label{sec:07-floor}
 % src: docs/28 §3
-\Cref{tab:07-overfit} fits one curved pillbox (179 tetrahedra) to its own order-2 labels with a width-64 two-block trunk, $\nbasis=12$, $\nmodes=4$. With vertex tokens and barycentric interpolation
-the eigenvalue error saturates near $10^{-4}$ (worse at order~3); with the quadrature-point tokens of \cref{sec:method} it reaches $10^{-6}$--$9\times10^{-6}$ in fewer steps.
-This is a capacity test on one training sample, not a generalisation result. The $2.4\times10^{-3}$ reported for the lowest-order Whitney model on similar cavities is the error of that space against the exact solution on a different sample, so it is not comparable and we draw no conclusion from it.
-
-\begin{table}[t]
-\centering\small
-\caption{Single-sample fit on a curved pillbox: relative eigenvalue error $\theta_k/\lambda^{\mathrm{label}}_k-1$ against the label of the same space.}
-\label{tab:07-overfit}
+We fit one curved pillbox (179 tetrahedra, 2280 DOF at order 2) to its own labels with a width-64 two-block trunk, $\nbasis=12$, $\nmodes=4$. The relative eigenvalue error $\theta_k/\lambda_k^{\mathrm{label}}-1$ against the label of the same space saturates at $0.8$--$1.1\times10^{-4}$ after 2000 steps with vertex tokens and barycentric interpolation (order 2; $2.3$--$3.0\times10^{-4}$ at order 3, 5480 DOF), and reaches $1$--$9\times10^{-6}$ after 1250 steps with the quadrature-point tokens of \cref{sec:method}.
 % src: docs/28 §3
-\begin{tabular}{lccrc}
-\toprule
-Tokens & order $p$ & DOF & steps & eigenvalue error\\
-\midrule
-vertices + barycentric interpolation & 2 & 2280 & 2000 & $0.8$--$1.1\times10^{-4}$\\
-vertices + barycentric interpolation & 3 & 5480 & 2000 & $2.3$--$3.0\times10^{-4}$\\
-quadrature points & 2 & 2280 & 1250 & $1$--$9\times10^{-6}$\\
-\bottomrule
-\end{tabular}
-\end{table}
+This is a capacity test on one training sample, not a generalisation result. The $2.4\times10^{-3}$ reported for the lowest-order Whitney model on similar cavities is the error of that space against the exact solution on a different sample, so it is not comparable and we draw no conclusion from it.
 
 \subsection{Kernel projection against a penalty}\label{sec:07-penalty}
 % src: docs/31 §3.5
@@ -120,29 +86,22 @@ With the model this far from the labels, the study does not probe the regime in 
 \paragraph{LF-to-HF gap.} The predictions of C2 have a mean error of $1.35\%$ against the LF labels of the test meshes and $1.37\%$ against the HF labels: $0.02$ percentage points apart. This is a consequence of the label agreement above, not independent evidence that training on LF labels is harmless.
 % src: docs/34 §8.2
 
-\paragraph{Ritz bound.} In every evaluation of this experiment (all arms, geometries and modes) the predicted eigenvalues lie above the finite-element eigenvalue of the evaluated space; the smallest margin $f_k^{\mathrm{model}}/f_k^{\mathrm{FE}}-1$ is $+0.47\%$ (\cref{prop:upper-bound}).
-Model errors are far larger than the margin the guarantee needs, so this is a consistency check. The guarantee itself was probed separately on two test meshes (4818 and 6315 tetrahedra) with synthetic bases (exact eigenvectors with noise, random bases, and bases with a gradient admixture) and several CG tolerances $\tau$, because the implemented projection is inexact.
-At the shipped $\tau=10^{-8}$ the bound $\theta_k\ge\lambda_{h,k}$ was never violated for exact eigenvectors with noise or for random bases, and was violated only for bases with a gradient admixture, by at most $1.5\times10^{-8}$ (relative) at a gradient mass fraction $0.99$ and $1.4\times10^{-10}$ at $0.5$ (a trained basis has about $0.5$--$0.6$ before projection), always within the a posteriori perturbation $\bar\eta\approx(1\text{--}3)\,\tau$. At $\tau=10^{-4}$ violations reach $8\times10^{-5}$ and the drop rule fails for nearly pure gradient directions; it protects only for $\tau\lesssim10^{-6}$. Details are in \cref{sec:method}.
+\paragraph{Ritz bound.} In every evaluation of this experiment (all arms, geometries and modes) the predicted eigenvalues lie above the finite-element eigenvalue of the evaluated space; the smallest margin $f_k^{\mathrm{model}}/f_k^{\mathrm{FE}}-1$ is $+0.47\%$ (\cref{prop:upper-bound}). This is a consistency check only, since model errors are far larger than the margin.
+Because the implemented projection is inexact, the guarantee was also probed on two test meshes (4818 and 6315 tetrahedra) with synthetic bases and several CG tolerances $\tau$. At the shipped $\tau=10^{-8}$ the bound $\theta_k\ge\lambda_{h,k}$ was never violated for exact eigenvectors with noise or for random bases; it was violated only for bases with a gradient admixture, by at most $1.5\times10^{-8}$ (relative) at gradient mass fraction $0.99$ and $1.4\times10^{-10}$ at $0.5$ (a trained basis has about $0.5$--$0.6$ before projection), always within the a posteriori perturbation $\bar\eta\approx(1\text{--}3)\,\tau$. At $\tau=10^{-4}$ violations reach $8\times10^{-5}$ and the drop rule fails for nearly pure gradient directions; it protects only for $\tau\lesssim10^{-6}$ (\cref{sec:method}).
 % src: docs/35 §2 (stress test, geometries 24 and 27); docs/34 §8.2 (+0.47 %)
-Assumption~(A) of \cref{sec:method} (kernel of $\Kmat$ equals the range of $\Gmat$) was verified numerically on five small curved meshes with $p=1,2,3$ (15 cases), including a two-wall shell; larger production meshes were checked only indirectly.
+Assumption~(A) of \cref{sec:method} was verified on five small curved meshes with $p=1,2,3$ (15 cases, including a two-wall shell); production meshes were checked only indirectly.
 % src: docs/35 §1
 
-\paragraph{Fine-tuning and mixed training are inconclusive.} Arm~D improves on C2 (mean error $1.37\%\to1.13\%$), but the gain cannot be attributed to the HF labels. The control (same start, same 200 steps, LF data only) was lost when the container restarted before its test evaluation;
-on the three validation geometries it had a mean absolute frequency error of $0.031$\,GHz and a field error of $0.046$, against $0.029$\,GHz and $0.052$ for D, a mixed signal. Two further runs are excluded: a mixed LF-40 plus HF-8 run with $8\times80$ steps never entered its decay phase
-(eight epochs is fewer than the ten-epoch constant phase) and reached $1.95\%$, and a mixed LF-32 plus HF-8 run with the same schedule was lost on restart at epoch~6.
+\paragraph{Fine-tuning and mixed training are inconclusive.} Arm~D improves on C2 (mean error $1.37\%\to1.13\%$), but the gain cannot be attributed to the HF labels: the control (same start, same 200 steps, LF data only) was lost when the container restarted before its test evaluation; on the three validation geometries it had a mean absolute frequency error of $0.031$\,GHz and a field error of $0.046$, against $0.029$\,GHz and $0.052$ for D, a mixed signal. Two further runs are excluded: a mixed LF-40 plus HF-8 run ($8\times80$ steps) never entered its decay phase (eight epochs is fewer than the ten-epoch constant phase) and reached $1.95\%$, and a mixed LF-32 plus HF-8 run was lost on restart at epoch~6.
 % src: docs/34 §8.2 (invalid and lost arms)
 We make no claim about fine-tuning or mixed training. In an earlier, smaller study (\cref{sec:A07-first}), a fine-tune with a proper control gave no gain from HF labels: the improvement ($1.8\%\to1.5\%$) came from the extra epochs.
-% src: docs/34 §4.1, §4.3
+% src: docs/34 §4.3
 
 \subsection{Transfer to other spaces}\label{sec:07-transfer}
 % src: docs/34 §4.2
-The Ritz layer uses only $\Kmat,\Mmat,\Gmat,\Kp$ of the space it is given, so the trained weights can be evaluated in another conforming space without retraining. \Cref{tab:A07-transfer} (appendix) does this for the model of the earlier study (\cref{sec:A07-first}) on two HF geometries: the native order-2 space, order~3 on the same mesh, and, for geometry~5, order~2 on the once uniformly refined mesh (two threads). The frequency errors against the HF labels are $+0.63$ to $+2.51\%$ natively, $+0.88$ to $+3.23\%$ at order~3 and $+0.86$ to $+2.29\%$ on the refined mesh.
-
-
-In all spaces the predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space. Accuracy does not improve: the frequency error is $0.2$--$0.7$ percentage points \emph{worse} than natively and the field error is unchanged.
+The Ritz layer uses only $\Kmat,\Mmat,\Gmat,\Kp$ of the space it is given, so trained weights can be evaluated in another conforming space without retraining. \Cref{tab:A07-transfer} (appendix) does this for the model of the earlier study (\cref{sec:A07-first}) on two HF geometries: the native order-2 space, order~3 on the same mesh and, for geometry~5, order~2 on the once uniformly refined mesh (two threads). The frequency errors against the HF labels are $+0.63$ to $+2.51\%$ natively, $+0.88$ to $+3.23\%$ at order~3 and $+0.86$ to $+2.29\%$ on the refined mesh. In all spaces the predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space. Accuracy does not improve: the frequency error is $0.2$--$0.7$ percentage points \emph{worse} than natively and the field error is unchanged.
 % src: docs/34 §4.2 table (differences computed from the table: id 3 p3 +0.68/+0.34/+0.35/+0.72; id 5 p3 +0.59/+0.25/+0.26/+0.64; refined +0.60/+0.23/+0.21/+0.40; EDITOR_NOTES_2 decision 6; docs/34's "0.2-0.6" was a misstatement)
-We attribute this to the learned basis $\psi_j$ being the same smooth field in a richer space, so that the error comes from the basis and not from the space, and to the different token density (24 quadrature points per tetrahedron at order~3 against 14 at order~2), a small distribution shift; neither explanation was tested.
-Transfer thus establishes validity (the guarantee and the absence of spurious modes survive a change of space), not accuracy.
+We attribute this to the learned basis $\psi_j$ being the same smooth field in a richer space and to the different token density (24 quadrature points per tetrahedron at order~3 against 14 at order~2); neither was tested. Transfer thus establishes validity (the guarantee and the absence of spurious modes survive a change of space), not accuracy.
 
 \subsection{Baselines}\label{sec:07-baselines}
 % src: docs/35 §3, §4; docs/34 §8.2
@@ -199,7 +158,7 @@ Model, arm C2 & model mesh & -- & -- & 8.3 & 1.37 & 5.30\\
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.72\linewidth]{figures/cost_accuracy.pdf}
+\includegraphics[width=0.62\linewidth]{figures/cost_accuracy.pdf}
 \caption{Time per geometry (one thread) against mean frequency error for direct finite elements (order 1 and 2, on the model mesh and on a coarser curved mesh) and for the model (arms A and C2). Finite-element times are measured, mean over six geometries; the model time is that of one geometry from an earlier run.}
 \label{fig:07-cost}
 % src: docs/35 §3b, §4
@@ -211,5 +170,4 @@ Together, the baselines show that on one low-dimensional family the model has no
 
 \subsection{Training-path engineering}\label{sec:07-engineering}
 % src: docs/31 §3.6, §3.7; docs/28 §4
-Removing repeated, parameter-independent work (stored wall features, a transpose prepared once per geometry, preallocated buffers in the projection solve) cut the single-thread training step of the 8931-tetrahedron pillbox from $40.7$ to $32.4$\,s ($-20\%$); activation checkpointing reduced the peak memory of a 13k-tetrahedron step from $9.9$ to $3.8$\,GB at an unchanged step time on CPU.
-Results are unchanged (details: \cref{sec:A07-engineering}); no GPU timing was made.
+Removing repeated, parameter-independent work cut the single-thread training step of the 8931-tetrahedron pillbox from $40.7$ to $32.4$\,s ($-20\%$), and activation checkpointing reduced the peak memory of a 13k-tetrahedron step from $9.9$ to $3.8$\,GB, with unchanged results (\cref{sec:A07-engineering}).

@@ -1,5 +1,24 @@
 \section{Additional experiments}\label{sec:A07-experiments}
 
+\subsection{Configuration}\label{sec:A07-config}
+\begin{table}[t]
+\centering\small
+\caption{Configuration of the experiments (equal-cost study unless noted).}
+\label{tab:A07-hyper}
+% src: docs/34 §4, §7, §8.2; configs/field_3d.yaml
+\begin{tabular}{p{0.24\linewidth}p{0.70\linewidth}}
+\toprule
+Model & embedding width 64, 2 attention blocks, 4 heads, basis width $\nbasis=12$, 32 random Fourier features, $\nmodes=4$ predicted modes (labels store more), order-2 space\\
+Optimiser & AdamW, learning rate $10^{-3}$, weight decay $10^{-4}$, gradient-norm clipping 1, batch size 1, no dropout, no augmentation\\
+Schedule & constant for 10 epochs, then cosine to $10^{-6}$ at the last epoch; 600 steps per arm (15 or 25 epochs); fine-tune arm D: 200 further steps at $3\times10^{-4}$\\
+Loss weights & $\alpha_{\mathrm{span}}=1$ (mass-plus-energy norm), $\alpha_{\mathrm{ss}}=\alpha_{\mathrm{ortho}}=0.01$, $\alpha_{\mathrm{freq}}=0.1$; frequency standardisation from the training split; figure-of-merit loss off\\
+Projection solve & CG tolerance $10^{-8}$, drop tolerance $10^{-6}$, float64\\
+Compute & 1 thread per run (earlier studies: 2); seed 42 (configuration default), one run per arm\\
+Evaluation & last checkpoint (no selection), stored model mesh, order-2 space\\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{An earlier, smaller LF-to-HF study}\label{sec:A07-first}
 % src: docs/34 §3, §4, §4.1, §4.3
 Before this experiment, the same architecture was trained on 14 LF geometries for 30 epochs (two threads, about an hour; LF meshes of the time) and evaluated on four HF geometries (identifiers 3, 5, 10, 13) that were not in training.

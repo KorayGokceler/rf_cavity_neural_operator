@@ -109,7 +109,7 @@ The solve runs in float64; in float32 the CG iteration did not converge within i
 % src: src/models/hcurl.py project_basis comment ("float32 CG does not converge (M_div off by ~79%, docs/21 B3)"); AGENTS.md invariants; referee M5 (CG hit the 2000-iteration cap)
 A cheap diagonal penalty on the gradient content instead of the projection was measured and rejected (\cref{sec:07-penalty}).
 % src: docs/31 §3.5 (penalty vs projection ablation, owned by 07)
-Since $\mathsf B\mapsto\mathsf Z$ is the symmetric operator $\Kp^{-1}$, its backward pass is one more solve with the same matrix, $\bar{\mathsf B}=\Kp^{-1}\bar{\mathsf Z}$, implemented as a custom PyTorch~\cite{paszke2019pytorch} autograd function instead of differentiating through the iterations.
+$\mathsf B\mapsto\mathsf Z$ is the symmetric operator $\Kp^{-1}$, so its backward pass is one more solve, $\bar{\mathsf B}=\Kp^{-1}\bar{\mathsf Z}$, implemented as a custom PyTorch~\cite{paszke2019pytorch} autograd function.
 % src: src/models/hcurl.py KpSolve
 The trunk costs $O(Nd^2L)$ per geometry; the float64 CG solves dominate (about $22$\,s per training step of the default-size model, not the one of the experiments, on a $13$k-tetrahedron mesh with $183$k tokens at order two, four CPU threads; \cref{sec:A04-cost}).
 % src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads: step ~22 s); docs/28 §4 ("p3 is impractical for training")
@@ -169,16 +169,15 @@ The matrix in \eqref{eq:04-ritz} is $\mathsf Y^{\!\top}\Av\mathsf Y=(\Pmat\Vmat\
 \paragraph{What the proposition does not give.}
 (i) The bound is index-wise and gives no mode identity: if the span misses a physical mode, a later eigenvalue fills its index and still satisfies it; there is no accuracy bound either (accuracy is measured, \cref{sec:experiments}).
 (ii) Every Rayleigh--Ritz method in $Z_h$ has this property; what is specific here is that it holds for arbitrary network output, so training cannot violate it.
-(iii) It is relative to the \emph{discrete} eigenvalue of the space the model runs in: since $\lamh_k\to\lambda_k$ as the space is enriched~\cite{boffi2010finite} but $\lamh_k-\lambda_k$ has no guaranteed sign, we make no claim about the exact eigenvalue (in the label comparisons of \cref{sec:multifidelity} the order-two eigenvalues exceeded the order-three ones by $0.004$--$0.047\,\%$ in frequency).
-% src: docs/34 §8.1 (frequency LF/HF - 1 = +0.004 ... +0.047 %)
-The Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors~\cite{boffi2010finite}, which the span loss below minimises.
+(iii) It is relative to the \emph{discrete} eigenvalue of the space the model runs in: since $\lamh_k\to\lambda_k$ as the space is enriched~\cite{boffi2010finite} but $\lamh_k-\lambda_k$ has no guaranteed sign, we make no claim about the exact eigenvalue.
+The Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors~\cite{boffi2010finite}.
 
 \begin{remark}[Inexact projection]\label{rem:04-inexact}
 \Cref{prop:upper-bound} is exact for an exact $\mathsf Z$; the CG solve stops at a relative residual $\tau=10^{-8}$.
 The numerator of the Rayleigh quotient is unaffected ($\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$); only $\Mdiv$ is perturbed, by a relative amount $\bar\eta$ that can be computed a posteriori, and then $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$ if $\bar\eta<1$ (\cref{sec:A04-inexact}).
 So for the implemented projection the bound holds up to a relative error $\bar\eta$; in a stress test with synthetic bases on two meshes $\bar\eta\approx(1\text{--}3)\,\tau$ ($\approx10^{-8}$ at the shipped $\tau$), and the a~posteriori guarantee held in every run with $\bar\eta<1$.
 The plain bound $\theta_k\ge\lamh_k$ was violated only for bases with a gradient admixture, by up to $1.5\times10^{-8}$ (relative; gradient mass fraction $0.99$) and $2\times10^{-11}$--$1.4\times10^{-10}$ (fraction $0.5$), far below the model error.
-The rule that discards directions with tiny divergence-free fraction protects only for $\tau\lesssim10^{-6}$: at $\tau=10^{-4}$ pure-gradient columns survive it ($\bar\eta=1$, $\theta\approx0$).
+The rule discarding directions of tiny divergence-free fraction protects only for $\tau\lesssim10^{-6}$: at $\tau=10^{-4}$ pure-gradient columns survive it ($\bar\eta=1$, $\theta\approx0$).
 In the equal-cost study the smallest margin $f_{\rm model}/f_{\rm FE}-1$ over arms, geometries and modes was $+0.47\,\%$; the stress test is in \cref{sec:A04-stress}.
 % src: docs/35 §2 (eta-bar approx 1-3 tau; violations up to -1.5e-8 at gamma 0.99, -2e-11..-1.4e-10 at gamma 0.5, shipped tau; drop rule fails at tau=1e-4); docs/34 §8.2 (at least +0.47 %); docs/34 §4.1-§4.2 quote no number
 \end{remark}
@@ -198,10 +197,10 @@ With $\Pi_{\mathsf N}$ the $\mathsf N$-orthogonal projector onto $\spn(\Pmat\Vma
   \mathcal L_{\rm span}=\frac1{n_{\rm tgt}}\sum_{k=1}^{n_{\rm tgt}}\sqrt{\tfrac12\big(r_k^{\Mmat}+r_k^{\Kmat}\big)+10^{-8}}.
 \end{equation}
 % src: src/training/lightning_module.py span_residual, _span_terms (span_norm both, span_root true, span_ridge 1e-9, eps 1e-8)
-$\sqrt{r_k^{\Mmat}}$ and $\sqrt{r_k^{\Kmat}}$ are the relative best-approximation errors in the mass and energy norms (the square root keeps the gradient from vanishing as the span becomes accurate); $\mathcal L_{\rm span}$ is invariant under recombination of the columns of $\Vmat$ and under sign changes and rotations in degenerate target clusters, so it needs no eigenvalue matching.
+$\sqrt{r_k^{\Mmat}}$, $\sqrt{r_k^{\Kmat}}$ are the relative best-approximation errors in the mass and energy norms (the root keeps the gradient from vanishing); $\mathcal L_{\rm span}$ is invariant under recombination of the columns of $\Vmat$ and under rotations in degenerate target clusters, so it needs no eigenvalue matching.
 
 \paragraph{Other terms.}
-The self-supervised term $\mathcal L_{\rm ss}=-\log\sum_{i\le r'}\theta_i^{-1}$ over the kept Ritz values needs no labels (the code evaluates $\mathrm{tr}(\Av^{-1}\Mdiv)$ by a Jacobi-scaled Cholesky solve with a relative ridge, which equals this when no direction is dropped) and, since $\theta_i\ge\lamh_i$, is bounded below by $-\log\sum_{i\le r'}\lamh_i^{-1}$, with equality iff the span is spanned by eigenvectors of the $r'$ lowest eigenvalues (unique only if $\lamh_{r'}<\lamh_{r'+1}$); it uses the projected mass, so gradient content cannot lower it (without projection the compliance exploded by more than $10^3$ in a test).
+The self-supervised term $\mathcal L_{\rm ss}=-\log\sum_{i\le r'}\theta_i^{-1}$ over the kept Ritz values needs no labels (the code evaluates $\mathrm{tr}(\Av^{-1}\Mdiv)$ by a ridge-regularised Cholesky solve, equal to this when no direction is dropped) and, since $\theta_i\ge\lamh_i$, is bounded below by $-\log\sum_{i\le r'}\lamh_i^{-1}$, with equality iff the span is that of the $r'$ lowest eigenvectors (unique only if $\lamh_{r'}<\lamh_{r'+1}$); the projected mass keeps gradient content from lowering it (without projection the compliance exploded by more than $10^3$).
 % src: docs/20 §3 (selfsup: "Neredeyse-gradyan bir kolonda projeksiyonsuz compliance >10^3x patlar (test edildi)")
 $\mathcal L_{\rm ortho}$, the mean squared off-diagonal correlation of $\Mdiv$, penalises collinear fields, and $\mathcal L_{\rm freq}=\frac1K\sum_k(z_k-z_k^\star)^2$ acts on frequencies standardised with the training-label mean and standard deviation.
 The total is $\sum_{\rm t}\alpha_{\rm t}\mathcal L_{\rm t}$ with weights $(\alpha_{\rm span},\alpha_{\rm ss},\alpha_{\rm ortho},\alpha_{\rm freq})=(1,0.01,0.01,0.1)$.
