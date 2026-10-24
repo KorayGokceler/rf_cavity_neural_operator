@@ -25,7 +25,7 @@
 \input{macros}
 
 \title{Rayleigh--Ritz Neural Operators for the Resonant Modes of 3D RF Cavities:\\
-Upper-Bound Eigenvalues on Curved High-Order Elements and Training with Low-Fidelity Labels}
+Discrete Upper-Bound Eigenvalues on Curved High-Order Elements and Training with Low-Fidelity Labels}
 \author{Author names to be added}
 \date{}
 
@@ -45,8 +45,11 @@ Upper-Bound Eigenvalues on Curved High-Order Elements and Training with Low-Fide
 \input{sections/07_experiments}
 \input{sections/08_discussion}
 
-\bibliographystyle{unsrtnat}
-\bibliography{references}
+\section*{Code and data availability}
+% TODO (authors): confirm the repository is public, or replace by the archive / DOI used for the release.
+The model, the label generator, the training configuration and the evaluation scripts used for every number in
+this paper are available at \url{https://github.com/koraygokceler/rf_cavity_neural_operator}. The labels can be
+regenerated from the stated geometry family, sampling seed and generator settings.
 
 \appendix
 \InputIfFileExists{sections/A03_qoi}{}{}
@@ -54,5 +57,8 @@ Upper-Bound Eigenvalues on Curved High-Order Elements and Training with Low-Fide
 \InputIfFileExists{sections/A05_data}{}{}
 \InputIfFileExists{sections/A06_label_meshes}{}{}
 \InputIfFileExists{sections/A07_experiments}{}{}
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
 
 \end{document}

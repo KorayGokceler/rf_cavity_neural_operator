@@ -240,7 +240,7 @@ python scripts/eval_fidelity.py --ckpt lf_best.ckpt --data hf.h5 --spaces native
     geometri 27'den geliyor. 27 hariç ortalama: A %1,11, B2 %1,14, C2 %1,06.
   - C2 (maliyet 1,4 kat) A ile aynı öğrenme oranı programında koştu. 6 geometrinin 3'ünde (24, 27, 29) A'dan iyi,
     diğer üçünde 0,01–0,06 puan geride.
-    Geometri başına ortalama hata: A 0,74 / 1,18 / 1,24 / 4,44 / 0,92 / 1,46; C2 0,66 / 1,23 / 1,25 / 2,93 / 0,98 / 1,17.
+    Geometri başına ortalama hata (kimlik 24–29, modlar 0–3): A 0,74 / 1,18 / 1,24 / 4,44 / 0,92 / 1,46; B2 0,76 / 1,33 / 1,34 / 3,59 / 1,04 / 1,24; C2 0,66 / 1,23 / 1,25 / 2,93 / 0,98 / 1,17. D'nin geometri başına değerleri kaydedilmedi.
 - **LF→HF boşluğu:** aynı tahminlerin LF etiketlerine göre hatası, HF'ye göre olandan yalnız 0,02 puan düşük
   (C2: %1,35 ve %1,37). LF ile eğitilen model HF verisinde, LF verisindeki kadar iyi.
 - **Ritz üst sınırı korunuyor:** tüm tahminler, o uzayın FE özdeğerinin üstünde (en az +%0,47).
