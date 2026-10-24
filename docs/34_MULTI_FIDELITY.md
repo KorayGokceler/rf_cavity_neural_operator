@@ -90,7 +90,7 @@ Frekans hatası f_model / f_HF − 1 [%], modlar 0 / 1 / 2 / 3; alan rel-L2 modl
 | 10 | +2,12 / +1,06 / +1,12 / +3,02 | 0,055 / 0,035 / 0,042 | ≤ 0,009 % |
 | 13 | +2,06 / +1,05 / +1,10 / +2,83 | 0,038 / 0,056 / 0,059 | ≤ 0,017 % |
 
-- Tüm hatalar pozitif ve değerlendirilen uzayın FE özdeğerinden büyük (en küçük fark +0,006 %): **Ritz üst
+- Tüm hatalar pozitif ve değerlendirilen uzayın FE özdeğerinden büyük (en küçük fark ≈ +0,6 %; önceki sürümde birim hatasıyla "+0,006 %" yazıyordu, değer kesirdi): **Ritz üst
   sınırı korunuyor.**
 - Hata p2 tabanından değil modelden geliyor: HF etiket ile p2 taban arasındaki fark ≤ 0,033 %, modelin hatası
   0,6–3 %. Bu ailede LF etiketin frekansı yanıltması söz konusu değil; darboğaz modelin doğruluğu.
@@ -115,8 +115,8 @@ Hedef: o uzayda ayrıca hesaplanan FE özdeğer / alanları.
 | 5, p2, mesh bir kez inceltilmiş (×8 tet) | 489 747 | +1,89 / +0,86 / +0,89 / +2,29 | 0,027 / 0,043 / 0,037 | 32,3 + 22,0 | 192 |
 
 - **Çalışıyor:** ağırlıklar yeniden eğitilmeden hem p3'te hem 8 kat ince mesh'te çıkarım yapıyor; Ritz değerleri
-  o uzayın FE özdeğerinin üstünde kalıyor (min. fark +0,009 %).
-- **Doğruluk iyileşmiyor:** frekans hatası p2 yerel çıkarıma göre 0,2–0,6 puan *kötüleşiyor*, alan hatası aynı.
+  o uzayın FE özdeğerinin üstünde kalıyor (en küçük fark ≈ +0,9 %; önceki sürümde birim hatasıyla "+0,009 %" yazıyordu).
+- **Doğruluk iyileşmiyor:** frekans hatası p2 yerel çıkarıma göre 0,2–0,7 puan *kötüleşiyor*, alan hatası aynı.
   Beklenen: uzay zenginleşiyor ama ψ aynı pürüzsüz alanlar; asıl hata ψ'nin (ağın) kalitesinde. Token yoğunluğu
   (p3'te 24, p2'de 14 nokta / tet) ve nokta-hacim özelliği eğitimdekinden farklı: küçük bir dağılım kayması.
 - **Maliyet:** bu ölçekte (≤ 12k tet, p2) doğrudan FE çözümü (6–19 s) modelin ops + ileri süresiyle (3–8 s) aynı

@@ -353,7 +353,7 @@ ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyon
   E_pk −4 – −28 %, B_pk +5 – +8 %. Mesh boyutu `curvaturesafety` / `maxh_factor` ile küçülmüyor.
 - LF ile eğitilen (14 geometri, 30 epoch) küçük model HF geometrilerde: frekans hatası %0,6–3,0 (hep üst
   sınır), alan rel-L2 0,03–0,07; hata p2 tabanından (≤ 0,033 %) değil modelden. Aynı ağırlıklarla p3 ve 8 kat ince
-  mesh'te çıkarım çalışıyor (Ritz üst sınırı korunuyor) ama doğruluk 0,2–0,6 puan kötüleşiyor.
+  mesh'te çıkarım çalışıyor (Ritz üst sınırı korunuyor) ama doğruluk 0,2–0,7 puan kötüleşiyor.
 - 2 HF örnekle ince ayar, aynı epoch sayısında yalnız LF kontrolüne göre kazanç vermedi.
 - **Eşit maliyetli deney (docs/34 §8):** 6 HF test geometrisinde |f| hata ortalaması: HF 8 (etiket 1242 s) %1,66,
   LF 24 (997 s) %1,55, LF 40 (1704 s) %1,37; alan rel-L2 0,050 / 0,046 / 0,045. LF→HF boşluğu 0,02 puan; Ritz üst
