@@ -14,7 +14,7 @@ coarse-FE baselines, a field figure) are being produced now and will be added in
    Low-Fidelity Labels". Everywhere: upper bounds of the *discrete* eigenvalues of the space the model runs in.
 2. **LF vs HF claim:** "comparable" (not "at least as accurate"). State the confound (fidelity and number of
    geometries change together; LF 8 vs HF 8 was not run), single runs, no seeds, and that the LF/HF label
-   difference (≤ 0.047 % frequency, ≤ 0.32 % field) is 30–300× smaller than the model error, so the study does not
+   difference (≤ 0.047 % frequency, ≤ 0.32 % field) is one to two orders of magnitude smaller than the model error (frequency 23–425×, field 14–63×; do not write "30–300×"), so the study does not
    yet probe the regime where label type matters. The clean, robust results are: LF labels on the HF model mesh
    are 2.8–4.3× cheaper and nearly identical to HF; the model's errors against LF and HF labels differ by 0.02 pp.
 3. **HF in all experiments** = one p3 solve on the start mesh (the 150k-DOF budget is used by the first solve;

@@ -4,49 +4,51 @@
 
 \paragraph{A structural ceiling.}
 By \cref{prop:upper-bound} every predicted $\theta_k$ lies above the discrete eigenvalue $\lambda_{h,k}$ of the space in which the model runs, so a trained model cannot be more accurate than the finite-element solution of that space.
-On the four geometries where we measured it, the second-order eigenvalue on the model mesh lies within \SI{0.033}{\percent} of the high-fidelity (HF) frequency. % src: docs/34 §4.1 (FE floor <= 0.033 %)
-This is small next to the \SIrange{1}{2}{\percent} error of our models but not next to the $10^{-5}$--$10^{-4}$ accuracy that final cavity designs require, % src: docs/33 §6
-so the model is a design-stage surrogate and not a replacement for a production solver.
-For parameter sweeps a frequency offset can be absorbed by rescaling or tuning, and the figures of merit matter more. % src: docs/33 §6
+The discrete $p{=}2$ eigenvalue on the model mesh lies at most \SI{0.047}{\percent} above the high-fidelity (HF) frequency on the six test geometries (\SI{0.033}{\percent} on four earlier geometries). % src: docs/34 §8.1 (LF/HF +0.004..+0.047 %); docs/34 §4.1 (<= 0.033 %); EDITOR_NOTES_2 dec. 9
+This is small next to the \SIrange{1}{2}{\percent} error of our models but not next to the $10^{-5}$--$10^{-4}$ accuracy that final cavity designs require, so the model is a design-stage surrogate and not a replacement for a production solver. % src: docs/33 §6
 
-\paragraph{Where the speed comes from.}
-Meshing and operator assembly are needed for every geometry and stay in the inference path, so at a fixed discretisation the gain over a direct solve is bounded to a small factor.
-On a single thread, assembling the operators took \SI{5}{s} and the forward pass \SI{3.3}{s}, against \SI{18}{s} for the finite-element solve in the same space; % src: docs/34 §8.2 (inference time)
-at the smallest sizes tested the two costs were of the same order, and the model path was about 2.5 times faster in a cubic space and about 3.5 times faster on an eight-fold finer mesh (two threads, CPU). % src: docs/34 §4.2
-We therefore claim no large per-query speed-up. The expected benefits are amortised design-space exploration, warm starts for an iterative solver (\cref{sec:08-future}), the guarantees (upper bound, no spurious zero modes, valid for any weights), and cheaper training data. We have not quantified which of these pays off in practice.
+\paragraph{Where a benefit can come from.}
+Meshing and operator assembly are needed for every geometry. On a single thread the model path took \SI{8.3}{s} (operators \SI{5.0}{s}, forward pass \SI{3.3}{s}) against \SI{18}{s} for assembling and solving the finite-element problem in the same space, about twice as fast at an error of \SIrange{1}{2}{\percent}; we claim no further speed advantage (\cref{sec:experiments}). % src: docs/34 §8.2 (inference time); EDITOR_NOTES_2 dec. 7
+Any benefit must therefore come from amortised design-space exploration, a warm start for an iterative solver (\cref{sec:08-future}), the guarantees (discrete upper bound, no spurious zero modes, for any weights) or cheaper training data; we have not quantified which pays off.
 
-\paragraph{Low-fidelity training and what HF is for.}
-Because the Ritz layer works in the model space, it can reach exactly the eigenvalues of the low-fidelity (LF) solve, which is why LF labels suit it (\cref{sec:multifidelity}).
-LF labels do not agree with HF labels on wall-dominated quantities (quality factor, peak fields), measured on four geometries on earlier, partly non-matching meshes (\cref{sec:multifidelity}). % src: docs/34 §3; EDITOR_NOTES 3
+\paragraph{Low-fidelity labels and the role of HF.}
+Because the Ritz layer works in the model space, it can reach exactly the eigenvalues of the low-fidelity (LF) solve, which is why LF labels are natural for it (\cref{sec:multifidelity}).
+In our experiments the LF and HF labels differ by at most \SI{0.047}{\percent} in frequency and \SI{0.32}{\percent} in field, which is 30--300 times less than the model error, % src: docs/34 §8.1; referee §E (label difference 30-300x below model error)
+so the study does not yet probe the regime in which the label type matters for the model.
+LF and HF do differ on wall-dominated quantities (quality factor, peak fields), measured on four geometries on earlier meshes (\cref{sec:multifidelity}); % src: docs/34 §3; EDITOR_NOTES 3
 HF labels therefore remain necessary for any loss on such quantities and for test sets, whose reference must not share the model's discretisation error.
 
 \subsection{Limitations}\label{sec:08-limitations}
 
 \begin{itemize}
-\item \textbf{Scale and scope.} All runs are small and on a CPU: at most 40 training geometries, a 64-dimensional two-block trunk, 600 optimiser steps per arm in the equal-cost study, a single geometry family (pipe-terminated pillbox cavities with a lower bound on the fillet radius) and six held-out geometries. % src: BRIEF §1; docs/34 §5, §8.2
-Absolute errors (about \SIrange{1}{2}{\percent}) reflect an under-trained model, no learning curve was measured, and generalisation across families and topologies is untested.
-\item \textbf{Single runs.} Each arm of \cref{tab:equal-cost} is one training run, so small differences between arms are not statistically established; the 0.02-percentage-point LF$\to$HF gap is the more robust result. % src: docs/34 §8.2; EDITOR_NOTES 1
+\item \textbf{Scale and scope.} All runs are small and on a CPU: at most 40 training geometries, a 64-dimensional two-block trunk, 600 optimiser steps per arm in the equal-cost study, a single geometry family (pipe-terminated pillbox cavities) with a minimum fillet of 0.12, which rounds the geometry considerably, and six held-out geometries. % src: BRIEF §1; docs/34 §5, §8.2; EDITOR_NOTES_2 dec. 10
+Absolute errors (\SIrange{1}{2}{\percent}) reflect an under-trained model; no learning curve was measured and generalisation across families is untested.
+\item \textbf{The LF/HF comparison is confounded and statistically weak.} Each arm of \cref{tab:equal-cost} is a single training run without seed repeats, and the fidelity and the number of geometries change together (the comparison of LF and HF with the same eight geometries was not run). We therefore call the arms comparable; the robust results are the lower label cost and the 0.02-percentage-point LF$\to$HF gap. % src: docs/34 §8.2; EDITOR_NOTES_2 dec. 2
+\item \textbf{HF is one level.} In all experiments the HF label is one third-order solve on the start mesh (the degree-of-freedom budget is used by the first solve, so label and model mesh coincide). The adaptive refinement and the label/model-mesh split are not exercised by the training experiments. % src: docs/34 §3, §8.1; EDITOR_NOTES_2 dec. 3
+\item \textbf{No baselines.} We compare no parametric-regression surrogate and no coarse finite-element solve at the same cost. % TODO pass 3: baselines (parametric regression, coarse FE) may change this item
 \item \textbf{Wall quantities are not trained.} The figures-of-merit loss is disabled for the field model. % src: docs/31 §2 (qoi_weight = 0)
-\item \textbf{Inconclusive HF use.} Fine-tuning on two HF geometries gave no measurable gain over continued LF training. In the equal-cost study the fine-tuned arm improved on its parent (\SI{1.37}{\percent} to \SI{1.13}{\percent}), but its control run was lost, so the cause cannot be attributed; two mixed LF+HF runs failed (a schedule on which the learning rate never decayed, and a lost run). % src: docs/34 §4.3, §8.2
-\item \textbf{Richer spaces do not help.} The same weights keep the upper bound in a cubic space or on a finer mesh, but the frequency error grows by 0.2 to 0.6 percentage points. % src: docs/34 §4.2
-\item \textbf{Deformed geometries and hardware.} All experiments use nominal geometries; for deformed meshes about \SI{11}{\percent} of points were not found by point location and the label projection error is unmeasured. % src: docs/31 §3.8
-Only CPU timings exist; the GPU path has not been run. % src: docs/31 §3.2, §3.6
+\item \textbf{Inconclusive HF use.} Fine-tuning on two HF geometries gave no measurable gain over continued LF training; a later fine-tuned arm improved (\SI{1.37}{\percent} to \SI{1.13}{\percent}) but its control run was lost, and two mixed LF+HF runs failed (a wrong schedule, a lost run). % src: docs/34 §4.3, §8.2
+\item \textbf{Richer spaces do not help.} The same weights remain above the finite-element eigenvalue of the evaluated space in a cubic space and on a finer mesh, but the frequency error grows by 0.2 to 0.7 percentage points; a plausible, untested cause is the changed token density. % src: docs/34 §4.2; EDITOR_NOTES_2 dec. 6
+\item \textbf{Deformed geometries and hardware.} Experiments use nominal geometries (on deformed meshes the label projection error is unmeasured), and the GPU path has not been run. % src: docs/31 §3.8, §3.2
 \end{itemize}
 
 \subsection{Future work}\label{sec:08-future}
 
 \paragraph{Hybrid inference.}
-The predicted subspace can serve as the starting block of the LOBPCG eigensolver~\cite{knyazev2001toward} on the target space: accuracy is then guaranteed by the solver and speed comes from the model.
-In a preliminary measurement with our label solver at about $3.6\times10^5$ degrees of freedom, a warm start from the previous adaptive level reached an eigenvalue error of $1.9\times10^{-8}$ in 10 iterations (\SI{36}{s}), whereas a cold start needed 40 iterations (\SI{123}{s}) for $1.7\times10^{-8}$; the direct solve took \SI{175}{s}, and the warm-start time excludes a \SI{26}{s} set-up and the mode transfer. % src: docs/31 §3.4 (358k DOF)
-Whether a model subspace is as good a start is untested; we expect a gain only when the solve takes minutes and the model's initial error is at most about \SI{0.1}{\percent}. % src: docs/34 §6
+The predicted subspace can serve as the starting block of the LOBPCG eigensolver~\cite{knyazev2001toward} on the target space, so that accuracy is guaranteed by the solver.
+For the cost side, our label solver gives a first indication at about $3.6\times10^5$ degrees of freedom (copper pillbox, third-order elements): a warm start from the previous adaptive level reached an eigenvalue error of $1.9\times10^{-8}$ in 10 iterations (\SI{36}{s}), and a cold start needed 40 iterations (\SI{123}{s}) for $1.7\times10^{-8}$. % src: docs/31 §3.4 (358k DOF)
+Including the \SI{26}{s} set-up and the \SI{68}{s} transfer of the modes to the new mesh, the totals are about \SI{130}{s} (warm), \SI{149}{s} (cold) and \SI{175}{s} (direct solve), a marginal gain. % src: docs/31 §3.4: 36+26+68 = 130 s; 123+26 = 149 s; direct 175 s; EDITOR_NOTES_2 dec. 12
+This is a property of the label solver, not a model result; whether a model subspace is a good start is untested.
 
 \paragraph{Training, families and validation.}
-Next steps are scaled LF+HF training (hundreds of LF and tens of HF geometries) with sweeps of the fidelity weights and a proper control for fine-tuning, a wall-quantity loss, and further families (quarter-wave resonators, drift-tube cells, RF-dipole cavities, photoinjector guns) with a validation set of published designs. % src: docs/34 §6, §8.3; docs/33 §4, §8; docs/31 §5, §6
+Next steps are the missing LF-8 versus HF-8 control with several seeds, scaled LF+HF training (hundreds of LF and tens of HF geometries) with sweeps of the fidelity weights, a wall-quantity loss, and further families (quarter-wave resonators, drift-tube cells, RF-dipole cavities, photoinjector guns) with a validation set of published designs. % src: docs/34 §6, §8.3; docs/33 §4, §8; docs/31 §5, §6; referee §5.1
 A subset of each family should be cross-checked with an independent open-source finite-element code such as Palace~\cite{awslabs2023palace}, and GPU measurements are needed to settle which part of the training step dominates. % src: docs/31 §4, §3.6
+% TODO pass 3: add the rank check of assumption (A), the a posteriori bound stress test and the baselines here if they change the outlook
 
 \subsection{Conclusion}\label{sec:08-conclusion}
 
-Predicting a basis of fields and letting a Nédélec-space projection and a Rayleigh--Ritz step produce the eigenpairs gives a surrogate whose frequencies are upper bounds of the discrete eigenvalues of the space it runs in and free of spurious gradient modes, with eigenvalue errors of $1\times10^{-6}$ to $9\times10^{-6}$ in single-sample overfitting against $2.4\times10^{-3}$ for a lowest-order model. % src: docs/28 §3
-Since the Ritz layer targets the eigenvalues of its own space, a single second-order solve on the model mesh is a sufficient label: it costs 4.3 times less than an adaptive third-order one and differs from it by at most \SI{0.047}{\percent} in frequency. % src: docs/34 §8.1
-In our equal-cost comparison (\cref{tab:equal-cost}), LF training at equal or lower label cost was at least as accurate on six held-out HF geometries as HF training, with an LF$\to$HF gap of 0.02 percentage points, % src: docs/34 §8.2
-but these are single runs on one family at small scale and should be read as controlled evidence for the method and data pipeline, not as production-grade accuracy.
+The surrogate predicts a basis of fields and lets a conforming-space projection and a Rayleigh--Ritz step produce the eigenpairs; its frequencies are upper bounds of the discrete eigenvalues of the space it runs in and are free of spurious gradient modes.
+Its single-sample representation capacity (fitting one sample to its own label) reached relative eigenvalue errors of $1\times10^{-6}$ to $9\times10^{-6}$, which says nothing about generalisation. % src: docs/28 §3; EDITOR_NOTES_2 dec. 8
+A single second-order solve on the model mesh is a cheap label: it costs 2.8 to 4.3 times less than a third-order one (depending on the machine load) and differs from it by at most \SI{0.047}{\percent} in frequency. % src: docs/34 §8.1; EDITOR_NOTES_2 dec. 4
+Models trained on such labels were comparable on six held-out HF geometries to a model trained on HF labels (\cref{tab:equal-cost}), with an LF$\to$HF gap of 0.02 percentage points; % src: docs/34 §8.2
+these are single, confounded runs on one family at small scale, and the label difference is far below the model error, so we read them as evidence for the method and the data pipeline and not as production-grade accuracy.

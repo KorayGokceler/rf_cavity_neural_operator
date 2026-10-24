@@ -33,13 +33,15 @@ Five further families are held out of distribution (plain box, quarter-wave coax
 
 \subsection{Elliptical half-cells}\label{sec:A05-halfcell}
 
+The elliptical family is the only one with a real-design anchor; it is not used in any training experiment (\cref{sec:data}).
 A half-cell joins an iris ellipse $(a,b)$ and an equator ellipse $(A,B)$ by their common tangent line, found by a least-squares solve with five starting points and tolerance $10^{-15}$.
 A wall is accepted if the radius does not decrease along it and, for a re-entrant wall, its angle to the beam axis is at most $105^\circ$ and it stays at least $0.05\,R_{eq}$ from the iris plane.
 End half-cells differ from the mid-cell with probability $0.6$ (ratios to the mid-cell: $L\times[0.9,1.1]$, $A\times[0.9,1.2]$, $B\times[0.85,1.4]$, $a,b\times[0.5,1.05]$, iris radius $\times[1,1.35]$).
 Published designs enter as sampling centres only (perturbed by $\pm10\,\%$ per parameter and rescaled); labels always come from the finite-element solve.
-The ranges were widened until all $14$ published reference half-cells that we compiled were accepted: the TESLA mid-cell and both end cups~\cite{aune2000superconducting}, the low-loss and ICHIRO cells~\cite{juntong2009highgradient}, NLSF and NLSF-RE, the Cornell ERL mid-cell and both ends, FCC-ee C3794, C3795 (mid and end) and FCCUROS5; four of them were rejected by the earlier solver tolerance and overlap rule.
-Several of these dimensions could not be checked against full texts, so we treat them as plausible reference shapes, not as authoritative design data.
-% src: docs/33 §12 "Ölçülenler", §11, §3.1; cavity_shapes.py half_cell_wall, END_CELL_RANGES, MAX_WALL_ANGLE, WEB_MIN
+The ranges were widened until $14$ published reference half-cells that we compiled were accepted, which earlier solver tolerances and an overlap rule had partly rejected (four of the 14).
+They comprise the TESLA mid-cell and both end cups~\cite{aune2000superconducting}, the low-loss and ICHIRO cells~\cite{juntong2009highgradient}, and nine further mid- and end-cells of low-loss, re-entrant and collider designs taken from secondary sources whose dimensions we did not verify against full texts; they serve as plausible reference shapes, not as authoritative design data.
+Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the earlier rules); rejected draws are replaced.
+% src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %), §11, §3.1; cavity_shapes.py half_cell_wall, END_CELL_RANGES, MAX_WALL_ANGLE, WEB_MIN; referee 2.1 (unverified names removed)
 
 \subsection{Element counts}\label{sec:A05-counts}
 
@@ -54,7 +56,7 @@ Meshes are accepted at a minimum Jacobian ratio of at least $0.05$; elements bel
 Ridged boxes and drift-tube tanks are healed in OpenCascade first (sewing and solid-making are disabled because they delete revolved solids).
 % src: docs/29 §2.2, §2.3
 \paragraph{Size field.}
-The size field of \cref{sec:05-adaptive} uses $\rho=0.25$ and $h_{\mathrm{new}}/h\in[0.3,1]$; the restrictions accumulate over iterations because rebuilding from the latest field alone oscillates, and the predicted element count (accurate to $15\,\%$) is scaled down uniformly if it exceeds the DOF budget.
+The size field of \cref{sec:05-adaptive} uses $\gamma=0.25$ and $h_{\mathrm{new}}/h\in[0.3,1]$; the restrictions accumulate over iterations because rebuilding from the latest field alone oscillates, and the predicted element count (accurate to $15\,\%$) is scaled down uniformly if it exceeds the DOF budget.
 Curved elements with a Jacobian ratio below $0.05$ get half the local size.
 The start mesh uses curvature safety $1.5$ (falling back to $2$ if elements fold); an example of the bisection closure is that marking 200 of 8109 tets of a pillbox cell with pipes produced $29$k tets ($105$ new tets per marked tet).
 % src: docs/30 §4; adaptive.py mesh_remesher, size_field
@@ -68,9 +70,8 @@ Peaks are left out of the test for samples with sharp edges.
 A mesh repaired by bisection keeps a refinement hierarchy in NGSolve, whose topology still numbers the bisected parents' edges and faces.
 On one pillbox cell with pipes the repaired mesh gave $116\,322$ order-two DOFs and the same mesh after saving and loading $115\,704$, so stored fields did not fit the rebuilt space.
 Meshes are therefore rebuilt through a file round trip before storage (eigenvalues on reloaded meshes agree with the originals to $10^{-14}$).
-The accelerating length $\Lacc$ is the sum of the cell lengths for elliptical cavities, the cell for pillbox and re-entrant cells, the tank for spoke and drift-tube linac cavities, the outer diameter for the coaxial resonator and the box length for the ridged box (otherwise the axis chord); the beam axis is the $x$-axis through mid-length for the coaxial resonator and through the ridge gap for the ridged box.
-On deformed samples the axis and $\Lacc$ come from the nominal geometry.
-% src: docs/30 §5; docs/29 §3.3; docs/24 §1.3, §1.3 (limitation)
+The beam axis and the accelerating length are defined once in \cref{sec:A03-qoi}; on deformed samples they come from the nominal geometry.
+% src: docs/30 §5; docs/29 §3.3; docs/24 §1.3 (limitation)
 
 \subsection{Generator speed-ups}\label{sec:A05-speedup}
 

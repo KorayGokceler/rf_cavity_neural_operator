@@ -1,10 +1,11 @@
 \section{Figures of merit: conventions and details}\label{sec:A03-qoi}
 % src: docs/24 §0.2, §1.2, §1.3; src/qoi/operators.py beam_axis, acceleration_length; src/data_gen/highorder.py mode_qoi; docs/29 §2.2
 \paragraph{Beam axis and accelerating length.}
-All geometry families are built with the beam along $z$, and the default axis is the line $x=y=0$. Exceptions are fixed per family; for example, the
-half-wave coaxial resonator is crossed along $x$ at mid-length. $\Lacc$ is the inner length of the cavity along the axis, beam pipes excluded: the sum of the cell lengths for
-elliptical cavities, the cell length for pillbox-type cells, and the tank length for spoke and drift-tube structures. For families without a beam it is the chord of the axis
-inside $\Omega$, and $\RoQ$ is then a defined functional and not an accelerator figure. Axis and $\Lacc$ follow the nominal geometry parameters, so on smoothly deformed samples they
+This is the single place where the convention is stated; the data section refers to it. All geometry families are built with the beam along $z$, and the default axis is the line $x=y=0$.
+Exceptions: for the half-wave coaxial resonator the beam crosses the coaxial line along $x$ at mid-length; for the ridged box it runs along $x$ through the ridge gap; for the plain box along $z$
+through the box centre. $\Lacc$ is the inner length of the cavity along the axis, beam pipes excluded: the sum of the cell lengths for elliptical cavities; the cell length for pillbox and re-entrant
+cells; the tank length for spoke and drift-tube structures; the outer diameter for the coaxial resonator; the box length for the ridged and plain boxes. For families without a beam it is the chord
+of the axis inside $\Omega$, and $\RoQ$ is then a defined functional and not an accelerator figure. Axis and $\Lacc$ follow the nominal geometry parameters, so on smoothly deformed samples they
 are those of the undeformed shape. Labels and model-side figures use the same definition.
 
 \paragraph{Eigenpair consistency.}

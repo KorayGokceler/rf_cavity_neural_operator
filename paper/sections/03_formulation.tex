@@ -18,23 +18,23 @@ $\nabla H^1_0(\Omega)\oplus\mathcal H$, the gradients of $H^1_0$ functions plus 
 harmonic Dirichlet fields whose dimension $b_2$ is the number of wall components beyond the first (one per floating conductor; each field is the
 gradient of a potential that is constant on its component). % src: docs/20 §8, docs/19 §6.1
 Handles of $\Omega$ add nothing to this kernel in the $\E$ formulation, which is why we use $\E$ and not $\Hf$ (for $\Hf$ the harmonic fields
-created by handles are not gradients and cannot be removed by a gradient projection). % src: AGENTS.md invariants, docs/19 §6.1
-Eigenvalue $0$ thus has infinite multiplicity; the physical resonances are the positive eigenvalues $0<\lambda_1\le\lambda_2\le\dots$, with
-divergence-free eigenfields. For learning this matters because any learned field contains gradient components, which have zero energy but non-zero mass and
-produce Rayleigh quotients near~$0$ (spurious modes) unless removed explicitly.
+of handles are not gradients and cannot be projected out). % src: AGENTS.md invariants, docs/19 §6.1
+The physical resonances are the positive eigenvalues $0<\lambda_1\le\lambda_2\le\dots$ with divergence-free eigenfields. For learning, the infinite kernel matters: any learned field contains
+gradient components, which have zero energy but non-zero mass and give Rayleigh quotients near~$0$ (spurious modes) unless removed explicitly.
 
 \subsection{Conforming discretisation on curved meshes}\label{sec:03-discrete}
 % src: docs/28 §2, docs/29 §1, src/data_gen/highorder.py field_operators / solve_modes
 Let $\mathcal T_h$ be a tetrahedral mesh of a CAD description of the cavity \citep{schoberl1997netgen} whose elements are images
 $T=F_T(\hat T)$ of the reference tetrahedron under polynomial maps of degree $q$ (the curve order; $q=3$ throughout, % src: docs/29 §1, field_labels.DEFAULTS curve=3
 so the geometry is iso- or super-parametric for $p\le 3$). $\Vh$ is the conforming Nédélec space of the first kind \citep{nedelec1980mixed} on $\mathcal T_h$, mapped with the covariant Piola transform, with zero
-tangential trace on $\bdry$ and the hierarchical basis of \citet{schoberl2005high}, as implemented in NGSolve \citep{schoberl2014cpp11}. The order $p$ is the
-implementation's: the gradient map is built from the $H^1$ space of order $p+1$ on the same curved mesh, whose gradients lie in $\Vh$. % src: highorder.field_operators / solve_modes (fes.CreateGradient); checked: HCurl(order=p) gives an H1 space of order p+1 for p=1,2,3 on a curved mesh
+tangential trace on $\bdry$ and the hierarchical basis of \citet{schoberl2005high}, as implemented in NGSolve \citep{schoberl2014cpp11}.
+\emph{Order convention.} Throughout, $p$ is the implementation's order: $\Vh$ contains the complete vector polynomials of degree $p$, $p=0$ is the lowest-order (Whitney) element,
+and the gradients of the $H^1$ space of order $p+1$ lie in $\Vh$. Thus ``$p=2$'' is not the element N2 of Nédélec's indexing. The numbers of DOFs per tetrahedron are about $10.7$ at $p=2$
+and $26.9$ at $p=3$ (112k and 282k DOFs on 10.5k tets). % src: highorder.field_operators / solve_modes (fes.CreateGradient); checked: HCurl(order=p) gives an H1 space of order p+1 for p=1,2,3 on a curved mesh; DOFs: docs/28 §4 table
 We use $p=2$ for the model space and $p=3$ for the reference labels. % src: docs/29 §1
 Let $\Sh$ be the $H^1_0$-conforming space of order $p+1$ on the same mesh, extended by one function per additional wall component
-(equal to $1$ there and $0$ on the other components). Then $\nabla\Sh\subset\Vh$, and since the covariant Piola map commutes with the gradient the discrete
-sequence is exact \citep{monk2003finite,arnold2006finite}, so $\nabla\Sh$ is the kernel of the curl in $\Vh$ (we rely on this; the cited exactness is for conforming
-meshes with a common geometry map). With $n$ the number of free (non-wall) DOFs and
+(equal to $1$ there and $0$ on the other components), so that $\nabla\Sh\subset\Vh$ and $\curl\nabla\Sh=0$.
+With $n$ the number of free (non-wall) DOFs and
 $\{\mathbf w_i\}$ the basis, let
 \begin{equation}\label{eq:03-matrices}
   \Kmat_{ij}=(\curl\mathbf w_j,\curl\mathbf w_i),\quad
@@ -42,21 +42,28 @@ $\{\mathbf w_i\}$ the basis, let
   \Gmat\ \text{the matrix of }\nabla:\Sh\to\Vh,\quad
   \Kp=\Gmat^{\top}\Mmat\Gmat .
 \end{equation}
-$\Kmat$ is symmetric positive semi-definite, $\Mmat$ and $\Kp$ are symmetric positive definite, and $\Kmat\Gmat=0$. The Galerkin
-discretisation of \eqref{eq:03-weak} is the generalised eigenproblem
+$\Kmat$ is symmetric positive semi-definite, $\Mmat$ and $\Kp$ are symmetric positive definite, and $\Kmat\Gmat=0$, which holds pointwise at every quadrature point because
+$\curl\nabla\varphi=0$. This gives $\operatorname{range}\Gmat\subset\ker\Kmat$; the rest of the paper uses the equality as an explicit assumption:
+\begin{equation}\label{eq:03-A}
+  \textbf{(A)}\qquad \ker\Kmat=\operatorname{range}\Gmat\quad\text{on }\Vh ,
+\end{equation}
+i.e.\ $\dim\ker\Kmat=\dim\Sh$ (counting the extra wall-component functions). (A) is the rank form of the exactness of the discrete de~Rham sequence at $\Vh$. For the covariant Piola map this exactness holds when $\Sh$ is mapped by the plain pull-back and the basis of $\Vh$ contains the
+gradients of $\Sh$ exactly, as the complete-sequence basis does \citep{schoberl2005high,monk2003finite,arnold2006finite}; we do not prove it for the quadrature-defined forms on
+curved elements used here. % TODO pass 3: rank check of (A): number of zero eigenvalues of K on V_h vs dim S_h + extra wall components, on the meshes used
+The Galerkin discretisation of \eqref{eq:03-weak} is the generalised eigenproblem
 \begin{equation}\label{eq:03-gev}
   \Kmat\,\mathbf x=\lambda\,\Mmat\,\mathbf x ,
 \end{equation}
 whose null space is $\operatorname{range}\Gmat$. The physical part of the spectrum lives on the
 \emph{discretely divergence-free} subspace
 \begin{equation}\label{eq:03-proj}
-  W_h=\{\mathbf v\in\Vh:\ (\mathbf v,\nabla\varphi)=0\ \ \forall\varphi\in\Sh\}
+  Z_h=\{\mathbf v\in\Vh:\ (\mathbf v,\nabla\varphi)=0\ \ \forall\varphi\in\Sh\}
   =\operatorname{range}\Pmat,\qquad
   \Pmat=\mathsf I-\Gmat\,\Kp^{-1}\Gmat^{\top}\Mmat ,
 \end{equation}
 the $\Mmat$-orthogonal complement of $\operatorname{range}\Gmat$ ($\Pmat$ is the $\Mmat$-orthogonal projector onto it).
 The \emph{discrete eigenvalues} $\lambda_{h,1}\le\lambda_{h,2}\le\dots$ are the positive eigenvalues of \eqref{eq:03-gev}, i.e.\ the
-eigenvalues of $\Kmat$ restricted to $W_h$. They depend only on $(\mathcal T_h,q,p)$. Because $W_h$ is not contained in
+eigenvalues of $\Kmat$ restricted to $Z_h$. Besides $(\mathcal T_h,q,p)$ they depend on the explicit quadrature rule (degree $2p+4$, see below), since $\Kmat$ and $\Mmat$ are the quadrature-defined forms; (A) and $\Mmat\succ0$ are all that the bounds of \cref{sec:method} use. Because $Z_h$ is not contained in
 the divergence-free fields, the $\lambda_{h,k}$ are not ordered with respect to the exact $\lambda_k$. They converge to $\lambda_k$ under refinement by discrete compactness \citep{monk2003finite,boffi2010finite}. Bounds in this paper are therefore
 relative to $\lambda_{h,k}$ of the space in which a computation runs, not to $\lambda_k$.
 
@@ -67,16 +74,15 @@ absolute coordinate deviation of a vertex from $\mathbf c$. The eigenvalues of \
 \begin{equation}\label{eq:03-freq}
   f_k=\frac{c_0\sqrt{\lambda_k}}{2\pi\,s}.
 \end{equation}
-Eigenvectors are $\Mmat$-normalised, determined up to sign and, in a multiple eigenspace, up to an orthogonal transformation.
+The model, labels and losses of \cref{sec:method} all work in these normalised units (a stored label eigenvalue is $s^2k^2$). Eigenvectors are $\Mmat$-normalised, determined up to sign and, in a multiple eigenspace, up to an orthogonal transformation.
 
 \paragraph{One integration rule for all forms.}
 % src: docs/28 §2 numerical note; src/data_gen/highorder.py volume_measure, solve_modes
-On curved elements the integrands are rational, and NGSolve chooses the quadrature rule of each form from its own integrand. The form
-$\curl\mathbf u\cdot\curl\mathbf v-\sigma\,\mathbf u\cdot\mathbf v$ assembled at once then differs from $\Kmat-\sigma\Mmat$ by $3\times10^{-4}$ on a pillbox
-at $p=2$, which biased shift-and-invert eigenvalues by $4\times10^{-5}$. We therefore evaluate every form (stiffness, mass, the stiffness of $\Sh$ that equals
-$\Kp$, shifted operators) with one explicit tetrahedral rule of degree $2p+4$. % src: highorder.volume_measure(order, bonus=4)
+On curved elements the integrands are rational and NGSolve picks each form's rule from its own integrand; the form
+$\curl\mathbf u\cdot\curl\mathbf v-\kappa\,\mathbf u\cdot\mathbf v$ assembled at once then differs from $\Kmat-\kappa\Mmat$ by $3\times10^{-4}$ (pillbox, $p=2$), biasing
+shift-and-invert eigenvalues by $4\times10^{-5}$. We therefore evaluate every form with one explicit tetrahedral rule of degree $2p+4$. % src: highorder.volume_measure(order, bonus=4)
 The eigenvalues then agree with a dense solve of \eqref{eq:03-gev} to $10^{-13}$, % src: docs/28 §2
-and $\Kp$ assembled as the stiffness of $\Sh$ equals $\Gmat^\top\Mmat\Gmat$ to $10^{-15}$, % src: highorder.solve_modes comment
+and $\Kp$ as the stiffness of $\Sh$ equals $\Gmat^\top\Mmat\Gmat$ to $10^{-15}$, % src: highorder.solve_modes comment
 so $\Pmat$ is an $\Mmat$-orthogonal projector to rounding.
 
 \subsection{Figures of merit}\label{sec:03-qoi}
@@ -89,23 +95,22 @@ wall loss. Every quantity is reported for the mode scaled to stored energy $U=\S
   \Qz&=\frac{\omega U}{P_c}, &
   G&=\Qz R_s=\frac{\omega\mu_0\int|\Hf|^2dV}{\oint|\mathbf n\times\Hf|^2dS}, \label{eq:03-q}\\
   V_{\mathrm{acc}}&=\Bigl|\int_\ell \E\!\cdot\!\mathbf d\;e^{\,j\omega t/(\beta c_0)}\,dt\Bigr|, &
-  T&=\frac{V_{\mathrm{acc}}}{\int_\ell|\E\!\cdot\!\mathbf d|\,dt}, \notag\\
+  T_{\mathrm{tr}}&=\frac{V_{\mathrm{acc}}}{\int_\ell|\E\!\cdot\!\mathbf d|\,dt}, \notag\\
   \Eacc&=\frac{V_{\mathrm{acc}}}{\Lacc}, &
   \RoQ&=\frac{V_{\mathrm{acc}}^2}{\omega U},\quad R_{\mathrm{sh}}=\frac{V_{\mathrm{acc}}^2}{P_c}=\RoQ\,\Qz, \label{eq:03-rq}\\
   \Epk&=\max_{\bdry}|\E|, &
   \Bpk&=\mu_0\max_{\bdry}|\Hf|=\max_{\bdry}\frac{|\curl\E|}{\omega}. \notag
 \end{align}
-Here $R_s=\sqrt{\pi f\mu_0/\sigma}$ is the skin-effect resistance at the mode's own frequency ($\sigma=\SI{5.8e7}{S/m}$, copper); $\Qz\propto1/R_s$, while $G$, $\RoQ$, $T$
+Here $R_s=\sqrt{\pi f\mu_0/\sigma}$ is the skin-effect resistance at the mode's own frequency ($\sigma=\SI{5.8e7}{S/m}$, copper); $\Qz\propto1/R_s$, while $G$, $\RoQ$, $T_{\mathrm{tr}}$
 and the peak ratios do not depend on the wall material. The beam axis $\ell$ has unit tangent $\mathbf d$ and arc length $t$, and $\beta=1$. % src: docs/24 §0.2, §1.1
-The modulus makes $V_{\mathrm{acc}}$ independent of the time and axial origins; $T\in[0,1]$ because the denominator is $\int|E_\parallel|$ and not $|\int E_\parallel|$.
-$\Bpk/\Eacc$ is given in $\si{\milli\tesla\per(\mega\volt\per\metre)}$. We use the \emph{linac} convention for $\RoQ$ and $R_{\mathrm{sh}}$
+The modulus makes $V_{\mathrm{acc}}$ independent of the time and axial origins, and $T_{\mathrm{tr}}\in[0,1]$. $\Bpk/\Eacc$ is given in $\si{\milli\tesla\per(\mega\volt\per\metre)}$. We use the \emph{linac} convention for $\RoQ$ and $R_{\mathrm{sh}}$
 \citep{wangler2008rf,padamsee2008rf}; the circuit convention halves both. % src: docs/24 §1.4
 The beam axis is the line $x=y=0$ along $z$ (exceptions per family) and $\Lacc$ is the inner cavity length along it, beam pipes excluded (\cref{sec:A03-qoi}).
 For a predicted field and frequency, $U$ is taken from $\E$ and the frequency enters $\Hf$, hence $P_c$, $\Bpk$ and $\Qz$ (\cref{sec:A03-qoi}). % src: docs/24 §1.2
 
 \subsection{What a model must produce}\label{sec:03-targets}
 A model maps a geometry with its curved mesh to the $\nmodes$ lowest frequencies $f_k$ and $\nmodes$ fields $\mathbf u_k\in\R^{n}$ in $\Vh$, with
-$\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$, $\mathbf u_k\in W_h$, and Rayleigh quotients consistent with $f_k$ through \eqref{eq:03-freq}. The figures of merit
+$\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$, $\mathbf u_k\in Z_h$, and Rayleigh quotients consistent with $f_k$ through \eqref{eq:03-freq}. The figures of merit
 \eqref{eq:03-q}--\eqref{eq:03-rq} are not separate outputs but fixed functionals of $(f_k,\mathbf u_k)$ and the geometry. Since $\mathbf u_k$ is determined only up to sign and
 rotation within an eigenspace, accuracy is measured by invariant quantities (frequency errors; $\Mmat$-norm subspace distances). \Cref{sec:method} constructs outputs that satisfy
 these constraints by design.

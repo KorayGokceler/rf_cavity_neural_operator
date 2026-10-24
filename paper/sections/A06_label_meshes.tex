@@ -13,5 +13,31 @@ An earlier measurement had concluded that the $\LF$ mesh does not become smaller
 (curvature safety $1.0$, $1.5$, $2.0$ and two mesh-size factors gave the same tetrahedron count); the cause was the
 mismatched start rule, and the observation is recorded here as a pitfall.
 % src: docs/34 §3 (old observation, corrected in §8.1)
-On the six test geometries the cost ratio $\HF$/$\LF$ with the shared rule is $4.1$ (\SI{779}{s} against \SI{190}{s}).
-% src: docs/34 §8.1
+
+\paragraph{Cost ratio and its conditions.} The ratio of the label times $\HF$/$\LF$ depends on the geometries, on the
+mesh rule used for $\LF$ and on the machine load; \cref{tab:A06-cost} lists every measurement. The range $2.8$--$4.3$
+quoted in the paper refers to the rows with the shared start-mesh rule. The $\HF$ label is a single order-3 solve in all
+rows, so the ratio is that of an order-3 against an order-2 solve on one mesh.
+
+\begin{table}[t]
+\centering
+\caption{Label-time ratio $\HF$/$\LF$ under the stated conditions. Workers: two processes with one NGSolve thread each on
+a shared 4-core VM; ``load'' means that training runs were active at the same time.}
+\label{tab:A06-cost}
+\small
+\begin{tabular}{@{}p{4.2cm}p{4.2cm}rrr@{}}
+\toprule
+Geometries, $\LF$ mesh rule & Conditions & $\HF$ [s] & $\LF$ [s] & Ratio \\
+\midrule
+8 training geometries, shared rule & workers, load & 1242 & 291 & 4.3 \\ % src: docs/34 §8.1
+6 test geometries, shared rule & workers, load & 779 & 190 & 4.1 \\ % src: docs/34 §8.1
+2 geometries (ids 3, 24), shared rule & new container (NGSolve 6.2.2608), no load & --- & --- & 2.8--3.7 \\ % src: docs/34 §8.1 bullet 2
+8 training geometries, earlier $\LF$ meshes & not recorded separately\textsuperscript{a} & --- & --- & 2.3 \\ % src: docs/34 §8.1
+4 geometries, earlier $\LF$ meshes & first measurement, before generator speed-ups & 157 & 31 & $\approx 5$ \\ % src: docs/34 §3 (mean mesh + label), §5
+\bottomrule
+\end{tabular}
+
+\smallskip
+{\footnotesize\textsuperscript{a}The source states the ratio for the same eight meshes; the load of that measurement is not recorded separately.\par}
+\end{table}
+% src: docs/34 §3, §5, §8.1; EDITOR_NOTES_2 decision 4

@@ -1,28 +1,27 @@
 \section{Dataset generation}\label{sec:data}
 
-A parametric generator draws a CAD solid; a curved tetrahedral mesh is built on it; the lowest $\nmodes$ modes are computed in $H(\mathrm{curl})$ of order three with adaptive remeshing (high-fidelity labels, $\HF$); and the fields are projected onto the order-two space of a smaller model mesh on which the network operates.
-Geometry is built with OpenCascade~\cite{opencascade} through gmsh~\cite{geuzaine2009gmsh}; meshing, curving and all finite-element solves use Netgen~\cite{schoberl1997netgen} and NGSolve~\cite{schoberl2014cpp11}.
+A parametric generator draws a CAD solid; a curved tetrahedral mesh is built on it; the lowest modes are computed in $H(\mathrm{curl})$ of order three (high-fidelity labels, $\HF$); and the fields are projected onto the order-two space of the model mesh on which the network operates.
+The full generator refines the order-three solution adaptively on a label mesh that may be finer than the model mesh.
+\emph{All training experiments of this paper, however, use a one-level variant}: the budget of 150k label DOFs is exhausted by the first order-three solve, so the $\HF$ label is one order-three solve on the start mesh, the label mesh equals the model mesh, and neither the adaptive loop nor the label/model-mesh transfer of \cref{sec:05-adaptive,sec:05-transfer} is exercised by training.
+% src: docs/34 §3 (adapt_iters = 1, adapt_stop = budget, max_ndof 150000), EDITOR_NOTES_2 decision 3
+Geometry is built with OpenCascade~\cite{opencascade} through gmsh~\cite{geuzaine2009gmsh}; meshing, curving and all finite-element solves use Netgen~\cite{schoberl1997netgen} and NGSolve~\cite{schoberl2014cpp11} (version 6.2.2608 for the experiments; the per-sample operator assembly depends on it).
 Beam pipes are capped by flat PEC walls, and the $\E$ formulation of \cref{sec:formulation} admits cavities with handles and floating conductors.
+% src: docs/34 §8.1 (ngsolve 6.2.2608)
 % src: AGENTS.md invariants (E formulation only); docs/19 §6.1; docs/19 §2 (pipes capped)
 
 \subsection{Geometry families}\label{sec:05-geometry}
 
-Eight families with CAD solids are used for field labels: multi-cell elliptical cavities, re-entrant (nose-cone) cells, pillbox cells with beam pipes, ridged rectangular cavities, constructive-solid-geometry composites, half-wave coaxial resonators, spoke cavities and drift-tube-linac tanks (parameter ranges in \cref{sec:A05-families}); five further families are held out of distribution.
-The controlled experiments of \cref{sec:experiments} use one family (pillbox cells with pipes).
-% src: dataset_generator_3d.py FAMILIES, parse_args; cavity_shapes.OOD_FAMILIES; BRIEF §1
+Eight families with CAD solids are available for field labels: multi-cell elliptical cavities, re-entrant (nose-cone) cells, pillbox cells with beam pipes, ridged rectangular cavities, constructive-solid-geometry composites, half-wave coaxial resonators, spoke cavities and drift-tube-linac tanks; five further families are held out of distribution.
+Parameter ranges, the construction of elliptical half-cells and the published half-cells that the elliptical family accepts are in \cref{sec:A05-families,sec:A05-halfcell}.
+\emph{Only one family, pillbox cells with beam pipes, is used in any training experiment; the other families are generated and labelled but untested in training.}
 Parameters are drawn uniformly, the first 64 draws of sample $i$ from the $i$-th point of a scrambled Sobol' sequence~\cite{sobol1967distribution,virtanen2020scipy}; an optional smooth random deformation of the mesh is switched off in our experiments.
-% src: dataset_generator_3d.py _sample_rng (qmc.Sobol d=64, scramble=True); docs/19 §2 (deformation); docs/34 §3 (--deform_prob 0)
-
-\paragraph{Elliptical half-cells.}
-A half-cell joins an iris ellipse and an equator ellipse by their common tangent; the wall must have non-decreasing radius, and mildly re-entrant walls (up to $105^\circ$) are admitted (details in \cref{sec:A05-halfcell}).
-The ranges were widened until all $14$ published reference half-cells that we compiled (TESLA~\cite{aune2000superconducting}, low-loss and ICHIRO~\cite{juntong2009highgradient}, and others listed in the appendix) were accepted, four of which an earlier solver tolerance had rejected.
-Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percent} with the earlier rules); rejected draws are replaced.
-% src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %), §11, §3.1
+% src: dataset_generator_3d.py FAMILIES, parse_args; cavity_shapes.OOD_FAMILIES; BRIEF §1; _sample_rng (qmc.Sobol d=64, scramble=True); docs/19 §2 (deformation); docs/34 §3 (--deform_prob 0, family pillbox_pipes); referee 2.1 (05 long, one family used)
 
 \paragraph{Fillet floor.}
-A corner radius far below the cavity size forces a curved mesh into many tiny elements (netgen sizes an element on a curved face as about radius over curvature safety) while changing frequencies little: for a pillbox cell with pipes the count falls from $45$k to $18$k tets as the floor rises from $0.02$ to $0.08$ (\cref{sec:A05-counts}).
-Every drawn corner radius is therefore raised to at least $0.05$ times the cavity size, and re-entrant edges left by boolean operations are rounded likewise; where OpenCascade fails the solid keeps its sharp edges and its surface peaks are stored as NaN.
-% src: dataset_generator_3d.py min_fillet default 0.05 (labels=field); docs/29 §2.1 table and §2.4; docs/30 §3 (rounding, NaN peaks)
+A corner radius far below the cavity size forces a curved mesh into many tiny elements while changing frequencies little (for a pillbox cell with pipes the count falls from $45$k to $18$k tets as the floor rises from $0.02$ to $0.08$; \cref{sec:A05-counts}).
+Every drawn corner radius is therefore raised to at least a fraction of the cavity size, and re-entrant edges left by boolean operations are rounded likewise; where OpenCascade fails the solid keeps its sharp edges and its surface peaks are stored as NaN.
+The generator default for field labels is $0.05$; \emph{the experiments use $0.12$}, which rounds the geometry substantially and limits how far they generalise to sharp features.
+% src: dataset_generator_3d.py min_fillet default 0.05 (labels=field); docs/34 §3 (--min_fillet 0.12); docs/29 §2.1 table; docs/30 §3 (rounding, NaN peaks); EDITOR_NOTES_2 decision 10
 
 \subsection{Curved meshes}\label{sec:05-mesh}
 
@@ -39,8 +38,8 @@ Meshes below a ratio of $0.05$ are rejected and distorted elements are repaired 
 On each mesh the $\nmodes$ lowest modes (plus one) are computed in $H_0(\mathrm{curl})$ of order three by shift-invert Arnoldi iteration~\cite{lehoucq1998arpack} with the kernel projection after every solve; modes have unit $L^2$ norm, so $\int|\curl\E_k|^2=\lambda_k$.
 With $\mathcal R$ the averaging interpolation into the continuous vector Lagrange space of the same order, the jumps of the discrete fields serve as error indicator, in the spirit of recovery estimators~\cite{zienkiewicz1987simple}:
 \begin{align*}
-\eta_{\mathrm{vol},T}^2 &= \sum_{k=1}^{\nmodes}\frac{\|\curl\E_k-\mathcal R\curl\E_k\|_T^2+\lambda_k\|\E_k-\mathcal R\E_k\|_T^2}{\lambda_k},\\
-\eta_{\mathrm{wall},T}^2 &= \sum_{k=1}^{\nmodes}\Bigl(\frac{\int_{\partial T\cap\bdry}|\curl\E_k-\mathcal R\curl\E_k|^2}{\int_{\bdry}|\curl\E_k|^2}+\frac{\int_{\partial T\cap\bdry}|\E_k-\mathcal R\E_k|^2}{\int_{\bdry}|\E_k|^2}\Bigr).
+\eta_{\mathrm{vol},e}^2 &= \sum_{k=1}^{\nmodes}\frac{\|\curl\E_k-\mathcal R\curl\E_k\|_e^2+\lambda_k\|\E_k-\mathcal R\E_k\|_e^2}{\lambda_k},\\
+\eta_{\mathrm{wall},e}^2 &= \sum_{k=1}^{\nmodes}\Bigl(\frac{\int_{\partial e\cap\bdry}|\curl\E_k-\mathcal R\curl\E_k|^2}{\int_{\bdry}|\curl\E_k|^2}+\frac{\int_{\partial e\cap\bdry}|\E_k-\mathcal R\E_k|^2}{\int_{\bdry}|\E_k|^2}\Bigr).
 \end{align*}
 % src: docs/30 §2; adaptive.py indicator
 The volume term estimates the relative eigenvalue error (second order in the field error); wall loss and surface peaks are first order in the field error at the wall, hence the separately normalised wall term, and the two are added with equal weight since both are of order $10^{-6}$ at the targets.
@@ -48,27 +47,25 @@ The volume term estimates the relative eigenvalue error (second order in the fie
 
 \paragraph{Remeshing instead of bisection.}
 Bisection of marked elements has a closure that explodes on curvature-graded meshes (200 of 8109 tets marked gave $29$k tets).
-Each iteration therefore builds a new mesh from an error-equidistributing size field, $h_{\mathrm{new},T}=h_T(\rho\,\overline{\eta^2}/\eta_T^2)^{1/(2p)}$ with $\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$ and $p$ the polynomial order, passed to Netgen as local size restrictions that accumulate over iterations and respect the DOF budget (\cref{sec:A05-mesh}).
+Each iteration therefore builds a new mesh from an error-equidistributing size field, $h_{\mathrm{new},e}=h_e(\gamma\,\overline{\eta^2}/\eta_e^2)^{1/(2p)}$ with $\eta_e^2=\eta_{\mathrm{vol},e}^2+\eta_{\mathrm{wall},e}^2$ ($e$ an element, $\gamma=0.25$) and $p$ the polynomial order, passed to Netgen as local size restrictions that accumulate over iterations and respect the DOF budget (\cref{sec:A05-mesh}).
 The start mesh is deliberately coarse; its selection rule is shared with the low-fidelity labels (\cref{sec:multifidelity}).
 % src: docs/30 §4; adaptive.py mesh_remesher, size_field
 
 \paragraph{Stopping.}
 Refinement stops when the cluster-mean frequency changes by less than $10^{-6}$ (relative) and the cluster-mean $\Qz$, $G$, $\RoQ$ and peaks by less than $10^{-3}$ between two consecutive levels, when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}), or after eight levels (\cref{sec:A05-mesh}).
 This compares successive levels and is not an error bound; the accuracy targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked against closed forms in \cref{sec:05-validation}.
-A budget can bind early: in our controlled experiments the 150k-DOF budget was exhausted after the first order-three solve, so the high-fidelity label there is one order-three solve on the start mesh.
+In the experiments this loop stops at the DOF budget after the first order-three solve (\cref{sec:data}).
 % src: docs/30 §1, §6; adaptive.py DEFAULTS, invariant_qoi, adaptive_modes; docs/34 §3 (adapt_iters = 1, adapt_stop = budget)
 
 \subsection{Label mesh, model mesh and storage}\label{sec:05-transfer}
 
-The \emph{label mesh} is the finest adaptive level and supplies frequencies, figures of merit and the order-three fields.
-The \emph{model mesh} is the finest level with at most $10\,000$ tets (about $10^5$ order-two DOFs per geometry); if the start mesh already exceeds this it is the model mesh, and if the final mesh fits both coincide.
-% src: docs/30 §5, §6 (model_max_elements 10000, about 100k DOF)
-The label fields are $L^2$-projected onto the order-two space of the model mesh, $\mathsf M_2\mathsf u_2=\int\mathbf v_2\cdot\E_3$ (exact best approximation on one mesh, where the spaces are nested; otherwise by evaluation at the model mesh's $216$ integration points per tet), and we store per mode $\text{proj\_err}=\|\E_3-\E_2\|/\|\E_3\|$ and the Rayleigh quotient of $\E_2$ in the model space.
-On two pillbox-with-pipes model meshes $\text{proj\_err}$ was $0.18$--$0.54\,\%$, and the Rayleigh quotients of the projected modes exceeded the order-three frequencies by $0.04$--$0.9\,\%$.
-This is the frequency of the projected field \emph{target}; the floor of the model space itself, the discrete order-two eigenvalue, was within $0.033\,\%$ of the order-three frequencies on the four geometries of \cref{sec:multifidelity}.
-% src: docs/30 §5 (proj_err 1.8e-3–5.4e-3; Rayleigh quotients of projected HF modes 4e-4–8.6e-3, meshes of 11300 and 13052 tets); docs/34 §4.1 (FE floor ≤ 0.033 %); EDITOR_NOTES note 2
-
-Each geometry is stored as the Netgen mesh file of the model mesh and the BREP of the meshed shape, with the frequencies, projected fields (single precision), figures of merit, axial field and the wall-distance token features of \cref{sec:method}: about \SI{9}{MB} for ten modes.
+In the full generator the \emph{label mesh} is the finest adaptive level and supplies frequencies, figures of merit and the order-three fields, and the \emph{model mesh} is the finest level with at most $10\,000$ tets (about $10^5$ order-two DOFs per geometry); if the start mesh already exceeds this it is the model mesh, and if the final mesh fits, both coincide, which is the case in all experiments.
+% src: docs/30 §5, §6 (model_max_elements 10000, about 100k DOF); docs/34 §8.1 (LF mesh = HF model mesh on 8/8 and 6/6 meshes)
+The label fields are $L^2$-projected onto the order-two space of the model mesh, $\mathsf M_2\mathsf u_2=\int\mathbf v_2\cdot\E_3$ (the exact best approximation on one mesh, where the spaces are nested; on a coarser model mesh by evaluation at its $216$ integration points per tet), and we store per mode $\text{proj\_err}=\|\E_3-\E_2\|/\|\E_3\|$ and the Rayleigh quotient of $\E_2$ in the model space.
+On two pillbox-with-pipes model meshes (not used for training) $\text{proj\_err}$ was $0.18$--$0.54\,\%$, and the Rayleigh quotients of the projected modes exceeded the order-three frequencies by $0.04$--$0.9\,\%$; this is the quality of the projected field \emph{target}.
+By contrast, the discrete order-two eigenvalue on the model mesh lies at most $0.047\,\%$ above the $\HF$ frequency on the six test geometries ($0.033\,\%$ on four earlier geometries; \cref{sec:multifidelity}).
+% src: docs/30 §5 (proj_err 1.8e-3–5.4e-3; Rayleigh quotients of projected HF modes 4e-4–8.6e-3, meshes of 11300 and 13052 tets); docs/34 §4.1 (≤ 0.033 %), §8.1 (0.004–0.047 %); EDITOR_NOTES_2 decision 9
+Each geometry is stored as the Netgen mesh file of the model mesh and the BREP of the meshed shape, with the frequencies, projected fields (single precision), figures of merit, axial field and the wall-distance token features of \cref{sec:method}: about \SI{9}{MB} for ten modes (the production setting; the network of \cref{sec:experiments} predicts $K=4$).
 % src: docs/29 §1, §4
 Because mesh generation is not bit-reproducible, the stored mesh is the record of a sample, and loading must reproduce its DOF numbering exactly: the generator rebuilds every stored mesh through a file round trip and fails a sample whose DOF count differs, and the loader rejects a sample whose stored fields have different Rayleigh quotients (relative $10^{-5}$) under the rebuilt operators (\cref{sec:A05-reload}).
 % src: docs/29 §3.3, §6; docs/30 §5 (single_level, _check_reload)
@@ -76,19 +73,19 @@ Because mesh generation is not bit-reproducible, the stored mesh is the record o
 \subsection{Figures of merit}\label{sec:05-qoi}
 
 Figures of merit follow \cref{sec:formulation} and are evaluated directly from the order-three fields (copper, $\sigma=\SI{5.8e7}{S/m}$, $U=\SI{1}{J}$, wall fields from the adjacent volume element); $\Epk$ and $\Bpk$ are maxima over wall integration points.
-The beam axis is the $z$-axis for the revolved families (a family-specific line for the coaxial resonator and ridged box).
-The accelerating length $\Lacc$ excludes the beam pipes (e.g.\ the sum of the cell lengths for elliptical cavities); the chord, used everywhere in an earlier version, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
+The beam axis and the accelerating length $\Lacc$ (beam pipes excluded) are family-specific (\cref{sec:A03-qoi}); using the axis chord for $\Lacc$, as an earlier version did, inflated $\Epk/\Eacc$ and $\Bpk/\Eacc$ by a median $1.2$--$2.4\times$.
 The axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any velocity $\beta$ without a new solve.
 % src: docs/24 §1.1, §1.3; highorder.py mode_qoi; docs/33 §2.1, §2.2, §12
 
 \subsection{Validation}\label{sec:05-validation}
 
-The whole label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
+The adaptive label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
+This pillbox is smooth, without beam pipes or fillets, so the check validates the solver and the figures of merit but \emph{not} the labels of the experimental family (pillbox cells with pipes and fillets), for which no closed form exists.
 The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs, at the price of a larger (still far inside the target) $\RoQ$ error; the $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
-The pillbox is smooth, so uniform refinement is near-optimal there; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than a single solve with fewer tets.
-$\Bpk$ converges slowest: it changed by $4\,\%$ between the two finest levels of a pillbox cell with pipes at a 400k-DOF limit.
+On a pillbox cell \emph{with} pipes, $\Bpk$ changed by $4\,\%$ between the two finest levels at a 400k-DOF limit, so the wall quantities of $\HF$ labels of that family are uncertain at the percent level; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than a single solve with fewer tets.
 We have not yet cross-validated against an independent solver.
-% src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row)
+% src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row); referee E2.3
+% TODO pass 3: none for 05 (no new results planned)
 
 \begin{table}[t]
 \centering
@@ -110,8 +107,10 @@ adaptive, volume + wall & 5961 & 157k & $6.1\cdot10^{-7}$ & $-3.4\cdot10^{-5}$ &
 
 \subsection{Cost per sample and generator speed-ups}\label{sec:05-cost}
 
-In the controlled experiments (four samples, 150k-DOF budget, single-thread workers on a shared four-core VM) a high-fidelity label including meshing took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}); a later matched measurement gave a cost ratio of $4.3$ to one order-two solve on the same model mesh (\cref{sec:multifidelity}).
-A sample at a 450k-DOF budget takes \SI{433}{s} on two threads, of which the eigensolver is about $90\,\%$.
-% src: docs/34 §3 (172.5, 119.9, 208.7, 125.7 s), §8.1 (4.3); docs/31 §3.8 (433 s); docs/30 §6 (90 %)
+\emph{Cost basis.} In the experiments the $\HF$ label is a single order-three solve on the start mesh (150k-DOF budget); on four earlier samples, including meshing, it took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}; two workers of one thread on a shared four-core VM).
+Its cost is $2.8$--$4.3\times$ that of a single order-two solve on the same mesh, depending on machine load (conditions in \cref{sec:multifidelity}); this is an order-three versus order-two comparison on one mesh, not a comparison with the adaptive generator, which needs about three to four single solves.
+% src: docs/34 §3 (172.5, 119.9, 208.7, 125.7 s), §8.1 (2.8–4.3); docs/30 §6 (3–4x one solve); EDITOR_NOTES_2 decision 4
+A full adaptive sample at a 450k-DOF budget takes \SI{433}{s} on two threads, of which the eigensolver is about $90\,\%$.
+% src: docs/31 §3.8 (433 s); docs/30 §6 (90 %)
 The generator was optimised without changing the labels (frequencies unchanged to $2\cdot10^{-15}$, figures of merit to $\le7\cdot10^{-10}$ at 150k DOFs): the transfer to the model mesh fell from \SI{253.5}{s} to \SI{29.4}{s} and a 450k-DOF sample from \SI{664}{s} to \SI{433}{s} (\cref{sec:A05-speedup}).
 % src: docs/31 §3.8

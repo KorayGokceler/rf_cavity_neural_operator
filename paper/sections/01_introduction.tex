@@ -18,56 +18,51 @@ Second, the curl operator has an infinite-dimensional kernel formed by gradient 
 any discretisation that does not respect the $H(\mathrm{curl})$ structure, and any predicted field that is not projected away from this kernel,
 produces spurious modes at or near zero frequency \citep{hiptmair2002finite,boffi2010finite}.
 Third, a network that outputs values on a fixed grid or degrees of freedom is tied to one discretisation, whereas eigenvalue accuracy depends on the mesh and the polynomial order.
-Lowest-order edge elements add a limit: even the best field representable on the training mesh had a \SIrange{12}{21}{\percent} error in $\E$ in our earlier lowest-order (Whitney) model. % src: docs/28 §1
 
 \paragraph{Approach.}
 We therefore do not ask the network for the modes themselves.
-The network maps the geometry to a \emph{learned basis} of $m$ vector fields.
+The network maps the geometry to a \emph{learned basis} of $m$ vector fields ($m$ is the basis width; $K\le m$ denotes the number of predicted modes).
 A fixed linear map takes the basis to the degrees of freedom of a conforming high-order N\'ed\'elec space \citep{nedelec1980mixed} of order $p$ on a curved (isoparametric) mesh,
 the basis is projected onto the discretely divergence-free subspace (the kernel projection, a float64 conjugate-gradient solve),
 and a Rayleigh--Ritz step in the projected span returns the $K$ lowest frequencies and the fields.
-The network is trained mainly to place the true modes inside the span of the basis; the Ritz step, not a regression head, then computes frequencies and fields.
-Since this is a Galerkin projection onto a subspace of the discrete problem, min--max theory applies.
-It is implemented with NGSolve and Netgen \citep{schoberl1997netgen,schoberl2014cpp11}.
+The network is trained mainly to place the true modes inside the span of the basis; the Ritz step, not a regression head, computes frequencies and fields, and as a Galerkin projection it obeys min--max.
+We implement it with NGSolve and Netgen \citep{schoberl1997netgen,schoberl2014cpp11}.
 
 \paragraph{Contributions.}
 \begin{enumerate}
-  \item \textbf{A neural operator with a built-in eigenvalue bound.}
+  \item \textbf{A neural operator with a built-in discrete eigenvalue bound.}
   Every predicted eigenvalue bounds from above the corresponding nonzero discrete eigenvalue of the space in which the model runs,
   and the kernel projection excludes spurious zero modes (\cref{sec:method}, \cref{prop:upper-bound}).
-  In the main held-out study every prediction stayed above the discrete eigenvalue of its space (smallest margin \SI{0.47}{\percent}); % src: docs/34 §8.2
-  the bound is with respect to the discrete, not the exact, eigenvalue.
+  In the main held-out study every prediction stayed above the discrete eigenvalue of its space (smallest margin $f_{\mathrm{model}}/f_{\mathrm{FE}}-1=\SI{0.47}{\percent}$ over arms, geometries and modes); % src: docs/34 §8.2
+  the bound is relative to the discrete, not the exact, eigenvalue and does not certify mode identity.
+  % TODO pass 3: rank check of assumption (A) and Ritz-bound stress test with the a posteriori inexact-CG bound
   \item \textbf{Independence of the discretisation space.}
-  The same weights run unchanged on a $p=3$ space and on a mesh refined once (eight times as many tetrahedra), and the bound still holds
-  (smallest margin \SI{0.009}{\percent}). % src: docs/34 §4.2
-  Accuracy does not improve there (the frequency error worsens by \numrange{0.2}{0.6} percentage points), as the remaining error lies in the learned basis. % src: docs/34 §4.2
-  \item \textbf{Accuracy floor of the representation.}
-  With quadrature-point tokens on a curved $p=2$ space, the relative eigenvalue error in a single-sample overfit test is \numrange{1e-6}{9e-6}, % src: docs/28 §3
-  against \num{2.4e-3} for the lowest-order model. % src: docs/28 §3
+  The same weights run unchanged on a $p=3$ space and on a mesh refined once ($8\times$ tetrahedra); all predicted eigenvalues lay above the FE eigenvalue of the evaluated space. % src: docs/34 §4.2
+  Accuracy does not improve there (frequency error up by \numrange{0.2}{0.7} percentage points), which we attribute, untested, to the learned basis. % src: docs/34 §4.2, referee E6
+  \item \textbf{Single-sample representation capacity.}
+  With quadrature-point tokens on a curved $p=2$ space, fitting one 179-tetrahedron sample to its own $p=2$ label reaches a relative eigenvalue error of \numrange{1e-6}{9e-6}. % src: docs/28 §3
+  This shows the representation can express the modes, not that it generalises.
   \item \textbf{A data pipeline with analytic validation.}
-  An adaptive $p=3$ label generator on curved meshes with separate label and model meshes (\cref{sec:data}).
-  On an analytic pillbox the solver reproduces the exact values to \num{6e-7} in frequency, \num{3e-5} in $\Qz$, \num{1e-5} in $\RoQ$, \num{2e-4} in $\Epk$ and \num{4e-4} in $\Bpk$ at \num{157000} degrees of freedom. % src: docs/31 §1
-  Removing repeated work cut the cost of an adaptive label at \num{450000} DOF from \SI{664}{s} to \SI{433}{s} with unchanged labels. % src: docs/31 §3.8
+  An adaptive $p=3$ label generator on curved meshes (\cref{sec:data}); on an analytic smooth pillbox (no pipes or fillets) it reproduces the exact values to \num{6e-7} in frequency, \num{3e-5} in $\Qz$, \num{1e-5} in $\RoQ$, \num{2e-4} in $\Epk$ and \num{4e-4} in $\Bpk$ at \num{157000} degrees of freedom. % src: docs/31 §1
+  Removing repeated work cut an adaptive label at \num{450000} DOF from \SI{664}{s} to \SI{433}{s}. % src: docs/31 §3.8
   \item \textbf{Training on low-fidelity labels.}
-  A low-fidelity (LF) label is one $p=2$ solve on the model mesh; the high-fidelity (HF) label is the adaptive $p=3$ solution projected to $p=2$ (\cref{sec:multifidelity}).
-  An LF label is $4.3\times$ cheaper, % src: docs/34 §8.1
+  A low-fidelity (LF) label is one $p=2$ solve on the model mesh. The high-fidelity (HF) label used in all training experiments is one $p=3$ solve on the same start mesh, projected to $p=2$; the adaptive generator path is not exercised by these experiments (\cref{sec:multifidelity}). % src: referee E2, EDITOR_NOTES_2 decision 3
+  On this mesh an LF label is $2.8$--$4.3\times$ cheaper (the range reflects machine load), % src: docs/34 §8.1, EDITOR_NOTES_2 decision 4
   differs from the HF label by \SIrange{0.004}{0.047}{\percent} in frequency and \SIrange{0.08}{0.32}{\percent} (mass norm) in the field subspace, % src: docs/34 §8.1
-  and the same predictions score within $0.02$ percentage points against LF and against HF labels. % src: docs/34 §8.2
-  In an equal-cost comparison on six held-out HF geometries, LF training at equal or lower label cost was at least as accurate as HF training, and more LF geometries helped slightly (\cref{tab:equal-cost}).
-  These are single training runs with small differences; the LF--HF agreement is the robust result.
+  and the model's errors measured against LF and against HF labels differ by only $0.02$ percentage points. % src: docs/34 §8.2
+  In an equal-cost comparison on six held-out HF geometries, LF-trained and HF-trained models reached comparable accuracy (\cref{tab:equal-cost}).
+  Limits: single runs; fidelity and the number of training geometries change together (no LF run on the HF geometries); and the label difference is 30--300 times smaller than the model error, so the study does not yet probe the regime where label type matters. % src: referee E1, EDITOR_NOTES_2 decision 2
+  % TODO pass 3: repeated seeds / LF-8 control if produced; parametric-regression and coarse-FE baselines
 \end{enumerate}
 
 \paragraph{Scope.}
-This is a method-and-pipeline paper with controlled small-scale evidence.
-All training runs are small: CPU only, at most 40 training geometries from one family (a pillbox with beam pipes), and a 64-dimensional two-block trunk. % src: BRIEF §1; docs/34 §4, §8.2
+This is a method-and-pipeline paper with small-scale evidence: CPU training, at most 40 training geometries from one family (a pillbox with beam pipes), a 64-dimensional two-block trunk. % src: BRIEF §1; docs/34 §4, §8.2
 The absolute frequency errors of \SIrange{1}{2}{\percent} reflect this under-trained model, not a limit of the method;
-the figure-of-merit loss is switched off for the field model;
-and fine-tuning on HF labels and mixed LF+HF training were inconclusive (\cref{sec:experiments}).
-At this scale inference takes about as long as an FE solve in the same space (about \SI{8}{s} against \SI{18}{s}), % src: docs/34 §8.2 (5 s + 3.3 s vs 18 s)
-and the model cannot be more accurate than the FE solution of its own space (\cref{sec:discussion}).
+the figure-of-merit loss is off; fine-tuning on HF labels and mixed LF+HF training were inconclusive (\cref{sec:experiments}).
+Single-threaded, the model path takes \SI{8.3}{s} (operators \SI{5.0}{s}, forward pass \SI{3.3}{s}) against \SI{18}{s} to assemble and solve the FE problem in the same space; % src: docs/34 §8.2, EDITOR_NOTES_2 decision 7
+at these sizes this is about a factor of two, not a speed advantage.
+The model cannot beat the FE solution of its own space, and no external baseline (parametric regression, coarse FE) is included yet (\cref{sec:discussion}). % TODO pass 3: baselines
 
 \paragraph{Outline.}
-\Cref{sec:related} reviews related work, \cref{sec:formulation} states the eigenproblem and the figures of merit, and
-\cref{sec:method} describes the model and proves the upper-bound property.
-\Cref{sec:data} covers the label generator and \cref{sec:multifidelity} the two label fidelities.
-\Cref{sec:experiments} reports the experiments and \cref{sec:discussion} discusses limitations and future work.
+\Cref{sec:related} reviews related work; \cref{sec:formulation} states the eigenproblem; \cref{sec:method} gives the model and the bound;
+\cref{sec:data} and \cref{sec:multifidelity} cover the label generator and the two fidelities; \cref{sec:experiments} reports the experiments; \cref{sec:discussion} discusses limitations and future work.
