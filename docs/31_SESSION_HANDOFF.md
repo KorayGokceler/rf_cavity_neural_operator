@@ -2,7 +2,7 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-22, dal `claude/field-model`.
+> Son güncelleme: 2026-10-24, dal `claude/field-model`.
 
 ## 1. Durum
 
@@ -355,6 +355,9 @@ ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyon
   sınır), alan rel-L2 0,03–0,07; hata p2 tabanından (≤ 0,033 %) değil modelden. Aynı ağırlıklarla p3 ve 8 kat ince
   mesh'te çıkarım çalışıyor (Ritz üst sınırı korunuyor) ama doğruluk 0,2–0,6 puan kötüleşiyor.
 - 2 HF örnekle ince ayar, aynı epoch sayısında yalnız LF kontrolüne göre kazanç vermedi.
+- Birleşik kodla `train.py --fast_dev_run` (`data_path` = 19 LF geometri, `train_extra` = 4 HF, `hf_repeat 2`,
+  `fidelity_weights [1,2]`) train/val/test adımlarını çalıştırıyor. 15 GB'lık makinede `num_workers 8` yükleyici
+  işçilerini bellek yetmezliğinden öldürüyor; 1 işçiyle sorunsuz. TRUBA'da işçi sayısını düğüm belleğine göre seçin.
 
 ## 4. Kararlar ve gerekçeleri
 
