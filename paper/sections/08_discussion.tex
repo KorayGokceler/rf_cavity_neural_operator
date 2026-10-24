@@ -2,33 +2,50 @@
 
 \subsection{Discussion}\label{sec:08-discussion}
 
-\paragraph{A structural ceiling.}
+\paragraph{A structural ceiling, now measured.}
 By \cref{prop:upper-bound} every predicted $\theta_k$ lies above the discrete eigenvalue $\lambda_{h,k}$ of the space in which the model runs, so a trained model cannot be more accurate than the finite-element solution of that space.
-The discrete $p{=}2$ eigenvalue on the model mesh lies at most \SI{0.047}{\percent} above the high-fidelity (HF) frequency on the six test geometries (\SI{0.033}{\percent} on four earlier geometries). % src: docs/34 §8.1 (LF/HF +0.004..+0.047 %); docs/34 §4.1 (<= 0.033 %); EDITOR_NOTES_2 dec. 9
-This is small next to the \SIrange{1}{2}{\percent} error of our models but not next to the $10^{-5}$--$10^{-4}$ accuracy that final cavity designs require, so the model is a design-stage surrogate and not a replacement for a production solver. % src: docs/33 §6
+The discrete $p{=}2$ eigenvalue on the model mesh lies at most \SI{0.047}{\percent} above the high-fidelity (HF) frequency on the six test geometries (\SI{0.033}{\percent} on four earlier ones). % src: docs/34 §8.1; docs/34 §4.1; EDITOR_NOTES_2 dec. 9
+Because meshing and operator assembly are needed for every geometry, the model cannot undercut the cost of a solve in its own space by much, and the direct comparison with plain finite elements at these sizes (about $7\times10^3$ tetrahedra on average) is unfavourable to the model (\cref{sec:experiments}): % src: docs/35 §3b (6969 tets mean)
+a first-order solve on the model mesh took \SI{1.7}{s} for a mean frequency error of \SI{1.25}{\percent}, a second-order solve on a mesh with 48\,\% fewer tetrahedra \SI{5.7}{s} for \SI{0.037}{\percent}, and the second-order solve on the model mesh (the LF label) \SI{13.9}{s} for \SI{0.019}{\percent}, against \SI{8.3}{s} and \SIrange{1.4}{1.7}{\percent} for the model path. % src: docs/35 §3b (single thread, idle machine); docs/34 §8.2 (8.3 s, one geometry, not re-measured)
+At the sizes studied the model therefore has no speed or accuracy advantage over a direct solve, and the earlier comparison of \SI{8.3}{s} with \SI{18}{s} was not reproduced. % src: docs/35 §3b
+The accuracy is also far from what final designs require ($10^{-5}$--$10^{-4}$), % src: docs/33 §6
+so the model is at best a design-stage surrogate.
 
-\paragraph{Where a benefit can come from.}
-Meshing and operator assembly are needed for every geometry. On a single thread the model path took \SI{8.3}{s} (operators \SI{5.0}{s}, forward pass \SI{3.3}{s}) against \SI{18}{s} for assembling and solving the finite-element problem in the same space, about twice as fast at an error of \SIrange{1}{2}{\percent}; we claim no further speed advantage (\cref{sec:experiments}). % src: docs/34 §8.2 (inference time); EDITOR_NOTES_2 dec. 7
-Any benefit must therefore come from amortised design-space exploration, a warm start for an iterative solver (\cref{sec:08-future}), the guarantees (discrete upper bound, no spurious zero modes, for any weights) or cheaper training data; we have not quantified which pays off.
+\paragraph{A parametric baseline on one family.}
+On the single family studied, a Gaussian process on the six geometry parameters matched the model once 24 or more geometries were available: with 40 LF geometries it reached \SI{1.01}{\percent} mean and \SI{1.82}{\percent} maximum frequency error, against \SI{1.37}{\percent} and \SI{5.30}{\percent} for the model, and with 24 geometries \SI{1.64}{\percent} against \SI{1.55}{\percent}. % src: docs/35 §3a
+With 8 geometries the model was about 2.3 times better (\SI{1.66}{\percent} against \SI{3.76}{\percent}), but its training labels were HF whereas the GP was equally accurate with LF and HF labels (\SI{3.75}{\percent} and \SI{3.76}{\percent}). % src: docs/35 §3a
+The comparison has limits: one family with six parameters, six test geometries (two slightly outside the training box), single model runs, and a regressor that returns frequencies only and no fields. % src: docs/35 §3a (limitations)
+It does show that at this scale the number of training geometries, rather than the label fidelity, governs the accuracy of both models.
+
+\paragraph{What is guaranteed.}
+The upper bound holds exactly in exact arithmetic, provided the kernel assumption (A) of \cref{sec:method} holds, which we verified numerically in all 15 cases tested (five curved meshes, $p=1,2,3$; small meshes only because the check needs dense linear algebra). % src: docs/35 §1
+For the implemented conjugate-gradient projection the bound holds up to a relative perturbation $\bar\eta\approx(1\text{--}3)\,\tau_{\mathrm{CG}}$, about $10^{-8}$ at the shipped tolerance $\tau_{\mathrm{CG}}=10^{-8}$, and the a~posteriori form $\tilde\theta_k\ge\lambda_{h,k}/(1+\bar\eta)$ held in every run with $\bar\eta<1$. % src: docs/35 §2 (156 + 104 runs)
+Violations of the plain bound occurred only for bases with a large gradient admixture and were at most $1.5\times10^{-8}$ (relative) at the shipped tolerance, many orders below the model error; a trained basis has a gradient fraction of about 0.5--0.6 before projection, for which the worst violations were $2\times10^{-11}$ and $1.4\times10^{-10}$ on two geometries. % src: docs/35 §2 (reading)
+The drop rule for near-gradient directions protects only for $\tau_{\mathrm{CG}}\lesssim10^{-6}$: at $\tau_{\mathrm{CG}}=10^{-4}$ a pure-gradient basis gave $\bar\eta=1$ and $\theta\approx0$. % src: docs/35 §2
+Without the projection, gradient-rich bases produce spurious modes (eight in the test, none with the projection at $\tau_{\mathrm{CG}}\le10^{-6}$), whereas random bases do not. % src: docs/35 §2 (v)
+The bound is an index-wise bound on the discrete eigenvalues; it gives neither mode identity nor an accuracy bound for the exact eigenvalues.
 
 \paragraph{Low-fidelity labels and the role of HF.}
 Because the Ritz layer works in the model space, it can reach exactly the eigenvalues of the low-fidelity (LF) solve, which is why LF labels are natural for it (\cref{sec:multifidelity}).
-In our experiments the LF and HF labels differ by at most \SI{0.047}{\percent} in frequency and \SI{0.32}{\percent} in field, which is one to two orders of magnitude less than the model error, % src: docs/34 §8.1; computed: frequency 23-425x, field 14-63x
-so the study does not yet probe the regime in which the label type matters for the model.
-LF and HF do differ on wall-dominated quantities (quality factor, peak fields), measured on four geometries on earlier meshes (\cref{sec:multifidelity}); % src: docs/34 §3; EDITOR_NOTES 3
-HF labels therefore remain necessary for any loss on such quantities and for test sets, whose reference must not share the model's discretisation error.
+Here the LF and HF labels differ by at most \SI{0.047}{\percent} in frequency and \SI{0.32}{\percent} in field, 30--300 times less than the model error, % src: docs/34 §8.1; referee §E
+so the study does not probe the regime in which the label type matters; there the evidence is the 0.02-percentage-point LF$\to$HF gap and the label cost.
+LF and HF do differ on wall-dominated quantities (measured on four geometries on earlier meshes; \cref{sec:multifidelity}), so HF labels remain necessary for any loss on such quantities and for test sets.
+
+\paragraph{Where the approach could pay off (hypotheses).}
+We have not shown an advantage over parametric regression on one low-dimensional family or over direct finite elements at about $10^4$ tetrahedra. The settings in which we expect it could are untested: geometry sets without a shared low-dimensional parametrisation (arbitrary CAD), where a regression on parameters is not available; predicted fields and figures of merit with a guaranteed eigenvalue ordering; warm starts for large finite-element solves (\cref{sec:08-future}); and larger meshes and GPUs, where the solve cost grows faster than the model's.
 
 \subsection{Limitations}\label{sec:08-limitations}
 
 \begin{itemize}
-\item \textbf{Scale and scope.} All runs are small and on a CPU: at most 40 training geometries, a 64-dimensional two-block trunk, 600 optimiser steps per arm in the equal-cost study, a single geometry family (pipe-terminated pillbox cavities) with a minimum fillet of 0.12, which rounds the geometry considerably, and six held-out geometries. % src: BRIEF §1; docs/34 §5, §8.2; EDITOR_NOTES_2 dec. 10
+\item \textbf{Scale and scope.} All runs are small and on a CPU: at most 40 training geometries, a 64-dimensional two-block trunk, 600 optimiser steps per arm, a single geometry family (pipe-terminated pillbox cavities) with a minimum fillet of 0.12, which rounds the geometry considerably, and six held-out geometries. % src: BRIEF §1; docs/34 §5, §8.2; EDITOR_NOTES_2 dec. 10
 Absolute errors (\SIrange{1}{2}{\percent}) reflect an under-trained model; no learning curve was measured and generalisation across families is untested.
-\item \textbf{The LF/HF comparison is confounded and statistically weak.} Each arm of \cref{tab:equal-cost} is a single training run without seed repeats, and the fidelity and the number of geometries change together (the comparison of LF and HF with the same eight geometries was not run). We therefore call the arms comparable; the robust results are the lower label cost and the 0.02-percentage-point LF$\to$HF gap. % src: docs/34 §8.2; EDITOR_NOTES_2 dec. 2
-\item \textbf{HF is one level.} In all experiments the HF label is one third-order solve on the start mesh (the degree-of-freedom budget is used by the first solve, so label and model mesh coincide). The adaptive refinement and the label/model-mesh split are not exercised by the training experiments. % src: docs/34 §3, §8.1; EDITOR_NOTES_2 dec. 3
-\item \textbf{No baselines.} We compare no parametric-regression surrogate and no coarse finite-element solve at the same cost. % TODO pass 3: baselines (parametric regression, coarse FE) may change this item
+\item \textbf{The LF/HF comparison is confounded and weak.} Each arm of \cref{tab:equal-cost} is a single run without seed repeats, and fidelity and number of geometries change together (LF 8 against HF 8 was not run). We call the arms comparable; the robust results are the lower label cost and the small LF$\to$HF gap. % src: docs/34 §8.2; EDITOR_NOTES_2 dec. 2
+\item \textbf{HF is one level.} The HF label is one third-order solve on the start mesh, so label and model mesh coincide; the adaptive refinement and the mesh split are not exercised by the training experiments. % src: docs/34 §3, §8.1; EDITOR_NOTES_2 dec. 3
+\item \textbf{Baselines.} The GP and finite-element comparisons above use the model numbers of earlier single runs (no checkpoint was re-evaluated), the model time was measured on another geometry, and coarser curved meshes than 48\,\% fewer tetrahedra could not be generated. % src: docs/35 §3a, §3b (limitations)
+\item \textbf{Checks cover small cases.} Assumption (A) was tested on meshes of up to about $6\times10^3$ free degrees of freedom, and the bound stress test on two geometries of one family with synthetic bases and one preconditioner. % src: docs/35 §1, §2 (limitations)
 \item \textbf{Wall quantities are not trained.} The figures-of-merit loss is disabled for the field model. % src: docs/31 §2 (qoi_weight = 0)
-\item \textbf{Inconclusive HF use.} Fine-tuning on two HF geometries gave no measurable gain over continued LF training; a later fine-tuned arm improved (\SI{1.37}{\percent} to \SI{1.13}{\percent}) but its control run was lost, and two mixed LF+HF runs failed (a wrong schedule, a lost run). % src: docs/34 §4.3, §8.2
-\item \textbf{Richer spaces do not help.} The same weights remain above the finite-element eigenvalue of the evaluated space in a cubic space and on a finer mesh, but the frequency error grows by 0.2 to 0.7 percentage points; a plausible, untested cause is the changed token density. % src: docs/34 §4.2; EDITOR_NOTES_2 dec. 6
+\item \textbf{Inconclusive HF use.} Fine-tuning on two HF geometries gave no measurable gain over continued LF training; a later fine-tuned arm improved (\SI{1.37}{\percent} to \SI{1.13}{\percent}) but its control run was lost, and two mixed LF+HF runs failed. % src: docs/34 §4.3, §8.2
+\item \textbf{Richer spaces do not help.} The same weights stay above the finite-element eigenvalue of the evaluated space in a cubic space and on a finer mesh, but the frequency error grows by 0.2 to 0.7 percentage points; a plausible, untested cause is the changed token density. % src: docs/34 §4.2; EDITOR_NOTES_2 dec. 6
 \item \textbf{Deformed geometries and hardware.} Experiments use nominal geometries (on deformed meshes the label projection error is unmeasured), and the GPU path has not been run. % src: docs/31 §3.8, §3.2
 \end{itemize}
 
@@ -41,14 +58,13 @@ Including the \SI{26}{s} set-up and the \SI{68}{s} transfer of the modes to the 
 This is a property of the label solver, not a model result; whether a model subspace is a good start is untested.
 
 \paragraph{Training, families and validation.}
-Next steps are the missing LF-8 versus HF-8 control with several seeds, scaled LF+HF training (hundreds of LF and tens of HF geometries) with sweeps of the fidelity weights, a wall-quantity loss, and further families (quarter-wave resonators, drift-tube cells, RF-dipole cavities, photoinjector guns) with a validation set of published designs. % src: docs/34 §6, §8.3; docs/33 §4, §8; docs/31 §5, §6; referee §5.1
+Next steps are the missing LF-8 versus HF-8 control with several seeds, scaled LF+HF training with sweeps of the fidelity weights, a wall-quantity loss, and further families (quarter-wave resonators, drift-tube cells, RF-dipole cavities, photoinjector guns), where the comparison with parametric regression is the decisive test: a geometry set that no low-dimensional parametrisation covers. % src: docs/34 §6, §8.3; docs/33 §4, §8; docs/31 §5, §6; referee §5.1
 A subset of each family should be cross-checked with an independent open-source finite-element code such as Palace~\cite{awslabs2023palace}, and GPU measurements are needed to settle which part of the training step dominates. % src: docs/31 §4, §3.6
-% TODO pass 3: add the rank check of assumption (A), the a posteriori bound stress test and the baselines here if they change the outlook
 
 \subsection{Conclusion}\label{sec:08-conclusion}
 
-The surrogate predicts a basis of fields and lets a conforming-space projection and a Rayleigh--Ritz step produce the eigenpairs; its frequencies are upper bounds of the discrete eigenvalues of the space it runs in and are free of spurious gradient modes.
-Its single-sample representation capacity (fitting one sample to its own label) reached relative eigenvalue errors of $1\times10^{-6}$ to $9\times10^{-6}$, which says nothing about generalisation. % src: docs/28 §3; EDITOR_NOTES_2 dec. 8
-A single second-order solve on the model mesh is a cheap label: it costs 2.8 to 4.3 times less than a third-order one (depending on the machine load) and differs from it by at most \SI{0.047}{\percent} in frequency. % src: docs/34 §8.1; EDITOR_NOTES_2 dec. 4
-Models trained on such labels were comparable on six held-out HF geometries to a model trained on HF labels (\cref{tab:equal-cost}), with an LF$\to$HF gap of 0.02 percentage points; % src: docs/34 §8.2
-these are single, confounded runs on one family at small scale, and the label difference is far below the model error, so we read them as evidence for the method and the data pipeline and not as production-grade accuracy.
+The surrogate predicts a basis of fields and lets a conforming-space projection and a Rayleigh--Ritz step produce the eigenpairs; its frequencies are upper bounds of the discrete eigenvalues of the space it runs in, exactly in exact arithmetic and up to a relative error of order $\tau_{\mathrm{CG}}$, verified a~posteriori, for the implemented projection, and free of spurious gradient modes.
+A validated generator supplies the labels, and a single second-order solve on the model mesh is a cheap substitute: it costs 2.8 to 4.3 times less than a third-order one (depending on the machine load) and differs from it by at most \SI{0.047}{\percent} in frequency. % src: docs/34 §8.1; EDITOR_NOTES_2 dec. 4
+Models trained on such labels were comparable to a model trained on HF labels (\cref{tab:equal-cost}), with a LF$\to$HF gap of 0.02 percentage points; % src: docs/34 §8.2
+in this small study the number of training geometries decided the accuracy more than the label fidelity, for the model and for a parametric regression.
+We did not show an accuracy or speed advantage over such a regression on one low-dimensional family or over direct finite elements at these mesh sizes. The contribution is the construction with its discrete guarantee, the data pipeline, and controlled small-scale evidence; whether the approach pays off on arbitrary CAD geometries, at larger sizes or with warm starts remains to be tested.
