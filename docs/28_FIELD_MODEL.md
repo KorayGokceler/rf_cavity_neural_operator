@@ -82,6 +82,17 @@ pillbox_pipes #0 (the current N0 label mesh has 10k tets / 13.5k edges):
   - `field_operators` ~4.2 s;
   - `field_collate` 0.34 s;
   - training step ~22 s.
+- **Work that was repeated every epoch or step, removed without changing a bit** (docs/31 §3.7):
+  - the token wall-distance / torsion features are stored in the H5 (`qfeat_wall`, docs/29 §3.4):
+    `FieldDataset.load` −40 to −55 %;
+  - `torch.sparse.mm` transposed the CSR operators with a sort in every backward (C, M, K: 0.5–1 s each);
+    `hcurl.spmm` now takes the transpose prepared once per geometry (`Cᵀ` in the item, K and M are exactly
+    symmetric, G/Gt are both in the batch);
+  - the Kp CG writes its vector updates into preallocated buffers; the attention applies mask and quadrature
+    weight to the keys in one pass.
+  - DataLoader workers run NGSolve with one thread (`loader_worker_init`).
+  - Not taken: an operator cache smaller than the existing pickle, a per-geometry Cholesky of Kp, a looser CG
+    tolerance (docs/31 §3.7).
 - **Training memory:** `model.eigenspace.grad_checkpoint: true` (the default in `configs/field_3d.yaml`)
   keeps only the inputs of the encoder and of each block's attention and FFN halves, and recomputes
   them in the backward.

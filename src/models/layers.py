@@ -61,11 +61,15 @@ class LinearAttention(nn.Module):
         k = self.k_proj(key).view(b, n_k, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = self.v_proj(value).view(b, n_k, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         q, k = F.elu(q) + 1.0, F.elu(k) + 1.0
+        kw = None                                                  # key factor: mask and quadrature weight
         if mask is not None:
-            k_mask = mask.view(b, 1, -1, 1).to(k.dtype)
-            k, v = k * k_mask, v * k_mask
-        if weights is not None:
-            k = k * weights.view(b, 1, -1, 1).to(k.dtype)          # enters kv and Σ k alike
+            kw = mask.view(b, 1, -1, 1).to(k.dtype)
+            v = v * kw
+        if weights is not None:                                    # enters kv and Σ k alike
+            w = weights.view(b, 1, -1, 1).to(k.dtype)
+            kw = w if kw is None else w * kw                       # (k·m)·w == k·(w·m) bit for bit: m ∈ {0, 1}
+        if kw is not None:
+            k = k * kw                                             # one pass over k instead of two
         kv = torch.einsum('bhnd,bhne->bhde', k, v)
         z = torch.einsum('bhnd,bhde->bhne', q, kv)
         z_norm = torch.einsum('bhnd,bhmd->bhn', q, k.sum(dim=2, keepdim=True)).unsqueeze(-1)
