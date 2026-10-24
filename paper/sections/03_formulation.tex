@@ -24,8 +24,8 @@ gradient components, which have zero energy but non-zero mass and give Rayleigh 
 
 \subsection{Conforming discretisation on curved meshes}\label{sec:03-discrete}
 % src: docs/28 §2, docs/29 §1, src/data_gen/highorder.py field_operators / solve_modes
-Let $\mathcal T_h$ be a tetrahedral mesh of a CAD description of the cavity \citep{schoberl1997netgen} whose elements are images
-$T=F_T(\hat T)$ of the reference tetrahedron under polynomial maps of degree $q$ (the curve order; $q=3$ throughout, % src: docs/29 §1, field_labels.DEFAULTS curve=3
+Let $\mathcal T_h$ be a tetrahedral mesh of a CAD model of the cavity \citep{schoberl1997netgen} whose elements are images
+$F_T(\hat T)$ of the reference tetrahedron under polynomial maps of degree $q$ (the curve order; $q=3$ throughout, % src: docs/29 §1, field_labels.DEFAULTS curve=3
 so the geometry is iso- or super-parametric for $p\le 3$). $\Vh$ is the conforming Nédélec space of the first kind \citep{nedelec1980mixed} on $\mathcal T_h$, mapped with the covariant Piola transform, with zero
 tangential trace on $\bdry$ and the hierarchical basis of \citet{schoberl2005high}, as implemented in NGSolve \citep{schoberl2014cpp11}.
 \emph{Order convention.} Throughout, $p$ is the implementation's order: $\Vh$ contains the complete vector polynomials of degree $p$, $p=0$ is the lowest-order (Whitney) element,
@@ -109,8 +109,7 @@ The beam axis is the line $x=y=0$ along $z$ (exceptions per family) and $\Lacc$ 
 For a predicted field and frequency, $U$ is taken from $\E$ and the frequency enters $\Hf$, hence $P_c$, $\Bpk$ and $\Qz$ (\cref{sec:A03-qoi}). % src: docs/24 §1.2
 
 \subsection{What a model must produce}\label{sec:03-targets}
-A model maps a geometry with its curved mesh to the $\nmodes$ lowest frequencies $f_k$ and $\nmodes$ fields $\mathbf u_k\in\R^{n}$ in $\Vh$, with
-$\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$, $\mathbf u_k\in Z_h$, and Rayleigh quotients consistent with $f_k$ through \eqref{eq:03-freq}. The figures of merit
-\eqref{eq:03-q}--\eqref{eq:03-rq} are not separate outputs but fixed functionals of $(f_k,\mathbf u_k)$ and the geometry. Since $\mathbf u_k$ is determined only up to sign and
-rotation within an eigenspace, accuracy is measured by invariant quantities (frequency errors; $\Mmat$-norm subspace distances). \Cref{sec:method} constructs outputs that satisfy
-these constraints by design.
+A model maps a geometry with its curved mesh to the $\nmodes$ lowest frequencies $f_k$ and fields $\mathbf u_k\in Z_h\subset\R^{n}$ with $\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$ and
+Rayleigh quotients consistent with $f_k$ through \eqref{eq:03-freq}. The figures of merit \eqref{eq:03-q}--\eqref{eq:03-rq} are fixed functionals of $(f_k,\mathbf u_k)$ and the geometry, not separate outputs.
+Since $\mathbf u_k$ is determined only up to sign and rotation within an eigenspace, accuracy is measured by invariant quantities (frequency errors; $\Mmat$-norm subspace distances).
+\Cref{sec:method} constructs outputs that satisfy these constraints by design.

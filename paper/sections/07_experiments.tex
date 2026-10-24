@@ -69,8 +69,8 @@ quadrature points & 2 & 2280 & 1250 & $1$--$9\times10^{-6}$\\
 
 \subsection{Kernel projection against a penalty}\label{sec:07-penalty}
 % src: docs/31 §3.5
-The kernel projection could be replaced by a penalty $\Kmat+s\,\Mmat\Gmat\,\mathsf{D}^{-1}\Gmat^{\top}\Mmat$ that raises the gradient directions out of the spectrum, without a CG solve. We tested this on a pillbox with 13\,052 tetrahedra ($s=1964$, chosen from the extreme eigenvalues of the potential problem), for fields with a given gradient mass fraction (\cref{tab:07-penalty}).
-The penalty stays above the target eigenvalues, so the bound is kept, but its error grows with the gradient content of the field, from $4\times10^{-6}$ to $6.7$ at a fraction of $10^{-2}$, whereas the projection stays at $5\times10^{-6}$. A network output has no reason to keep its gradient content below $10^{-8}$, so the penalty was rejected.
+The kernel projection could be replaced by a penalty $\Kmat+s\,\Mmat\Gmat\,\mathsf{D}^{-1}\Gmat^{\top}\Mmat$ that raises the gradient directions out of the spectrum, without a CG solve. We tested this on a pillbox with 13\,052 tetrahedra ($s=1964$), for fields with a given gradient mass fraction (\cref{tab:07-penalty}).
+The penalty never gives a lower value than the projection, so an upper bound is retained, but its error grows with the gradient content of the field, from $4\times10^{-6}$ to $6.7$ at a fraction of $10^{-2}$, whereas the projection stays at $5\times10^{-6}$. A network output has no reason to keep its gradient content below $10^{-8}$, so the penalty was rejected.
 
 \begin{table}[t]
 \centering\small

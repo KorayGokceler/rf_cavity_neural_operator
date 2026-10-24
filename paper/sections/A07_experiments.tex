@@ -4,12 +4,31 @@
 % src: docs/34 §3, §4, §4.1, §4.3
 Before this experiment, the same architecture was trained on 14 LF geometries for 30 epochs (two threads, about an hour; LF meshes of the time) and evaluated on four HF geometries (identifiers 3, 5, 10, 13) that were not in training.
 On three LF test geometries it had a frequency error of $2.07\%$ and a field error of $0.182$. On the HF geometries the frequency errors of modes 0--3 were between $+0.63\%$ and $+3.02\%$, all positive, and the field error of modes 0--2 was $0.026$--$0.072$.
-The discrete order-2 eigenvalue on the model mesh differs from the HF frequency by at most $0.033\%$ (the floor of the model space, \cref{sec:multifidelity}), so the error is the model's and not the space's. No additional LF-to-HF gap was visible, which is expected as the LF and HF frequencies agree to about $10^{-4}$ on this family.
+The discrete order-2 eigenvalue on the model mesh lies at most $0.033\%$ above the HF frequency on these four geometries (the floor of the model space; at most $0.047\%$ on the six test geometries of \cref{sec:07-equal-cost}, \cref{sec:multifidelity}), so the error is the model's and not the space's. Mode~3 has the largest frequency error and the largest field error in this study. No additional LF-to-HF gap was visible, which is expected as the LF and HF frequencies agree to about $10^{-4}$ on this family.
 
 A first fine-tuning test (two HF geometries added, 8 further epochs at $3\times10^{-4}$ from the LF checkpoint) had a control with 8 further epochs on LF data only. On the two held-out HF geometries the mean error fell from $1.83\%$ and $1.76\%$ to
 $1.50\%$ and $1.50\%$ for the control, against $1.73\%$ and $1.50\%$ with the HF fine-tune: the gain came from the additional training, not from the HF labels.
 % src: docs/34 §4.3
 This is the control missing for arm~D of \cref{tab:equal-cost}, and suggests (without proving) that D's gain is also due to the extra steps. What HF labels add on this family is mostly wall-dependent ($\Qz$, surface peaks), whose loss term is off here.
+
+\subsection{Field errors of the space-transfer study}\label{sec:A07-transfer}
+% src: docs/34 §4.2
+\begin{table}[t]
+\centering\small
+\caption{Field error (relative $L^2$ in the mass norm, modes 0/1/2) of the same weights in different spaces; frequency errors are in \cref{tab:07-transfer}.}
+\label{tab:A07-transfer-field}
+\begin{tabular}{llccc}
+\toprule
+Id & Space & mode 0 & mode 1 & mode 2\\
+\midrule
+3 & $p{=}2$ native & 0.037 & 0.064 & 0.072\\
+3 & $p{=}3$ & 0.038 & 0.065 & 0.073\\
+5 & $p{=}2$ native & 0.026 & 0.043 & 0.037\\
+5 & $p{=}3$ & 0.027 & 0.044 & 0.037\\
+5 & $p{=}2$, refined & 0.027 & 0.043 & 0.037\\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Training-path cost reductions}\label{sec:A07-engineering}
 % src: docs/31 §3.6, §3.7; docs/28 §4

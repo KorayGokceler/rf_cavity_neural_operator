@@ -1,11 +1,9 @@
 \section{Low-fidelity labels and multi-fidelity training}\label{sec:multifidelity}
 
 Multi-fidelity learning combines a few expensive, accurate samples with many cheap, approximate ones
-\citep{kennedy2000predicting,peherstorfer2018survey}; for neural surrogates this is usually realised by
-composite networks that correct a low-fidelity prediction with high-fidelity data
-\citep{meng2020composite,lu2022multifidelity,howard2023multifidelity}. Here the two fidelities are two
-\emph{label generators} for the same model, and the Ritz layer of \cref{sec:method} makes the cheap one natural.
-Training experiments are in \cref{sec:experiments}.
+\citep{kennedy2000predicting,peherstorfer2018survey}; for neural surrogates this is usually realised by composite
+networks that correct a low-fidelity prediction \citep{meng2020composite,lu2022multifidelity,howard2023multifidelity}.
+Here the two fidelities are two \emph{label generators} for the same model; experiments are in \cref{sec:experiments}.
 
 \subsection{Two label fidelities}\label{sec:06-defs}
 
@@ -20,10 +18,8 @@ the label/model-mesh split are part of the generator but are not exercised by th
 \paragraph{Low fidelity ($\LF$).} The label is a single order-2 solve directly on the model mesh: no adaptivity and no
 transfer between meshes (a solve computes six modes; the experiments predict $K=4$). Because the label already lies
 in the model space, the field target carries no projection error (the projection residual of the stored label is of
-order $10^{-7}$;
+order $10^{-7}$).
 % src: docs/34 §1 (proj_err ~1e-7); docs/34 §8.1 (6 modes); EDITOR_NOTES_2 decision 11
-the $\HF$ projection residual, in contrast, is $0.10$--$0.42\,\%$ on the four geometries of \cref{tab:06-diff}).
-% src: docs/34 §3 table (HF proj_err 0.10–0.42 %)
 
 \paragraph{Why $\LF$ labels suit this model.} The Ritz layer computes eigenpairs of the model space itself, so the
 frequencies it can attain are bounded below by the discrete order-2 eigenvalues $\lamh$ of that space
@@ -46,9 +42,8 @@ mesh with the first of a list of curvature-safety settings (the coarser $1.5$ fi
 when elements fold) and does not retry a finer setting after a mesh that exceeds the element limit; the $\LF$ path
 uses the same rule.
 % src: src/data_gen/field_labels.py start_mesh; docs/34 §8.1
-Our first $\LF$ generator used the finer setting only and produced meshes up to $1.9$ times larger than the $\HF$
-model meshes (\cref{sec:A06-meshes}); an earlier observation that the $\LF$ mesh ``does not shrink'' was a
-misdiagnosis caused by this mismatch.
+Our first $\LF$ generator did not, and produced meshes up to $1.9$ times larger than the $\HF$ model meshes; an earlier
+observation that the $\LF$ mesh ``does not shrink'' was a misdiagnosis caused by this mismatch (\cref{sec:A06-meshes}).
 % src: docs/34 §8.1 (1.2–1.9×), §3 (corrected in §8.1)
 With the shared rule the meshes are identical to the $\HF$ model meshes on 8 of 8 training and 6 of 6 test geometries,
 and the mean size over 40 $\LF$ samples drops from 9404 to 7639 tetrahedra ($-19\,\%$).
