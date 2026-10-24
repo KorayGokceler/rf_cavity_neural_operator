@@ -52,7 +52,7 @@ The tokens are the $N=N_t\,n_q$ quadrature points $\bm x_q$ of a reference rule 
 % src: src/data_gen/highorder.py _quadrature (IntegrationRule(TET, 2*order)); n_q = 14, 24 checked with NGSolve 6.2; docs/34 §4.2
 Vertex tokens are avoided because coarse curved meshes can have no interior vertex, where vertex features such as the torsion function are $0/0$ (\cref{sec:experiments} compares the two for a single sample).
 % src: docs/28 §2, §3
-Each token carries nine features computed on the curved geometry in normalised coordinates: position, wall distance, unit vector to the nearest wall point, point volume (quadrature weight over its maximum) and the torsion function $\chi$ ($-\Delta\chi=1$ in $\Omega$, $\chi=0$ on $\partial\Omega$, solved in the order-$(p+1)$ $H^1_0$ space on the same mesh, normalised by its maximum).
+Each token carries nine features on the curved geometry (normalised coordinates): position, wall distance, unit vector to the nearest wall point, point volume (quadrature weight over its maximum) and the torsion function $\chi$ ($-\Delta\chi=1$, $\chi=0$ on $\partial\Omega$, solved in the order-$(p+1)$ $H^1_0$ space on the same mesh, normalised by its maximum).
 % src: src/data_gen/highorder.py point_features, wall_features; docs/28 §2
 
 Let $\gamma(\bm x)=\sqrt{2/d_{\rm f}}\,[\cos(\bm\Xi\bm x),\sin(\bm\Xi\bm x)]$ be a random Fourier feature map with a frozen Gaussian matrix~\cite{rahimi2007random,tancik2020fourier}.
@@ -66,7 +66,7 @@ The weights $w_q\propto|\det J|\,\hat w_q$ are the quadrature weights of the mes
 % src: src/models/layers.py LinearAttention (eps=1e-6), mass_weights; src/data/field_dataset.py (Area = quadrature weights)
 Both sums are quadratures of $\int\mathcal S\,\Theta_v\bm h\,\mathrm d\bm y$ and $\int\mathcal S\,\mathrm d\bm y$ for the separable kernel $\mathcal S$: a global integral operator evaluated with the mesh's own quadrature (cf.\ the Galerkin-type attention of Cao~\cite{cao2021choose}); forming $\sum_q w_q\phi(\Theta_k\bm h_q)(\Theta_v\bm h_q)^{\!\top}$ once makes a block cost $O(Nd^2)$ for embedding dimension $d$.
 The head is a two-layer MLP, $\bm\psi_{1..m}(\bm x_q)=\mathrm{head}([\bm h^L_q\,\Vert\,\gamma(\bm x_q)])\in(\R^3)^m$; it does not depend on the numbering of mesh entities, so the $\bm\psi_j$ are geometric fields.
-Width, depth, number of heads, basis width $m$, number of modes $K$ and Fourier dimension are hyperparameters; the configuration-file defaults are larger than the sizes used for all reported results, which are stated in \cref{sec:experiments} (defaults: \cref{sec:A04-cost}).
+Width, depth, heads, $m$, $K$ and the Fourier dimension are hyperparameters; the configuration-file defaults (\cref{sec:A04-cost}) are larger than the sizes used for all reported results (\cref{sec:experiments}).
 
 \subsection{From point values to degrees of freedom}\label{sec:04-map}
 
@@ -85,7 +85,7 @@ With $\mathsf I_{\rm int}$ the $0/1$ diagonal matrix of non-wall DOFs and $\math
   \Vmat_{:,j}=\mathsf I_{\rm int}\,\Cmat\,\mathsf F\,\bm\psi_j,\qquad \Vmat\in\R^{n\times m},
 \end{equation}
 so $\bm n\times\E=0$ holds structurally, and gradients flow through two sparse products.
-All operators are assembled once per geometry with one explicit integration rule on the curved elements, so that the forms of the model and of the label solver coincide.
+All operators use one explicit integration rule on the curved elements, as the label solver does.
 % src: AGENTS.md invariants (highorder.volume_measure); docs/28 §2 numerical note
 
 \subsection{Kernel projection}\label{sec:04-proj}
@@ -116,7 +116,7 @@ Since $\mathsf B\mapsto\mathsf Z$ is the symmetric operator $\Kp^{-1}$, its back
 \subsection{Rank-revealing Rayleigh--Ritz layer}\label{sec:04-ritz}
 
 The Ritz problem $\Av c=\theta\,\Mdiv c$ on $\spn(\Pmat\Vmat)$ is degenerate exactly when a combination $\Vmat c$ is a pure gradient: then $\Pmat\Vmat c=0$ and both $\Mdiv c$ and $\Av c$ vanish.
-A ridge would give them an arbitrary $\theta$ inside the spectrum, so we reveal the rank instead.
+A ridge would give them an arbitrary $\theta$ inside the spectrum, so we reveal the rank.
 Let $\mathsf D=\mathrm{diag}(\Vmat^{\!\top}\Mmat\Vmat)^{-1/2}$ and $\mathsf D\Vmat^{\!\top}\Mmat\Vmat\mathsf D+\varepsilon_{\rm M}\mathsf I=\mathsf L\mathsf L^{\!\top}$, $\varepsilon_{\rm M}=10^{-8}$.
 The eigenvalues $\mu_i\in[0,1]$ of $\mathsf L^{-1}\mathsf D\Mdiv\mathsf D\mathsf L^{-\top}=\mathsf O\,\mathrm{diag}(\mu)\mathsf O^{\!\top}$ are the divergence-free mass fractions of the whitened directions.
 Directions with $\mu_i\le\tau_{\rm drop}=10^{-6}$ are discarded; with the $r'$ remaining ones, $\mathsf W=\mathsf L^{-\top}\mathsf O_{\rm kept}\mu_{\rm kept}^{-1/2}$ and
@@ -181,7 +181,7 @@ The Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-appr
 The proposition is exact only for an exact $\mathsf Z$; the CG solve stops at a relative residual $\tau=10^{-8}$.
 The numerator of the Rayleigh quotient is unaffected ($\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$); only $\Mdiv$ is perturbed, by a relative amount $\bar\eta$, and then $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$ if $\bar\eta<1$ (\cref{sec:A04-inexact}).
 The bound on $\bar\eta$ scales like $C\,\tau/\mu$ with a mesh-dependent constant $C$ and the divergence-free mass fraction $\mu$ of the direction, so at the discarding threshold $\mu=10^{-6}$ the ratio $\tau/\mu$ is $10^{-2}$ before $C$: $\bar\eta$ is \emph{not} small a priori, and the guarantee holds in exact arithmetic only.
-In the equal-cost study the smallest margin $f_{\rm model}/f_{\rm FE}-1$ over all arms, geometries and modes was $+0.47\,\%$, and in the other studies all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space; these trained models have errors of $0.6$--$3\,\%$ and are far from the regime where the perturbation could matter.
+In the equal-cost study the smallest margin $f_{\rm model}/f_{\rm FE}-1$ over all arms, geometries and modes was $+0.47\,\%$, and in the other studies all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space; trained models (errors $0.6$--$3\,\%$) are far from the regime where the perturbation could matter.
 % src: docs/34 §8.2 (all predictions above the FE eigenvalue of the space, at least +0.47 %); docs/34 §4.1-§4.2 quote no number (units slip in the doc)
 % TODO pass 3: stress test of the bound (exact-eigenvector bases with noise, random bases, near-gradient mixtures, tau in {1e-4, 1e-6, 1e-8}) and the a posteriori eta-bar of the evaluation runs
 \end{remark}
@@ -206,7 +206,7 @@ $\sqrt{r_k^{\Mmat}}$ and $\sqrt{r_k^{\Kmat}}$ are the relative best-approximatio
 \paragraph{Other terms.}
 The self-supervised term $\mathcal L_{\rm ss}=-\log\sum_{i\le r'}\theta_i^{-1}$ over the kept Ritz values needs no labels (the code evaluates $\mathrm{tr}(\Av^{-1}\Mdiv)$ by a Jacobi-scaled Cholesky solve with a relative ridge, which equals this when no direction is dropped) and, since $\theta_i\ge\lamh_i$, is bounded below by $-\log\sum_{i\le r'}\lamh_i^{-1}$, with equality iff the span is spanned by eigenvectors of the $r'$ lowest eigenvalues (unique only if $\lamh_{r'}<\lamh_{r'+1}$); it uses the projected mass, so gradient content cannot lower it (without projection the compliance exploded by more than $10^3$ in a test).
 % src: docs/20 §3 (selfsup: "Neredeyse-gradyan bir kolonda projeksiyonsuz compliance >10^3x patlar (test edildi)")
-$\mathcal L_{\rm ortho}=\frac1{m(m-1)}\sum_{i\ne j}\Mdiv_{ij}^2/(\Mdiv_{ii}\Mdiv_{jj})$ penalises collinear fields, and $\mathcal L_{\rm freq}=\frac1K\sum_k(z_k-z_k^\star)^2$ acts on frequencies standardised with the training-label mean and standard deviation.
+$\mathcal L_{\rm ortho}$, the mean squared off-diagonal correlation of $\Mdiv$, penalises collinear fields, and $\mathcal L_{\rm freq}=\frac1K\sum_k(z_k-z_k^\star)^2$ acts on frequencies standardised with the training-label mean and standard deviation.
 The total is $\sum_{\rm t}\alpha_{\rm t}\mathcal L_{\rm t}$ with weights $(\alpha_{\rm span},\alpha_{\rm ss},\alpha_{\rm ortho},\alpha_{\rm freq})=(1,0.01,0.01,0.1)$.
 % src: configs/field_3d.yaml (span_weight 1.0, selfsup_weight 0.01, ortho_weight 0.01, freq_weight 0.1)
 A loss on the figures of merit exists in the code but is disabled for this model.

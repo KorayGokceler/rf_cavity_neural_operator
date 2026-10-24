@@ -4,9 +4,9 @@ A parametric generator draws a CAD solid; a curved tetrahedral mesh is built on 
 The full generator refines the order-three solution adaptively on a label mesh that may be finer than the model mesh.
 \emph{All training experiments of this paper, however, use a one-level variant}: the budget of 150k label DOFs is exhausted by the first order-three solve, so the $\HF$ label is one order-three solve on the start mesh, the label mesh equals the model mesh, and neither the adaptive loop nor the label/model-mesh transfer of \cref{sec:05-adaptive,sec:05-transfer} is exercised by training.
 % src: docs/34 §3 (adapt_iters = 1, adapt_stop = budget, max_ndof 150000), EDITOR_NOTES_2 decision 3
-Geometry is built with OpenCascade~\cite{opencascade} through gmsh~\cite{geuzaine2009gmsh}; meshing, curving and all finite-element solves use Netgen~\cite{schoberl1997netgen} and NGSolve~\cite{schoberl2014cpp11} (version 6.2.2608 for the experiments; the per-sample operator assembly depends on it).
+Geometry is built with OpenCascade~\cite{opencascade} through gmsh~\cite{geuzaine2009gmsh}; meshing, curving and all finite-element solves use Netgen~\cite{schoberl1997netgen} and NGSolve~\cite{schoberl2014cpp11} (version 6.2; a re-check of the shared start mesh on 6.2.2608 reproduced the identical LF and HF meshes with slightly different tetrahedron counts, so mesh sizes depend on the mesher version).
 Beam pipes are capped by flat PEC walls, and the $\E$ formulation of \cref{sec:formulation} admits cavities with handles and floating conductors.
-% src: docs/34 §8.1 (ngsolve 6.2.2608)
+% src: docs/34 §8.1 (re-check on ngsolve 6.2.2608: ids 3 and 24, same LF/HF mesh, id 3 6754 vs 6925 tets)
 % src: AGENTS.md invariants (E formulation only); docs/19 §6.1; docs/19 §2 (pipes capped)
 
 \subsection{Geometry families}\label{sec:05-geometry}
