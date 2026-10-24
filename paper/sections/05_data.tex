@@ -31,10 +31,8 @@ Element quality is the ratio of the minimum to the maximum Jacobian determinant 
 Frequencies hardly depend on it, wall quantities strongly: on one pillbox cell with pipes a 9k-tet mesh with minimum ratio $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and peaks off by $100$--$1600\times$, against a locally repaired 18k-tet reference mesh (ratio $0.35$).
 % src: docs/29 §2.2 table
 
-Meshes are accepted at a ratio of at least $0.05$; elements below $0.1$ are bisected and re-curved (about $+5\,\%$ tets), and only if that fails is the mesh regenerated with doubled curvature safety (about $3\times$ the tets).
-Draws with more than $30\,000$ tets are re-drawn.
+Meshes below a ratio of $0.05$ are rejected and distorted elements are repaired locally (thresholds and cost in \cref{sec:A05-mesh}); draws with more than $30\,000$ tets are re-drawn.
 % src: docs/29 §2.2 (defaults, thresholds, repair), §2.3 (healing), field_labels.py DEFAULTS max_elements 30000
-
 
 \subsection{Adaptive order-three labels}\label{sec:05-adaptive}
 
@@ -50,14 +48,12 @@ The volume term estimates the relative eigenvalue error (second order in the fie
 
 \paragraph{Remeshing instead of bisection.}
 Bisection of marked elements has a closure that explodes on curvature-graded meshes (200 of 8109 tets marked gave $29$k tets).
-Each iteration therefore builds a new mesh from an error-equidistributing size field,
-$h_{\mathrm{new},T}=h_T\bigl(\rho\,\overline{\eta^2}/\eta_T^2\bigr)^{1/(2p)}$ with $\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$, $\rho=0.25$, $h_{\mathrm{new}}/h\in[0.3,1]$ and $p$ the polynomial order, passed to Netgen as local size restrictions at the element centroids.
-The restrictions accumulate over iterations (rebuilding from the latest field alone oscillates), and the predicted element count (accurate to $15\,\%$) is kept within the DOF budget.
+Each iteration therefore builds a new mesh from an error-equidistributing size field, $h_{\mathrm{new},T}=h_T(\rho\,\overline{\eta^2}/\eta_T^2)^{1/(2p)}$ with $\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$ and $p$ the polynomial order, passed to Netgen as local size restrictions that accumulate over iterations and respect the DOF budget (\cref{sec:A05-mesh}).
 The start mesh is deliberately coarse; its selection rule is shared with the low-fidelity labels (\cref{sec:multifidelity}).
 % src: docs/30 §4; adaptive.py mesh_remesher, size_field
 
 \paragraph{Stopping.}
-Refinement stops when, between two consecutive levels, the cluster-mean frequency changes by less than $10^{-6}$ (relative) and cluster-mean $\Qz$, $G$, summed $\RoQ$ and maximum $\Epk$, $\Bpk$ by less than $10^{-3}$ (near-degenerate modes are grouped), or when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}), or after eight levels.
+Refinement stops when the cluster-mean frequency changes by less than $10^{-6}$ (relative) and the cluster-mean $\Qz$, $G$, $\RoQ$ and peaks by less than $10^{-3}$ between two consecutive levels, when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}), or after eight levels (\cref{sec:A05-mesh}).
 This compares successive levels and is not an error bound; the accuracy targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked against closed forms in \cref{sec:05-validation}.
 A budget can bind early: in our controlled experiments the 150k-DOF budget was exhausted after the first order-three solve, so the high-fidelity label there is one order-three solve on the start mesh.
 % src: docs/30 §1, §6; adaptive.py DEFAULTS, invariant_qoi, adaptive_modes; docs/34 §3 (adapt_iters = 1, adapt_stop = budget)

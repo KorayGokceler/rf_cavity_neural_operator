@@ -47,6 +47,22 @@ For pillbox cells with pipes ($R=\SI{57}{mm}$, $r_p=\SI{17}{mm}$) fillet floors 
 Four draws of the ridged box, which has fillets along every edge, gave $38$k--$89$k tets, four draws of the spoke family $5.2$k--$7.8$k (curvature safety 2, before adaptive refinement).
 % src: docs/29 §2.1 table and §2.4
 
+\subsection{Meshing and refinement details}\label{sec:A05-mesh}
+
+\paragraph{Mesh repair.}
+Meshes are accepted at a minimum Jacobian ratio of at least $0.05$; elements below $0.1$ are bisected and re-curved (about $+5\,\%$ tets), and only if that fails is the mesh regenerated with doubled curvature safety (about $3\times$ the tets).
+Ridged boxes and drift-tube tanks are healed in OpenCascade first (sewing and solid-making are disabled because they delete revolved solids).
+% src: docs/29 §2.2, §2.3
+\paragraph{Size field.}
+The size field of \cref{sec:05-adaptive} uses $\rho=0.25$ and $h_{\mathrm{new}}/h\in[0.3,1]$; the restrictions accumulate over iterations because rebuilding from the latest field alone oscillates, and the predicted element count (accurate to $15\,\%$) is scaled down uniformly if it exceeds the DOF budget.
+Curved elements with a Jacobian ratio below $0.05$ get half the local size.
+The start mesh uses curvature safety $1.5$ (falling back to $2$ if elements fold); an example of the bisection closure is that marking 200 of 8109 tets of a pillbox cell with pipes produced $29$k tets ($105$ new tets per marked tet).
+% src: docs/30 §4; adaptive.py mesh_remesher, size_field
+\paragraph{Stopping rule.}
+Between two consecutive levels (at least two solves) the relative change of the cluster-mean frequency must be below $10^{-6}$, and the relative changes of cluster-mean $\Qz$ and $G$, summed $\RoQ$ (clusters with $\RoQ$ above $1\,\%$ of the largest) and maximum $\Epk$, $\Bpk$ below $10^{-3}$; modes with relative spacing below $10^{-3}$ form a cluster, so the test is invariant to rotations inside a degenerate pair.
+Peaks are left out of the test for samples with sharp edges.
+% src: adaptive.py DEFAULTS, invariant_qoi, adaptive_modes; docs/30 §6
+
 \subsection{Generator speed-ups}\label{sec:A05-speedup}
 
 \Cref{tab:A05-speedup} lists the measured speed-ups of the label generator.
