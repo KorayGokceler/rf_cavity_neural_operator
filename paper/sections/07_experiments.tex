@@ -1,0 +1,227 @@
+\section{Experiments}\label{sec:experiments}
+
+All experiments are small by design. They run on CPU, on one geometry family, with a small trunk, and they
+are meant to isolate the effect of one design choice at a time, not to reach the accuracy ceiling of the
+method. Absolute errors of one to two percent in frequency therefore reflect an under-trained model, and only
+comparisons between arms that share the model, the data family and the evaluation protocol should be read as evidence.
+
+\paragraph{Setup.}
+% src: docs/34 §3, §4, §7, §8.2; docs/31 §3.9; configs/field_3d.yaml
+Training and evaluation ran on a shared four-core cloud VM without a GPU, usually with other jobs running at
+the same time, so wall-clock times carry a noticeable spread. The equal-cost experiment used one compute thread
+per run, the earlier studies two. The model is the field model of \cref{sec:method} with embedding width~64,
+two attention blocks, four heads, a learned basis of width $\nbasis=12$, 32 random Fourier features and
+$\nmodes=4$ predicted modes. It is trained with AdamW~\cite{loshchilov2019decoupled} (implemented in
+PyTorch~\cite{paszke2019pytorch}), learning rate $10^{-3}$, weight decay $10^{-4}$, gradient-norm clipping at~1 and
+batch size~1. The learning rate is constant for the first ten epochs and follows a cosine decay to $10^{-6}$ over the remaining
+epochs of the run (an epoch is one pass over the training list, so the decay is only active if a run has
+more than ten epochs). The loss is the span loss in the mass-plus-energy norm, with the self-supervised, orthogonality and frequency terms
+of \cref{sec:method} at their default weights; the figure-of-merit loss is switched off for the field model.
+Dropout is zero and no data augmentation is used.
+
+\emph{Data.} All geometries belong to the family \texttt{pillbox\_pipes} (pillbox cells with beam pipes) with fillet radius floored
+at $0.12$ (the minimum-fillet setting of the generator), drawn from a Sobol sequence with a fixed seed, so that identifier~$i$ is the same
+geometry in the low- and the high-fidelity set (checked on four samples). Training uses identifiers 0--7 (HF, 8 geometries),
+0--23 (LF, 24) and 0--23 plus 30--45 (LF, 40); the six test geometries are identifiers 24--29 and
+carry HF labels. In the equal-cost experiment the stored model mesh of every test geometry has between
+4.8k and 10.0k tetrahedra, and the LF label meshes of the training geometries coincide with the HF model meshes
+(\cref{sec:multifidelity}).
+
+\emph{Metrics.} The frequency error of mode~$k$ is $f_k^{\mathrm{model}}/f_k^{\HF}-1$, with $f^{\HF}_k$ the stored
+label. Where the evaluated space differs from the label space, or to test the bound of \cref{prop:upper-bound}, it is also
+computed against the finite-element eigenvalue of the evaluated space itself, $f^{\mathrm{model}}_k/f^{\mathrm{FE}}_k-1$. The
+field error is the relative $L^2$ error in the mass norm of the predicted mode against the finite-element mode of the evaluated space,
+minimised over the sign for an isolated mode, and the relative distance between the target and the predicted subspace
+inside a cluster of near-degenerate modes. We report it averaged over modes 0--2; the fourth mode is
+not learned by this model (field error between 0.07 and 1.3 on the first study's geometries; cause not investigated) and is excluded.
+Unless stated otherwise, all models are evaluated from the last checkpoint, without checkpoint selection, on the stored mesh in the order-2 space.
+
+\subsection{Accuracy floor}\label{sec:07-floor}
+
+% src: docs/28 §3
+We first ask how accurately the architecture can represent the modes at all. \Cref{tab:07-overfit} overfits a single curved
+pillbox (179 tetrahedra, span loss, width-64 two-block trunk, $\nbasis=12$, $\nmodes=4$). With vertex tokens and barycentric
+interpolation of the learned fields, the relative eigenvalue error saturates around $10^{-4}$, and is worse at order~3. With the quadrature-point
+tokens of \cref{sec:method} it reaches $10^{-6}$--$9\times10^{-6}$ in fewer steps. For comparison, the lowest-order
+Whitney model reaches a relative frequency floor of $2.4\times10^{-3}$ on similar cavities, in an earlier study of the lowest-order model
+\emph{on the same kind of cavities, not the same sample}; this is
+the representation error of the space that the quadrature-point tokens remove. A single-sample fit is of course a ceiling on capacity, not a generalisation result.
+
+\begin{table}[t]
+\centering\small
+\caption{Single-sample overfit on a curved pillbox: relative eigenvalue error $\theta_k/\lambda^{\mathrm{label}}_k-1$ of the Ritz values.}
+\label{tab:07-overfit}
+% src: docs/28 §3
+\begin{tabular}{lccrc}
+\toprule
+Tokens & order $p$ & DOF & steps & eigenvalue error\\
+\midrule
+vertices + barycentric interpolation & 2 & 2280 & 2000 & $0.8$--$1.1\times10^{-4}$\\
+vertices + barycentric interpolation & 3 & 5480 & 2000 & $2.3$--$3.0\times10^{-4}$\\
+quadrature points & 2 & 2280 & 1250 & $\mathbf{1\text{--}9\times10^{-6}}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training on low-fidelity labels at equal label cost}\label{sec:07-equal-cost}
+
+% src: docs/34 §8.2
+This is the main experiment. All arms share the model, the family, the test set, the optimiser and the number of
+optimisation steps (600); they differ in the labels. Arm~A trains on 8 HF geometries (listed five times per epoch,
+$15\times40$ steps). Arm~B2 trains on 24 LF geometries ($25\times24$ steps), which costs about $20\%$ less
+label time than A. Arm~C2 trains on 40 LF geometries ($15\times40$ steps, the same schedule as A) at $1.4\times$ the
+label cost of A. Label cost is the measured wall-clock time of mesh generation plus labelling on the shared VM (two workers, one thread each, running next to a training job); the HF to LF cost ratio of the
+same eight meshes is $4.3$ (\cref{sec:multifidelity}). Arm~D continues C2 for 200 steps on the 8 HF geometries at learning rate $3\times10^{-4}$.
+
+\begin{table}[t]
+\centering\small
+\caption{Equal-cost comparison on the six HF test geometries (identifiers 24--29). Frequency errors are absolute relative errors against the HF label, in percent, summarised over the six geometries and the modes; field error is the mass-norm relative $L^2$ error averaged over modes 0--2. One training run per arm. Arm~D has no valid control (see text).}
+\label{tab:equal-cost}
+% src: docs/34 §8.2 (table)
+\begin{tabular}{llrrrrc}
+\toprule
+Arm & Training labels & Label cost [s] & Steps & \multicolumn{3}{c}{$|\Delta f|$ [\%] mean / median / max} \\
+\cmidrule(lr){5-7}
+ & & & & mean & median / max & field $\relLtwo$\\
+\midrule
+A  & HF, 8 geometries  & 1242 & 600 & 1.66 & 1.11 / 8.11 & 0.050\\
+B2 & LF, 24 geometries & 997  & 600 & 1.55 & 1.06 / 6.57 & 0.046\\
+C2 & LF, 40 geometries & 1704 & 600 & \textbf{1.37} & \textbf{1.00 / 5.30} & \textbf{0.045}\\
+D  & C2, then HF 8 fine-tune & 1704 + 1242 & 600 + 200 & 1.13 & 0.82 / 4.41 & 0.039\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Result.} Training on LF labels is not worse than training on HF labels at equal or lower label cost, and is
+slightly better in the arm that spends somewhat more (\cref{tab:equal-cost}). B2 costs $20\%$ less than A and has a lower mean and median error; C2 costs $1.4\times$
+as much, and reduces the mean error from $1.66\%$ to $1.37\%$ and the field error from $0.050$ to $0.045$. The differences are small relative to the spread over geometries,
+and each arm is a single run, so we read the table as ``LF labels do not hurt'' rather than as a precise ranking.
+\Cref{tab:07-pergeom} shows why: the mean of A and C2 is dominated by one geometry (identifier 27), and on the other five the arms
+differ by a few hundredths of a percentage point in either direction.
+% src: docs/34 §8.2 per-geometry means; the sub-mean without id 27 and the count of geometries are computed from these numbers
+Excluding identifier 27, the mean error is $1.11\%$ for A and $1.06\%$ for C2, and C2 is lower on three of the six geometries (24, 27, 29).
+Geometry~27 is the worst in every arm ($2.9$--$4.4\%$); we did not investigate the cause. The advantage of C2 is largest there ($4.44\%\to2.93\%$).
+
+\begin{table}[t]
+\centering\small
+\caption{Mean absolute frequency error per test geometry (percent), arm~A (HF 8) vs.\ arm~C2 (LF 40).}
+\label{tab:07-pergeom}
+% src: docs/34 §8.2 (per-geometry means, listed in test-identifier order)
+\begin{tabular}{lcccccc}
+\toprule
+Test identifier & 24 & 25 & 26 & 27 & 28 & 29\\
+\midrule
+A  & 0.74 & 1.18 & 1.24 & 4.44 & 0.92 & 1.46\\
+C2 & 0.66 & 1.23 & 1.25 & 2.93 & 0.98 & 1.17\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{The LF-to-HF gap.} The predictions of arm~C2 have a mean error of $1.35\%$ against the LF labels of the same
+test meshes and $1.37\%$ against the HF labels, so the model trained on LF data is only $0.02$ percentage points worse on HF targets than on LF targets.
+% src: docs/34 §8.2
+This is consistent with the label comparison in \cref{sec:multifidelity}: on identical meshes the LF and HF frequencies differ by
+$0.004$--$0.047\%$, and the HF mode lies outside the six-mode LF space by only $0.08$--$0.32\%$ in the mass norm (modes 0--3). The model error is 10 to 50 times larger than either.
+% src: docs/34 §8.1 ("10-50 times"; the label differences are for the same 8 meshes)
+
+\paragraph{Ritz bound.} In all evaluations of this study every predicted eigenvalue is above the finite-element eigenvalue of the space it was evaluated in,
+with the smallest margin $+0.47\%$ (equal-cost study), consistent with \cref{prop:upper-bound}. In the earlier studies of this section the smallest
+margins were $+0.006\%$ and $+0.009\%$ (\cref{sec:07-first,sec:07-transfer}).
+% src: docs/34 §8.2 (+0.47 %), §4.1 (+0.006 %), §4.2 (+0.009 %)
+Because the HF label frequencies lie below the order-2 floor by at most $0.033\%$ (\cref{sec:07-first}),
+a positive error against the HF label here also implies a positive gap to the discrete eigenvalue.
+% src: docs/34 §4.1 (FE floor <= 0.033 %)
+
+\paragraph{Fine-tuning and mixed training are inconclusive.} Arm~D is better than C2 in \cref{tab:equal-cost} (mean error $1.37\%\to1.13\%$), but we cannot attribute the gain to the HF labels. The control run (same
+starting point, same 200 steps, LF data only) was lost when the container restarted before its test evaluation; on the three validation geometries it reached a frequency error of $0.031$\,GHz and field error $0.046$,
+against $0.029$\,GHz and $0.052$ for D, a mixed signal. Two further runs are not part of the comparison: a mixed LF-40 plus HF-8 run with $8\times80$ steps never entered its
+decay phase (eight epochs is fewer than the ten-epoch constant phase) and reached $1.95\%$, and a mixed LF-32 plus HF-8 run with the same schedule was lost on restart at epoch~6.
+% src: docs/34 §8.2 (invalid and lost arms; D0 validation numbers)
+The mixed schedule should be repeated with a corrected schedule and a control at larger scale; we make no claim about the value of fine-tuning or mixed training here.
+
+\subsection{An earlier, smaller study}\label{sec:07-first}
+
+% src: docs/34 §3, §4, §4.1, §4.3
+Before the equal-cost experiment, a model with the same architecture was trained on 14 LF geometries for 30 epochs (two threads, about an hour; lr $10^{-3}$, constant for ten epochs then cosine) with the then-current LF meshes, and evaluated on four HF geometries (identifiers 3, 5, 10, 13) that were never part of training.
+Its error on three LF test geometries was $2.07\%$ in frequency and $0.182$ in field. On the HF geometries the frequency errors of modes 0--3 were between $+0.63\%$ and $+3.02\%$, all positive, and the field error of modes 0--2 was
+$0.026$--$0.072$. The finite-element floor of the order-2 space lies at most $0.033\%$ above the HF labels, so the error is the model's and not the space's. No additional LF-to-HF gap was visible, which is expected here
+since LF and HF frequencies agree to the order of $10^{-4}$ on this family (\cref{sec:multifidelity}).
+
+A first fine-tuning test with two HF geometries (8 more epochs, lr $3\times10^{-4}$, started from the LF checkpoint) was controlled by 8 more epochs on LF data alone. On the two held-out HF geometries the mean error went
+from $1.83\%$ and $1.76\%$ to $1.50\%$ and $1.50\%$ for the control, against $1.73\%$ and $1.50\%$ with the HF fine-tune; the gain came from the additional training, not from the HF labels.
+% src: docs/34 §4.3 (table)
+This is the control that is missing for arm~D above, and it suggests, though it does not prove, that the improvement of D is due to the extra steps. The HF information that fine-tuning could add is in the wall-dependent quantities
+(Q$_0$, surface peaks) whose loss term is switched off in these runs.
+
+\subsection{Transfer to other spaces}\label{sec:07-transfer}
+
+% src: docs/34 §4.2 table
+The Ritz layer uses only $\Kmat,\Mmat,\Gmat,\Kp$ of the space it is given, so the same trained weights can be evaluated in a different conforming space without retraining. \Cref{tab:07-transfer} gives the results for the
+model of the first study on two HF geometries: the native order-2 space, order~3 on the same mesh, and (geometry~5) order~2 on the once uniformly refined mesh. The reference of the frequency error is the HF label; the field error is
+against the finite-element modes of the evaluated space.
+
+\begin{table}[t]
+\centering\small
+\caption{Same weights in different spaces. $|\Delta f|$: model vs.\ HF label, modes 0--3, signed percent; field error: modes 0--2. Times in seconds, one process, two threads: operator assembly plus model forward (ops + fwd) versus a finite-element solve of the same space.}
+\label{tab:07-transfer}
+% src: docs/34 §4.2
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llrlcrr}
+\toprule
+Id & Space & DOF & $\Delta f$ [\%], modes 0/1/2/3 & field $\relLtwo$ & ops + fwd & FE solve\\
+\midrule
+3 & $p{=}2$ native   & 74\,301  & $+1.61/+1.05/+1.16/+2.51$ & 0.037/0.064/0.072 & 3.8 + 1.3  & 11.5\\
+3 & $p{=}3$          & 186\,576 & $+2.29/+1.39/+1.51/+3.23$ & 0.038/0.065/0.073 & 12.6 + 5.1 & 48.1\\
+5 & $p{=}2$ native   & 64\,965  & $+1.29/+0.63/+0.68/+1.89$ & 0.026/0.043/0.037 & 1.7 + 1.2  & 6.4\\
+5 & $p{=}3$          & 163\,176 & $+1.88/+0.88/+0.94/+2.53$ & 0.027/0.044/0.037 & 8.4 + 4.4  & 27.6\\
+5 & $p{=}2$, refined ($8\times$ tets) & 489\,747 & $+1.89/+0.86/+0.89/+2.29$ & 0.027/0.043/0.037 & 32.3 + 22.0 & 192\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The bound holds in all three spaces (smallest margin $+0.009\%$ to the eigenvalue of the evaluated space). Accuracy does not improve: the frequency error is $0.2$--$0.6$ percentage points \emph{worse} than in the native space,
+and the field error is unchanged. This is what the construction predicts. A richer space enlarges the set of admissible fields, but the learned basis $\psi_j$ is the same smooth field, so the model error comes from the basis and not from the space; additionally,
+the token density (24 quadrature points per tetrahedron at order 3 against 14 at order 2) and the point-volume features differ from training, a small distribution shift.
+% src: docs/34 §4.2
+Transfer is therefore a statement about validity (the guarantee and the absence of spurious modes survive a change of space), not about accuracy.
+
+\subsection{Cost}\label{sec:07-cost}
+
+% src: docs/34 §4.2, §6, §8.2
+At the sizes used here a direct finite-element solve is of the same order of magnitude as the model. In the order-2 native space the operators and the forward pass took $5.1$ and $2.9$\,s on geometries 3 and 5, against $11.5$ and $6.4$\,s for the finite-element
+solve of the same space (\cref{tab:07-transfer}); in the equal-cost study (one thread) the operators took $5$\,s and the forward pass $3.3$\,s against $18$\,s for the solve. The model is thus faster by roughly a factor of two on these meshes (a ratio computed from these timings),
+with about $2.2$ to $2.7$ at order~3 and about $3.5$ on the refined mesh ($54$\,s against $192$\,s), the largest space tested. At the same time its error is $1$--$2\%$, whereas the finite-element solve is exact up to the discretisation error of its space.
+We do not claim a speed advantage at this scale. The potential benefit is at larger spaces and, with a GPU, where the network's share would shrink (not measured), and in combination with an iterative solver started from the model's subspace (not implemented).
+
+\subsection{Engineering}\label{sec:07-engineering}
+
+% src: docs/31 §3.6, §3.7; docs/28 §4
+Training on curved high-order meshes is dominated by work that does not depend on the learned parameters. \Cref{tab:07-engineering} lists the reductions we measured, all of which leave the computed quantities unchanged: the training loss, the input tensors and all 76 parameter gradients are
+bit-identical to the previous code on both test geometries, with the single exception of the wall-distance and torsion features, which are identical for 182\,728 of 182\,728 entries on the geometry on which this was measured, and
+differ by at most $6\times10^{-8}$ in 7 of $1.33\times10^{6}$ entries on a 95k-tetrahedron mesh. Timings are single-thread CPU times on a loaded machine, repeatable to about $1\%$ between runs, wall-clock numbers vary by about $30\%$.
+% src: docs/31 §3.7 ("bit düzeyinde aynı", 76 gradients, two samples), §3.6 (torsion CG), measurement notes
+
+\begin{table}[t]
+\centering\small
+\caption{Measured cost reductions of the training path (curved pillbox with 8931 tetrahedra and 92\,751 DOF, unless noted).}
+\label{tab:07-engineering}
+% src: docs/31 §3.6, §3.7; docs/28 §4
+\begin{tabular}{p{0.46\linewidth}llc}
+\toprule
+Change & Before & After & Result\\
+\midrule
+Training step (forward + backward), pillbox & 40.7\,s & 32.4\,s & $-20\%$\\
+Training step, elliptical cell (5719 tets) & 20.1\,s & 19.0\,s & $-5.5\%$\\
+Batch preparation (item + transpose + collate), pillbox & 4.40\,s & 3.0--3.2\,s & $-27$ to $-32\%$\\
+Dataset load with stored wall features, pillbox & 4.24\,s & 2.67\,s & $-37\%$\\
+Dataset load with stored wall features, elliptical & 3.12\,s & 1.83\,s & $-41\%$\\
+Peak process memory with activation checkpointing (13k tets) & 9.9\,GB & 3.8\,GB & $-62\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The training-step gain comes from three changes with identical results: the wall features are stored in the data file instead of being recomputed; the sparse-matrix products carry a transpose prepared once per geometry (it removes a sort of $0.5$--$0.7$\,s per matrix in
+every backward pass); and the conjugate-gradient projection solve writes its updates into preallocated buffers ($15$--$20\%$ less CG time, same iterate and iteration count). Activation checkpointing in the trunk reduces the peak memory from $9.9$ to $3.8$\,GB at an unchanged step time within
+measurement noise on CPU, with identical gradients. The gain grows with the number of tokens and nonzeros, which is why it is $20\%$ on the pillbox and $5.5\%$ on the smaller elliptical cell. Not adopted, after measurement: a per-geometry sparse Cholesky factorisation of $\Kp$
+(about $5\%$ of the step), a looser CG tolerance (it changes the gradients), and a smaller operator cache (about 78\,MB against $\sim$1.2\,s per geometry). GPU timing was not measured.
+% src: docs/31 §3.6 (checkpointing table 9.89 -> 3.79 GB; step 21.4-22.5 vs 21.5-24.9 s), §3.7
