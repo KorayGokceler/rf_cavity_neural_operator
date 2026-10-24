@@ -17,3 +17,11 @@ Rayleigh-quotient mismatch; we take $U$ from $\E$ and use the frequency explicit
 The functionals are evaluated directly on the polynomial fields. Wall values are taken from the adjacent volume element, because for $\E\in\Hcurl$ a plain boundary
 evaluation gives only the tangential trace, which vanishes on a PEC wall. Wall quantities ($\Qz$, $G$, $\Epk$, $\Bpk$) are far more sensitive to element quality than
 frequencies, which is why mesh quality is controlled in the data pipeline (\cref{sec:data}).
+
+\paragraph{Why one quadrature rule.}
+% src: docs/28 §2 numerical note; src/data_gen/highorder.py volume_measure, solve_modes
+On curved elements the integrands are rational, and NGSolve chooses the rule of each form from its own integrand. The form
+$\curl\mathbf u\cdot\curl\mathbf v-\kappa\,\mathbf u\cdot\mathbf v$ assembled at once then differs from $\Kmat-\kappa\Mmat$ by $3\times10^{-4}$ (pillbox, $p=2$), which biased
+shift-and-invert eigenvalues by $4\times10^{-5}$. With one explicit rule of degree $2p+4$ for every form, the eigenvalues match a dense solve to $10^{-13}$, % src: docs/28 §2
+and $\Kp$ assembled as the stiffness of $\Sh$ equals $\Gmat^\top\Mmat\Gmat$ to $10^{-15}$, % src: highorder.solve_modes comment
+so $\Pmat$ is an $\Mmat$-orthogonal projector to rounding.

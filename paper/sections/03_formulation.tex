@@ -64,8 +64,7 @@ whose null space is $\operatorname{range}\Gmat$. The physical part of the spectr
 the $\Mmat$-orthogonal complement of $\operatorname{range}\Gmat$ ($\Pmat$ is the $\Mmat$-orthogonal projector onto it).
 The \emph{discrete eigenvalues} $\lambda_{h,1}\le\lambda_{h,2}\le\dots$ are the positive eigenvalues of \eqref{eq:03-gev}, i.e.\ the
 eigenvalues of $\Kmat$ restricted to $Z_h$. Besides $(\mathcal T_h,q,p)$ they depend on the explicit quadrature rule (degree $2p+4$, see below), since $\Kmat$ and $\Mmat$ are the quadrature-defined forms; (A) and $\Mmat\succ0$ are all that the bounds of \cref{sec:method} use. Because $Z_h$ is not contained in
-the divergence-free fields, the $\lambda_{h,k}$ are not ordered with respect to the exact $\lambda_k$. They converge to $\lambda_k$ under refinement by discrete compactness \citep{monk2003finite,boffi2010finite}. Bounds in this paper are therefore
-relative to $\lambda_{h,k}$ of the space in which a computation runs, not to $\lambda_k$.
+the divergence-free fields, the $\lambda_{h,k}$ are not ordered with respect to the exact $\lambda_k$. They converge to $\lambda_k$ under refinement by discrete compactness \citep{monk2003finite,boffi2010finite}; bounds in this paper are relative to $\lambda_{h,k}$ of the space in which a computation runs, not to $\lambda_k$.
 
 \paragraph{Normalisation and frequencies.}
 % src: src/data/dataset_converter_3d.py normalise(); src/data_gen/highorder.py field_operators; src/data/field_dataset.py check_labels
@@ -78,12 +77,10 @@ The model, labels and losses of \cref{sec:method} all work in these normalised u
 
 \paragraph{One integration rule for all forms.}
 % src: docs/28 §2 numerical note; src/data_gen/highorder.py volume_measure, solve_modes
-On curved elements the integrands are rational and NGSolve picks each form's rule from its own integrand; the form
-$\curl\mathbf u\cdot\curl\mathbf v-\kappa\,\mathbf u\cdot\mathbf v$ assembled at once then differs from $\Kmat-\kappa\Mmat$ by $3\times10^{-4}$ (pillbox, $p=2$), biasing
-shift-and-invert eigenvalues by $4\times10^{-5}$. We therefore evaluate every form with one explicit tetrahedral rule of degree $2p+4$. % src: highorder.volume_measure(order, bonus=4)
-The eigenvalues then agree with a dense solve of \eqref{eq:03-gev} to $10^{-13}$, % src: docs/28 §2
-and $\Kp$ as the stiffness of $\Sh$ equals $\Gmat^\top\Mmat\Gmat$ to $10^{-15}$, % src: highorder.solve_modes comment
-so $\Pmat$ is an $\Mmat$-orthogonal projector to rounding.
+All forms ($\Kmat$, $\Mmat$, the stiffness of $\Sh$ that equals $\Kp$, shifted operators) are evaluated with one explicit tetrahedral rule of degree $2p+4$, % src: highorder.volume_measure(order, bonus=4)
+because on curved elements NGSolve otherwise picks each form's rule from its own integrand and the discrete operators become mutually inconsistent (details in \cref{sec:A03-qoi}). With one rule the eigenvalues agree
+with a dense solve of \eqref{eq:03-gev} to $10^{-13}$ % src: docs/28 §2
+and $\Pmat$ is an $\Mmat$-orthogonal projector to rounding.
 
 \subsection{Figures of merit}\label{sec:03-qoi}
 % src: docs/24 §0.2, §1.1–§1.5; src/qoi/operators.py figures_of_merit, surface_resistance; src/data_gen/highorder.py mode_qoi
@@ -96,17 +93,16 @@ wall loss. Every quantity is reported for the mode scaled to stored energy $U=\S
   G&=\Qz R_s=\frac{\omega\mu_0\int|\Hf|^2dV}{\oint|\mathbf n\times\Hf|^2dS}, \label{eq:03-q}\\
   V_{\mathrm{acc}}&=\Bigl|\int_\ell \E\!\cdot\!\mathbf d\;e^{\,j\omega t/(\beta c_0)}\,dt\Bigr|, &
   T_{\mathrm{tr}}&=\frac{V_{\mathrm{acc}}}{\int_\ell|\E\!\cdot\!\mathbf d|\,dt}, \notag\\
-  \Eacc&=\frac{V_{\mathrm{acc}}}{\Lacc}, &
-  \RoQ&=\frac{V_{\mathrm{acc}}^2}{\omega U},\quad R_{\mathrm{sh}}=\frac{V_{\mathrm{acc}}^2}{P_c}=\RoQ\,\Qz, \label{eq:03-rq}\\
+  \RoQ&=\frac{V_{\mathrm{acc}}^2}{\omega U}, &
+  R_{\mathrm{sh}}&=\frac{V_{\mathrm{acc}}^2}{P_c}=\RoQ\,\Qz, \label{eq:03-rq}\\
   \Epk&=\max_{\bdry}|\E|, &
   \Bpk&=\mu_0\max_{\bdry}|\Hf|=\max_{\bdry}\frac{|\curl\E|}{\omega}. \notag
 \end{align}
 Here $R_s=\sqrt{\pi f\mu_0/\sigma}$ is the skin-effect resistance at the mode's own frequency ($\sigma=\SI{5.8e7}{S/m}$, copper); $\Qz\propto1/R_s$, while $G$, $\RoQ$, $T_{\mathrm{tr}}$
-and the peak ratios do not depend on the wall material. The beam axis $\ell$ has unit tangent $\mathbf d$ and arc length $t$, and $\beta=1$. % src: docs/24 §0.2, §1.1
+and the peak ratios do not depend on the wall material. The beam axis $\ell$ has unit tangent $\mathbf d$ and arc length $t$, $\beta=1$, and $\Eacc=V_{\mathrm{acc}}/\Lacc$. % src: docs/24 §0.2, §1.1
 The modulus makes $V_{\mathrm{acc}}$ independent of the time and axial origins, and $T_{\mathrm{tr}}\in[0,1]$. $\Bpk/\Eacc$ is given in $\si{\milli\tesla\per(\mega\volt\per\metre)}$. We use the \emph{linac} convention for $\RoQ$ and $R_{\mathrm{sh}}$
-\citep{wangler2008rf,padamsee2008rf}; the circuit convention halves both. % src: docs/24 §1.4
-The beam axis is the line $x=y=0$ along $z$ (exceptions per family) and $\Lacc$ is the inner cavity length along it, beam pipes excluded (\cref{sec:A03-qoi}).
-For a predicted field and frequency, $U$ is taken from $\E$ and the frequency enters $\Hf$, hence $P_c$, $\Bpk$ and $\Qz$ (\cref{sec:A03-qoi}). % src: docs/24 §1.2
+\citep{wangler2008rf,padamsee2008rf}; the circuit convention halves both and leaves the other quantities unchanged. % src: docs/24 §1.4
+The beam axis is the line $x=y=0$ along $z$ (exceptions per family) and $\Lacc$ the inner cavity length along it, beam pipes excluded; for a predicted field, $U$ is taken from $\E$ and the predicted frequency enters $\Hf$ (\cref{sec:A03-qoi}). % src: docs/24 §1.2
 
 \subsection{What a model must produce}\label{sec:03-targets}
 A model maps a geometry with its curved mesh to the $\nmodes$ lowest frequencies $f_k$ and fields $\mathbf u_k\in Z_h\subset\R^{n}$ with $\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$ and

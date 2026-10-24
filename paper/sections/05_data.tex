@@ -39,11 +39,11 @@ With $\mathcal R$ the averaging interpolation into the continuous vector Lagrang
 \eta_{\mathrm{wall},e}^2 &= \sum_{k=1}^{\nmodes}\Bigl(\frac{\int_{\partial e\cap\bdry}|\curl\E_k-\mathcal R\curl\E_k|^2}{\int_{\bdry}|\curl\E_k|^2}+\frac{\int_{\partial e\cap\bdry}|\E_k-\mathcal R\E_k|^2}{\int_{\bdry}|\E_k|^2}\Bigr).
 \end{align*}
 % src: docs/30 §2; adaptive.py indicator
-The volume term estimates the relative eigenvalue error (second order in the field error); wall loss and surface peaks are first order in the field error at the wall, hence the separately normalised wall term, and the two are added with equal weight since both are of order $10^{-6}$ at the targets.
+The volume term estimates the relative eigenvalue error (second order in the field error); wall loss and peaks are first order in the field error at the wall, hence the separately normalised wall term, added with equal weight.
 % src: docs/30 §2
 
 \paragraph{Remeshing and stopping.}
-Bisection of marked elements has a closure that explodes on curvature-graded meshes (200 of 8109 tets marked gave $29$k tets), so each iteration instead builds a new mesh from an error-equidistributing size field, $h_{\mathrm{new},e}=h_e(\gamma\,\overline{\eta^2}/\eta_e^2)^{1/(2p)}$ with $\eta_e^2=\eta_{\mathrm{vol},e}^2+\eta_{\mathrm{wall},e}^2$, $e$ an element, $\gamma=0.25$ and $p$ the polynomial order, passed to Netgen as accumulating local size restrictions within the DOF budget (\cref{sec:A05-mesh}).
+Bisection of marked elements has a closure that explodes on curvature-graded meshes (200 of 8109 tets marked gave $29$k tets), so each iteration instead builds a new mesh from an error-equidistributing size field (new size $h_e(\gamma\,\overline{\eta^2}/\eta_e^2)^{1/(2p)}$ on element $e$, with $\eta_e^2$ the sum of the two terms, $\gamma=0.25$, $p$ the order), passed to Netgen as accumulating size restrictions (\cref{sec:A05-mesh}).
 The start mesh is deliberately coarse; its selection rule is shared with the low-fidelity labels (\cref{sec:multifidelity}).
 Refinement stops when cluster-mean frequency and figures of merit change by less than $10^{-6}$ and $10^{-3}$ (relative) between two levels, when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}), or after eight levels.
 This compares successive levels and is not an error bound; the accuracy targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked in \cref{sec:05-validation}.
@@ -76,7 +76,7 @@ The axial field is stored, so $V_{acc}$, $T$ and $\RoQ$ follow at any velocity $
 The adaptive label path (remeshing, order-three solve, figures of merit) is compared with closed forms on a copper pillbox ($R=\SI{40}{mm}$, $L=\SI{50}{mm}$; six lowest modes, TM$_{010}$ figures of merit) in \cref{tab:05-validation}.
 This pillbox is smooth, without beam pipes or fillets, so the check validates the solver and the figures of merit but \emph{not} the labels of the experimental family (pillbox cells with pipes and fillets), for which no closed form exists.
 The wall term reduces the $\Qz$ and $\Bpk$ errors about threefold at slightly fewer DOFs, at the price of a larger (still far inside the target) $\RoQ$ error; the $\Epk/\Eacc$ error stalls at $2\cdot10^{-4}$ because the maximum is sampled at wall integration points.
-On a pillbox cell \emph{with} pipes, $\Bpk$ changed by $4\,\%$ between the two finest levels at a 400k-DOF limit, so the wall quantities of $\HF$ labels of that family are uncertain at the percent level; on a ported elliptical draw the adaptive mesh was roughly $2$--$6\times$ more accurate than a single solve with fewer tets.
+On a pillbox cell \emph{with} pipes, $\Bpk$ changed by $4\,\%$ between the two finest levels at a 400k-DOF limit, so the wall quantities of $\HF$ labels of that family are uncertain at the percent level.
 We have not yet cross-validated against an independent solver.
 % src: docs/30 §2 (table, wall-term text, Epk stall), §4 (elliptical 2–6x; Bpk 4 %), header; docs/31 §1 (157k row); referee E2.3
 % TODO pass 3: none for 05 (no new results planned)
@@ -103,7 +103,5 @@ adaptive, volume + wall & 5961 & 157k & $6.1\cdot10^{-7}$ & $-3.4\cdot10^{-5}$ &
 \emph{Cost basis.} In the experiments the $\HF$ label is a single order-three solve on the start mesh (150k-DOF budget); on four earlier samples, including meshing, it took \SI{157}{s} on average (\SI{120}{s}--\SI{209}{s}; two workers of one thread on a shared four-core VM).
 Its cost is $2.8$--$4.3\times$ that of a single order-two solve on the same mesh, depending on machine load (conditions in \cref{sec:multifidelity}); this is an order-three versus order-two comparison on one mesh, not a comparison with the adaptive generator, which needs about three to four single solves.
 % src: docs/34 §3 (172.5, 119.9, 208.7, 125.7 s), §8.1 (2.8–4.3); docs/30 §6 (3–4x one solve); EDITOR_NOTES_2 decision 4
-A full adaptive sample at a 450k-DOF budget takes \SI{433}{s} on two threads, of which the eigensolver is about $90\,\%$.
-% src: docs/31 §3.8 (433 s); docs/30 §6 (90 %)
-The generator was optimised without changing the labels (frequencies unchanged to $2\cdot10^{-15}$, figures of merit to $\le7\cdot10^{-10}$ at 150k DOFs): the transfer to the model mesh fell from \SI{253.5}{s} to \SI{29.4}{s} and a 450k-DOF sample from \SI{664}{s} to \SI{433}{s} (\cref{sec:A05-speedup}).
+The generator was optimised without changing the labels (frequencies unchanged to $2\cdot10^{-15}$): a full adaptive sample at a 450k-DOF budget fell from \SI{664}{s} to \SI{433}{s} on two threads (\cref{sec:A05-speedup}).
 % src: docs/31 §3.8

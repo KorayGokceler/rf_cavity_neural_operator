@@ -69,23 +69,10 @@ quadrature points & 2 & 2280 & 1250 & $1$--$9\times10^{-6}$\\
 
 \subsection{Kernel projection against a penalty}\label{sec:07-penalty}
 % src: docs/31 §3.5
-The kernel projection could be replaced by a penalty $\Kmat+s\,\Mmat\Gmat\,\mathsf{D}^{-1}\Gmat^{\top}\Mmat$ that raises the gradient directions out of the spectrum, without a CG solve. We tested this on a pillbox with 13\,052 tetrahedra ($s=1964$), for fields with a given gradient mass fraction (\cref{tab:07-penalty}).
-The penalty never gives a lower value than the projection, so an upper bound is retained, but its error grows with the gradient content of the field, from $4\times10^{-6}$ to $6.7$ at a fraction of $10^{-2}$, whereas the projection stays at $5\times10^{-6}$. A network output has no reason to keep its gradient content below $10^{-8}$, so the penalty was rejected.
-
-\begin{table}[t]
-\centering\small
-\caption{Largest relative error of the eigenvalues with a penalty or with the kernel projection, against the gradient mass fraction of the field (13\,052 tetrahedra).}
-\label{tab:07-penalty}
-% src: docs/31 §3.5
-\begin{tabular}{lcccc}
-\toprule
-Gradient mass fraction & 0 & $10^{-6}$ & $10^{-4}$ & $10^{-2}$\\
-\midrule
-kernel projection & $5\times10^{-6}$ & $6\times10^{-6}$ & $5\times10^{-6}$ & $5\times10^{-6}$\\
-penalty & $4\times10^{-6}$ & $6.6\times10^{-4}$ & $6.7\times10^{-2}$ & $6.7$\\
-\bottomrule
-\end{tabular}
-\end{table}
+The kernel projection could be replaced by a penalty $\Kmat+s\,\Mmat\Gmat\,\mathsf{D}^{-1}\Gmat^{\top}\Mmat$ that raises the gradient directions out of the spectrum, without a CG solve. We tested this on a pillbox with 13\,052 tetrahedra ($s=1964$), for fields with a given gradient mass fraction.
+% src: docs/31 §3.5 (largest relative error vs target eigenvalues: gradient fraction 0 / 1e-6 / 1e-4 / 1e-2; projection 5e-6, 6e-6, 5e-6, 5e-6; penalty 4e-6, 6.6e-4, 6.7e-2, 6.7)
+At fractions $0$, $10^{-6}$, $10^{-4}$ and $10^{-2}$ the largest relative eigenvalue error of the penalty is $4\times10^{-6}$, $6.6\times10^{-4}$, $6.7\times10^{-2}$ and $6.7$, whereas the projection stays at $5\times10^{-6}$ to $6\times10^{-6}$.
+The penalty never gives a lower value than the projection, so an upper bound is retained, but a network output has no reason to keep its gradient content below $10^{-8}$, and the penalty was rejected.
 
 \subsection{Training on low-fidelity labels at equal label cost}\label{sec:07-equal-cost}
 % src: docs/34 §8.1, §8.2

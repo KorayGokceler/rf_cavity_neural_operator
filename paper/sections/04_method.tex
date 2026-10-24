@@ -25,18 +25,18 @@ It predicts $m$ vector fields $\bm\psi_1,\dots,\bm\psi_m$ on the geometry; a fix
   \draw[arr] (tok) -- (trunk);
   \draw[arr] (trunk) -- (head);
   % row 2: fixed linear-algebra layer
-  \node[fixed] (V)   at (0,-2.9)    {fit and interpolation $\Vmat=\Cmat\mathsf F\bm\psi$; wall DOFs $=0$};
-  \node[fixed] (P)   at (3.5,-2.9)  {kernel projection $\Pmat\Vmat$ (PCG, float64)};
-  \node[fixed] (R)   at (7.0,-2.9)  {Rayleigh--Ritz $\Av c=\theta\,\Mdiv c$};
-  \node[fixed] (out) at (10.5,-2.9)  {frequencies $f_k$, fields $\E_k$};
-  \node[opt]   (qoi) at (14.0,-2.9) {figures of merit from $\E_k$};
-  \draw[arr] (head.south) -- ++(0,-0.8) -| ($(V.north)+(-0.55,0)$);
+  \node[fixed] (V)   at (0,-2.5)    {fit and interpolation $\Vmat=\Cmat\mathsf F\bm\psi$; wall DOFs $=0$};
+  \node[fixed] (P)   at (3.5,-2.5)  {kernel projection $\Pmat\Vmat$ (PCG, float64)};
+  \node[fixed] (R)   at (7.0,-2.5)  {Rayleigh--Ritz $\Av c=\theta\,\Mdiv c$};
+  \node[fixed] (out) at (10.5,-2.5)  {frequencies $f_k$, fields $\E_k$};
+  \node[opt]   (qoi) at (14.0,-2.5) {figures of merit from $\E_k$};
+  \draw[arr] (head.south) -- ++(0,-0.7) -| ($(V.north)+(-0.55,0)$);
   \draw[arr] (V) -- (P);
   \draw[arr] (P) -- (R);
   \draw[arr] (R) -- (out);
   \draw[arr] (out) -- (qoi);
   % operators of the mesh feed the fixed layer
-  \draw[dashed, gray!70!black] (mesh.south) -- ++(0,-1.35) coordinate (b);
+  \draw[dashed, gray!70!black] (mesh.south) -- ++(0,-1.15) coordinate (b);
   \draw[darr] (b) -| ($(V.north)+(0.55,0)$);
   \draw[darr] (b) -| ($(P.north)+(0.55,0)$);
   \draw[darr] (b) -| ($(R.north)+(0.55,0)$);
@@ -138,8 +138,8 @@ We assume:
 \begin{description}
 \item[(A)] $\ker\Kmat=\mathrm{range}\,\Gmat$ on $\Vh$, and $\Mmat$ is positive definite.
 \end{description}
-$\Kmat\Gmat=0$ only gives $\mathrm{range}\,\Gmat\subset\ker\Kmat$; (A) also needs the reverse inclusion, a rank statement: $\dim\ker\Kmat$ equals the number of columns of $\Gmat$ ($\dim\Sh$ plus the extra wall components).
-It rests on the exactness of the discrete sequence $\Sh\xrightarrow{\ \nabla\ }\Vh\xrightarrow{\ \curl\ }$ stated in \cref{sec:formulation} (covariant Piola map)~\cite{monk2003finite,arnold2006finite} and is not proved here for the curved meshes used.
+$\Kmat\Gmat=0$ gives only $\mathrm{range}\,\Gmat\subset\ker\Kmat$; (A) needs the reverse inclusion, a rank statement ($\dim\ker\Kmat$ equals the number of columns of $\Gmat$).
+It rests on the exactness of the discrete sequence $\Sh\xrightarrow{\ \nabla\ }\Vh\xrightarrow{\ \curl\ }$ of \cref{sec:formulation} (covariant Piola map)~\cite{monk2003finite,arnold2006finite}, not proved here for the curved meshes used.
 % TODO pass 3: rank check of (A): number of zero eigenvalues of K on V_h versus the number of columns of G on the meshes used (number to be inserted here, with the meshes it was run on)
 Under (A), $\Vh=\ker\Kmat\oplus Z_h$ is an $\Mmat$-orthogonal splitting, $\Kmat$ is positive definite on $Z_h$, and the positive eigenvalues of the full problem are those of the pencil restricted to $Z_h$ (an eigenvector with $\lambda>0$ is $\Mmat$-orthogonal to $\ker\Kmat$ because $\bm g^{\!\top}\Mmat x=\lambda^{-1}\bm g^{\!\top}\Kmat x=0$).
 Courant--Fischer~\cite{parlett1998symmetric} gives
@@ -178,13 +178,12 @@ There is no accuracy bound either; accuracy is measured (\cref{sec:experiments})
 (iii) It is relative to the \emph{discrete} eigenvalue of the space the model runs in.
 Since $\lamh_k\to\lambda_k$ as the space is enriched~\cite{boffi2010finite} but $\lamh_k-\lambda_k$ has no guaranteed sign, we make no claim about the exact eigenvalue (in the label comparisons of \cref{sec:multifidelity} the order-two eigenvalues exceeded the order-three ones by $0.004$--$0.047\,\%$ in frequency).
 % src: docs/34 §8.1 (frequency LF/HF - 1 = +0.004 ... +0.047 %)
-Two consequences feed the losses: if $\Pmat\Vmat$ has full column rank, $\sum_{i\le m}\theta_i^{-1}\le\sum_{i\le m}\lamh_i^{-1}$, with equality iff $\spn(\Pmat\Vmat)$ is spanned by eigenvectors of the $m$ lowest eigenvalues (unique only if $\lamh_m<\lamh_{m+1}$); and $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors~\cite{boffi2010finite}.
+The Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-approximation error of the eigenvectors~\cite{boffi2010finite}, which the span loss below minimises.
 
 \begin{remark}[Inexact projection]\label{rem:04-inexact}
 The proposition is exact only for an exact $\mathsf Z$; the CG solve stops at a relative residual $\tau=10^{-8}$.
-The numerator of the Rayleigh quotient is unaffected, because $\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$; only the mass matrix $\Mdiv$ is perturbed, by a relative amount $\bar\eta$, and then $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$ if $\bar\eta<1$ (\cref{sec:A04-inexact}).
-The bound on $\bar\eta$ scales like $C\,\tau/\mu$ with a mesh-dependent constant $C$ and the divergence-free mass fraction $\mu$ of the direction; a direction just above the discarding threshold $\mu=10^{-6}$ would give $\tau/\mu=10^{-2}$ before $C$.
-It is therefore \emph{not} small a priori, and the guarantee of \cref{prop:upper-bound} holds in exact arithmetic only.
+The numerator of the Rayleigh quotient is unaffected ($\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$); only $\Mdiv$ is perturbed, by a relative amount $\bar\eta$, and then $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$ if $\bar\eta<1$ (\cref{sec:A04-inexact}).
+The bound on $\bar\eta$ scales like $C\,\tau/\mu$ with a mesh-dependent constant $C$ and the divergence-free mass fraction $\mu$ of the direction, so at the discarding threshold $\mu=10^{-6}$ the ratio $\tau/\mu$ is $10^{-2}$ before $C$: $\bar\eta$ is \emph{not} small a priori, and the guarantee holds in exact arithmetic only.
 In the equal-cost study the smallest margin $f_{\rm model}/f_{\rm FE}-1$ over all arms, geometries and modes was $+0.47\,\%$, and in the other studies all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space; these trained models have errors of $0.6$--$3\,\%$ and are far from the regime where the perturbation could matter.
 % src: docs/34 §8.2 (all predictions above the FE eigenvalue of the space, at least +0.47 %); docs/34 §4.1-§4.2 quote no number (units slip in the doc)
 % TODO pass 3: stress test of the bound (exact-eigenvector bases with noise, random bases, near-gradient mixtures, tau in {1e-4, 1e-6, 1e-8}) and the a posteriori eta-bar of the evaluation runs
@@ -207,11 +206,10 @@ With $\Pi_{\mathsf N}$ the $\mathsf N$-orthogonal projector onto $\spn(\Pmat\Vma
   \mathcal L_{\rm span}=\frac1{n_{\rm tgt}}\sum_{k=1}^{n_{\rm tgt}}\sqrt{\tfrac12\big(r_k^{\Mmat}+r_k^{\Kmat}\big)+10^{-8}}.
 \end{equation}
 % src: src/training/lightning_module.py span_residual, _span_terms (span_norm both, span_root true, span_ridge 1e-9, eps 1e-8)
-$\sqrt{r_k^{\Mmat}}$ and $\sqrt{r_k^{\Kmat}}$ are the relative best-approximation errors in the mass and energy norms; the square root keeps the gradient from vanishing as the span becomes accurate.
-$\mathcal L_{\rm span}$ is invariant under recombination of the columns of $\Vmat$ and under sign changes and rotations in degenerate target clusters, so it needs no eigenvalue matching.
+$\sqrt{r_k^{\Mmat}}$ and $\sqrt{r_k^{\Kmat}}$ are the relative best-approximation errors in the mass and energy norms (the square root keeps the gradient from vanishing as the span becomes accurate); $\mathcal L_{\rm span}$ is invariant under recombination of the columns of $\Vmat$ and under sign changes and rotations in degenerate target clusters, so it needs no eigenvalue matching.
 
 \paragraph{Other terms.}
-The self-supervised term $\mathcal L_{\rm ss}=-\log\sum_{i\le r'}\theta_i^{-1}$ over the kept Ritz values needs no labels (the code evaluates $\mathrm{tr}(\Av^{-1}\Mdiv)$ by a Jacobi-scaled Cholesky solve with a relative ridge, which equals this when no direction is dropped) and, by the first consequence of \cref{prop:upper-bound}, is bounded below by $-\log\sum_{i\le r'}\lamh_i^{-1}$, with equality for the lowest eigenspace; it uses the projected mass, so gradient content cannot lower it (without projection the compliance exploded by more than $10^3$ in a test).
+The self-supervised term $\mathcal L_{\rm ss}=-\log\sum_{i\le r'}\theta_i^{-1}$ over the kept Ritz values needs no labels (the code evaluates $\mathrm{tr}(\Av^{-1}\Mdiv)$ by a Jacobi-scaled Cholesky solve with a relative ridge, which equals this when no direction is dropped) and, since $\theta_i\ge\lamh_i$, is bounded below by $-\log\sum_{i\le r'}\lamh_i^{-1}$, with equality iff the span is spanned by eigenvectors of the $r'$ lowest eigenvalues (unique only if $\lamh_{r'}<\lamh_{r'+1}$); it uses the projected mass, so gradient content cannot lower it (without projection the compliance exploded by more than $10^3$ in a test).
 % src: docs/20 §3 (selfsup: "Neredeyse-gradyan bir kolonda projeksiyonsuz compliance >10^3x patlar (test edildi)")
 $\mathcal L_{\rm ortho}=\frac1{m(m-1)}\sum_{i\ne j}\Mdiv_{ij}^2/(\Mdiv_{ii}\Mdiv_{jj})$ penalises collinear fields, and $\mathcal L_{\rm freq}=\frac1K\sum_k(z_k-z_k^\star)^2$ acts on frequencies standardised with the training-label mean and standard deviation.
 The total is $\sum_{\rm t}\alpha_{\rm t}\mathcal L_{\rm t}$ with weights $(\alpha_{\rm span},\alpha_{\rm ss},\alpha_{\rm ortho},\alpha_{\rm freq})=(1,0.01,0.01,0.1)$.
