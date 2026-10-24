@@ -59,14 +59,15 @@ def curved_mesh(cad_path, h, deform=None, s=None):
     mesh, shape = ho.netgen_mesh(cad_path, s["maxh_factor"] * h, curve=s["curve"], deform=deform,
                                  return_shape=True, retries=s["retries"], min_jacobian_ratio=s["min_jacobian_ratio"],
                                  fix_passes=s["fix_passes"], fix_below=s["fix_below"],
-                                 curvaturesafety=s["curvaturesafety"], grading=s["grading"])
+                                 curvaturesafety=s["curvaturesafety"], grading=s["grading"],
+                                 max_elements=s["max_elements"])
     if mesh.ne > s["max_elements"]:
         raise RuntimeError(f"curved mesh has {mesh.ne} tets > max_elements={s['max_elements']} "
                            "(small features: raise --min_fillet or --field_max_elements)")
     return mesh, shape
 
 
-def project_to_model(mesh, label, model_order):
+def project_to_model(mesh, label, model_order, unit_norm=False):
     """M-orthogonal projection of the label modes (solve_modes result: fes, gfs) onto
     HCurl(model_order) of the same mesh → (U [n_model, K], proj_err [K], rq_model [K], fes_model).
 
@@ -75,7 +76,9 @@ def project_to_model(mesh, label, model_order):
     model space only; nested spaces, so this is the exact best approximation).  proj_err =
     ‖u₃ − u₂‖ / ‖u₃‖ in L² (‖u₃ − u₂‖² = ‖u₃‖² − ‖u₂‖², since u₂ is the orthogonal projection).
     rq_model: Rayleigh quotients of u₂ with the MODEL operators (field_operators' integration rule
-    volume_measure(model_order)) — the check the dataset repeats on the rebuilt mesh."""
+    volume_measure(model_order)) — the check the dataset repeats on the rebuilt mesh.
+    unit_norm: the label modes have unit norm in dx₃ (solve_modes normalises with the same rule), so the
+    norm integrals are skipped (1.5 s of 5 s on 158k label DOFs; they give 1 ± 1e-15)."""
     from ngsolve import BilinearForm, HCurl, InnerProduct, Integrate, TaskManager, curl
     fes3 = label["fes"]
     dx3 = ho.volume_measure(fes3.globalorder)
@@ -95,7 +98,7 @@ def project_to_model(mesh, label, model_order):
         rhs.data = B.mat * g.vec
         x.data = Ainv * rhs
         U[:, k] = x.FV().NumPy()
-        n3[k] = Integrate(InnerProduct(g, g) * dx3, mesh)
+        n3[k] = 1.0 if unit_norm else Integrate(InnerProduct(g, g) * dx3, mesh)
     dx2 = ho.volume_measure(model_order)
     with TaskManager():
         K2 = ho._tosp(BilinearForm(curl(u2) * curl(v2) * dx2, symmetric=True).Assemble().mat)
@@ -109,25 +112,47 @@ def project_to_model(mesh, label, model_order):
 
 def transfer_to_model(gfs, mesh_model, model_order, label_order):
     """M-orthogonal (L2) projection of label fields living on ANOTHER (finer) mesh onto
-    HCurl(model_order) of mesh_model → (U [n_model, K], proj_err [K], rq_model [K], fes_model).  The label
-    fields are evaluated at mesh_model's integration points (NGSolve point search); both meshes are
-    curved to the same CAD, so the domains agree to the geometry approximation.  proj_err is relative to
-    ‖u₃‖ on the model domain; rq_model uses the model operators (field_operators' rule)."""
-    from ngsolve import BilinearForm, HCurl, InnerProduct, Integrate, LinearForm, TaskManager, curl
+    HCurl(model_order) of mesh_model → (U [n_model, K], proj_err [K], rq_model [K], fes_model).  Both meshes
+    are curved to the same CAD, so the domains agree to the geometry approximation.  proj_err is relative
+    to ‖u₃‖ on the model domain; rq_model uses the model operators (field_operators' rule).
+
+    The label fields are evaluated at the model mesh's integration points (the rule of dxq) with ONE point
+    search for all modes: the physical points are located in the label mesh once and the values of every
+    mode are put on the model mesh's IntegrationRuleSpace, where the linear forms and norms read them back
+    at the same points.  (Integrating the label GridFunctions directly searches every point again for each
+    form and mode: 253 s of 664 s per sample at 430k label DOFs, docs/31 §3.7; same result to 1e-14.)"""
+    from ngsolve import (CF, TET, VOL, BilinearForm, GridFunction, HCurl, InnerProduct, Integrate,
+                         IntegrationRule, LinearForm, TaskManager, curl, x, y, z)
+    from ngsolve.comp import IntegrationRuleSpace
     dxq = ho.volume_measure(label_order)
+    rule_order = 2 * int(label_order) + 4                  # the degree of volume_measure's rule
     fes2 = HCurl(mesh_model, order=int(model_order), dirichlet="wall")
     u2, v2 = fes2.TnT()
     with TaskManager():
         A = BilinearForm(u2 * v2 * dxq, symmetric=True).Assemble()
         Ainv = A.mat.Inverse(fes2.FreeDofs(), inverse="sparsecholesky")
+    rule = IntegrationRule(TET, rule_order)
+    pts = np.asarray(CF((x, y, z))(mesh_model.MapToAllElements(rule, VOL))).reshape(-1, 3)
+    vals = np.zeros((len(gfs), len(pts), 3))               # outside the label mesh (geometry mismatch): 0
+    for a in range(0, len(pts), 1 << 18):                  # chunks bound the memory of the located points
+        located = ho.locate(gfs[0].space.mesh, pts[a:a + (1 << 18)])
+        for k, g in enumerate(gfs):
+            vals[k, a:a + (1 << 18)] = ho.evaluate(g, located)
+    irs = IntegrationRuleSpace(mesh_model, order=rule_order // 2)
+    if irs.ndof != mesh_model.ne * len(rule.points):
+        raise RuntimeError("IntegrationRuleSpace does not carry the volume_measure rule")
+    comps = [GridFunction(irs) for _ in range(3)]
+    cf = CF(tuple(comps))
     U, n3 = np.zeros((fes2.ndof, len(gfs))), np.zeros(len(gfs))
-    x = A.mat.CreateColVector()
-    for k, g in enumerate(gfs):
+    xk = A.mat.CreateColVector()
+    for k in range(len(gfs)):
+        for c in range(3):
+            comps[c].vec.FV().NumPy()[:] = vals[k, :, c]
         with TaskManager():
-            rhs = LinearForm(InnerProduct(g, v2) * dxq).Assemble()
-            x.data = Ainv * rhs.vec
-        U[:, k] = x.FV().NumPy()
-        n3[k] = Integrate(InnerProduct(g, g) * dxq, mesh_model)
+            rhs = LinearForm(InnerProduct(cf, v2) * dxq).Assemble()
+            xk.data = Ainv * rhs.vec
+        U[:, k] = xk.FV().NumPy()
+        n3[k] = Integrate(InnerProduct(cf, cf) * dxq, mesh_model)
     A2 = ho._tosp(A.mat)
     err = np.sqrt(np.clip(1.0 - np.einsum("ik,ik->k", U, A2 @ U) / n3, 0.0, None))
     dx2 = ho.volume_measure(model_order)
@@ -184,11 +209,15 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
     adapt_attrs = {}
     if s["adaptive"]:
         from src.data_gen import adaptive as ad
-        err = None
+        err, too_fine = None, np.inf
         for cs in dict.fromkeys((s["adapt_cs"], s["curvaturesafety"])):
+            if cs >= too_fine:                        # a finer curvaturesafety only has more tets
+                continue
             try:
                 mesh, shape = curved_mesh(cad_path, h, deform, {**s, "curvaturesafety": cs, "retries": 0})
                 break
+            except ho.TooManyElements as e:
+                err, too_fine = e, cs
             except RuntimeError as e:                 # folded elements at the coarse start
                 err = e
         else:
@@ -231,7 +260,8 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         model_mesh = ho.single_level(mesh, shape, s["curve"], deform)
         U, err, rq, fes2 = transfer_to_model(lab["gfs"][:K], model_mesh, s["model_order"], s["label_order"])
     else:                                                # same mesh: exact nested projection
-        U, err, rq, fes2 = project_to_model(mesh, {"fes": lab["fes"], "gfs": lab["gfs"][:K]}, s["model_order"])
+        U, err, rq, fes2 = project_to_model(mesh, {"fes": lab["fes"], "gfs": lab["gfs"][:K]}, s["model_order"],
+                                            unit_norm=True)
     t2 = time.perf_counter()
     with tempfile.TemporaryDirectory() as tmp:
         brep = os.path.join(tmp, "s.brep")

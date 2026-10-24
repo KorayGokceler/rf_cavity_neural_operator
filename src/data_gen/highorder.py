@@ -78,8 +78,13 @@ def _name_faces(shape):
         f.name = "interface" if count[key] > 1 else "wall"
 
 
+class TooManyElements(RuntimeError):
+    """The straight netgen mesh already has more tets than allowed: curving and bisection only add elements,
+    and a finer curvaturesafety gives more, so nothing is left to try."""
+
+
 def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, min_jacobian_ratio=0.25,
-                return_shape=False, fix_passes=3, fix_below=0.3, **meshing):
+                return_shape=False, fix_passes=3, fix_below=0.3, max_elements=None, **meshing):
     """NGSolve mesh of the solid in `cad_path` (BREP / STEP, metres), curved to order `curve`; the
     cavity surface is the boundary "wall" (internal cut faces: "interface").  deform: optional
     (om [n,3], a [n,3], ph [n]) of the generator's smooth map x → x + Σ_m a_m sin(om_m·x + ph_m)
@@ -93,6 +98,8 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
     elements (ratio < fix_below, typically a few dozen tets touching a small fillet) are bisected
     and re-curved, up to `fix_passes` times (+5 % elements; doubling curvaturesafety instead costs 3×);
     a mesh still failing is regenerated with curvaturesafety doubled, up to `retries` times.
+    max_elements: raise TooManyElements as soon as the generated mesh has more tets (before the curving, the
+    distortion repair and the retries, which cost as much as the meshing: docs/31 §3.7).
     return_shape: also return the named netgen.occ shape that was meshed (the solid, or the quartered
     compound) — save it with shape.WriteBrep to rebuild the curved mesh later (load_curved_mesh)."""
     import os
@@ -124,6 +131,9 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
         raise RuntimeError(f"netgen could not mesh {cad_path}: {err}")
     if not set(mesh.GetBoundaries()) <= {"wall", "interface"}:
         raise RuntimeError(f"unexpected boundary names {set(mesh.GetBoundaries())}")
+    if max_elements is not None and mesh.ne > max_elements:
+        raise TooManyElements(f"curved mesh has {mesh.ne} tets > max_elements={max_elements} "
+                              "(small features: raise --min_fillet or --field_max_elements)")
     mesh.Curve(int(curve))
     if deform is not None:
         set_deformation(mesh, *deform, order=int(curve))
@@ -144,7 +154,7 @@ def netgen_mesh(cad_path, maxh, curve=3, deform=None, split="auto", retries=2, m
         if retries > 0:                           # coarse tets bent onto small fillets fold: refine there
             return netgen_mesh(cad_path, maxh, curve, deform, split, retries=retries - 1,
                                min_jacobian_ratio=min_jacobian_ratio, return_shape=return_shape,
-                               fix_passes=fix_passes, fix_below=fix_below,
+                               fix_passes=fix_passes, fix_below=fix_below, max_elements=max_elements,
                                **{**meshing, "curvaturesafety": 2 * cs})
         raise RuntimeError(f"curved mesh of {cad_path} has folded elements (min det J ratio {q:.2f})")
     return (mesh, shape) if return_shape else mesh
@@ -229,7 +239,7 @@ def _diag_mean(mat, free):
     r, c, v = np.asarray(r), np.asarray(c), np.asarray(v)
     d = np.zeros(mat.height)
     on = r == c
-    np.add.at(d, r[on], v[on])
+    d[r[on]] = v[on]                                   # one entry per (row, col)
     return float(d[free].mean())
 
 
@@ -242,15 +252,6 @@ def _condensed_inverse(form, fes):
     ext = IdentityMatrix() + form.harmonic_extension
     ext_t = IdentityMatrix() + form.harmonic_extension_trans
     return ext @ inv @ ext_t + form.inner_solve
-
-
-def _galerkin_product(G, M):
-    """NGSolve sparse matrix GᵀMG (exact, formed in scipy)."""
-    from ngsolve.la import SparseMatrixd
-    Gs, Ms = _tosp(G), _tosp(M)
-    A = (Gs.T @ Ms @ Gs).tocoo()
-    return SparseMatrixd.CreateFromCOO(A.row.astype(np.int64).tolist(), A.col.astype(np.int64).tolist(),
-                                       A.data.tolist(), A.shape[0], A.shape[1])
 
 
 def volume_measure(order, bonus=4):
@@ -266,7 +267,7 @@ def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4, max_ndof=Non
     """k lowest physical eigenpairs.  Returns dict(lam [k] (k² in 1/m²), f_hz [k], gfs (one
     GridFunction per mode, unit L2 norm), fes, info).  max_ndof: raise before assembling a larger
     space (memory guard: ~1 GB per 70k DOF at p = 4)."""
-    from ngsolve import BilinearForm, GridFunction, HCurl, TaskManager, curl
+    from ngsolve import BilinearForm, GridFunction, HCurl, TaskManager, curl, grad
 
     t0 = time.perf_counter()
     fes = HCurl(mesh, order=order, dirichlet="wall")
@@ -279,8 +280,12 @@ def solve_modes(mesh, k, order=3, tol=1e-10, sigma=None, n_extra=4, max_ndof=Non
         K = BilinearForm(curl(u) * curl(v) * dx, symmetric=True).Assemble()
         M = BilinearForm(u * v * dx, symmetric=True).Assemble()
         G, fesh1 = fes.CreateGradient()
-        # Kp = GᵀMG from the assembled M, so P is an exact M-orthogonal projector
-        Kp = _galerkin_product(G, M.mat)
+        # Kp = GᵀMG: the gradients of H1(p+1) are in HCurl(p), so the explicit-rule form ∇φ·∇ψ gives the same
+        # matrix (1e-15) as the sparse triple product, which cost 4–6 s of every solve (docs/31 §3.7), and P
+        # stays an M-orthogonal projector
+        phi, psi = fesh1.TnT()
+        Kpf = BilinearForm(grad(phi) * grad(psi) * dx, symmetric=True).Assemble()
+        Kp = Kpf.mat
     lam_scale = _diag_mean(K.mat, free) / _diag_mean(M.mat, free)
     if sigma is None:
         sigma = -1e-2 * lam_scale
