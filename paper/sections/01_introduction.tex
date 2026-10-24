@@ -11,17 +11,14 @@ whose cost per geometry grows with the mesh resolution needed for accurate figur
 A surrogate that returns frequencies, fields and figures of merit directly from the geometry would shorten the loop,
 provided it can be trusted at the accuracy of the solver it replaces.
 
-Neural operators \citep{lu2021learning,li2021fourier,kovachki2023neural} are natural candidates, since they learn the map from
-a PDE's input (here the geometry) to its solution.
+Neural operators \citep{lu2021learning,li2021fourier,kovachki2023neural}, which learn the map from a PDE's input to its solution, are natural candidates.
 Applying them directly to the Maxwell eigenproblem $\curl\curl\,\E=k^2\E$ in $\Omega$ with $\mathbf{n}\times\E=0$ on $\partial\Omega$ is problematic for three reasons.
 First, the network must return an ordered set of modes with mutually consistent eigenvalues and fields, and a plain regression loss guarantees none of this.
 Second, the curl operator has an infinite-dimensional kernel formed by gradient fields;
 any discretisation that does not respect the $H(\mathrm{curl})$ structure, and any predicted field that is not projected away from this kernel,
 produces spurious modes at or near zero frequency \citep{hiptmair2002finite,boffi2010finite}.
 Third, a network that outputs values on a fixed grid or degrees of freedom is tied to one discretisation, whereas eigenvalue accuracy depends on the mesh and the polynomial order.
-Lowest-order edge elements add a limit: in our earlier lowest-order (Whitney) model, even the best representable field on the training mesh
-had a \SIrange{12}{21}{\percent} error in $\E$ % src: docs/28 §1
-and the frequency error floor was \num{2.4e-3}. % src: docs/28 §3
+Lowest-order edge elements add a limit: even the best field representable on the training mesh had a \SIrange{12}{21}{\percent} error in $\E$ in our earlier lowest-order (Whitney) model. % src: docs/28 §1
 
 \paragraph{Approach.}
 We therefore do not ask the network for the modes themselves.
@@ -36,15 +33,14 @@ It is implemented with NGSolve and Netgen \citep{schoberl1997netgen,schoberl2014
 \paragraph{Contributions.}
 \begin{enumerate}
   \item \textbf{A neural operator with a built-in eigenvalue bound.}
-  Every predicted eigenvalue is an upper bound of the corresponding nonzero discrete eigenvalue of the finite-element space in which the model runs,
+  Every predicted eigenvalue bounds from above the corresponding nonzero discrete eigenvalue of the space in which the model runs,
   and the kernel projection excludes spurious zero modes (\cref{sec:method}, \cref{prop:upper-bound}).
   In the main held-out study every prediction stayed above the discrete eigenvalue of its space (smallest margin \SI{0.47}{\percent}); % src: docs/34 §8.2
   the bound is with respect to the discrete, not the exact, eigenvalue.
   \item \textbf{Independence of the discretisation space.}
   The same weights run unchanged on a $p=3$ space and on a mesh refined once (eight times as many tetrahedra), and the bound still holds
   (smallest margin \SI{0.009}{\percent}). % src: docs/34 §4.2
-  Accuracy does not improve in the richer space (the frequency error worsens by \numrange{0.2}{0.6} percentage points): % src: docs/34 §4.2
-  the remaining error lies in the learned basis.
+  Accuracy does not improve there (the frequency error worsens by \numrange{0.2}{0.6} percentage points), as the remaining error lies in the learned basis. % src: docs/34 §4.2
   \item \textbf{Accuracy floor of the representation.}
   With quadrature-point tokens on a curved $p=2$ space, the relative eigenvalue error in a single-sample overfit test is \numrange{1e-6}{9e-6}, % src: docs/28 §3
   against \num{2.4e-3} for the lowest-order model. % src: docs/28 §3

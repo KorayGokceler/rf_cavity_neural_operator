@@ -67,7 +67,7 @@ absolute coordinate deviation of a vertex from $\mathbf c$. The eigenvalues of \
 \begin{equation}\label{eq:03-freq}
   f_k=\frac{c_0\sqrt{\lambda_k}}{2\pi\,s}.
 \end{equation}
-Eigenvectors are $\Mmat$-normalised and determined up to sign and, in a multiple eigenspace (frequent in symmetric cavities), up to an orthogonal transformation.
+Eigenvectors are $\Mmat$-normalised, determined up to sign and, in a multiple eigenspace, up to an orthogonal transformation.
 
 \paragraph{One integration rule for all forms.}
 % src: docs/28 §2 numerical note; src/data_gen/highorder.py volume_measure, solve_modes
@@ -104,8 +104,8 @@ The beam axis is the line $x=y=0$ along $z$ (exceptions per family) and $\Lacc$ 
 For a predicted field and frequency, $U$ is taken from $\E$ and the frequency enters $\Hf$, hence $P_c$, $\Bpk$ and $\Qz$ (\cref{sec:A03-qoi}). % src: docs/24 §1.2
 
 \subsection{What a model must produce}\label{sec:03-targets}
-For a geometry with its curved mesh, a model maps the geometry to $\bigl(\{f_k\}_{k=1}^{\nmodes},\{\mathbf u_k\}_{k=1}^{\nmodes}\bigr)$: the $\nmodes$ lowest
-frequencies and the $\nmodes$ fields as coefficient vectors $\mathbf u_k\in\R^{n}$ in $\Vh$ with $\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$, $\mathbf u_k\in W_h$ and
-Rayleigh quotient consistent with $f_k$ through \eqref{eq:03-freq}. The figures of merit \eqref{eq:03-q}--\eqref{eq:03-rq} are not separate outputs: they are fixed
-functionals of $(f_k,\mathbf u_k)$ and the geometry (axis, $\Lacc$, wall). Because $\mathbf u_k$ is determined only up to sign and rotation within an eigenspace, accuracy is
-measured by invariant quantities (frequency errors, and subspace distances in the $\Mmat$-norm). \Cref{sec:method} constructs outputs that satisfy these constraints by design.
+A model maps a geometry with its curved mesh to the $\nmodes$ lowest frequencies $f_k$ and $\nmodes$ fields $\mathbf u_k\in\R^{n}$ in $\Vh$, with
+$\mathbf u_j^\top\Mmat\mathbf u_k=\delta_{jk}$, $\mathbf u_k\in W_h$, and Rayleigh quotients consistent with $f_k$ through \eqref{eq:03-freq}. The figures of merit
+\eqref{eq:03-q}--\eqref{eq:03-rq} are not separate outputs but fixed functionals of $(f_k,\mathbf u_k)$ and the geometry. Since $\mathbf u_k$ is determined only up to sign and
+rotation within an eigenspace, accuracy is measured by invariant quantities (frequency errors; $\Mmat$-norm subspace distances). \Cref{sec:method} constructs outputs that satisfy
+these constraints by design.

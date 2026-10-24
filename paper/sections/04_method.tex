@@ -155,10 +155,13 @@ Hence no spurious zero mode occurs and $f_k\ge f_{h,k}$ for every network weight
 \begin{proof}
 \emph{Step 1.} $\Gmat^{\!\top}\Mmat\Pmat\Vmat=\mathsf B-\Kp\mathsf Z=0$, so by (A) every column of $\Pmat\Vmat$ is $\Mmat$-orthogonal to $\ker\Kmat$, i.e.\ lies in $W_h$.
 
-\emph{Step 2.} Since $\mathsf L^{-1}\mathsf D\Mdiv\mathsf D\mathsf L^{-\top}=\mathsf Q\mathrm{diag}(\mu)\mathsf Q^{\!\top}$, we get $\mathsf W^{\!\top}\mathsf D\Mdiv\mathsf D\mathsf W=\mathrm{diag}(\mu_{\rm kept})^{-1/2}\,\mathrm{diag}(\mu_{\rm kept})\,\mathrm{diag}(\mu_{\rm kept})^{-1/2}=\mathsf I_{r'}$ (the ridge only enters $\mathsf L$).
+\emph{Step 2.} Since $\mathsf L^{-1}\mathsf D\Mdiv\mathsf D\mathsf L^{-\top}=\mathsf Q\,\mathrm{diag}(\mu)\,\mathsf Q^{\!\top}$, the matrix $\mathsf W$ satisfies $\mathsf W^{\!\top}\mathsf D\Mdiv\mathsf D\mathsf W=\mathsf I_{r'}$ (the ridge only enters $\mathsf L$).
 With $\mathsf Y=\mathsf D\mathsf W$ and \eqref{eq:04-proj}, $(\Pmat\Vmat\mathsf Y)^{\!\top}\Mmat(\Pmat\Vmat\mathsf Y)=\mathsf Y^{\!\top}\Mdiv\mathsf Y=\mathsf I_{r'}$: the columns of $\Pmat\Vmat\mathsf Y$ are $\Mmat$-orthonormal, hence independent, and span $U'\subset\spn(\Pmat\Vmat)$ with $\dim U'=r'$.
 The matrix in \eqref{eq:04-ritz} is $\mathsf Y^{\!\top}\Av\mathsf Y=(\Pmat\Vmat\mathsf Y)^{\!\top}\Kmat(\Pmat\Vmat\mathsf Y)$, the Gram matrix of $\Kmat$ in an $\Mmat$-orthonormal basis of $U'$.
-Its eigenvalues are therefore the Rayleigh--Ritz values on $U'$~\cite{parlett1998symmetric}, and by Courant--Fischer on $U'$, $\theta_k=\min_{S\subset U',\,\dim S=k}\max_{0\ne\bm v\in S}\bm v^{\!\top}\Kmat\bm v/\bm v^{\!\top}\Mmat\bm v$.
+Its eigenvalues are therefore the Rayleigh--Ritz values on $U'$~\cite{parlett1998symmetric}, and by Courant--Fischer on $U'$
+\[
+  \theta_k=\min_{\substack{S\subset U'\\ \dim S=k}}\ \max_{0\ne\bm v\in S}\frac{\bm v^{\!\top}\Kmat\bm v}{\bm v^{\!\top}\Mmat\bm v}.
+\]
 
 \emph{Step 3.} $U'\subset W_h$, so this minimum runs over a subfamily of the subspaces in \eqref{eq:04-minmax}; hence $\theta_k\ge\lamh_k$, and $\lamh_1>0$ by (A).
 \end{proof}

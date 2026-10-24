@@ -22,20 +22,19 @@ Of random $\beta=1$ mid-cells, \SI{65.1}{\percent} are accepted (\SI{50}{\percen
 % src: docs/33 §12 "Ölçülenler" (14 half-cells accepted, four rejected before; 65.1 % vs 50 %), §11, §3.1
 
 \paragraph{Fillet floor.}
-A corner radius far below the cavity size forces a curved mesh into many tiny elements (netgen sizes an element on a curved face as about radius over curvature safety) while changing frequencies little.
-Every drawn corner radius is therefore raised to at least $0.05$ times the cavity size (never above the builder's feasible maximum), and re-entrant edges left by boolean operations (port, bore and pipe junctions) are rounded with the same rule; where this fails the solid keeps its sharp edges and its surface peaks are stored as NaN.
-Small fillets drive the element count (e.g.\ $45$k tets at floor $0.02$ against $18$k at $0.08$ for a pillbox cell with pipes; \cref{sec:A05-counts}).
+A corner radius far below the cavity size forces a curved mesh into many tiny elements (netgen sizes an element on a curved face as about radius over curvature safety) while changing frequencies little: for a pillbox cell with pipes the count falls from $45$k to $18$k tets as the floor rises from $0.02$ to $0.08$ (\cref{sec:A05-counts}).
+Every drawn corner radius is therefore raised to at least $0.05$ times the cavity size, and re-entrant edges left by boolean operations are rounded likewise; where OpenCascade fails the solid keeps its sharp edges and its surface peaks are stored as NaN.
 % src: dataset_generator_3d.py min_fillet default 0.05 (labels=field); docs/29 §2.1 table and §2.4; docs/30 §3 (rounding, NaN peaks)
 
 \subsection{Curved meshes}\label{sec:05-mesh}
 
 Netgen generates tetrahedra (curvature safety $2$, grading $0.5$) and bends them onto the CAD surfaces to geometry order three.
-The element quality is the ratio of the minimum to the maximum Jacobian determinant over each element's integration points ($\le0$: folded).
-Frequencies hardly depend on it, wall quantities strongly: on one pillbox cell with pipes (8\,\% fillet floor) a mesh with 9k tets and a minimum ratio of $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and surface peaks off by $100$--$1600\times$; at 16k tets and ratio $0.069$ the errors were $10^{-6}$ in frequency and $2\cdot10^{-6}$ in $\Qz$ (reference: the locally repaired 18k-tet mesh, ratio $0.35$); a mesh at curvature safety $1$ folded.
+Element quality is the ratio of the minimum to the maximum Jacobian determinant over each element ($\le0$: folded).
+Frequencies hardly depend on it, wall quantities strongly: on one pillbox cell with pipes a 9k-tet mesh with minimum ratio $0.010$ gave frequencies within $10^{-5}$ but $\Qz$ off by $50\,\%$ and peaks off by $100$--$1600\times$, whereas at 16k tets and ratio $0.069$ the $\Qz$ error was $2\cdot10^{-6}$ (reference: the locally repaired 18k-tet mesh, ratio $0.35$).
 % src: docs/29 §2.2 table
 
-Meshes are accepted at a ratio of at least $0.05$; elements below $0.1$ are bisected and re-curved (three passes, about $+5\,\%$ tets), and only if that fails the mesh is regenerated with doubled curvature safety (about $3\times$ the tets).
-Draws with more than $30\,000$ tets are rejected and re-drawn.
+Meshes are accepted at a ratio of at least $0.05$; elements below $0.1$ are bisected and re-curved (about $+5\,\%$ tets), and only if that fails is the mesh regenerated with doubled curvature safety (about $3\times$ the tets).
+Draws with more than $30\,000$ tets are re-drawn.
 % src: docs/29 §2.2 (defaults, thresholds, repair), §2.3 (healing), field_labels.py DEFAULTS max_elements 30000
 
 
@@ -56,14 +55,14 @@ Wall loss and surface peaks are first order in the field error at the wall, henc
 Bisection of marked elements on curvature-graded meshes has a closure that explodes: marking 200 of 8109 tets of a pillbox cell with pipes produced $29$k tets ($105$ new per marked tet).
 Each iteration therefore builds a new mesh from an error-equidistributing size field,
 $h_{\mathrm{new},T}=h_T\bigl(\rho\,\overline{\eta^2}/\eta_T^2\bigr)^{1/(2p)}$ with $\eta_T^2=\eta_{\mathrm{vol},T}^2+\eta_{\mathrm{wall},T}^2$, $\rho=0.25$, $h_{\mathrm{new}}/h\in[0.3,1]$ and $p$ the polynomial order, passed to Netgen as local size restrictions at the element centroids.
-The restrictions accumulate over iterations (rebuilding from the latest field alone oscillates); the predicted element count matched Netgen's within $15\,\%$ and is scaled down uniformly if it exceeds the DOF budget.
+The restrictions accumulate over iterations (rebuilding from the latest field alone oscillates), and the predicted element count (accurate to $15\,\%$) is kept within the DOF budget.
 The start mesh is deliberately coarse; its selection rule is shared with the low-fidelity labels (\cref{sec:multifidelity}).
 % src: docs/30 §4; adaptive.py mesh_remesher, size_field
 
 \paragraph{Stopping.}
-Refinement stops when, between two consecutive levels (at least two solves), the relative change of the cluster-mean frequency is below $10^{-6}$ and the relative changes of cluster-mean $\Qz$ and $G$, summed $\RoQ$ (clusters with $\RoQ$ above $1\,\%$ of the largest) and maximum $\Epk$, $\Bpk$ are below $10^{-3}$; near-degenerate modes (spacing $<10^{-3}$) are grouped so the test does not depend on the rotation inside a pair.
-Otherwise it stops when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}) or after eight levels; peaks are left out for samples with sharp edges.
-The criterion compares successive levels and is not an error bound; the targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked against closed forms in \cref{sec:05-validation}.
+Refinement stops when, between two consecutive levels (at least two solves), the relative change of the cluster-mean frequency is below $10^{-6}$ and the relative changes of cluster-mean $\Qz$ and $G$, summed $\RoQ$ (clusters with $\RoQ$ above $1\,\%$ of the largest) and maximum $\Epk$, $\Bpk$ are below $10^{-3}$ (near-degenerate modes are grouped).
+Otherwise it stops when the next mesh would exceed the DOF budget (default 900k label DOFs, about \SI{12}{GB}) or after eight levels.
+The criterion compares successive levels and is not an error bound; the accuracy targets (frequency $10^{-5}$, $\Qz$, $G$, $\RoQ$ $0.2\,\%$, peaks $1\,\%$) are checked against closed forms in \cref{sec:05-validation}.
 A budget can bind early: in our controlled experiments the 150k-DOF budget was exhausted after the first order-three solve, so the high-fidelity label there is one order-three solve on the start mesh.
 % src: docs/30 §1, §6; adaptive.py DEFAULTS, invariant_qoi, adaptive_modes; docs/34 §3 (adapt_iters = 1, adapt_stop = budget)
 

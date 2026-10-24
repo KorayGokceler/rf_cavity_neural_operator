@@ -1,0 +1,17 @@
+\section{Start-mesh details for low-fidelity labels}\label{sec:A06-meshes}
+
+On the six test geometries the first version of the $\LF$ generator, which built its mesh with the finer curvature-safety
+setting ($2.0$) only, whereas the adaptive path starts at $1.5$, produced meshes $1.2$--$1.9$ times larger than the
+$\HF$ model meshes ($5.9$k--$12.1$k against $4.8$k--$10.0$k tetrahedra). The cheap labels were therefore costlier than
+necessary and the mesh distribution at training differed from that at inference.
+% src: docs/34 §8.1 (1.2–1.9×, 5.9k–12.1k vs 4.8k–10.0k)
+Merely switching to the coarser setting did not suffice: on geometries where it folds elements the $\LF$ path re-meshed
+with a finer mesh (for one geometry 13.7k tetrahedra), whereas the adaptive path fell back to the default and obtained
+6.9k.
+% src: docs/34 §8.1 (id 3: 13.7k vs 6.9k)
+An earlier measurement had concluded that the $\LF$ mesh does not become smaller whichever meshing parameter is varied
+(curvature safety $1.0$, $1.5$, $2.0$ and two mesh-size factors gave the same tetrahedron count); the cause was the
+mismatched start rule, and the observation is recorded here as a pitfall.
+% src: docs/34 §3 (old observation, corrected in §8.1)
+On the six test geometries the cost ratio $\HF$/$\LF$ with the shared rule is $4.1$ (\SI{779}{s} against \SI{190}{s}).
+% src: docs/34 §8.1

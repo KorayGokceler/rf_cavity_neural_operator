@@ -37,23 +37,19 @@ quality of the projected target rather than of the floor itself.
 \subsection{The shared start mesh}\label{sec:06-mesh}
 
 Comparing or mixing the two fidelities is only meaningful on the same mesh. The adaptive path starts from the curved
-mesh with the first of a list of curvature-safety settings (coarser first, the default $2.0$ as a fallback when
-elements fold; $1.5$ is the coarser setting), and does not retry a finer setting after a mesh that exceeds the
-element limit.
+mesh with the first of a list of curvature-safety settings (the coarser $1.5$ first, the default $2.0$ as a fallback
+when elements fold) and does not retry a finer setting after a mesh that exceeds the element limit; the $\LF$ path
+uses the same rule.
 % src: src/data_gen/field_labels.py start_mesh; docs/34 §8.1
-The first version of our $\LF$ generator used the finer setting only. On six test geometries this gave meshes
-$1.2$--$1.9$ times larger than the $\HF$ model meshes ($5.9$k--$12.1$k against $4.8$k--$10.0$k tetrahedra), so the
-cheap labels were more expensive than necessary and the mesh distribution at training differed from that at
-inference. Merely switching to the coarser setting did not suffice, because the two paths then handled folded elements differently.
-% src: docs/34 §8.1 (1.2–1.9×, 5.9k–12.1k vs 4.8k–10.0k; cs 1.5 alone insufficient)
-An earlier measurement had concluded that the $\LF$ mesh does not shrink whichever meshing parameter is varied;
-this was a misdiagnosis caused by the mismatched start rule, and a pitfall worth recording.
-% src: docs/34 §3 (corrected in §8.1)
-Reusing the start-mesh rule gave meshes identical to the $\HF$ model meshes on 8 of 8 training and 6 of 6 test
-geometries, reduced the mean size over 40 $\LF$ samples from 9404 to 7639 tetrahedra ($-19\,\%$), and raised the
-cost ratio $\HF$/$\LF$ from $2.3$ to $4.3$ (\SI{1242}{s} against \SI{291}{s} on the same eight meshes, two workers on a shared 4-core machine under
-concurrent training load; $4.1$ on the six test geometries).
-% src: docs/34 §8.1 (8/8, 6/6, 9404→7639 −19 %, 1242 s/291 s = 4.3, old ratio 2.3, 779/190 s)
+Our first $\LF$ generator used the finer setting only and produced meshes up to $1.9$ times larger than the $\HF$
+model meshes; an observation that the $\LF$ mesh ``does not shrink'' was a misdiagnosis caused by this mismatch
+(details in \cref{sec:A06-meshes}).
+% src: docs/34 §8.1 (1.2–1.9×), §3 (corrected in §8.1)
+With the shared rule the meshes are identical to the $\HF$ model meshes on 8 of 8 training and 6 of 6 test geometries,
+the mean size over 40 $\LF$ samples drops from 9404 to 7639 tetrahedra ($-19\,\%$), and the cost ratio
+$\HF$/$\LF$ rises from $2.3$ to $4.3$ (\SI{1242}{s} against \SI{291}{s} on the same eight meshes, two workers on a
+shared 4-core machine under concurrent training load).
+% src: docs/34 §8.1 (8/8, 6/6, 9404→7639 −19 %, 1242 s/291 s = 4.3, old ratio 2.3)
 With the budget used here (at most 150\,000 label DOFs) the first order-3 solve exhausts the budget, so the
 ``adaptive'' $\HF$ label is a single order-3 solve on the start mesh; with a larger budget the $\HF$ model mesh may
 be a refined level and the meshes would differ.
@@ -80,10 +76,6 @@ $\LF$ against $\HF$). Wall-dominated quantities differ much more than frequency,
 \begin{tabular}{@{}lc@{}}
 \toprule
 Quantity & Range \\
-\midrule
-Frequency, modes 0--3 & $+0.004$ to $+0.047\,\%$ \\ % src: docs/34 §8.1
-Field, $M$-norm distance of the $\HF$ mode to the $\LF$ span & $0.08$ to $0.32\,\%$ \\ % src: docs/34 §8.1
-\midrule
 $\RoQ$ & $|\Delta|\le 0.04\,\%$ \\ % src: docs/34 §3 table (−0.005, +0.001, −0.039, +0.003 %)
 $\Qz$ & $-0.76$ to $-1.37\,\%$ \\ % src: docs/34 §3 table
 $\Epk/\Eacc$ & $-28$ to $+6.2\,\%$ \\ % src: docs/34 §3 table (+6.2, −28, −4.2, −13.6 %)

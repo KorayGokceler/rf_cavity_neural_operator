@@ -224,6 +224,9 @@ python scripts/eval_fidelity.py --ckpt lf_best.ckpt --data hf.h5 --spaces native
   - Val = test geometrilerinin 3'ü; yalnız izleme için kullanıldı.
   - Kurulum: `data_path` = test dosyası, `train_ratio 0`, eğitim verisi `train_extra` (glob ya da dizin).
 
+İstatistikler: |f hatası| ortalama / medyan / maksimum, 6 geometri × modlar 0–3 = 24 değer üzerinden; alan rel-L2,
+6 geometri × modlar 0–2 = 18 değerin ortalaması (M-normu, işaretten bağımsız).
+
 | kol | eğitim verisi | etiket maliyeti [s] | adım | \|f hatası\| ort. / medyan / maks. [%] | alan rel-L2 (mod 0–2) |
 |---|---|---|---|---|---|
 | A | HF 8 | 1242 | 15 × 40 | 1,66 / 1,11 / 8,11 | 0,050 |
