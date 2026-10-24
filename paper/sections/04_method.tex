@@ -50,7 +50,7 @@ It predicts $m$ vector fields $\bm\psi_1,\dots,\bm\psi_m$ on the geometry; a fix
 Let $\mathcal T_h$ be the curved mesh of $\Omega$ with $N_t$ elements and $\Vh$ the Nédélec space of order $p$ on it.
 The tokens are the $N=N_t\,n_q$ quadrature points $\bm x_q$ of a reference rule of degree $2p$ on every element, $n_q=14$ at $p=2$ and $n_q=24$ at $p=3$.
 % src: src/data_gen/highorder.py _quadrature (IntegrationRule(TET, 2*order)); n_q = 14, 24 checked with NGSolve 6.2; docs/34 §4.2
-Vertex tokens are avoided because coarse curved meshes can have no interior vertex, where vertex features such as the torsion function are $0/0$.
+Vertices are avoided because coarse curved meshes can have no interior vertex (torsion function $0/0$).
 % src: docs/28 §2, §3
 Each token carries nine features on the curved geometry (normalised coordinates): position, wall distance, unit vector to the nearest wall point, point volume (quadrature weight over its maximum) and the torsion function $\chi$ ($-\Delta\chi=1$, $\chi=0$ on $\partial\Omega$, solved in the order-$(p+1)$ $H^1_0$ space on the same mesh, normalised by its maximum).
 % src: src/data_gen/highorder.py point_features, wall_features; docs/28 §2
@@ -111,7 +111,7 @@ A cheap diagonal penalty on the gradient content instead of the projection was m
 % src: docs/31 §3.5 (penalty vs projection ablation, owned by 07)
 Since $\mathsf B\mapsto\mathsf Z$ is the symmetric operator $\Kp^{-1}$, its backward pass is one more solve with the same matrix, $\bar{\mathsf B}=\Kp^{-1}\bar{\mathsf Z}$, implemented as a custom PyTorch~\cite{paszke2019pytorch} autograd function instead of differentiating through the iterations.
 % src: src/models/hcurl.py KpSolve
-The trunk costs $O(Nd^2L)$ per geometry, linear in the number of tokens, whereas the float64 CG solves (forward and backward) dominate: one training step of the default-size model (not the one of the experiments) on a $13$k-tetrahedron mesh ($183$k tokens, order two) took about $22$\,s on four CPU threads; sizes and timings are in \cref{sec:A04-cost}.
+The trunk costs $O(Nd^2L)$ per geometry; the float64 CG solves dominate (about $22$\,s per training step of the default-size model, not the one of the experiments, on a $13$k-tetrahedron mesh with $183$k tokens at order two, four CPU threads; \cref{sec:A04-cost}).
 % src: docs/28 §4 "Measured per step" (13k tets, 183k tokens, CPU, 4 threads: step ~22 s); docs/28 §4 ("p3 is impractical for training")
 
 \subsection{Rank-revealing Rayleigh--Ritz layer}\label{sec:04-ritz}
@@ -176,15 +176,15 @@ The Ritz error $\theta_k-\lamh_k\ge0$ is controlled by the energy-norm best-appr
 \begin{remark}[Inexact projection]\label{rem:04-inexact}
 \Cref{prop:upper-bound} is exact for an exact $\mathsf Z$; the CG solve stops at a relative residual $\tau=10^{-8}$.
 The numerator of the Rayleigh quotient is unaffected ($\Av=\Vmat^{\!\top}\Kmat\Vmat$ is evaluated directly and $\Kmat\Gmat=0$); only $\Mdiv$ is perturbed, by a relative amount $\bar\eta$ that can be computed a posteriori, and then $\tilde\theta_k\ge\lamh_k/(1+\bar\eta)$ if $\bar\eta<1$ (\cref{sec:A04-inexact}).
-So for the implemented projection the bound holds up to a relative error $\bar\eta$; in a stress test with synthetic bases on two meshes, $\bar\eta\approx(1\text{--}3)\,\tau$ ($\approx10^{-8}$ at the shipped $\tau$), and the a~posteriori guarantee held in every run with $\bar\eta<1$.
-The plain bound $\theta_k\ge\lamh_k$ was violated only for bases with a gradient admixture, by up to $1.5\times10^{-8}$ (relative) at gradient mass fraction $0.99$ and $2\times10^{-11}$--$1.4\times10^{-10}$ at $0.5$, far below the model error, and not for exact eigenvectors with noise or for random bases.
+So for the implemented projection the bound holds up to a relative error $\bar\eta$; in a stress test with synthetic bases on two meshes $\bar\eta\approx(1\text{--}3)\,\tau$ ($\approx10^{-8}$ at the shipped $\tau$), and the a~posteriori guarantee held in every run with $\bar\eta<1$.
+The plain bound $\theta_k\ge\lamh_k$ was violated only for bases with a gradient admixture, by up to $1.5\times10^{-8}$ (relative; gradient mass fraction $0.99$) and $2\times10^{-11}$--$1.4\times10^{-10}$ (fraction $0.5$), far below the model error.
 The rule that discards directions with tiny divergence-free fraction protects only for $\tau\lesssim10^{-6}$: at $\tau=10^{-4}$ pure-gradient columns survive it ($\bar\eta=1$, $\theta\approx0$).
-In the equal-cost study the smallest margin $f_{\rm model}/f_{\rm FE}-1$ over all arms, geometries and modes was $+0.47\,\%$, and in the other studies all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space (the stress test and its tables are in \cref{sec:A04-stress}).
+In the equal-cost study the smallest margin $f_{\rm model}/f_{\rm FE}-1$ over arms, geometries and modes was $+0.47\,\%$; the stress test is in \cref{sec:A04-stress}.
 % src: docs/35 §2 (eta-bar approx 1-3 tau; violations up to -1.5e-8 at gamma 0.99, -2e-11..-1.4e-10 at gamma 0.5, shipped tau; drop rule fails at tau=1e-4); docs/34 §8.2 (at least +0.47 %); docs/34 §4.1-§4.2 quote no number
 \end{remark}
 
 \paragraph{Space independence.}\label{rem:04-space}
-The network sees only points, features and quadrature weights, and the Ritz layer needs only $\Kmat,\Mmat,\Gmat,\Kp$ and the maps $\Cmat,\mathsf F$ of the space it runs in, so the same weights can be run on another conforming space (order three on the same mesh, or a refined mesh) by rebuilding these operators; the Ritz values then bound the discrete eigenvalues of \emph{that} space (in the transfer study all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space, \cref{sec:experiments}).
+The network sees only points, features and weights, and the Ritz layer needs only $\Kmat,\Mmat,\Gmat,\Kp,\Cmat,\mathsf F$ of the space it runs in, so the same weights can be run on another conforming space (order three, or a refined mesh) by rebuilding these operators, and the Ritz values then bound the discrete eigenvalues of \emph{that} space (in the transfer study all predicted eigenvalues lay above the finite-element eigenvalue of the evaluated space, \cref{sec:experiments}).
 % src: docs/34 §4.2 (no number quoted: units slip in the doc)
 
 \subsection{Losses}\label{sec:04-loss}

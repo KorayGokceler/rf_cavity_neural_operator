@@ -23,7 +23,7 @@ The drop rule for near-gradient directions protects only for $\tau_{\mathrm{CG}}
 It is an index-wise bound on discrete eigenvalues, not a mode identity or an accuracy bound.
 
 \paragraph{Low-fidelity labels, and where the approach could pay off.}
-The Ritz layer reaches exactly the eigenvalues of the low-fidelity (LF) solve, which makes LF labels natural (\cref{sec:multifidelity}); here LF and HF labels differ by at most \SI{0.047}{\percent} (frequency) and \SI{0.32}{\percent} (field), 30--300 times less than the model error, so the study does not probe the regime where label type matters. % src: docs/34 §8.1; referee §E
+The Ritz layer reaches exactly the eigenvalues of the low-fidelity (LF) solve, which makes LF labels natural (\cref{sec:multifidelity}); here LF and HF labels differ by at most \SI{0.047}{\percent} (frequency) and \SI{0.32}{\percent} (field), one to two orders of magnitude less than the model error, so the study does not probe the regime where label type matters. % src: docs/34 §8.1; referee §E
 They do differ on wall-dominated quantities (\cref{sec:multifidelity}), so HF labels remain necessary for such losses and for test sets.
 We have not shown an advantage over parametric regression on one low-dimensional family or over direct finite elements at about $10^4$ tetrahedra. We hypothesise, without evidence yet, that it may pay off for geometry sets without a shared low-dimensional parametrisation (arbitrary CAD), for predicted fields and figures of merit with a guaranteed eigenvalue ordering, for warm starts of large finite-element solves, and for larger meshes and GPUs.
 
