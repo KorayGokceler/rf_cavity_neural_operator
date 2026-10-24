@@ -116,6 +116,8 @@ def main():
     ap.add_argument("--config", default="configs/field_3d.yaml")
     ap.add_argument("--cprofile", action="store_true")
     ap.add_argument("--grad_checkpoint", action="store_true", help="model.eigenspace.grad_checkpoint = true")
+    ap.add_argument("--no_stored_features", action="store_true",
+                    help="compute the token wall-distance / torsion features instead of reading qfeat_wall")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
@@ -139,7 +141,9 @@ def main():
     _, center, scale = normalise(Xv, tets)
 
     t = clock()
-    ops = ho.field_operators(mesh, order=rec["model_order"], scale=scale, center=center)
+    wall = None if a.no_stored_features else rec.get("wall_feat")
+    res["stored_features"] = wall is not None
+    ops = ho.field_operators(mesh, order=rec["model_order"], scale=scale, center=center, wall_feat=wall)
     res["t_operators"] = clock() - t
     res["rss_after_operators_gb"] = peak_rss_gb()
     if a.cprofile:
@@ -160,7 +164,8 @@ def main():
 
     K = int(rec["u_model"].shape[1])
     t = clock()
-    item = field_item(ops, rec["u_model"], rec["freqs"][:K], None, rec.get("shape_type", ""), check=False)
+    item = field_item(ops, rec["u_model"], rec["freqs"][:K], None, rec.get("shape_type", ""), check=False,
+                      with_ct=True)
     t_item = clock()
     batch = field_collate([item])
     res["t_item"], res["t_collate"] = t_item - t, clock() - t_item
@@ -214,7 +219,8 @@ def main():
           f"{res['n_modes']} modes; {res['n_params'] / 1e6:.3f} M parameters; {res['device']}, {a.threads} threads")
     print(f"nnz: " + ", ".join(f"{k} {v / 1e6:.2f}M" for k, v in res["nnz"].items()))
     print(f"data   mesh (generator, from CAD) {res['t_mesh_generator']:6.2f} s | rebuild from .vol {res['t_mesh_rebuild']:.2f} s")
-    print(f"       field_operators            {res['t_operators']:6.2f} s | peak RSS {res['rss_after_operators_gb']:.2f} GB")
+    print(f"       field_operators            {res['t_operators']:6.2f} s (token features "
+          f"{'read from the H5' if res['stored_features'] else 'computed'}) | peak RSS {res['rss_after_operators_gb']:.2f} GB")
     print(f"       field_item / collate       {res['t_item']:6.2f} / {res['t_collate']:.2f} s | to {res['device']} {res['t_to_device']:.2f} s")
     for i, r in enumerate(res["infer"]):
         print(f"infer  #{i} forward {r['t']:6.2f} s (CG {r['t_cg']:.2f} s, iterations {r['cg_iters']}) | "

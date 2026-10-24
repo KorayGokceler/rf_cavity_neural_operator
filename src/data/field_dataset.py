@@ -61,9 +61,10 @@ def check_labels(ops, Y_field, Y_freq, rtol=1e-8):
         raise ValueError("labels are nonzero on PEC wall DOFs")
 
 
-def field_item(ops, Y_field=None, Y_freq=None, feature_indices=None, shape_type="", check=True):
+def field_item(ops, Y_field=None, Y_freq=None, feature_indices=None, shape_type="", check=True, with_ct=False):
     """Model item from a field_operators dict (normalised geometry).  Labels (DOF vectors of the
-    same HCurl(p) space, frequencies in GHz) are verified against the operators (check_labels)."""
+    same HCurl(p) space, frequencies in GHz) are verified against the operators (check_labels).
+    with_ct: also carry Cᵀ (CSR) for the backward of the DOF map (training; hcurl._SpMM)."""
     if Y_field is not None and check:
         check_labels(ops, Y_field, Y_freq)
     nt, nq = ops["qx"].shape[:2]
@@ -81,6 +82,8 @@ def field_item(ops, Y_field=None, Y_freq=None, feature_indices=None, shape_type=
             "shape_type": str(shape_type)}
     for k in ("M", "K", "G", "Kp", "C"):
         item[k] = ops[k]
+    if with_ct:
+        item["Ct"] = ops["C"].T.tocsr()
     if Y_field is not None:
         Y = torch.as_tensor(np.asarray(Y_field), dtype=torch.float32).reshape(n, -1).clone()
         Y[torch.from_numpy(bnd)] = 0.0
@@ -117,6 +120,9 @@ def field_collate(batch):
                                   batch_first=True)
     # C maps the element-major L2 coefficients (t, c, l); padded elements have QP = 0 → coefficient 0
     out["C"] = _block_diag([it["C"] for it in batch], Nd, Nl)
+    if all("Ct" in it for it in batch):
+        out["Ct"] = _block_diag([it["Ct"] for it in batch], Nl, Nd)       # backward of V = C·coef
+    out["SymmetricMK"] = True       # K, M are exactly symmetric (assembled from one triangle): hcurl.spmm's backward
     if all("Y_field" in it for it in batch):
         out["Y_field"] = pad("Y_field")
         out["Y_freq"] = pad("Y_freq")
@@ -126,6 +132,15 @@ def field_collate(batch):
     if all("Y_qoi" in it for it in batch):
         out["Y_qoi"] = pad_sequence([it["Y_qoi"] for it in batch], batch_first=True, padding_value=float("nan"))
     return out
+
+
+def loader_worker_init(_worker_id=0):
+    """DataLoader worker_init_fn of the field datasets: one NGSolve thread per worker.  Every worker
+    assembles its own operators; with NGSolve's default (all cores) N workers run N × cores busy-waiting
+    threads — 3 workers on 4 cores: 2.1–2.5 s → 1.6 s per batch (docs/31 §3.7).  The operators are the
+    same bit for bit at any thread count."""
+    import ngsolve
+    ngsolve.SetNumThreads(1)
 
 
 def _expand(paths):
@@ -161,7 +176,7 @@ class FieldDataset(Dataset):
     files of a mixed run: the held-out geometries come from data_path)."""
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,
-                 feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False,
+                 feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False, with_ct=None,
                  hf_repeat=1, train_extra=None):
         if augment:
             raise ValueError("FieldDataset: rotation augmentation is not supported (the DOF maps C, QP "
@@ -172,6 +187,7 @@ class FieldDataset(Dataset):
             self.paths = self.paths + [p for p in _expand(train_extra) if p not in self.paths]
         self.split, self.feature_indices, self.rq_rtol = split, feature_indices, float(rq_rtol)
         self.cache_dir = cache_dir
+        self.with_ct = split == "train" if with_ct is None else bool(with_ct)      # Cᵀ for the backward (training only)
         index, freqs, nxt, Ks, types, fids = [], [], [], [], [], []
         self.qoi_names = tuple(default_qoi_names())
         n_main = None
@@ -234,8 +250,7 @@ class FieldDataset(Dataset):
 
     def load(self, g_id):
         """(ops, record) of geometry g_id: field_operators of the rebuilt curved mesh + stored labels."""
-        from src.data.dataset_converter_3d import normalise
-        from src.data_gen.field_labels import read_field_group
+        from src.data_gen.field_labels import model_normalisation, read_field_group
         from src.data_gen.highorder import field_operators
         path, key = self.index[g_id]
         cp = self._cache_path(g_id)
@@ -244,10 +259,11 @@ class FieldDataset(Dataset):
                 return pickle.load(fh)
         with h5py.File(path, "r") as f:
             mesh, rec = read_field_group(f[key])
-        Xv = np.array([tuple(p.p) for p in mesh.ngmesh.Points()], dtype=np.float64)
-        tets = np.array([[v.nr - 1 for v in el.vertices] for el in mesh.ngmesh.Elements3D()], dtype=np.int64)
-        _, center, scale = normalise(Xv, tets)
-        ops = field_operators(mesh, order=rec["model_order"], scale=scale, center=center)
+        center, scale = model_normalisation(mesh)
+        wf = rec.pop("wall_feat", None)             # stored wall-distance / torsion columns, else computed
+        if wf is not None and wf.shape[0] != mesh.ne:
+            raise ValueError(f"{path}/{key}: qfeat_wall has {wf.shape[0]} elements, the mesh {mesh.ne}")
+        ops = field_operators(mesh, order=rec["model_order"], scale=scale, center=center, wall_feat=wf)
         U = rec["u_model"]
         if U.shape[0] != ops["n_dof"]:
             raise ValueError(f"{path}/{key}: {U.shape[0]} label DOFs, the rebuilt HCurl(p={rec['model_order']}) "
@@ -272,7 +288,7 @@ class FieldDataset(Dataset):
         ops, rec = self.load(g_id)
         K = self.n_modes
         item = field_item(ops, rec["u_model"][:, :K], rec["freqs"][:K], self.feature_indices,
-                          rec.get("shape_type", self.shape_types[g_id]), check=False)
+                          rec.get("shape_type", self.shape_types[g_id]), check=False, with_ct=self.with_ct)
         m, sd = self.stats["mean"], self.stats["std"]
         item["Y_freq"] = (item["Y_freq"] - m) / sd
         item["FreqNext"] = torch.tensor((self._next[g_id] - m) / sd, dtype=torch.float32)

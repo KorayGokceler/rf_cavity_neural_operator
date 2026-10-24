@@ -42,7 +42,7 @@ class EigenspaceOperatorField(EigenspaceOperator3D):
             z = torch.cat([z, self.rff(qx.to(z.dtype))], dim=-1)
         psi = self.edge_head(z).view(B, Nt, nq, self.n_basis, 3)
         coef = torch.einsum('btlq,btqmc->btclm', batch['QP'].to(z.dtype), psi)   # [B, Nt, 3, nl, m]
-        V = spmm(batch['C'], coef.reshape(B, -1, self.n_basis).double())
+        V = spmm(batch['C'], coef.reshape(B, -1, self.n_basis).double(), batch.get('Ct'))
         keep = batch['DofMask'] & ~batch['BndDof'].bool()
         return V * keep.unsqueeze(-1).to(V.dtype)
 
