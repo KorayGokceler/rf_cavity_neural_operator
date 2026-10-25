@@ -17,7 +17,6 @@ For Maxwell cavities on parameter-dependent domains the reduced space must be cl
 We keep the Ritz step but replace snapshots by a basis predicted from the geometry, and the gauge by the kernel projection.
 A regressed parametric eigenspace can also hot-start LOBPCG~\citep{fanaskov2025deep,knyazev2001toward}, a use of our model we leave to future work.
 For electromagnetic resonators, supervised networks map the parameters of dielectric-loaded cylindrical cavities to the resonant frequency and mode coefficients~\citep{lewis2022machine}, and deep networks regress photonic-crystal nanocavity quality factors from hole patterns~\citep{asano2019iterative}; both are parametric regressors for a fixed template.
-% TODO pass 3: parametric-regression and coarse-FE baselines (sec:experiments) are positioned here
 A physics-informed network targets the lowest mode of a single 3D RF cavity with a soft divergence-free loss~\citep{shali2024dfsnet}.
 We differ in three respects: the operator is amortised over a family of 3D geometries; the learned object is a basis that is projected onto the discretely divergence-free subspace and fed to Rayleigh--Ritz, so spurious zero modes are excluded by construction rather than penalised; and the Ritz values are upper bounds of the discrete eigenvalues (\cref{prop:upper-bound}).
 

@@ -2,7 +2,7 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-24, dal `claude/field-model`.
+> Son güncelleme: 2026-10-25, dal `claude/field-model`.
 
 ## 1. Durum
 
@@ -363,6 +363,22 @@ ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyon
   `fidelity_weights [1,2]`) train/val/test adımlarını çalıştırıyor. 15 GB'lık makinede `num_workers 8` yükleyici
   işçilerini bellek yetmezliğinden öldürüyor; 1 işçiyle sorunsuz. TRUBA'da işçi sayısını düğüm belleğine göre seçin.
 
+### 3.10 Makale ve hakem kontrolleri (docs/35, `paper/`)
+
+- `paper/`: arXiv taslağı (LaTeX, `latexmk -pdf main.tex`, 39 sayfa, temiz derleme). Bölüm başına ajan yazdı;
+  kurallar `paper/BRIEF.md`, editör notları `paper/EDITOR_NOTES*.md`; kaynakça `python paper/merge_bib.py` ile
+  `paper/bib/*.bib`'den birleşir (80 kaynak, web'de doğrulandı). Yazar adları ve depo erişimi sahibin kararı.
+- Hakem kontrolleri (docs/35, `scripts/paper/`):
+  - (A) ker K = range G: 15 küçük eğri mesh durumunda (p = 1, 2, 3, iki duvarlı kabuk dahil) sağlanıyor.
+  - Ritz üst sınırı: tam aritmetikte kesin; uygulanan CG projeksiyonunda göreli η̄ ≈ (1–3)·τ_CG ≈ 1e-8 kadar
+    delinebiliyor (gradyan karışımlı tabanlarda en kötü −1,5e-8); a posteriori θ ≥ λ_h/(1+η̄) her koşuda tuttu.
+    Düşürme kuralı yalnız τ_CG ≲ 1e-6'da koruyor.
+  - **Karşılaştırmalar (önemli):** tek ailede (6 geometri parametresi) bir GP, ≥ 24 geometriyle modelle aynı ya da
+    daha iyi (LF 40: GP %1,01, model %1,37); model yalnız 8 geometride ~2,3× iyi. Düz FE, model mesh'inde p1 1,7 s'de
+    %1,25, daha kaba mesh'te p2 5,7 s'de %0,037 veriyor; model 8,3 s'de %1,4–1,7. Bu ölçekte modelin hız ya da
+    doğruluk avantajı yok. GP için de LF 8 ≈ HF 8: belirleyici olan geometri sayısı.
+  - docs/34'teki iki birim hatası (+0,006 % / +0,009 %) ve 0,2–0,6 → 0,2–0,7 puan düzeltildi.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -412,7 +428,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 
 | 11 | Etiket üretiminin hızı: iki kez yapılan pahalı işler (uyarlamalı seviyeler, mesh'ler, yeniden yüklemeler); etiketler aynı kalmalı. | ajan "datagen-speed" | worktree → `claude/field-model` | bitti (§3.8): transfer 253→29 s, Kp formu, erken ret; kalan: çözücü (TRUBA ölçümü, Pardiso) |
 | 12 | Eğitim veri yolunun hızı: her epoch'ta yeniden kurulan operatörler ve token özellikleri (açık iş 2'nin devamı). | ajan "train-data-speed" | worktree → `claude/field-model` | bitti (§3.7): özellikler H5'te, hazır devrikler, CG tamponları, işçi iş parçacığı; operatör önbelleği ve Kp Cholesky ölçüldü, alınmadı |
-| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | bitti (docs/34 §8): LF eğitimi eşit ya da düşük maliyette en az HF kadar iyi (tek koşu); LF mesh'i = HF model mesh'i. Açık: kontrollü ince ayar / karışık eğitim, hibrit mod |
+| 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | bitti (docs/34 §8, docs/35): LF eğitimi eşit ya da düşük maliyette HF ile karşılaştırılabilir (tek koşu; GP ve FE karşılaştırmaları modelden iyi, §3.10); LF mesh'i = HF model mesh'i. Açık: kontrollü ince ayar / karışık eğitim, hibrit mod |
 
 1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
