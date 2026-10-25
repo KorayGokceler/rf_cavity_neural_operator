@@ -19,6 +19,18 @@ Evaluation & last checkpoint (no selection), stored model mesh, order-2 space\\
 \end{tabular}
 \end{table}
 
+\subsection{Penalty against kernel projection}\label{sec:A07-penalty}
+The kernel projection could be replaced by a penalty $\Kmat+s\,\Mmat\Gmat\,\mathsf{D}^{-1}\Gmat^{\top}\Mmat$ that raises the gradient directions out of the spectrum, without a CG solve. We tested this on a pillbox with 13\,052 tetrahedra ($s=1964$), for fields with a given gradient mass fraction.
+% src: docs/31 §3.5 (largest relative error vs target eigenvalues: gradient fraction 0 / 1e-6 / 1e-4 / 1e-2; projection 5e-6, 6e-6, 5e-6, 5e-6; penalty 4e-6, 6.6e-4, 6.7e-2, 6.7)
+At fractions $0$, $10^{-6}$, $10^{-4}$ and $10^{-2}$ the largest relative eigenvalue error of the penalty is $4\times10^{-6}$, $6.6\times10^{-4}$, $6.7\times10^{-2}$ and $6.7$, whereas the projection stays at $5\times10^{-6}$ to $6\times10^{-6}$.
+The penalty never gives a lower value than the projection, so an upper bound is retained, but a network output has no reason to keep its gradient content below $10^{-8}$, and the penalty was rejected.
+
+
+\subsection{Ritz-bound stress test}\label{sec:A07-ritz}
+% src: docs/35 §1, §2
+The inexact projection was probed on two LF test meshes (4818 and 6315 tetrahedra, order 2) with $m=12$ columns of exact discrete eigenvectors plus random padding, exact eigenvectors with relative noise, random bases, exact eigenvectors plus a gradient of given mass fraction $\gamma$, and eight pure gradient columns, for CG tolerances $\tau=10^{-4}$ to $10^{-10}$. At the shipped $\tau=10^{-8}$ the bound $\theta_k\ge\lambda_{h,k}$ was never violated for exact eigenvectors with noise or for random bases; violations occurred only with a gradient admixture, at most $1.5\times10^{-8}$ (relative) at $\gamma=0.99$ and $1.4\times10^{-10}$ at $\gamma=0.5$ (a trained basis has about $0.5$--$0.6$ before projection), always within the a posteriori perturbation $\bar\eta\approx(1\text{--}3)\,\tau$. At $\tau=10^{-4}$ violations reach $8\times10^{-5}$ and the drop rule fails for nearly pure gradient directions ($\bar\eta=1$); it protects only for $\tau\lesssim10^{-6}$. Without the projection, gradient-rich bases produce spurious modes (8 for eight gradient columns, none with the projection); random bases do not. Assumption~(A) (kernel of $\Kmat$ equals the range of $\Gmat$) held in 15 cases (five small curved meshes including a two-wall shell, $p=1,2,3$), with kernel eigenvalues below $4\times10^{-16}$ of the largest and the first nonzero above $2.7\times10^{-4}$. The meshes are small (dense eigensolves), the bases synthetic, and mode identity was not tested.
+% src: docs/35 §1, §2
+
 \subsection{An earlier, smaller LF-to-HF study}\label{sec:A07-first}
 % src: docs/34 §3, §4, §4.1, §4.3
 Before this experiment, the same architecture was trained on 14 LF geometries for 30 epochs (two threads, about an hour; LF meshes of the time) and evaluated on four HF geometries (identifiers 3, 5, 10, 13) that were not in training.
@@ -47,7 +59,6 @@ D  & C2 + HF 8 & \multicolumn{6}{c}{not recorded}\\
 \bottomrule
 \end{tabular}
 \end{table}
-% TODO pass 3: per-geometry bar figure paper/figures/equal_cost_per_geometry.pdf (A, B2, C2 per test geometry) -- add \includegraphics here once the file exists
 
 \subsection{Space-transfer study: frequency errors and timings}\label{sec:A07-transfer-freq}
 \begin{table}[t]
