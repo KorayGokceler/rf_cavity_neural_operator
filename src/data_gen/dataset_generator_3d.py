@@ -781,6 +781,8 @@ def generate_field_sample(s_id):
     """Field-label sample (docs/29): the generator geometry, its curved netgen mesh and the HCurl
     labels (field_labels.label_sample) — a failed curved mesh / element budget re-draws."""
     from src.data_gen import field_labels as fl
+    t0 = time.perf_counter()
+    print(f"sample {s_id}: started", flush=True)
     with tempfile.TemporaryDirectory() as tmp:
         cad = os.path.join(tmp, "solid.brep")
         post = lambda path, h, dmap, st, prm: fl.label_sample(  # noqa: E731
@@ -789,6 +791,9 @@ def generate_field_sample(s_id):
         g = mesh_sample(s_id, cad_path=cad, post=post)
         _save_step(g, s_id)
     lab = g["post"]
+    at = lab["attrs"]
+    print(f"sample {s_id}: done in {time.perf_counter() - t0:.0f} s ({g['shape_type']}, {at.get('n_dof_label', 0)} label "
+          f"DOF, {at.get('adapt_iters', 1)} level(s), stop {at.get('adapt_stop', 'single solve')})", flush=True)
     return {"id": s_id, "labels": "field", "field": lab, "freqs": lab["freqs"], "freq_next": lab["freq_next"],
             "shape_type": g["shape_type"], "geom_params": g["params"], "mesh_h": float(g["h"]),
             "volume": float(g["volume"]), "t_mesh": g["t_mesh"] + lab["attrs"]["t_curved_mesh"],
@@ -897,7 +902,8 @@ def write_sample(f_h5, res):
     return g
 
 
-def _run_chunk(pool, chunk_range, timeout):
+def _run_chunk(pool, chunk_range, timeout, on_result=None):
+    """Run the samples of one chunk; on_result(result or None) after each one (progress)."""
     handles = [(s_id, pool.apply_async(generate_sample_data, (s_id,))) for s_id in chunk_range]
     results, hung = [], []
     for s_id, h in handles:
@@ -906,6 +912,8 @@ def _run_chunk(pool, chunk_range, timeout):
         except MPTimeoutError:
             print(f"Sample {s_id} timed out after {timeout:.0f}s, skipped.")
             hung.append(s_id)
+        if on_result is not None:
+            on_result(results[-1] if not hung or hung[-1] != s_id else None)
     return results, hung
 
 
@@ -964,7 +972,15 @@ def main(argv=None):
                 f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
             chunk = 4 * n_workers
             for i in range(0, len(ids), chunk):
-                results, hung = _run_chunk(pool, ids[i:i + chunk], ARGS.sample_timeout)
+                seen = {"n": 0, "ok": 0}
+
+                def progress(res, i=i, seen=seen):     # per sample, before the chunk is written (UI progress bar)
+                    seen["n"] += 1
+                    seen["ok"] += res is not None
+                    if seen["n"] < min(chunk, len(ids) - i):
+                        print(f"  {i + seen['n']}/{len(ids)} done ({n_ok + seen['ok']} ok, "
+                              f"{n_fail + seen['n'] - seen['ok']} failed)", flush=True)
+                results, hung = _run_chunk(pool, ids[i:i + chunk], ARGS.sample_timeout, on_result=progress)
                 if hung:
                     pool.terminate()
                     pool = new_pool()
