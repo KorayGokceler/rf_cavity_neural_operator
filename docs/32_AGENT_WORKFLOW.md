@@ -13,8 +13,8 @@
 | `docs/32_AGENT_WORKFLOW.md` | sen ve entegratör | bu rehber |
 | `CLAUDE.md` | Claude Code | `AGENTS.md`'yi içe aktarır, Claude'a özel notlar |
 | `.claude/settings.json` | Claude Code | izinler: güvenli komutlar sorulmadan çalışır, yıkıcı komutlar engellenir |
-| `.claude/agents/*.md` | Claude Code | alt ajanlar: `explorer`, `numerics-check`, `ui`, `physics-review` |
-| `.claude/skills/*/SKILL.md` | Claude Code | komutlar: `/task`, `/verify`, `/handoff` |
+| `.claude/agents/*.md` | Claude Code | 8 alt ajan (§3.1): `explorer`, `numerics-check`, `physics-review`, `ui`, `label-pipeline`, `trainer`, `truba-ops`, `docs-writer` |
+| `.claude/skills/*/SKILL.md` | Claude Code | 8 komut (§3.2): `/task`, `/verify`, `/handoff`, `/experiment`, `/measure`, `/cst-compare`, `/truba-run`, `/new-family` |
 | `scripts/agent_worktree.sh` | herkes | ajan başına ayrı dal + çalışma kopyası (git worktree) |
 
 ## 2. Kendi bilgisayarında kurulum
@@ -37,8 +37,9 @@ python -m pytest -q tests/test_field_model.py  # ortam çalışıyor mu
 3. Giriş yap: abonelikle `/login`, ya da API anahtarı kullanacaksan `ANTHROPIC_API_KEY` ortam değişkeni.
 4. Model ve efor seç: `/model` (fable, opus, sonnet, haiku), `/effort`.
 5. Kontrol et:
-   - `/agents` → dört alt ajan görünmeli;
-   - `/` yazınca `task`, `verify`, `handoff` komutları listelenmeli.
+   - `/agents` → sekiz alt ajan görünmeli;
+   - `/` yazınca `task`, `verify`, `handoff`, `experiment`, `measure`, `cst-compare`, `truba-run`, `new-family`
+     komutları listelenmeli.
 6. Kişisel ayarlar `.claude/settings.local.json` dosyasına gider (git'e girmez). `.claude/settings.json`
    herkes için ortaktır; değiştirirken commit et.
 
@@ -64,6 +65,32 @@ araçlarda bir şey yapmaz; kurallar zaten `AGENTS.md`'de.
 | **İnceleyici** | diff'i temiz bağlamla inceler | uygulayıcıdan **farklı** bir model ya da sağlayıcı; Claude içinde `physics-review` |
 | **Doğrulayıcı** | testleri ve analitik kontrolü çalıştırır, sayıları raporlar | `numerics-check` / `ui` alt ajanları ya da `/verify` |
 | **Kaşif** | kod arama, uzun log özetleme | ucuz model; Claude'da `explorer` (Haiku 5.5) |
+
+### 3.1 Alt ajanlar (`.claude/agents/`)
+
+| ajan | ne zaman | yazar mı | model |
+|---|---|---|---|
+| `explorer` | kod arama, bir değerin hat boyunca izlenmesi, uzun log / belge özeti | hayır | ucuz |
+| `numerics-check` | çözücü, etiket, operatör, model, kayıp, QoI değişikliğinden sonra testler + analitik pillbox + Ritz sınırı kontrolleri; yalnız rapor | hayır | orta |
+| `physics-review` | commit'ten önce diff'in fizik / sayısal yöntem incelemesi (değişmezler) | hayır | en güçlü |
+| `ui` | web arayüzü: değişiklik, derleme, Playwright tarayıcı kontrolü, ekran görüntüleri, süreler | evet | orta |
+| `label-pipeline` | geometri ailesi → eğri mesh → p3 etiket → H5; hatalı / yavaş örnekler, STEP; üreteç davranışı sahibin onayıyla | evet | orta |
+| `trainer` | eğitim ve değerlendirme, kontrollü deneyler, taban çizgileri (GP, kaba FE) | evet | orta |
+| `truba-ops` | TRUBA betikleri, kaynak planı, `--dry-run`, log okuma; iş göndermez | evet | orta |
+| `docs-writer` | numaralı belgeler, docs/31, makale (LaTeX); her sayının kaynağı | evet | orta |
+
+### 3.2 Komutlar (`.claude/skills/`)
+
+| komut | ne yapar |
+|---|---|
+| `/task` | işi başlatır: oku, yeniden ifade et, dal, plan + kabul ölçütleri, onay bekle |
+| `/verify` | değişen yollara göre kontrolleri seçer ve sayıları raporlar |
+| `/handoff` | oturum sonunda docs/31'i günceller |
+| `/experiment` | kontrollü eğitim deneyi: soru ve kollar önce, kimliğe göre bölme, tohumlar, taban çizgileri, docs/34–35'e kayıt |
+| `/measure` | önce / sonra süre ve bellek: sabit girdi, ısınma, ≥ 5 koşu, iş parçacığı denetimi, tablo |
+| `/cst-compare` | CST kıyası: kalibrasyon seti, CST ayarları, kural farkları (R/Q, L_acc), tablolar |
+| `/truba-run` | TRUBA koşusu hazırlar: kaynaklar ölçümden, `--dry-run`, sahibe komutlar, log takibi |
+| `/new-family` | yeni geometri ailesi: kurucu, sabit kimlik bloğu, testler, belgeler (sahibin onayıyla) |
 
 İlkeler:
 - **Farklı modeller farklı hataları yakalar.** Çok modelli kurulumun asıl getirisi çapraz inceleme.
