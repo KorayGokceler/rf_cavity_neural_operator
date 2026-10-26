@@ -324,9 +324,10 @@ docker compose up --build                                                 # http
 
    Her adım yapılmışsa atlanır: aynı VM'de yeniden çalıştırmak saniyeler sürer.
 3. Checkpoint: `CHECKPOINT = "auto"` → `<DRIVE_DIR>/training_logs` altında en yeni `.ckpt`'yi içeren eğitim (o klasörde en iyi `val_rel_l2`, yoksa `last.ckpt`). Bulunamaz ya da yüklenemezse eğitilmemiş demo modeli + arayüzde uyarı (`--checkpoint_optional`, `RFCAV_CHECKPOINT_OPTIONAL=1`).
-4. Sunucu: `--data <DRIVE_DIR>` (Drive'daki PKL / H5'ler) + `--gen_root <GEN_DIR>` + `--runs_root <DRIVE_DIR>/training_logs` (eğitim) + tünel + QR. `GEN_DIR`, `DRIVE_DIR`'in içindeyse oradaki datasetler yalnız bir kez, `generated/…` adıyla listelenir.
+4. Sunucu: `--data <DATA_DIRS>` (varsayılan hücrede `[GEN_DIR]`; `[DRIVE_DIR]` verilirse Drive'daki bütün PKL / H5'ler) + `--gen_root <GEN_DIR>` + `--runs_root <DRIVE_DIR>/training_logs` (eğitim) + tünel + QR. `GEN_DIR`, `DRIVE_DIR`'in içindeyse oradaki datasetler yalnız bir kez, `generated/…` adıyla listelenir.
 
 Colab notları:
+- **Açılış yavaşsa:** Dataset sayfası açılışta `DATA_DIRS`'i 5 seviye derinliğe kadar tarar ve her H5 klasörünün ilk dosyasını açar; Drive bir ağ diski olduğundan çok parçalı büyük bir klasör dakikalar sürer. Yalnız gereken klasörü verin (`DATA_DIRS = [GEN_DIR]`). `CHECKPOINT = "auto"` da `training_logs`'u özyinelemeli tarar ve checkpoint'i Drive'dan yükler; model gerekmiyorsa (ör. CST kıyası) `CHECKPOINT = ""`. Yeni bir VM'de ilk kurulum (apt, pip, Node.js, `npm ci`, derleme) birkaç dakika sürer; aynı VM'de tekrar çalıştırmak saniyeler.
 - Sekme açık kalmalı. Boşta kalan oturumu Colab kapatır; kapanırsa hücreyi yeniden çalıştırıp aynı işi başlat (bitmiş parçalar atlanır, yarım parça baştan üretilir).
 - Üretim süresi çekirdek sayısıyla ölçeklenir: arayüzdeki tahmin, sunucunun gördüğü çekirdek sayısını kullanır.
 - Alan etiketlerinde işçi × thread, VM'nin çekirdeğinden ve belleğinden otomatik planlanır (§3c). Örnek:

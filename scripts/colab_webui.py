@@ -86,6 +86,9 @@ def main(argv=None):
     ap.add_argument('--tunnel', action='store_true', help='public HTTPS link + QR code (phone)')
     ap.add_argument('--port', type=int, default=8000)
     ap.add_argument('--skip_install', action='store_true', help='no apt / pip / node (already set up)')
+    ap.add_argument('--data', nargs='*', default=None,
+                    help='dataset folders the Dataset page scans (default: the whole <drive_dir>; on a large Drive '
+                         'folder pass only the ones you need, e.g. <gen_dir>, since scanning Drive is slow)')
     args = ap.parse_args(argv)
 
     drive = os.path.abspath(args.drive_dir)
@@ -97,10 +100,13 @@ def main(argv=None):
         node()
     os.makedirs(gen, exist_ok=True)
     print(f'Drive: {drive}\n  generated datasets → {gen}\n  training runs      → {drive}/training_logs')
+    if args.data:
+        print('  Dataset page scans → ' + ', '.join(args.data))
 
     import serve_web
     runs = os.path.join(drive, 'training_logs')
-    cmd = ['--data', drive, '--gen_root', gen, '--runs_root', runs, '--port', str(args.port), '--checkpoint_optional']
+    data = [os.path.abspath(d) for d in args.data] if args.data else [drive]
+    cmd = ['--data', *data, '--gen_root', gen, '--runs_root', runs, '--port', str(args.port), '--checkpoint_optional']
     if args.checkpoint == 'auto':
         cmd += ['--checkpoint', 'auto', '--ckpt_search', runs]
     elif args.checkpoint:
