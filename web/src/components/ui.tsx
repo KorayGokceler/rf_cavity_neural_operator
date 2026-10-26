@@ -1,6 +1,7 @@
 // Small shared controls of the design system: segmented control, icon button, collapsible section, popover menu,
 // validated number field. No UI library; styles in styles.css.
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import Icon, { type IconName } from './Icon';
 import { useOverlay } from '../overlay';
 import { t, type Lang } from '../i18n';
@@ -67,34 +68,48 @@ export function Collapsible({ title, defaultOpen = true, children, actions, clas
   );
 }
 
-/** Button with a popover panel; closes on an outside click and on Esc (also via the overlay stack). */
+/** Button with a popover panel (in a portal, positioned from the button: no parent clips it); closes on an
+ *  outside click, on scroll / resize and on Esc (also via the overlay stack). */
 export function Menu({ icon, label, text, children, testid, align = 'start', active, disabled, tone }: {
   icon: IconName; label: string; text?: string; children: ReactNode | ((close: () => void) => ReactNode);
   testid?: string; align?: 'start' | 'end'; active?: boolean; disabled?: boolean; tone?: 'warn';
 }) {
   const [open, setOpen] = useState(false);
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
   const box = useRef<HTMLDivElement>(null);
-  const close = () => setOpen(false);
+  const panel = useRef<HTMLDivElement>(null);
+  const close = () => { setOpen(false); setAt(null); };
   useOverlay(open, close);
   useEffect(() => {
     if (!open) return;
-    const down = (e: PointerEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false); };
+    const down = (e: PointerEvent) => {
+      const n = e.target as Node;
+      if (box.current?.contains(n) || panel.current?.contains(n)) return;
+      close();
+    };
     window.addEventListener('pointerdown', down);
-    return () => window.removeEventListener('pointerdown', down);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('pointerdown', down); window.removeEventListener('resize', close); };
   }, [open]);
+  useLayoutEffect(() => {                               // below the button, kept inside the window
+    if (!open || !box.current || !panel.current) return;
+    const r = box.current.getBoundingClientRect(), pw = panel.current.offsetWidth, ph = panel.current.offsetHeight;
+    const left = align === 'end' ? r.right - pw : r.left;
+    const top = r.bottom + 6 + ph > window.innerHeight - 8 ? Math.max(8, r.top - 6 - ph) : r.bottom + 6;
+    setAt({ top, left: Math.min(Math.max(8, left), Math.max(8, window.innerWidth - pw - 8)) });
+  }, [open, align]);
   return (
     <div className="menu" ref={box}>
       <button type="button" className={`ibtn ${tone ?? ''} ${(active || open) && !tone ? 'on' : ''} ${text ? 'with-text' : ''}`} title={label}
               aria-label={label} aria-haspopup="true" aria-expanded={open} disabled={disabled} data-testid={testid}
-              onClick={() => setOpen(!open)}>
+              onClick={() => (open ? close() : setOpen(true))}>
         <Icon name={icon} />{text && <span>{text}</span>}<Icon name="down" size={12} className="caret" />
       </button>
-      {open && (
-        <div className={`menu-panel ${align}`} role="dialog" aria-label={label}
-             onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); } }}>
+      {open && createPortal(
+        <div className="menu-panel" ref={panel} role="dialog" aria-label={label} style={at ? { top: at.top, left: at.left } : { top: 0, left: 0, visibility: 'hidden' }}
+             onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } }}>
           {typeof children === 'function' ? children(close) : children}
-        </div>
-      )}
+        </div>, document.body)}
     </div>
   );
 }

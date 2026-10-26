@@ -76,7 +76,6 @@ export default function DisplayToolbar(p: ToolbarProps) {
             </div>
           )}
         </Menu>
-        {p.extra}
       </div>
       <div className="tb-row sliders">
         {showPos && (
@@ -100,6 +99,7 @@ export default function DisplayToolbar(p: ToolbarProps) {
           <IconButton icon={p.playing ? 'pause' : 'play'} label={t(lang, 'playTip')} active={p.playing} disabled={!p.canPlay}
                       onClick={() => p.setPlaying(!p.playing)} testid="play" className="play" />
         )}
+        {p.extra && <div className="tb-tools">{p.extra}</div>}
       </div>
     </div>
   );

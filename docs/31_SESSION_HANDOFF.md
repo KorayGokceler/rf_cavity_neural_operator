@@ -2,7 +2,7 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-25, dal `claude/field-model`.
+> Son güncelleme: 2026-10-26, dal `claude/field-model`.
 
 ## 1. Durum
 
@@ -49,6 +49,22 @@ CAD → eğri mesh → token'lar: tet başına 14 kuadratür noktası, 9 özelli
 
 Tablo docs/26 §2'de. Özet: mod, faz, E/H ve kesit değişimleri artık ağa gitmiyor. 10 adımlık hacim
 faz taraması 6,2 s → 0,65 s.
+
+**Arayüz yeniden tasarımı (CAD / mühendislik aracı görünümü, 3 aşama; ayrıntı docs/26 §3):**
+- Aşama 1 kabuk ve çalışma alanı: gezinme çubuğu, üst çubuk (uyarılar çipte), tuval + yüzen araç çubuğu, daraltılabilir
+  Geometri paneli / denetçi / eksen doku, durum çubuğu, telefonda alt gezinme + alttan sayfalar, tasarım belirteçleri
+  (açık + koyu), "Gelişmiş" grupları, satır içi doğrulama, Üretim sayfasında varsayılan etiket = alan.
+- Aşama 2 kısayollar (`?` yardım), dosya sürükle-bırak, bildirimler (geometri, tahmin, üretim / eğitim işleri), son 8 geometri.
+- Aşama 3 PNG (renk çubuğu + başlık + gösterge) ve CSV dışa aktarma, nokta okuyucu (kesitte, faz uygulanmış), renk ölçeği
+  (kilit / elle / log), iki görünüm (bağlı kameralar).
+- Ölçüm (48 852 tetlik örnek, yazılım GL, dönüşümlü 5 + 5 çalıştırmanın medyanı, eski → yeni, ağ isteği 0): mod değiştir (kesit)
+  136 → 128 ms, E↔H 114 → 145, kesit konumu 105 → 117, 3B hacme geç 540 → 499, mod (hacim + oklar) 205 → 227, faz adımı
+  (hacim + oklar) 187 → 204 ms. JS payı eşit (E↔H 11 ms, faz adımı ≈ 14 ms); fark yazılım GL'de (tuval %12 daha büyük, bileşik
+  katman sayısı arttı). E↔H'deki +%27 açık bir gerileme: GPU'lu makinede yeniden ölçülmeli.
+- Ders: tuvalin yanındaki panellere `will-change: transform` verilmeden mod değiştirmek 2,5× yavaştı (yan panel DOM'u bütün
+  sayfayı yeniden boyuyordu, yazılım GL'de ölçüldü). Yeni bir yan panel eklerken aynı yöntemle tekrar ölçün.
+- Doğrulanmadı: gerçek GPU'da zamanlama (yerleşimin GPU'su yok), gerçek bir telefonda dokunmatik kullanım. Dataset tablosu
+  390 px'te kendi içinde yatay kayıyor (sayfa taşmıyor). `tests/test_service_api.py` 8/8.
 
 ### 3.2 Bir eğitim adımı (CPU, 4 iş parçacığı)
 

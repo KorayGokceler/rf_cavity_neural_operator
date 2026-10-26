@@ -14,6 +14,7 @@ import vtkGlyph3DMapper from '@kitware/vtk.js/Rendering/Core/Glyph3DMapper';
 import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
 import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
 import vtkArrowSource from '@kitware/vtk.js/Filters/Sources/ArrowSource';
+import vtkSphereSource from '@kitware/vtk.js/Filters/Sources/SphereSource';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
@@ -49,7 +50,15 @@ interface Props {
   neutralPlane?: boolean;                   // plane drawn in one neutral tone (overlays carry the content)
   cells?: ScalarMesh | null;                // e.g. tets cut by the plane, edges drawn
   segments?: Segments[];                    // line overlays: grid / axis / marker / iso / arrow
+  logScale?: boolean;                       // range / scalars are log10 values (the gain shifts the range by log10 g)
+  pickMode?: boolean;                       // a click (not a drag) reports a camera ray
+  onPick?: (ray: Ray) => void;
+  marker?: [number, number, number] | null; // a probe point [mm]
+  topInset?: number;                        // CSS px the overlay toolbar covers at the top: the framing leaves them free
 }
+
+/** A ray through a screen point: origin + t · dir (mm). */
+export interface Ray { origin: [number, number, number]; dir: [number, number, number] }
 
 export const VOL_RAMP_START = 0.35;                  // volume colours: the sequential ramp from 35 % on
 
@@ -80,9 +89,10 @@ export function phaseFactor(field: 'E' | 'H', phaseDeg: number): number {
 }
 
 /** The scalar range the colour maps span: the shown range over the gain (an empty range → [0, 1]). */
-function dataRange(range: [number, number], gain = 1): [number, number] {
+function dataRange(range: [number, number], gain = 1, log = false): [number, number] {
   const [lo, hi] = range[1] > range[0] ? range : [0, 1];
   const g = Math.max(Math.abs(gain), 1e-6);              // gain 0 (E at 90°): every value at the low end
+  if (log) { const d = Math.log10(g); return [lo - d, hi - d]; }       // log10 of the scalars: a gain is a shift
   return [lo / g, hi / g];
 }
 
@@ -118,6 +128,8 @@ export const PRESETS: Preset[] = [
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /** Camera at `center + dir`, looking at the centre of the surface, fitted to its bounds. */
 function lookFrom(v: any, dir: Vec3, up: Vec3) {
+  v.frame = { dir, up };                                  // re-fitted when the canvas is resized (until the user moves the camera)
+  v.touched = false;
   const b = v.surf.pd.getBounds();
   const c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
   const cam = v.renderer.getActiveCamera();
@@ -129,6 +141,9 @@ function lookFrom(v: any, dir: Vec3, up: Vec3) {
   // a portrait canvas (phone): the vertical view angle fits the bounds, the width would crop them, so back off
   const [w, h] = v.grw.getApiSpecificRenderWindow().getSize();
   if (w > 0 && h > 0 && w < h) { cam.dolly(w / h); v.renderer.resetCameraClippingRange(b); }
+  // the toolbar floats over the top of the canvas: shift the image down by half of it (window centre, NDC)
+  const hc = v.host?.clientHeight || 0;
+  cam.setWindowCenter(0, hc > 0 ? Math.min(0.3, (2 * (v.inset ?? 0)) / hc) : 0);
   v.render();
 }
 
@@ -187,22 +202,53 @@ function setMesh(o: any, points: Float32Array, triangles: Uint32Array) {
   o.pd = pd;
 }
 
+type Vec = [number, number, number];
+/** The ray through a client point: a pinhole (or parallel) camera model of vtk's active camera. */
+function rayAt(v: any, el: HTMLElement, clientX: number, clientY: number): Ray | null {
+  if (!v) return null;
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  const cam = v.renderer.getActiveCamera();
+  const wc: [number, number] = cam.getWindowCenter();           // an off-centre window shifts the image plane
+  const nx = ((clientX - r.left) / r.width) * 2 - 1 + wc[0], ny = 1 - ((clientY - r.top) / r.height) * 2 + wc[1];
+  const pos: Vec = cam.getPosition(), d: Vec = cam.getDirectionOfProjection(), up: Vec = cam.getViewUp();
+  const cross = (a: Vec, b: Vec): Vec => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const norm = (a: Vec): Vec => { const n = Math.hypot(...a) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };
+  const right = norm(cross(d, up));
+  const upn = norm(cross(right, d));
+  const aspect = r.width / r.height;
+  if (cam.getParallelProjection()) {
+    const sc = cam.getParallelScale();
+    const o: Vec = [0, 1, 2].map((i) => pos[i] + right[i] * nx * sc * aspect + upn[i] * ny * sc) as Vec;
+    return { origin: o, dir: d };
+  }
+  const th = Math.tan((cam.getViewAngle() * Math.PI) / 360);
+  const dir = norm([0, 1, 2].map((i) => d[i] + right[i] * nx * th * aspect + upn[i] * ny * th) as Vec);
+  return { origin: pos, dir };
+}
+
 /** What the workspace can ask of a viewer: camera presets (the view tools live outside the canvas). */
 export interface ViewerHandle {
   home: () => void;
   preset: (id: string) => void;
   camera: () => any;
+  syncFrom: (cam: any) => void;               // take another viewer's camera (linked split view)
+  render: () => void;
+  capture: () => Promise<string>;             // PNG data URL of the canvas, at the device pixel ratio
 }
 
 export default function Viewer3D(p: Props) {
   const host = useRef<HTMLDivElement>(null);
   const vtk = useRef<any>(null);
   const [camera, setCamera] = useState<any>(null);
+  const pickRef = useRef<{ mode: boolean; fn?: (r: Ray) => void }>({ mode: false });
+  pickRef.current = { mode: !!p.pickMode, fn: p.onPick };
+  if (vtk.current) vtk.current.inset = p.topInset ?? 0;
 
   useEffect(() => {
     const grw = vtkGenericRenderWindow.newInstance({ background: hexToRgb(cssVar('--viewer-bg', '#f7f8fa')) });
     grw.setContainer(host.current!);
-    grw.resize();
+    if (host.current!.clientWidth > 0) grw.resize();
     const renderer = grw.getRenderer();
     const mk = () => {
       const pd = vtkPolyData.newInstance();
@@ -237,15 +283,52 @@ export default function Viewer3D(p: Props) {
     renderer.addActor(ga);
     // one render per frame: an update runs several of the effects below (data, colour maps, arrows), each asks
     let frame = 0;
+    // a hidden page (display: none, e.g. the workspace behind another page) has no size: nothing to draw
+    const visible = () => !!host.current && host.current.clientWidth > 0 && host.current.clientHeight > 0;
     const render = () => {
-      if (!frame) frame = requestAnimationFrame(() => { frame = 0; grw.getRenderWindow().render(); });
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; if (visible()) grw.getRenderWindow().render(); });
     };
-    vtk.current = { grw, renderer, render, surf: mk(), plane: mk(), cells: mk(), mk, lines: [],
-                    ctf: vtkColorTransferFunction.newInstance(), vol, arrows: { mapper: gm, actor: ga } };
+    // probe marker
+    const sph = vtkSphereSource.newInstance({ thetaResolution: 24, phiResolution: 16 });
+    const sm = vtkMapper.newInstance();
+    sm.setInputConnection(sph.getOutputPort());
+    const sa = vtkActor.newInstance();
+    sa.setMapper(sm);
+    sa.getProperty().setColor(...hexToRgb(cssVar('--critical', '#c9302c')));
+    sa.getProperty().setAmbient(0.6);
+    sa.setVisibility(false);
+    renderer.addActor(sa);
+    vtk.current = { grw, host: host.current, inset: 0, renderer, render, surf: mk(), plane: mk(), cells: mk(), mk, lines: [],
+                    ctf: vtkColorTransferFunction.newInstance(), vol, arrows: { mapper: gm, actor: ga },
+                    marker: { source: sph, actor: sa } };
     setCamera(renderer.getActiveCamera());
-    const ro = new ResizeObserver(() => { grw.resize(); render(); });
+    const ro = new ResizeObserver(() => {
+      if (!visible()) return;
+      grw.resize();
+      const v = vtk.current;
+      if (v?.frame && !v.touched && v.surf.actor.getVisibility()) lookFrom(v, v.frame.dir, v.frame.up);   // keep the fit
+      else render();
+    });
     ro.observe(host.current!);
-    return () => { ro.disconnect(); cancelAnimationFrame(frame); grw.delete(); vtk.current = null; };
+    // a click without a drag (the interactor rotates on drags) reports a ray when picking is on
+    const el = host.current!;
+    let down: { x: number; y: number } | null = null;
+    const onDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY }; if (vtk.current) vtk.current.touched = true; };
+    const onWheel = () => { if (vtk.current) vtk.current.touched = true; };
+    const onUp = (e: PointerEvent) => {
+      const d = down; down = null;
+      const cb = pickRef.current;
+      if (!d || !cb.mode || !cb.fn || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) return;
+      const ray = rayAt(vtk.current, el, e.clientX, e.clientY);
+      if (ray) cb.fn(ray);
+    };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('wheel', onWheel, { passive: true });
+    return () => {
+      el.removeEventListener('pointerdown', onDown); el.removeEventListener('pointerup', onUp); el.removeEventListener('wheel', onWheel);
+      ro.disconnect(); cancelAnimationFrame(frame); grw.delete(); vtk.current = null;
+    };
   }, []);
 
   useEffect(() => {                                     // background follows the theme
@@ -293,7 +376,7 @@ export default function Viewer3D(p: Props) {
   useEffect(() => {
     const v = vtk.current;
     if (!v || !p.volume) return;
-    const [lo, hi] = dataRange(p.range, p.gain);
+    const [lo, hi] = dataRange(p.range, p.gain, p.logScale);
     // the ramp from its mid tone: the near-background light end would make weak fields vanish; the opacity
     // carries the weak end instead
     v.vol.ctf.removeAllPoints();
@@ -306,7 +389,23 @@ export default function Viewer3D(p: Props) {
     v.vol.otf.addPoint(lo + 0.7 * (hi - lo), 0.4);
     v.vol.otf.addPoint(hi, 0.8);
     v.render();
-  }, [p.volume, p.range, p.gain, p.theme]);
+  }, [p.volume, p.range, p.gain, p.theme, p.logScale]);
+
+  // probe marker: a small sphere on the cut plane
+  useEffect(() => {
+    const v = vtk.current;
+    if (!v) return;
+    const m = p.marker;
+    if (m && p.surface) {
+      const b = v.surf.pd.getBounds();
+      const diag = Math.hypot(b[1] - b[0], b[3] - b[2], b[5] - b[4]) || 1;
+      v.marker.source.setCenter(m);
+      v.marker.source.setRadius(0.011 * diag);
+      v.marker.actor.getProperty().setColor(...hexToRgb(cssVar('--critical', '#c9302c')));
+    }
+    v.marker.actor.setVisibility(!!(m && p.surface));
+    v.render();
+  }, [p.marker, p.surface, p.theme]);
 
   // arrows (field direction; length ∝ |F|)
   useEffect(() => {
@@ -330,7 +429,7 @@ export default function Viewer3D(p: Props) {
   useEffect(() => {
     const v = vtk.current;
     if (!v) return;
-    const [lo, hi] = dataRange(p.range, p.gain);
+    const [lo, hi] = dataRange(p.range, p.gain, p.logScale);
     v.ctf.removeAllPoints();
     if (p.signed) {
       const m = Math.max(Math.abs(lo), Math.abs(hi));
@@ -394,7 +493,7 @@ export default function Viewer3D(p: Props) {
     }
     v.render();
   }, [p.plane, p.planeScalars, p.surfaceScalars, p.range, p.gain, p.signed, p.surfaceMode, p.theme, p.surface, p.cells,
-      p.neutralPlane, p.volume]);
+      p.neutralPlane, p.volume, p.logScale]);
 
   // line overlays (rebuilt when they change)
   useEffect(() => {
@@ -435,10 +534,30 @@ export default function Viewer3D(p: Props) {
       if (v && p.surface && pr) lookFrom(v, pr.dir, pr.up);
     },
     camera: () => vtk.current?.renderer.getActiveCamera(),
+    syncFrom: (src: any) => {
+      const v = vtk.current;
+      if (!v || !src) return;
+      const cam = v.renderer.getActiveCamera();
+      cam.setPosition(...(src.getPosition() as Vec));
+      cam.setFocalPoint(...(src.getFocalPoint() as Vec));
+      cam.setViewUp(...(src.getViewUp() as Vec));
+      cam.setViewAngle(src.getViewAngle());
+      cam.setWindowCenter(...(src.getWindowCenter() as [number, number]));
+      if (v.surf.pd.getBounds) v.renderer.resetCameraClippingRange(v.surf.pd.getBounds());
+      v.render();
+    },
+    render: () => vtk.current?.render(),
+    capture: () => {
+      const v = vtk.current;
+      if (!v) return Promise.reject(new Error('no view'));
+      const ready = v.grw.getApiSpecificRenderWindow().captureNextImage('image/png') as Promise<string>;
+      v.grw.getRenderWindow().render();
+      return ready;
+    },
   }), [p.surface, p.viewAxis, p.oblique]);
   return (
     <>
-      <div className="viewer" ref={host} aria-label="3D view" />
+      <div className={`viewer ${p.pickMode ? 'pick' : ''}`} ref={host} aria-label="3D view" />
       {p.surface && <AxesTriad camera={camera} />}
     </>
   );

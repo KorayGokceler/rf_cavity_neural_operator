@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 interface Props { z: number[]; ez: (number | null)[]; title: string; note: string; scale: number; empty: string }
 
-const H = 170, M = { l: 68, r: 12, t: 10, b: 28 };
+const H = 170, M = { l: 68, r: 34, t: 10, b: 28 };
 
 function ticks(lo: number, hi: number, n = 5) {
   const span = hi - lo || 1;
@@ -78,7 +78,7 @@ export default function AxisPlot({ z, ez, title, note, scale, empty }: Props) {
           {d.xt.map((x) => (
             <text key={`x${x}`} x={d.sx(x)} y={H - 10} textAnchor="middle" className="tick">{x}</text>
           ))}
-          <text x={W - M.r} y={H - 10} textAnchor="end" className="tick">s [mm]</text>
+          <text x={W - 2} y={H - 10} textAnchor="end" className="tick">s [mm]</text>
           <path d={d.path} className="series-line" />
           {hv && hv[1] !== null && (
             <g>
