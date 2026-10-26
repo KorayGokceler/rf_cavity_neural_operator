@@ -163,11 +163,6 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
   STEP yazılmaz; CST karşılaştırması için deformasyon olasılığını 0 seçin. Katı, kavitenin vakum hacmidir
   (borular PEC kapaklı); CST'de arka planı PEC (ya da kayıplı bakır, σ = 5,8·10⁷ S/m) seçip katıyı vakum olarak
   içe aktarın.
-- **Önceden üretilmiş parçaların STEP'i:** bitmiş parça atlanır, örnekleri yeniden çözülmez. Alan etiketi parçalarında
-  her örneğin CAD katısı H5'te saklı (`brep`, docs/29). İş, atlanan parçanın eksik STEP'lerini oradan yazar
-  (`scripts/export_step.py`; örnek başına saniyeler, etiketlere dokunmaz). Elle:
-  `python scripts/export_step.py <GEN_ROOT>/<TAG>/h5/<aile>/*.h5 --out <GEN_ROOT>/<TAG>/step/<aile>`.
-  N0 parçaları CAD saklamaz: onların STEP'i için parçayı silip yeniden üretmek gerekir.
 - **Google Drive:** `Colab_WebUI.ipynb` (tek hücre) ya da `Colab_Maxwell3D.ipynb` hücre 15, `MyDrive/rf_cavity_3d/ui_datasets` klasörünü kullanır. Üretim **Colab VM'sinin CPU'larında** çalışır (çekirdek başına bir işçi; GPU gerekmez).
   - Parçalar önce yerel diske yazılır, tamamlanınca Drive'a taşınır (Drive yavaş bir ağ diski).
   - Bağlantı koparsa biten parçalar Drive'da kalır. Aynı işi yeniden başlatınca bitmiş parçalar atlanır, kaldığı yerden devam eder.

@@ -367,38 +367,6 @@ def add_wall_features(path, overwrite=False, log=print):
     return n
 
 
-def export_step_files(path, step_dir, overwrite=False, log=print):
-    """STEP copies [mm] of the stored CAD solids (the 'brep' of each sample) of a field-label H5 file, named like
-    dataset_generator_3d --step_dir (<shape_type>_<id:08d>.step), for files generated without --step_dir.  Deformed
-    samples are skipped as there: their labels belong to the warped mesh, not to the stored solid.
-    Returns {'written', 'existing', 'deformed', 'no_cad'} counts."""
-    import h5py
-    n = dict(written=0, existing=0, deformed=0, no_cad=0)
-    with h5py.File(path, "r") as f, tempfile.TemporaryDirectory() as tmp:
-        for key in sorted(k for k in f.keys() if k.startswith("sample_")):
-            g = f[key]
-            if "brep" not in g:                          # N0 labels store no CAD
-                n["no_cad"] += 1
-                continue
-            if "deform_om" in g:
-                n["deformed"] += 1
-                continue
-            out = os.path.join(step_dir, f"{g.attrs['shape_type']}_{int(key.split('_', 1)[1]):08d}.step")
-            if os.path.exists(out) and not overwrite:
-                n["existing"] += 1
-                continue
-            brep = os.path.join(tmp, "s.brep")
-            with open(brep, "wb") as fh:
-                fh.write(np.asarray(g["brep"]).tobytes())
-            os.makedirs(step_dir, exist_ok=True)
-            ho.write_step(brep, out + ".part")
-            os.replace(out + ".part", out)
-            n["written"] += 1
-    log(f"{path}: {n['written']} STEP written, {n['existing']} existing, {n['deformed']} deformed (no STEP), "
-        f"{n['no_cad']} without CAD (N0 labels)")
-    return n
-
-
 def read_field_group(g):
     """(mesh, record) of one H5 field group: the curved mesh rebuilt exactly as it was labelled."""
     deform = None
