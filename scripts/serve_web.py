@@ -109,9 +109,13 @@ def cloudflared_bin():
     return dst
 
 
-def start_tunnel(port, timeout=60):
-    """(process, public https URL) of a Cloudflare quick tunnel to localhost:port."""
-    p = subprocess.Popen([cloudflared_bin(), 'tunnel', '--no-autoupdate', '--url', f'http://127.0.0.1:{port}'],
+def start_tunnel(port, timeout=90):
+    """(process, public https URL) of a Cloudflare quick tunnel to localhost:port, returned once the tunnel
+    has registered a connection with the Cloudflare edge (the URL is printed earlier than that; opening it
+    too soon gives a DNS error that phones and resolvers then cache for minutes).  HTTP/2 instead of the
+    default QUIC: UDP is blocked on some networks (cloud VMs, campus Wi-Fi)."""
+    p = subprocess.Popen([cloudflared_bin(), 'tunnel', '--no-autoupdate', '--protocol', 'http2',
+                          '--url', f'http://127.0.0.1:{port}'],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     found, t0 = {}, time.time()
 
@@ -120,13 +124,32 @@ def start_tunnel(port, timeout=60):
             m = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', line)
             if m and 'url' not in found:
                 found['url'] = m.group(0)
+            if 'Registered tunnel connection' in line:
+                found['registered'] = True
     threading.Thread(target=read, daemon=True).start()
-    while 'url' not in found and time.time() - t0 < timeout and p.poll() is None:
+    while not ('url' in found and 'registered' in found) and time.time() - t0 < timeout and p.poll() is None:
         time.sleep(0.2)
     if 'url' not in found:
         p.kill()
         sys.exit('could not open the tunnel (is outbound HTTPS allowed?) — use the same-Wi-Fi link instead')
+    if 'registered' not in found:
+        print('warning: the tunnel has not reported a registered connection yet; the link may need a minute',
+              flush=True)
     return p, found['url']
+
+
+def wait_public(url, token, timeout=90):
+    """True once the public URL answers (DNS of the new trycloudflare name resolves and the edge reaches the
+    server); False after timeout."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            req = urllib.request.Request(f'{url}/api/info', headers={'X-RFCAV-Token': token or ''})
+            urllib.request.urlopen(req, timeout=5)
+            return True
+        except Exception:                      # noqa: BLE001 — DNS / edge not ready yet
+            time.sleep(2)
+    return False
 
 
 def print_qr(url):
@@ -205,6 +228,10 @@ def main(argv=None):
             tp, base = start_tunnel(args.port)
             procs.append(tp)
             url = base + q
+            print('waiting until the public link answers …', flush=True)
+            if not wait_public(base, token):
+                print('warning: the link did not answer from here yet; if the browser shows a DNS error, wait a '
+                      'minute and retry (or switch the phone between Wi-Fi and mobile data)', flush=True)
         else:
             url = f'http://{lan_ip()}:{args.port}{q}'
         print('\n' + '=' * 72)
