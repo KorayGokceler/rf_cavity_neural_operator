@@ -89,6 +89,13 @@ barisentrik testle bulur. Maliyet ızgaraya doğrusal. Eski `locate`, kavite dı
   - **Renk her zaman alan büyüklüğüdür.** Bileşen (x, y, z) seçeneği kaldırıldı; yön okların işi.
   - **Kontroller:** E/H, görünüm (kesit / 3B hacim), oklar, kesit ekseni ve konumu (mm; hacimde bakış
     ekseni), faz 0–180° kaydırıcısı ve ▶ oynat, yüzey (saydam / duvar alanı / gizli).
+  - **Görünüm çubuğu (3D görünümün sağ üstü):** Ev (açılıştaki görünüm), ±X / ±Y / ±Z (o yönden bak; X ve Y
+    görünümlerinde z dikey, Z görünümlerinde y yukarı) ve İzometrik (+X, −Y, +Z yönünden). Hepsi geometrinin sınırlarına
+    sığdırılır ve yalnız kamerayı değiştirir (mod, kesit konumu, renk ölçeği, kaynak aynı kalır; ağ isteği yok).
+    Sol üstte kamerayı izleyen x / y / z üçlüsü yönü gösterir.
+  - **Kapat** (sol panelde "Geometri" başlığının yanında): açık geometriyi kapatır; görüntüleyici, alan verisi, tahmin /
+    karşılaştırma ve geometriye ait durum temizlenir, çalışma alanı boş hâline döner. Yalnız arayüz tarafı; sunucudaki
+    kayıt RFCAV_TTL_S ile kendiliğinden silinir.
   - **Eksen grafiği:** eksen boyunca E_z(z); tek seri, artı imleç ve ipucu.
 - **Sağ:**
   - Mod tablosu: ★ hızlandırıcı mod, ≈ dejenere çift, η rozeti (✓ iyi < %2, ! orta < %10, ✕ zayıf).

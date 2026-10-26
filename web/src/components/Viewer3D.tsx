@@ -3,7 +3,7 @@
 // The caller passes per-point scalars (the amplitude |E| / |H|, or a model input feature), the range of the shown
 // values and a gain (the phase factor |cos φ| / |sin φ|): a phase step only rescales the colour maps, no data
 // is re-uploaded.
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import '@kitware/vtk.js/Rendering/Profiles/Geometry';
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
 import '@kitware/vtk.js/Rendering/Profiles/Glyph';
@@ -21,6 +21,7 @@ import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransf
 import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
 import { divergingStops, hexToRgb, sequentialStops, type Theme } from '../colors';
 import type { ScalarMesh, Segments, Surface } from '../api';
+import { t, type Key, type Lang } from '../i18n';
 
 export type SurfaceMode = 'ghost' | 'field' | 'mesh' | 'hidden';
 
@@ -31,6 +32,7 @@ export interface VolumeScalars { dims: [number, number, number]; origin: [number
 export interface Arrows { points: Float32Array; vectors: Float32Array; vmax: number; length: number }
 
 interface Props {
+  lang: Lang;
   surface: Surface | null;
   surfaceScalars: Float32Array | null;     // per surface point (coloured surface mode)
   plane: PlaneGeom | null;
@@ -98,6 +100,79 @@ function cssVar(name: string, fallback: string) {
   return v || fallback;
 }
 
+
+// Camera presets: `dir` = from where we look (the camera sits on that side of the geometry), `up` = view-up.
+// The side views keep the beam axis z vertical, the ±Z views have y up.
+type Vec3 = [number, number, number];
+interface Preset { id: string; label: string; dir: Vec3; up: Vec3; tip: Key }
+const PRESETS: Preset[] = [
+  { id: 'px', label: '+X', dir: [1, 0, 0], up: [0, 0, 1], tip: 'viewPX' },
+  { id: 'nx', label: '−X', dir: [-1, 0, 0], up: [0, 0, 1], tip: 'viewNX' },
+  { id: 'py', label: '+Y', dir: [0, 1, 0], up: [0, 0, 1], tip: 'viewPY' },
+  { id: 'ny', label: '−Y', dir: [0, -1, 0], up: [0, 0, 1], tip: 'viewNY' },
+  { id: 'pz', label: '+Z', dir: [0, 0, 1], up: [0, 1, 0], tip: 'viewPZ' },
+  { id: 'nz', label: '−Z', dir: [0, 0, -1], up: [0, 1, 0], tip: 'viewNZ' },
+  { id: 'iso', label: 'İzo', dir: [1, -1, 1], up: [0, 0, 1], tip: 'viewIso' },
+];
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/** Camera at `center + dir`, looking at the centre of the surface, fitted to its bounds. */
+function lookFrom(v: any, dir: Vec3, up: Vec3) {
+  const b = v.surf.pd.getBounds();
+  const c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
+  const cam = v.renderer.getActiveCamera();
+  cam.setFocalPoint(c[0], c[1], c[2]);
+  cam.setPosition(c[0] + dir[0], c[1] + dir[1], c[2] + dir[2]);
+  cam.setViewUp(...up);
+  v.renderer.resetCamera(b);
+  cam.orthogonalizeViewUp();
+  v.render();
+}
+
+/** The view the viewer opens with: along the cut normal, slightly oblique (more so for the 3D volume). */
+function homeView(v: any, axis: 'x' | 'y' | 'z', oblique: boolean) {
+  const t = oblique ? 0.7 : 0.25;
+  const dir: Vec3 = axis === 'x' ? [1, t, 0.8 * t] : axis === 'y' ? [t, -1, 0.8 * t] : [t, 0.8 * t, 1];
+  lookFrom(v, dir, axis === 'z' ? [0, 1, 0] : [0, 0, 1]);
+}
+
+const TRIAD: { label: string; e: Vec3; color: string }[] = [
+  { label: 'x', e: [1, 0, 0], color: 'var(--critical)' },
+  { label: 'y', e: [0, 1, 0], color: 'var(--good)' },
+  { label: 'z', e: [0, 0, 1], color: 'var(--accent)' },
+];
+
+/** Small x / y / z triad that follows the camera (corner of the viewer). */
+function AxesTriad({ camera }: { camera: any }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!camera) return;
+    const sub = camera.onModified(() => tick((n) => n + 1));
+    return () => sub.unsubscribe();
+  }, [camera]);
+  if (!camera) return null;
+  const d: Vec3 = camera.getDirectionOfProjection();
+  const u: Vec3 = camera.getViewUp();
+  const r: Vec3 = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]];   // screen right
+  const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const L = 24;
+  return (
+    <svg className="triad" width="72" height="72" viewBox="-36 -36 72 72" aria-hidden="true">
+      {TRIAD.map(({ label, e, color }) => {
+        const x = L * dot(e, r), y = -L * dot(e, u), toward = dot(e, d) < 0;   // toward the viewer
+        return (
+          <g key={label} opacity={toward ? 1 : 0.45}>
+            <line x1={0} y1={0} x2={x} y2={y} stroke={color} strokeWidth={2} strokeLinecap="round" />
+            <text x={x * 1.3} y={y * 1.3} fill={color} fontSize="11" fontWeight="600" textAnchor="middle"
+                  dominantBaseline="central">{label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // A NEW vtkPolyData per update: vtk.js does not re-upload a polydata whose point / cell arrays were only
 // overwritten with setData (the cut plane stayed where it was first drawn).
@@ -112,6 +187,7 @@ function setMesh(o: any, points: Float32Array, triangles: Uint32Array) {
 export default function Viewer3D(p: Props) {
   const host = useRef<HTMLDivElement>(null);
   const vtk = useRef<any>(null);
+  const [camera, setCamera] = useState<any>(null);
 
   useEffect(() => {
     const grw = vtkGenericRenderWindow.newInstance({ background: hexToRgb(cssVar('--surface-1', '#fcfcfb')) });
@@ -156,6 +232,7 @@ export default function Viewer3D(p: Props) {
     };
     vtk.current = { grw, renderer, render, surf: mk(), plane: mk(), cells: mk(), mk, lines: [],
                     ctf: vtkColorTransferFunction.newInstance(), vol, arrows: { mapper: gm, actor: ga } };
+    setCamera(renderer.getActiveCamera());
     const ro = new ResizeObserver(() => { grw.resize(); render(); });
     ro.observe(host.current!);
     return () => { ro.disconnect(); cancelAnimationFrame(frame); grw.delete(); vtk.current = null; };
@@ -174,16 +251,8 @@ export default function Viewer3D(p: Props) {
     if (!v) return;
     if (p.surface) setMesh(v.surf, p.surface.points, p.surface.triangles);
     v.surf.actor.setVisibility(!!p.surface);
-    const cam = v.renderer.getActiveCamera();
-    const b = v.surf.pd.getBounds();
-    const c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
-    const t = p.oblique ? 0.7 : 0.25;
-    const dir = p.viewAxis === 'x' ? [1, t, 0.8 * t] : p.viewAxis === 'y' ? [t, -1, 0.8 * t] : [t, 0.8 * t, 1];
-    cam.setFocalPoint(c[0], c[1], c[2]);
-    cam.setPosition(c[0] + dir[0], c[1] + dir[1], c[2] + dir[2]);
-    cam.setViewUp(...(p.viewAxis === 'z' ? [0, 1, 0] : [0, 0, 1]) as [number, number, number]);
-    v.renderer.resetCamera();
-    v.render();
+    if (p.surface) homeView(v, p.viewAxis, !!p.oblique);
+    else v.render();
   }, [p.surface, p.viewAxis, p.oblique]);
 
   useEffect(() => {
@@ -349,5 +418,22 @@ export default function Viewer3D(p: Props) {
     v.render();
   }, [p.segments, p.theme, p.viewAxis]);
 
-  return <div className="viewer" ref={host} aria-label="3D view" />;
+  const home = () => { const v = vtk.current; if (v && p.surface) homeView(v, p.viewAxis, !!p.oblique); };
+  const preset = (pr: Preset) => { const v = vtk.current; if (v && p.surface) lookFrom(v, pr.dir, pr.up); };
+  return (
+    <>
+      <div className="viewer" ref={host} aria-label="3D view" />
+      {p.surface && <AxesTriad camera={camera} />}
+      {p.surface && (
+        <div className="viewtools" role="toolbar" aria-label={t(p.lang, 'viewTools')}>
+          <button onClick={home} title={t(p.lang, 'viewHome')} aria-label={t(p.lang, 'viewHome')}>⌂ {t(p.lang, 'viewHomeShort')}</button>
+          {PRESETS.map((pr) => (
+            <button key={pr.id} onClick={() => preset(pr)} title={t(p.lang, pr.tip)} aria-label={t(p.lang, pr.tip)}>
+              {pr.id === 'iso' ? t(p.lang, 'viewIsoShort') : pr.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
 }

@@ -11,9 +11,10 @@ interface Props {
   onUpload: (file: File, unit: string, meshSize: number, nCells: number) => void;
   onSample: (family: string, id: number | null, meshSize: number) => void;
   onPredict: () => void;
+  onClose: () => void;
 }
 
-export default function GeometryPanel({ lang, info, geometry, busy, onUpload, onSample, onPredict }: Props) {
+export default function GeometryPanel({ lang, info, geometry, busy, onUpload, onSample, onPredict, onClose }: Props) {
   const [tab, setTab] = useState<'sample' | 'upload'>('sample');
   const [file, setFile] = useState<File | null>(null);
   const [unit, setUnit] = useState('mm');
@@ -26,7 +27,12 @@ export default function GeometryPanel({ lang, info, geometry, busy, onUpload, on
 
   return (
     <aside className="panel">
-      <h2>{t(lang, 'geometry')}</h2>
+      <div className="panel-head">
+        <h2>{t(lang, 'geometry')}</h2>
+        {geometry && (
+          <button className="ghost small close" onClick={onClose} title={t(lang, 'closeGeomTip')}>× {t(lang, 'closeGeom')}</button>
+        )}
+      </div>
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={tab === 'sample'} className={tab === 'sample' ? 'on' : ''}
                 onClick={() => setTab('sample')}>{t(lang, 'sample')}</button>

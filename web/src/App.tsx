@@ -99,19 +99,32 @@ export default function App() {
   }, []);
 
   const truth = geom?.truth ?? null;
+  const geomId = useRef<string | null>(null);              // the open geometry: late answers for another one are dropped
   const newGeometry = (g: Geometry | undefined) => {
     if (!g) return;
+    geomId.current = g.id;
     setGeom(g); setPred(null); setPos(null);
     fields.current.clear();
     setFeatures(null); setFView(null); setFSurf(null);
     const acc = g.truth?.modes.find((m) => m.accelerating);
     setMode(acc ? acc.mode : 0);
     setSource(g.truth ? 'fe' : 'model');
-    api.features(g.id).then(setFeatures).catch(() => setFeatures(null));
+    api.features(g.id).then((f) => { if (geomId.current === g.id) setFeatures(f); }).catch(() => setFeatures(null));
+  };
+
+  // unload the geometry: viewer, field data, prediction and the per-geometry state, back to the empty workspace.
+  // Frontend only; the server's store expires its items (RFCAV_TTL_S)
+  const closeGeometry = () => {
+    geomId.current = null;
+    setGeom(null); setPred(null); setPos(null); setPlaying(false); setError(null);
+    fields.current.clear();
+    setFeatures(null); setFView(null); setFSurf(null);
+    setMode(0); setSource('model');
   };
 
   const predict = () => geom && run(async () => {
     const p = await api.predict(geom.id, truth?.id ?? null);
+    if (geomId.current !== geom.id) return;               // closed (or replaced) meanwhile
     setPred(p);
     setSource('model');
     if (!truth) {
@@ -282,13 +295,13 @@ export default function App() {
             <GeometryPanel lang={lang} info={info} geometry={geom} busy={busy}
                            onUpload={(f, u, m, n) => run(() => api.upload(f, u, m, n)).then(newGeometry)}
                            onSample={(fam, id, m) => run(() => api.sample(fam, id, m)).then(newGeometry)}
-                           onPredict={predict} />
+                           onPredict={predict} onClose={closeGeometry} />
             {geom && <GeometryInfo lang={lang} geometry={geom} features={features} />}
           </div>
 
           <section className="center">
             <div className="viewer-card">
-              <Viewer3D surface={geom?.surface ?? null} surfaceScalars={view.surfS} plane={view.plane}
+              <Viewer3D lang={lang} surface={geom?.surface ?? null} surfaceScalars={view.surfS} plane={view.plane}
                         planeScalars={view.planeS} volume={view.volume} arrows={view.arrows}
                         range={view.range} gain={view.gain} signed={view.signed}
                         surfaceMode={surfaceMode} theme={theme} viewAxis={axis}
