@@ -297,14 +297,14 @@ class JobManager:
                 job.ok, job.failed = ok0 + job.ok_shard, f0 + job.failed_shard
                 job.done = base_done + count
                 job.stage = f"copying shard {s + 1} to the storage"
-                shutil.move(local, dest + '.part')
-                os.replace(dest + '.part', dest)
-                job.outputs.append(dest)
-                if os.path.isdir(step_local):                    # STEP files next to the shards
+                if os.path.isdir(step_local):    # STEP files first: a shard on the storage always has its STEP files
                     step_dir = os.path.join(self.gen_root, p['tag'], 'step', p['family'])
                     os.makedirs(step_dir, exist_ok=True)
                     for f in os.listdir(step_local):
                         shutil.move(os.path.join(step_local, f), os.path.join(step_dir, f))
+                shutil.move(local, dest + '.part')
+                os.replace(dest + '.part', dest)
+                job.outputs.append(dest)
             if p.get('convert', True) and p.get('labels', 'n0') != 'field':   # field: H5 only (docs/29)
                 job.stage = 'converting to PKL'
                 shards = sorted(f for f in os.listdir(h5_dir) if f.endswith('.h5'))
