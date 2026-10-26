@@ -7,6 +7,8 @@ import TrubaPage from './components/TrubaPage';
 import Workspace, { type WorkspaceHandle } from './components/Workspace';
 import Icon, { type IconName } from './components/Icon';
 import { IconButton, Menu } from './components/ui';
+import ShortcutHelp from './components/ShortcutHelp';
+import { closeTopOverlay } from './overlay';
 import { ToastProvider, useToast } from './components/Toasts';
 import type { Theme } from './colors';
 import { t, type Key, type Lang } from './i18n';
@@ -45,7 +47,10 @@ function Shell({ lang, setLang }: { lang: Lang; setLang: (l: Lang) => void }) {
   const [railMin, setRailMin] = useState<boolean>(() => load('rail.min', false));
   const [info, setInfo] = useState<Info | null>(null);
   const [wsWarnings, setWsWarnings] = useState<string[]>([]);
+  const [help, setHelp] = useState(false);
   const ws = useRef<WorkspaceHandle>(null);
+  const pageRef = useRef<Page>('work');
+  pageRef.current = page;
 
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   // the theme attribute before the re-render: the 3D view reads its colours (CSS variables) in its effects,
@@ -58,6 +63,33 @@ function Shell({ lang, setLang }: { lang: Lang; setLang: (l: Lang) => void }) {
   const go = (p: Page) => { setPage(p); setSeen((s) => (s.has(p) ? s : new Set(s).add(p))); };
   const openItem = async (did: string, sid: number) => { if (await ws.current?.openDataset(did, sid)) go('work'); };
   const toggleRail = () => { setRailMin(!railMin); save('rail.min', !railMin); };
+
+  // keyboard shortcuts: ignored while typing (or when the focused control uses the key itself); Esc closes the
+  // topmost overlay first, then the open geometry
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName ?? '';
+      const type = tag === 'INPUT' ? (el as HTMLInputElement).type : '';
+      const typing = tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable
+        || (tag === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'file'].includes(type));
+      if (typing) return;
+      const activates = (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY' || type === 'checkbox' || type === 'radio'
+                         || type === 'file') && (e.key === ' ' || e.key === 'Enter');
+      if (e.key === 'Escape') {
+        if (closeTopOverlay()) { e.preventDefault(); return; }
+        if (pageRef.current === 'work' && ws.current?.closeGeometry()) e.preventDefault();
+        return;
+      }
+      if (e.key === '?') { e.preventDefault(); setHelp((h) => !h); return; }
+      if (type === 'range' && (e.key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown'].includes(e.key))) return;
+      if (activates || pageRef.current !== 'work') return;
+      ws.current?.key(e);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // the browser must not navigate to a file dropped outside the workspace
   useEffect(() => {
@@ -109,6 +141,7 @@ function Shell({ lang, setLang }: { lang: Lang; setLang: (l: Lang) => void }) {
             </div>
           </Menu>
         )}
+        <IconButton icon="keyboard" label={t(lang, 'helpTip')} onClick={() => setHelp(true)} testid="help" />
         <button type="button" className="ibtn with-text" onClick={() => changeLang(lang === 'tr' ? 'en' : 'tr')} title={t(lang, 'langToggle')} data-testid="lang">
           {lang === 'tr' ? 'EN' : 'TR'}
         </button>
@@ -123,6 +156,8 @@ function Shell({ lang, setLang }: { lang: Lang; setLang: (l: Lang) => void }) {
           <TrainPage lang={lang} model={info?.model ?? null} onModel={() => { api.info().then(setInfo).catch(() => undefined); }} /></div>}
         {seen.has('truba') && <div className="page-host" hidden={page !== 'truba'}><TrubaPage lang={lang} /></div>}
       </main>
+
+      <ShortcutHelp lang={lang} open={help} onClose={() => setHelp(false)} />
 
       <nav className="bottomnav" aria-label={t(lang, 'navMain')}>
         {NAV.map((n) => (

@@ -26,7 +26,19 @@ import Viewer3D, { PRESETS, phaseFactor, volumeStops, type Arrows, type SurfaceM
                    type VolumeScalars } from './Viewer3D';
 import { useToast } from './Toasts';
 
-export interface WorkspaceHandle { openDataset: (did: string, sid: number) => Promise<boolean> }
+export interface WorkspaceHandle {
+  openDataset: (did: string, sid: number) => Promise<boolean>;
+  closeGeometry: () => boolean;             // false when nothing is open
+  key: (e: KeyboardEvent) => void;          // workspace keyboard shortcuts (the app filters typing and modifiers)
+}
+
+/** A geometry that can be opened again with one click (uploads cannot: the file is not kept). */
+interface Recent {
+  key: string; label: string; meta: string; at: number;
+  dataset?: { did: string; sid: number };
+  sample?: { family: string; id: number; meshSize: number };
+}
+const RECENT_MAX = 8;
 
 interface Props {
   ref?: Ref<WorkspaceHandle>;
@@ -76,6 +88,8 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
   useOverlay(sheet !== null, () => setSheet(null));
   const [form, setForm] = useState<GeomForm>({ family: 'elliptical', sid: null, unit: 'mm', meshSize: 0.1, nCells: 1 });
   const viewer = useRef<ViewerHandle>(null);
+  const [recent, setRecent] = usePersisted<Recent[]>('recent', []);
+  const [dropDepth, setDropDepth] = useState(0);
 
   const run = useCallback(async <T,>(fn: () => Promise<T>, fail: string): Promise<T | undefined> => {
     setBusy(true);
@@ -84,8 +98,10 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
 
   const truth = geom?.truth ?? null;
   const geomId = useRef<string | null>(null);              // the open geometry: late answers for another one are dropped
-  const newGeometry = (g: Geometry | undefined): boolean => {
+  const remember = (r: Recent) => setRecent((l) => [r, ...l.filter((x) => x.key !== r.key)].slice(0, RECENT_MAX));
+  const newGeometry = (g: Geometry | undefined, mem?: Recent): boolean => {
     if (!g) return false;
+    if (mem) remember(mem);
     geomId.current = g.id;
     setGeom(g); setPred(null); setPos(null);
     fields.current.clear();
@@ -121,15 +137,52 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
     toast('ok', `${t(lang, 'toastPredOk')} · ${sec.toFixed(1)} s`);
   }, t(lang, 'toastPredFail'));
 
+  const sampleRecent = (family: string, id: number, meshSize: number): Recent => ({
+    key: `s:${family}:${id}:${meshSize}`, at: Date.now(), label: `${family} #${id}`,
+    meta: `${t(lang, 'meshSize').split(' ')[0]} ${meshSize}`, sample: { family, id, meshSize },
+  });
   const buildSample = (family: string, id: number | null, meshSize: number) =>
-    run(() => api.sample(family, id, meshSize), t(lang, 'toastGeomFail')).then(newGeometry);
+    run(() => api.sample(family, id, meshSize), t(lang, 'toastGeomFail')).then((g) => {
+      const sid = g ? Number((g.source as Record<string, unknown>).id) : NaN;      // the drawn id when none was given
+      return newGeometry(g, Number.isFinite(sid) ? sampleRecent(family, sid, meshSize) : undefined);
+    });
   const upload = (file: File) =>
-    run(() => api.upload(file, form.unit, form.meshSize, form.nCells), t(lang, 'toastGeomFail')).then(newGeometry);
+    run(() => api.upload(file, form.unit, form.meshSize, form.nCells), t(lang, 'toastGeomFail')).then((g) => newGeometry(g));
+  const datasetRecent = (g: Geometry, did: string, sid: number): Recent => {
+    const s = g.source as Record<string, unknown>;
+    return { key: `d:${did}:${sid}`, at: Date.now(), label: `${s.family ?? g.family ?? '?'} #${sid}`,
+             meta: String(s.dataset ?? ''), dataset: { did, sid } };
+  };
+  const openDataset = (did: string, sid: number) =>
+    run(() => api.datasetOpen(did, sid), t(lang, 'toastGeomFail')).then((g) => newGeometry(g, g ? datasetRecent(g, did, sid) : undefined));
+  const reopen = (r: Recent) => {
+    const job = r.dataset ? api.datasetOpen(r.dataset.did, r.dataset.sid) : api.sample(r.sample!.family, r.sample!.id, r.sample!.meshSize);
+    run(() => job, t(lang, 'toastGeomFail')).then((g) => {
+      if (g) newGeometry(g, r);
+      else setRecent((l) => l.filter((x) => x.key !== r.key));          // gone (another dataset root, a restart)
+    });
+  };
 
-  useImperativeHandle(ref, () => ({
-    openDataset: (did: string, sid: number) =>
-      run(() => api.datasetOpen(did, sid), t(lang, 'toastGeomFail')).then(newGeometry),
-  }));
+  // a CAD / mesh file dropped on the workspace goes the way of the upload form (same unit, mesh size, cells)
+  const accepted = info ? [...info.limits.cad, ...info.limits.mesh] : [];
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const onDragEnter = (e: React.DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setDropDepth((d) => d + 1); } };
+  const onDragOver = (e: React.DragEvent) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } };
+  const onDragLeave = (e: React.DragEvent) => { if (hasFiles(e)) setDropDepth((d) => Math.max(0, d - 1)); };
+  const onDrop = (e: React.DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    setDropDepth(0);
+    const f = e.dataTransfer.files[0];
+    if (!f || busy) return;
+    const ext = `.${f.name.split('.').pop()?.toLowerCase() ?? ''}`;
+    if (accepted.length && !accepted.includes(ext)) { toast('error', `${t(lang, 'dropBadType')}: ${ext} (${accepted.join(' ')})`); return; }
+    upload(f);
+  };
+
+  const closeIfOpen = () => { if (!geom) return false; closeGeometry(); return true; };
+
+  useImperativeHandle(ref, () => ({ openDataset, closeGeometry: closeIfOpen, key: onKey }));
 
   const srcId = source === 'fe' ? truth?.id : source === 'diff' ? pred?.comparison?.diff_id : pred?.id;
   const sources: Source[] = [...(truth ? ['fe' as Source] : []), ...(pred ? ['model' as Source] : []),
@@ -265,6 +318,32 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
   // warnings of the prediction go to the top bar
   useEffect(() => { onWarnings(pred?.warnings.filter((w) => !w.startsWith('untrained')) ?? []); }, [pred, onWarnings]);
 
+  // keyboard shortcuts (App filters typing in inputs and modified keys, and calls this on the workspace page)
+  const onKey = (e: KeyboardEvent) => {
+    if (!geom) return;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const field_ = display === 'field';
+    const nModes = shown?.modes.length ?? 0;
+    const step = (range[1] - range[0]) / 40;
+    let used = true;
+    if (/^[1-7]$/.test(k)) presetBtn(PRESETS[Number(k) - 1].id);
+    else if (k === 'h') homeBtn();
+    else if (k === 'ArrowLeft' && field_ && nModes) setMode((m) => Math.max(0, m - 1));
+    else if (k === 'ArrowRight' && field_ && nModes) setMode((m) => Math.min(nModes - 1, m + 1));
+    else if (k === 'e' && field_) setField('E');
+    else if (k === 'm' && field_) setField('H');
+    else if (k === 's' && field_ && sources.length > 1) setSource(sources[(sources.indexOf(source) + 1) % sources.length]);
+    else if (k === 'v' && field_) setView3d(view3d === 'cut' ? 'volume' : 'cut');
+    else if (k === 'a' && field_) setArrowsOn(!arrowsOn);
+    else if (k === 'x' || k === 'y' || k === 'z') { setAxis(k); setPos(null); }
+    else if ((k === '[' || k === ']') && (!field_ || view3d === 'cut')) {
+      setPos(Math.min(range[1], Math.max(range[0], posValue + (k === ']' ? step : -step))));
+    }
+    else if (k === ' ' && field_ && shown) setPlaying(!playing);
+    else used = false;
+    if (used) e.preventDefault();
+  };
+
   const presetBtn = (id: string) => viewer.current?.preset(id);
   const homeBtn = () => viewer.current?.home();
 
@@ -281,7 +360,24 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
   const geomPanel = (
     <GeometryPanel lang={lang} info={info} geometry={geom} busy={busy} form={form} setForm={setForm}
                    onUpload={upload} onSample={buildSample} onPredict={predict} onClose={closeGeometry}
-                   after={geom ? <GeometryInfo lang={lang} geometry={geom} features={features} /> : null} />
+                   after={geom ? <GeometryInfo lang={lang} geometry={geom} features={features} /> : null}>
+      {recent.length > 0 && (
+        <Collapsible title={t(lang, 'recentTitle')} className="panel-section recent"
+                     actions={<IconButton icon="x" label={t(lang, 'recentClear')} className="flat" onClick={() => setRecent([])} testid="recent-clear" />}>
+          <ul className="recent-list" data-testid="recent">
+            {recent.map((r) => (
+              <li key={r.key}>
+                <button type="button" className="recent-item" disabled={busy} title={`${t(lang, 'recentOpen')}: ${r.label} ${r.meta}`}
+                        onClick={() => reopen(r)} data-testid="recent-item">
+                  <Icon name={r.dataset ? 'database' : 'cube'} size={14} />
+                  <span className="recent-label">{r.label}</span><span className="recent-meta">{r.meta}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Collapsible>
+      )}
+    </GeometryPanel>
   );
 
   const sourceName = t(lang, source === 'fe' ? 'fe' : source === 'model' ? 'model' : 'diff');
@@ -384,7 +480,15 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
   };
 
   return (
-    <div className={`ws ${compact ? 'compact' : ''}`} hidden={hidden} data-testid="workspace">
+    <div className={`ws ${compact ? 'compact' : ''}`} hidden={hidden} data-testid="workspace"
+         onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      {dropDepth > 0 && (
+        <div className="drop-overlay" data-testid="drop-overlay" aria-hidden="true">
+          <Icon name="upload" size={30} />
+          <strong>{t(lang, 'dropFile')}</strong>
+          <span>{t(lang, 'dropWith')} {form.unit} · {t(lang, 'meshSize').split(' ')[0]} {form.meshSize} · {t(lang, 'nCells')} {form.nCells}</span>
+        </div>
+      )}
       <div className="ws-main">
         {!compact && sideTab(leftOpen, setLeftOpen, 'cube', t(lang, 'geometry'), 'left', geomPanel)}
         <div className="ws-center">
