@@ -94,6 +94,30 @@ def test_stored_token_features_equal_the_computed_ones(field_h5, tmp_path):
                 assert np.array_equal(f1[k]["qfeat_wall"], f2[k]["qfeat_wall"])
 
 
+def test_step_export_from_stored_cad(field_h5, tmp_path):
+    """scripts/export_step.py: STEP [mm] of the stored CAD of every undeformed sample, named like --step_dir;
+    deformed samples are skipped, existing files kept."""
+    from netgen.occ import OCCGeometry
+    from src.data_gen.field_labels import export_step_files
+    path = tmp_path / "c.h5"
+    with h5py.File(field_h5, "r") as src, h5py.File(path, "w") as f:
+        for key in src:
+            src.copy(src[key], f, name=key)
+        f["sample_0002"].create_dataset("deform_om", data=np.zeros(3))   # stands in for a deformed sample
+    step = tmp_path / "step"
+    n = export_step_files(str(path), str(step))
+    assert n == dict(written=3, existing=0, deformed=1, no_cad=0)
+    with h5py.File(path, "r") as f:
+        for sid in (0, 1, 3):
+            g = f[f"sample_{sid:04d}"]
+            shape = OCCGeometry(str(step / f"{g.attrs['shape_type']}_{sid:08d}.step")).shape
+            assert shape.mass == pytest.approx(g.attrs["volume"] * 1e9, rel=1e-6)   # STEP in mm, H5 in m
+    assert not any(step.glob("*_00000002.step"))
+    r = subprocess.run(["python", "scripts/export_step.py", str(path), "--out", str(step)], cwd=REPO,
+                       capture_output=True, text=True, check=True)
+    assert "0 STEP written, 3 existing, 1 deformed" in r.stdout
+
+
 def test_field_dataset_rebuilds_the_labelled_mesh(field_h5, tmp_path):
     ds = FieldDataset(str(field_h5), split="train", train_ratio=0.5, val_ratio=0.25)
     va = FieldDataset(str(field_h5), split="val", train_ratio=0.5, val_ratio=0.25)

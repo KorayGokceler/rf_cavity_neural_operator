@@ -267,6 +267,7 @@ class JobManager:
         os.makedirs(tmp, exist_ok=True)
         n, size = int(p['n_total']), int(p['shard_size'])
         n_shards = -(-n // size)
+        step_dir = os.path.join(self.gen_root, p['tag'], 'step', p['family'])
         try:
             for s in range(n_shards):
                 if job._cancel:
@@ -276,6 +277,8 @@ class JobManager:
                 if os.path.exists(dest):
                     job.done += count
                     job.log.append(f"exists, skipped: {os.path.basename(dest)}")
+                    if p.get('labels', 'n0') == 'field':         # STEP files of shards made without them
+                        self._exec(job, [self.python, 'scripts/export_step.py', dest, '--out', step_dir])
                     continue
                 job.stage = f"shard {s + 1}/{n_shards}"
                 local = os.path.join(tmp, os.path.basename(dest))
@@ -301,7 +304,6 @@ class JobManager:
                 os.replace(dest + '.part', dest)
                 job.outputs.append(dest)
                 if os.path.isdir(step_local):                    # STEP files next to the shards
-                    step_dir = os.path.join(self.gen_root, p['tag'], 'step', p['family'])
                     os.makedirs(step_dir, exist_ok=True)
                     for f in os.listdir(step_local):
                         shutil.move(os.path.join(step_local, f), os.path.join(step_dir, f))

@@ -195,6 +195,32 @@ def test_generation_job_writes_family_dataset(tmp_path, monkeypatch):
     assert c.post("/api/jobs/generate", json=dict(body, n_total=10 ** 9)).status_code == 422
 
 
+def test_field_job_backfills_step_files_of_existing_shards(tmp_path, monkeypatch):
+    """A field shard that already exists is skipped, but its STEP files are exported from the stored CAD
+    (shards generated before STEP export was switched on)."""
+    import time
+    from src.service import jobs as J
+    cmds = []
+    monkeypatch.setattr(J.JobManager, "_exec", lambda self, job, cmd, on_line=None: cmds.append(cmd))
+    monkeypatch.setattr(J, "machine", lambda: {"cpus": 4, "mem_gb": 32.0})
+    root = tmp_path / "drive"
+    monkeypatch.setenv("RFCAV_GEN_ROOT", str(root))
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    body = {"families": ["elliptical"], "labels": "field", "n_total": 2, "shard_size": 8, "tag": "t"}
+    shard = root / "t" / "h5" / "elliptical" / "elliptical_s00000.h5"
+    shard.parent.mkdir(parents=True)
+    shard.write_bytes(b"")
+    j = c.post("/api/jobs/generate", json=body).json()[0]
+    for _ in range(200):
+        j = c.get(f"/api/jobs/{j['id']}").json()
+        if j["status"] in ("done", "failed", "cancelled"):
+            break
+        time.sleep(0.05)
+    assert j["status"] == "done", j["log"][-10:]
+    assert len(cmds) == 1 and cmds[0][1] == "scripts/export_step.py" and cmds[0][2] == str(shard)
+    assert cmds[0][-2:] == ["--out", str(root / "t" / "step" / "elliptical")]
+
+
 def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
     """Field labels from the UI: the server plans workers × threads from its cores and memory, writes the
     TRUBA tag, passes every adaptive setting to the generator, and keeps them H5 only (no PKL)."""
