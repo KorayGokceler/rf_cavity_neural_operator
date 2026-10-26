@@ -1,11 +1,13 @@
 // Model training from the UI: one train.py run at a time on the server's GPU, checkpoints in
 // RFCAV_RUNS_ROOT/<name>/ (Colab: Drive training_logs), live curves from progress.json.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type DatasetRef, type ModelInfo, type RunDetail, type RunStatus, type RunSummary, type TrainConfig,
   type TrainParams } from '../api';
 import { sci } from '../format';
 import { t, type Key, type Lang } from '../i18n';
 import { LineChart, type LineSeries } from './Charts';
+import { Collapsible, NumField, numOk } from './ui';
+import { useToast } from './Toasts';
 
 const ST: Record<RunStatus, { key: Key; cls: string; icon: string }> = {
   running: { key: 'stRunning', cls: 'running', icon: '◷' },
@@ -27,12 +29,14 @@ function stamp() {
 interface Props { lang: Lang; model: ModelInfo | null; onModel: () => void }
 
 export default function TrainPage({ lang, model, onModel }: Props) {
+  const toast = useToast();
+  const lastStatus = useRef(new Map<string, RunStatus>());
   const [cfg, setCfg] = useState<TrainConfig | null>(null);
   const [datasets, setDatasets] = useState<DatasetRef[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [run, setRun] = useState<RunDetail | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const setErr = (m: string | null) => { if (m) toast('error', m); };
   const [showLog, setShowLog] = useState(false);
   const [more, setMore] = useState<number | null>(null);
   const [p, setP] = useState<TrainParams>({
@@ -51,13 +55,23 @@ export default function TrainPage({ lang, model, onModel }: Props) {
     let on = true;
     const tick = () => api.trainRuns().then((r) => {
       if (!on) return;
+      // a run that was live and is not any more: one toast (the first poll only records the states)
+      for (const x of r) {
+        const prev = lastStatus.current.get(x.name);
+        if (live(prev) && !live(x.status)) {
+          const ok = x.status === 'finished', bad = x.status === 'failed';
+          toast(bad ? 'error' : ok ? 'ok' : 'info',
+                `${t(lang, ok ? 'toastRunDone' : bad ? 'toastRunFail' : 'toastRunStopped')}: ${x.name}${bad && x.error ? ` — ${x.error}` : ''}`);
+        }
+        lastStatus.current.set(x.name, x.status);
+      }
       setRuns(r);
       setSel((s) => s ?? r[0]?.name ?? null);
     }).catch(() => undefined);
     tick();
     const h = setInterval(tick, anyLive ? 3000 : 10000);
     return () => { on = false; clearInterval(h); };
-  }, [cfg, anyLive]);
+  }, [cfg, anyLive, toast, lang]);
   const selLive = live(runs.find((r) => r.name === sel)?.status);
   useEffect(() => {
     if (!sel) { setRun(null); return; }
@@ -78,9 +92,15 @@ export default function TrainPage({ lang, model, onModel }: Props) {
   };
   const start = () => act(async () => {
     const r = await api.trainStart(p);
+    lastStatus.current.set(r.name, r.status);
+    toast('info', `${t(lang, 'toastRunStarted')}: ${r.name}`);
     setSel(r.name);
     setP({ ...p, name: `${p.preset}_${stamp()}` });
   });
+
+  const formOk = numOk(p.epochs, { min: 1, integer: true }) && numOk(p.batch_size, { min: 1, integer: true })
+    && numOk(p.lr, { min: 1e-7 }) && numOk(p.n_modes, { min: 1, max: 30, integer: true })
+    && numOk(p.patience, { min: 1, integer: true }) && numOk(p.qoi_weight, { min: 0 });
 
   const curves = useMemo(() => {
     const h = run?.history ?? [];
@@ -95,7 +115,7 @@ export default function TrainPage({ lang, model, onModel }: Props) {
     };
   }, [run, lang]);
 
-  if (cfg && !cfg.enabled) return <div className="page"><div className="card">{t(lang, 'trainOff')}</div></div>;
+  if (cfg && !cfg.enabled) return <div className="page"><div className="card pad">{t(lang, 'trainOff')}</div></div>;
   const busy = !!cfg && runs.some((r) => live(r.status));
   const inUse = model?.run && run && model.run === run.name;
   const st = run ? ST[run.status] : null;
@@ -103,13 +123,14 @@ export default function TrainPage({ lang, model, onModel }: Props) {
 
   return (
     <div className="page">
-      {err && <div className="banner critical"><span className="icon">✕</span>{err}</div>}
       {cfg && !cfg.gpu && <div className="banner warning"><span className="icon">!</span>{t(lang, 'noGpu')}</div>}
       <div className="train">
         <div className="train-side">
           <div className="card">
             <div className="card-title">{t(lang, 'newRun')}<span className="muted">{cfg?.gpu ?? 'CPU'}</span></div>
-            <label>{t(lang, 'runName')}<input type="text" value={p.name} onChange={(e) => set('name', e.target.value)} /></label>
+            <label className="field"><span className="field-label">{t(lang, 'runName')}</span>
+              <input type="text" value={p.name} aria-invalid={!p.name} onChange={(e) => set('name', e.target.value)} />
+              {!p.name && <span className="field-error" role="alert">{t(lang, 'vRequired')}</span>}</label>
             <div>
               <div className="label">{t(lang, 'trainData')}</div>
               <div className="ds-list">
@@ -139,20 +160,24 @@ export default function TrainPage({ lang, model, onModel }: Props) {
               </div>
             </div>
             <div className="grid2">
-              <label>{t(lang, 'epochs')}<input type="number" min={1} value={p.epochs} onChange={(e) => set('epochs', Number(e.target.value))} /></label>
-              <label>{t(lang, 'batchSize')}<input type="number" min={1} value={p.batch_size} onChange={(e) => set('batch_size', Number(e.target.value))} /></label>
-              <label>{t(lang, 'lr')}<input type="number" step={1e-5} min={0} value={p.lr} onChange={(e) => set('lr', Number(e.target.value))} /></label>
-              <label>{t(lang, 'ritzModes')}<input type="number" min={1} max={30} value={p.n_modes} onChange={(e) => set('n_modes', Number(e.target.value))} /></label>
-              <label>{t(lang, 'patience')}<input type="number" min={1} value={p.patience} onChange={(e) => set('patience', Number(e.target.value))} /></label>
-              <label>{t(lang, 'qoiWeight')}<input type="number" step={0.05} min={0} value={p.qoi_weight} onChange={(e) => set('qoi_weight', Number(e.target.value))} /></label>
-              <label>{t(lang, 'cacheOps')}
-                <select value={p.cache_operators === null ? 'auto' : p.cache_operators ? 'on' : 'off'}
-                        onChange={(e) => set('cache_operators', e.target.value === 'auto' ? null : e.target.value === 'on')}>
-                  <option value="auto">{t(lang, 'auto')}</option><option value="on">{t(lang, 'on')}</option><option value="off">{t(lang, 'off')}</option>
-                </select>
-              </label>
+              <NumField lang={lang} label={t(lang, 'epochs')} value={p.epochs} min={1} integer onChange={(v) => set('epochs', v as number)} />
+              <NumField lang={lang} label={t(lang, 'batchSize')} value={p.batch_size} min={1} integer onChange={(v) => set('batch_size', v as number)} />
             </div>
-            <button className="primary" disabled={!cfg || busy || !p.datasets.length || !p.name} onClick={start}>{t(lang, 'startTrain')}</button>
+            <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
+              <div className="grid2">
+                <NumField lang={lang} label={t(lang, 'lr')} value={p.lr} min={1e-7} step={1e-5} onChange={(v) => set('lr', v as number)} />
+                <NumField lang={lang} label={t(lang, 'ritzModes')} value={p.n_modes} min={1} max={30} integer onChange={(v) => set('n_modes', v as number)} />
+                <NumField lang={lang} label={t(lang, 'patience')} value={p.patience} min={1} integer onChange={(v) => set('patience', v as number)} />
+                <NumField lang={lang} label={t(lang, 'qoiWeight')} value={p.qoi_weight} min={0} step={0.05} onChange={(v) => set('qoi_weight', v as number)} />
+                <label>{t(lang, 'cacheOps')}
+                  <select value={p.cache_operators === null ? 'auto' : p.cache_operators ? 'on' : 'off'}
+                          onChange={(e) => set('cache_operators', e.target.value === 'auto' ? null : e.target.value === 'on')}>
+                    <option value="auto">{t(lang, 'auto')}</option><option value="on">{t(lang, 'on')}</option><option value="off">{t(lang, 'off')}</option>
+                  </select>
+                </label>
+              </div>
+            </Collapsible>
+            <button className="btn primary" disabled={!cfg || busy || !p.datasets.length || !p.name || !formOk} data-testid="train-start" onClick={start}>{t(lang, 'startTrain')}</button>
             <div className="note">{t(lang, 'colabNote')}</div>
           </div>
           <div className="card">
@@ -204,18 +229,18 @@ export default function TrainPage({ lang, model, onModel }: Props) {
                 </dl></>
               )}
               <div className="actions">
-                {live(run.status) && <button onClick={() => act(api.trainStop)}>{t(lang, 'stop')}</button>}
+                {live(run.status) && <button type="button" className="btn" onClick={() => act(api.trainStop)}>{t(lang, 'stop')}</button>}
                 {!live(run.status) && run.resumable && (
                   <>
                     <label className="inline">{t(lang, 'toEpoch')}<input type="number" min={1} placeholder={String(run.max_epochs ?? '')}
                            value={more ?? ''} onChange={(e) => setMore(e.target.value === '' ? null : Number(e.target.value))} /></label>
-                    <button disabled={busy} onClick={() => act(() => api.trainResume(run.name, more))}>{t(lang, 'resume')}</button>
+                    <button type="button" className="btn" disabled={busy} onClick={() => act(() => api.trainResume(run.name, more))}>{t(lang, 'resume')}</button>
                   </>
                 )}
                 {run.n_ckpt > 0 && !inUse && (
-                  <button className="primary" onClick={() => act(async () => { await api.loadModel(run.name); onModel(); })}>{t(lang, 'useModel')}</button>
+                  <button className="btn primary" onClick={() => act(async () => { await api.loadModel(run.name); onModel(); })}>{t(lang, 'useModel')}</button>
                 )}
-                {(run.log.length > 0) && <button className="ghost" onClick={() => setShowLog(!showLog)}>log</button>}
+                {(run.log.length > 0) && <button className="btn ghost" onClick={() => setShowLog(!showLog)}>log</button>}
               </div>
               {showLog && <pre className="log">{run.log.join('\n')}</pre>}
             </div>

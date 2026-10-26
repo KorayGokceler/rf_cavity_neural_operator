@@ -1,19 +1,19 @@
 import { api, type CmpRow, type ModeRow } from '../api';
 import { QOI_DEFS, etaLabel, fmtF, sci } from '../format';
 import { t, type Lang } from '../i18n';
+import Icon from './Icon';
 
 interface Props {
-  lang: Lang; row: ModeRow; source: string; cmp?: CmpRow | null; timings?: Record<string, number> | null;
+  lang: Lang; row: ModeRow; cmp?: CmpRow | null; timings?: Record<string, number> | null;
   exportId?: string | null; label?: Record<string, number> | null;
 }
 
 const pct = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)} %`);
 
-export default function ModeDetails({ lang, row, source, cmp, timings, exportId, label }: Props) {
+export default function ModeDetails({ lang, row, cmp, timings, exportId, label }: Props) {
   const e = row.eta !== null && row.eta !== undefined ? etaLabel(lang, row.eta) : null;
   return (
-    <div className="card">
-      <div className="card-title">{t(lang, 'selected')}: {row.mode} · {source}</div>
+    <div className="mode-details">
       <div className="hero">
         <span className="hero-num">{fmtF(cmp ? cmp.f_model : row.f_GHz)}</span><span className="hero-unit">GHz</span>
         {cmp && <span className="muted">FE {fmtF(cmp.f_fe)} · Δ {pct(cmp.f_rel_err)}</span>}
@@ -61,7 +61,7 @@ export default function ModeDetails({ lang, row, source, cmp, timings, exportId,
       )}
       {row.degenerate && <div className="note warning-text">≈ {t(lang, 'degenerate')}: per-mode values depend on the pair's rotation.</div>}
       {timings && <div className="note">{t(lang, 'timings')}: {Object.entries(timings).map(([k, v]) => `${k} ${v.toFixed(2)} s`).join(' · ')}</div>}
-      {exportId && <a className="button" href={api.exportUrl(exportId)} download>{t(lang, 'export')}</a>}
+      {exportId && <a className="btn" href={api.exportUrl(exportId)} download data-testid="export-json"><Icon name="download" size={14} />{t(lang, 'export')}</a>}
     </div>
   );
 }

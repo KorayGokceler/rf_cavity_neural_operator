@@ -5,13 +5,17 @@ import { api, type DatasetRef, type DatasetRow, type DatasetStats } from '../api
 import { t, type Key, type Lang } from '../i18n';
 import { int } from '../format';
 import { BarList, Histogram } from './Charts';
+import { useToast } from './Toasts';
 
-interface Props { lang: Lang; onOpen: (did: string, sid: number) => void; busy: boolean }
+interface Props { lang: Lang; onOpen: (did: string, sid: number) => Promise<unknown> | void }
 
 const PAGE = 50;
 type SortKey = 'id' | 'family' | 'n_edges' | 'n_nodes' | 'betti1' | 'f0';
 
-export default function DatasetPage({ lang, onOpen, busy }: Props) {
+export default function DatasetPage({ lang, onOpen }: Props) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const open = (did: string, sid: number) => { setBusy(true); Promise.resolve(onOpen(did, sid)).finally(() => setBusy(false)); };
   const [list, setList] = useState<DatasetRef[] | null>(null);
   const [did, setDid] = useState<string>('');
   const [stats, setStats] = useState<DatasetStats | null>(null);
@@ -20,7 +24,7 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
   const [desc, setDesc] = useState(false);
   const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<{ total: number; items: DatasetRow[] } | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const setErr = (m: string) => toast('error', m);
 
   useEffect(() => { api.datasets().then((l) => { setList(l); if (l.length) setDid(l[0].id); }).catch((e) => setErr(e.message)); }, []);
   useEffect(() => {
@@ -49,12 +53,11 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
   );
 
   if (list && !list.length) {
-    return <div className="page"><div className="card">{t(lang, 'noDatasets')}</div></div>;
+    return <div className="page"><div className="card pad">{t(lang, 'noDatasets')}</div></div>;
   }
   return (
     <div className="page">
-      {err && <div className="banner critical"><span className="icon">✕</span>{err}</div>}
-      <div className="filters">
+            <div className="filters">
         <label>{t(lang, 'dataset')}
           <select value={did} onChange={(e) => setDid(e.target.value)}>
             {list?.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.kind}</option>)}
@@ -97,7 +100,7 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
           </thead>
           <tbody>
             {rows?.items.map((r) => (
-              <tr key={r.id} onDoubleClick={() => onOpen(did, r.id)}>
+              <tr key={r.id} onDoubleClick={() => open(did, r.id)}>
                 <td className="num">{r.id}</td>
                 <td>{r.family}{r.deformed ? <span className="tag" title={t(lang, 'deformed')}>~</span> : null}</td>
                 {field && r.field ? <>
@@ -115,16 +118,16 @@ export default function DatasetPage({ lang, onOpen, busy }: Props) {
                 <td className="num">{r.betti1}</td>
                 {Array.from({ length: Math.max(nModes, 1) }, (_, i) =>
                   <td key={i} className="num">{r.f_GHz[i] !== undefined ? r.f_GHz[i].toFixed(4) : '—'}</td>)}
-                <td><button disabled={busy} onClick={() => onOpen(did, r.id)}>{t(lang, 'open')}</button></td>
+                <td><button type="button" className="btn small" disabled={busy} onClick={() => open(did, r.id)} data-testid="open-item">{t(lang, 'open')}</button></td>
               </tr>
             ))}
           </tbody>
         </table>
         {rows && (
           <div className="pager">
-            <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>‹</button>
+            <button type="button" className="btn small" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>‹</button>
             <span className="muted">{rows.total ? offset + 1 : 0}–{Math.min(offset + PAGE, rows.total)} / {int(rows.total)}</span>
-            <button disabled={offset + PAGE >= rows.total} onClick={() => setOffset(offset + PAGE)}>›</button>
+            <button type="button" className="btn small" disabled={offset + PAGE >= rows.total} onClick={() => setOffset(offset + PAGE)}>›</button>
           </div>
         )}
       </div>

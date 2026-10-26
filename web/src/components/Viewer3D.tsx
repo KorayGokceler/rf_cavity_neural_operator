@@ -3,7 +3,7 @@
 // The caller passes per-point scalars (the amplitude |E| / |H|, or a model input feature), the range of the shown
 // values and a gain (the phase factor |cos φ| / |sin φ|): a phase step only rescales the colour maps, no data
 // is re-uploaded.
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import '@kitware/vtk.js/Rendering/Profiles/Geometry';
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
 import '@kitware/vtk.js/Rendering/Profiles/Glyph';
@@ -21,7 +21,7 @@ import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransf
 import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
 import { divergingStops, hexToRgb, sequentialStops, type Theme } from '../colors';
 import type { ScalarMesh, Segments, Surface } from '../api';
-import { t, type Key, type Lang } from '../i18n';
+import type { Key } from '../i18n';
 
 export type SurfaceMode = 'ghost' | 'field' | 'mesh' | 'hidden';
 
@@ -32,7 +32,7 @@ export interface VolumeScalars { dims: [number, number, number]; origin: [number
 export interface Arrows { points: Float32Array; vectors: Float32Array; vmax: number; length: number }
 
 interface Props {
-  lang: Lang;
+  ref?: Ref<ViewerHandle>;
   surface: Surface | null;
   surfaceScalars: Float32Array | null;     // per surface point (coloured surface mode)
   plane: PlaneGeom | null;
@@ -104,15 +104,15 @@ function cssVar(name: string, fallback: string) {
 // Camera presets: `dir` = from where we look (the camera sits on that side of the geometry), `up` = view-up.
 // The side views keep the beam axis z vertical, the ±Z views have y up.
 type Vec3 = [number, number, number];
-interface Preset { id: string; label: string; dir: Vec3; up: Vec3; tip: Key }
-const PRESETS: Preset[] = [
+export interface Preset { id: string; label: string; dir: Vec3; up: Vec3; tip: Key }
+export const PRESETS: Preset[] = [
   { id: 'px', label: '+X', dir: [1, 0, 0], up: [0, 0, 1], tip: 'viewPX' },
   { id: 'nx', label: '−X', dir: [-1, 0, 0], up: [0, 0, 1], tip: 'viewNX' },
   { id: 'py', label: '+Y', dir: [0, 1, 0], up: [0, 0, 1], tip: 'viewPY' },
   { id: 'ny', label: '−Y', dir: [0, -1, 0], up: [0, 0, 1], tip: 'viewNY' },
   { id: 'pz', label: '+Z', dir: [0, 0, 1], up: [0, 1, 0], tip: 'viewPZ' },
   { id: 'nz', label: '−Z', dir: [0, 0, -1], up: [0, 1, 0], tip: 'viewNZ' },
-  { id: 'iso', label: 'İzo', dir: [1, -1, 1], up: [0, 0, 1], tip: 'viewIso' },
+  { id: 'iso', label: 'Iso', dir: [1, -1, 1], up: [0, 0, 1], tip: 'viewIso' },
 ];
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -126,6 +126,9 @@ function lookFrom(v: any, dir: Vec3, up: Vec3) {
   cam.setViewUp(...up);
   v.renderer.resetCamera(b);
   cam.orthogonalizeViewUp();
+  // a portrait canvas (phone): the vertical view angle fits the bounds, the width would crop them, so back off
+  const [w, h] = v.grw.getApiSpecificRenderWindow().getSize();
+  if (w > 0 && h > 0 && w < h) { cam.dolly(w / h); v.renderer.resetCameraClippingRange(b); }
   v.render();
 }
 
@@ -184,13 +187,20 @@ function setMesh(o: any, points: Float32Array, triangles: Uint32Array) {
   o.pd = pd;
 }
 
+/** What the workspace can ask of a viewer: camera presets (the view tools live outside the canvas). */
+export interface ViewerHandle {
+  home: () => void;
+  preset: (id: string) => void;
+  camera: () => any;
+}
+
 export default function Viewer3D(p: Props) {
   const host = useRef<HTMLDivElement>(null);
   const vtk = useRef<any>(null);
   const [camera, setCamera] = useState<any>(null);
 
   useEffect(() => {
-    const grw = vtkGenericRenderWindow.newInstance({ background: hexToRgb(cssVar('--surface-1', '#fcfcfb')) });
+    const grw = vtkGenericRenderWindow.newInstance({ background: hexToRgb(cssVar('--viewer-bg', '#f7f8fa')) });
     grw.setContainer(host.current!);
     grw.resize();
     const renderer = grw.getRenderer();
@@ -241,7 +251,7 @@ export default function Viewer3D(p: Props) {
   useEffect(() => {                                     // background follows the theme
     const v = vtk.current;
     if (!v) return;
-    v.renderer.setBackground(...hexToRgb(cssVar('--surface-1', '#fcfcfb')));
+    v.renderer.setBackground(...hexToRgb(cssVar('--viewer-bg', '#f7f8fa')));
     v.render();
   }, [p.theme]);
 
@@ -418,22 +428,18 @@ export default function Viewer3D(p: Props) {
     v.render();
   }, [p.segments, p.theme, p.viewAxis]);
 
-  const home = () => { const v = vtk.current; if (v && p.surface) homeView(v, p.viewAxis, !!p.oblique); };
-  const preset = (pr: Preset) => { const v = vtk.current; if (v && p.surface) lookFrom(v, pr.dir, pr.up); };
+  useImperativeHandle(p.ref, () => ({
+    home: () => { const v = vtk.current; if (v && p.surface) homeView(v, p.viewAxis, !!p.oblique); },
+    preset: (id: string) => {
+      const v = vtk.current, pr = PRESETS.find((x) => x.id === id);
+      if (v && p.surface && pr) lookFrom(v, pr.dir, pr.up);
+    },
+    camera: () => vtk.current?.renderer.getActiveCamera(),
+  }), [p.surface, p.viewAxis, p.oblique]);
   return (
     <>
       <div className="viewer" ref={host} aria-label="3D view" />
       {p.surface && <AxesTriad camera={camera} />}
-      {p.surface && (
-        <div className="viewtools" role="toolbar" aria-label={t(p.lang, 'viewTools')}>
-          <button onClick={home} title={t(p.lang, 'viewHome')} aria-label={t(p.lang, 'viewHome')}>⌂ {t(p.lang, 'viewHomeShort')}</button>
-          {PRESETS.map((pr) => (
-            <button key={pr.id} onClick={() => preset(pr)} title={t(p.lang, pr.tip)} aria-label={t(p.lang, pr.tip)}>
-              {pr.id === 'iso' ? t(p.lang, 'viewIsoShort') : pr.label}
-            </button>
-          ))}
-        </div>
-      )}
     </>
   );
 }

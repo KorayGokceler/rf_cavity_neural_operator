@@ -1,9 +1,9 @@
 // E_z on the beam axis: one series, 2px line, recessive grid, crosshair + tooltip; gaps outside Ω.
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 interface Props { z: number[]; ez: (number | null)[]; title: string; note: string; scale: number; empty: string }
 
-const W = 560, H = 190, M = { l: 56, r: 12, t: 10, b: 30 };
+const H = 170, M = { l: 68, r: 12, t: 10, b: 28 };
 
 function ticks(lo: number, hi: number, n = 5) {
   const span = hi - lo || 1;
@@ -24,7 +24,16 @@ function fmtField(v: number) {
 
 export default function AxisPlot({ z, ez, title, note, scale, empty }: Props) {
   const ref = useRef<SVGSVGElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const [W, setW] = useState(560);                         // follows the dock's width
   const [hover, setHover] = useState<number | null>(null);
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setW(Math.max(280, Math.round(el.clientWidth))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const d = useMemo(() => {
     const pts = z.map((x, i) => [x, ez[i]] as [number, number | null]).filter(([x]) => Number.isFinite(x));
     const vals = pts.map(([, y]) => y).filter((y): y is number => y !== null && Number.isFinite(y));
@@ -40,10 +49,10 @@ export default function AxisPlot({ z, ez, title, note, scale, empty }: Props) {
       pen = true;
     }
     return { pts, x0, x1, ymax, sx, sy, path, xt: ticks(x0, x1), yt: ticks(-ymax, ymax, 4) };
-  }, [z, ez]);
+  }, [z, ez, W]);
 
-  if (!d) return <div className="card muted">{title}: —</div>;
-  if (d.ymax < 1e-6 * scale) return <div className="card"><div className="card-title">{title}</div><div className="muted">{empty}</div></div>;
+  if (!d) return <div className="plot muted" ref={wrap}>{title}: —</div>;
+  if (d.ymax < 1e-6 * scale) return <div className="plot muted" ref={wrap}>{empty}</div>;
 
   const onMove = (e: React.PointerEvent) => {
     const r = ref.current!.getBoundingClientRect();
@@ -56,8 +65,7 @@ export default function AxisPlot({ z, ez, title, note, scale, empty }: Props) {
   const hv = hover !== null ? d.pts[hover] : null;
 
   return (
-    <div className="card plot">
-      <div className="card-title">{title}</div>
+    <div className="plot" ref={wrap}>
       <div className="plot-wrap">
         <svg ref={ref} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={title}
              onPointerMove={onMove} onPointerLeave={() => setHover(null)}>

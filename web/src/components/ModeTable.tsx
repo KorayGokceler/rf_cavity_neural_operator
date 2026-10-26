@@ -16,7 +16,7 @@ function Eta({ lang, eta }: { lang: Lang; eta: number | null }) {
 
 export default function ModeTable({ lang, modes, cmp, selected, onSelect }: Props) {
   const row = (k: number, cells: React.ReactNode) => (
-    <tr key={k} className={k === selected ? 'sel' : ''} tabIndex={0}
+    <tr key={k} className={k === selected ? 'sel' : ''} tabIndex={0} data-testid="mode-row" aria-selected={k === selected}
         onClick={() => onSelect(k)} onKeyDown={(ev) => ev.key === 'Enter' && onSelect(k)}>{cells}</tr>
   );
   const tags = (m: { accelerating: boolean; degenerate: boolean }) => (
@@ -24,12 +24,11 @@ export default function ModeTable({ lang, modes, cmp, selected, onSelect }: Prop
       {m.degenerate && <span className="tag" title={t(lang, 'degenerate')}>≈</span>}</>
   );
   return (
-    <div className="card">
-      <div className="card-title">{cmp ? t(lang, 'cmpTitle') : t(lang, 'modes')}</div>
+    <div className="mode-table">
       <table className="modes">
         {cmp ? (
           <>
-            <thead><tr><th>#</th><th>f FE</th><th>f model</th><th>Δf</th><th>rel-L2</th><th>η</th></tr></thead>
+            <thead><tr><th>#</th><th className="num">f FE</th><th className="num">f model</th><th className="num">Δf</th><th className="num">rel-L2</th><th>η</th></tr></thead>
             <tbody>
               {cmp.map((c) => row(c.mode, <>
                 <td>{c.mode}{tags(c)}</td>
@@ -43,7 +42,7 @@ export default function ModeTable({ lang, modes, cmp, selected, onSelect }: Prop
           </>
         ) : (
           <>
-            <thead><tr><th>#</th><th>f [GHz]</th><th>Q₀</th><th>R/Q [Ω]</th><th>E<sub>pk</sub>/E<sub>acc</sub></th><th>η</th></tr></thead>
+            <thead><tr><th>#</th><th className="num">f [GHz]</th><th className="num">Q₀</th><th className="num">R/Q [Ω]</th><th className="num">E<sub>pk</sub>/E<sub>acc</sub></th><th>η</th></tr></thead>
             <tbody>
               {modes.map((m) => row(m.mode, <>
                 <td>{m.mode}{tags(m)}</td>
