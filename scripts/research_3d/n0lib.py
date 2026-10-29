@@ -176,7 +176,7 @@ def solve_penalty(A, k, s):
 
 # ─────────────────────────── analytic spectra ──────────────────
 
-def box_spectrum(a, b, d, nmax=6, kmax=None):
+def box_spectrum(a, b, d, nmax=6):
     """PEC box: k² = (mπ/a)² + (nπ/b)² + (pπ/d)²; multiplicity 2 if m,n,p ≥ 1
     (TE + TM), 1 if exactly one index is 0, none if two are 0."""
     out = []

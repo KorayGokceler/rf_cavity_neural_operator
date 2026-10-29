@@ -3,4 +3,5 @@
 # Test / lint tooling
 pytest>=7.4
 ruff>=0.5
+vulture>=2.11             # dead-code gate in CI ([tool.vulture] in pyproject.toml)
 scikit-learn>=1.3          # scripts/paper/check_baseline_regression.py (GP baseline, docs/35)

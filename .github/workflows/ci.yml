@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main, "claude/**", "codex/**", "copilot/**"]
   pull_request:
   workflow_dispatch:
 
@@ -38,8 +38,11 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
 
-      - name: Lint (syntax errors / undefined names)
+      - name: Lint (syntax errors / undefined names / unused imports)
         run: ruff check .
+
+      - name: Dead code (vulture, settings in pyproject.toml)
+        run: vulture
 
       - name: CLI smoke (--help of every entry point)
         run: |
@@ -47,6 +50,8 @@ jobs:
                    scripts/eval_qoi.py scripts/plot_3d.py scripts/predict_geometry.py scripts/active_sampling.py \
                    scripts/resolution_study.py scripts/qoi_validation.py scripts/dataset_stats_3d.py \
                    scripts/show_geometries.py scripts/serve_web.py scripts/colab_webui.py; do
+            # a removed entry point must fail here: update this list in the same change
+            [ -f "$f" ] || { echo "::error::$f is listed but does not exist"; exit 1; }
             echo "::group::$f --help"
             python "$f" --help
             echo "::endgroup::"

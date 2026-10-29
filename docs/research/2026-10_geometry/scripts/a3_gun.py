@@ -4,7 +4,6 @@ radius of curvature.  Assumed (not in the extract): iris thickness 2 x 0.95 cm (
 same shape, exit pipe radius = iris radius, length 3 x radius, sharp cell corners, flat cathode wall."""
 import sys
 from pathlib import Path
-import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import a3_axisym as ax
 

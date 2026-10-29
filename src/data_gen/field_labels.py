@@ -256,7 +256,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         axis = _beam_axis(shape_type, mesh, params)
         snap = {}
 
-        def keep_model_level(m, lab_, q_, rec):          # finest level within the model budget
+        def keep_model_level(m, _lab, _q, rec):          # finest level within the model budget
             if m.ne <= s["model_max_elements"] or not snap:
                 snap.update(vol=_mesh_bytes(m), ne=int(m.ne))
         remesh = ad.mesh_remesher(shape, s["maxh_factor"] * h, curve=s["curve"], deform=deform, curvaturesafety=cs,

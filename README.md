@@ -110,6 +110,7 @@ yol haritasında: [docs/23](docs/23_ROADMAP.md).
 pip install -r requirements-dev.txt -r requirements-web.txt
 python -m pytest -q          # gmsh testleri sistem kütüphanelerini ister
 ruff check .
+vulture                      # ölü kod (ayarlar pyproject.toml [tool.vulture])
 ```
 
 2D model (GNOT, SpectralNO) ve H-alanı formülasyonu çıkarıldı; eski hâlleri `legacy-2d` (2D main) ve `legacy-h` (H dahil son 3D sürüm) dallarında duruyor.

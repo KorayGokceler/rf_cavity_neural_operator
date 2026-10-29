@@ -19,6 +19,14 @@ line-length = 120
 extend-exclude = ["examples", "*.ipynb"]
 
 [tool.ruff.lint]
-# CI-blocking set: syntax errors, undefined names, invalid comparisons.
+# CI-blocking set: syntax errors, undefined names, invalid comparisons, unused imports / local variables.
 # Wider local audit: ruff check --select E9,F63,F7,F82,F401,F811,F841,B .
-select = ["E9", "F63", "F7", "F82"]
+select = ["E9", "F63", "F7", "F82", "F401", "F841"]
+
+[tool.vulture]
+# CI dead-code gate (`vulture` with no arguments). 90 % = only certain findings (unused arguments,
+# local variables, unreachable code); 60 % findings (functions, methods, constants) are mostly
+# framework entry points (FastAPI routes, Lightning hooks) and stay a manual audit:
+# vulture --min-confidence 60. Prefix a required-but-unused argument with "_" (callbacks, __exit__).
+paths = ["src", "scripts", "train.py", "convert_3d.py"]
+min_confidence = 90
