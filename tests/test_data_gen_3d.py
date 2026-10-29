@@ -435,28 +435,10 @@ def test_elliptical_chain_end_cells_and_ood_split():
     assert max(cs.N_CELLS) < 6                                          # OOD elliptical_long: 6–9 cells
 
 
-def test_item_from_geometry_runs_the_model(set_args):
-    import torch
-    from src.data.dataset_3d import item_from_geometry, maxwell3d_collate
-    from src.data.dataset_converter_3d import extract_geometry_3d
-    from src.training.lightning_module import CavityLightning
-    set_args("--families", "composite", "--mesh_size", "0.25", "--n_eigen_modes", "3")
-    g = gen.mesh_sample(1)
-    geom, _ = extract_geometry_3d(g["nodes"], g["tets"])
-    batch = maxwell3d_collate([item_from_geometry(geom)])
-    torch.manual_seed(0)
-    lm = CavityLightning(val_dim=9, hidden_dim=16, n_heads=2, n_basis=8, num_field_modes=3, rff_dim=8,
-                         eigenspace_kwargs={"n_layers": 1})
-    lm.freq_stats = {"mean": 0.0, "std": 1.0}
-    with torch.no_grad():
-        out = lm.model(batch)
-    assert out["field"].shape == (1, len(geom["edges"]), 3) and torch.isfinite(out["eigenvalues"]).all()
-
-
-def test_active_residual_indicator(set_args):
-    """Exact discrete pairs have η ≈ 0, perturbed ones not; the wall rows are not equations
-    (essential BC) → excluded via the free mask."""
-    from scripts.active_sampling import residual_indicator
+def test_residual_indicator(set_args):
+    """Label-free indicator of the service (src.service.model.residual): exact discrete pairs have η ≈ 0,
+    perturbed ones not; the wall rows are not equations (essential BC) → excluded via the free mask."""
+    from src.service.model import residual as residual_indicator
     from src.data.dataset_converter_3d import geometry_operators, h5_edges_to_canonical
     set_args("--families", "hwr", "--mesh_size", "0.25", "--n_eigen_modes", "3")
     g = gen.mesh_sample(0)

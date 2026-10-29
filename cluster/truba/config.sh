@@ -18,9 +18,6 @@ CPUS=${CPUS:-56}                       # cores per shard job = generator worker 
 TIME=${TIME:-0-12:00:00}               # wall time per shard job (killed jobs resume, see --resume)
 ACCOUNT=${ACCOUNT:-}                   # -A <account> if your project needs one (empty: none)
 MAX_PARALLEL=${MAX_PARALLEL:-10}       # shard jobs of ONE family running at the same time
-CONVERT_PARTITION=${CONVERT_PARTITION:-$PARTITION}
-CONVERT_CPUS=${CONVERT_CPUS:-$CPUS}    # conversion is single-process; the cores give it the node's RAM
-CONVERT_TIME=${CONVERT_TIME:-0-12:00:00}
 
 # ── physics / generator (one TAG = one consistent dataset; change TAG when you change these) ─
 MESH_SIZE=${MESH_SIZE:-0.10}           # tet size relative to the (per-cell) characteristic length
@@ -31,9 +28,9 @@ DEFORM_MAX=${DEFORM_MAX:-0.5}
 SEED=${SEED:-0}
 
 # ── labels (docs/29) ─────────────────────────────────────────────────────────
-# n0:    Whitney N0 labels on the gmsh mesh → per-family PKL → model eigenspace3d (configs/eigenspace_3d.yaml)
 # field: NGSolve HCurl p3 labels on a curved netgen mesh, projected onto the model's p2 space → H5
-#        only (no conversion) → model field3d (configs/field_3d.yaml)
+#        → model field3d (configs/field_3d.yaml); the only labels the model trains on
+# n0:    Whitney N0 labels on the gmsh mesh → H5 only (generation; no model trains on them)
 LABELS=${LABELS:-n0}
 LABEL_ORDER=${LABEL_ORDER:-3}          # field: label order (frequencies, QoI)
 MODEL_ORDER=${MODEL_ORDER:-2}          # field: model space order (2: ~0.2 % field / 1e-4 freq floor; 1: ~6× cheaper)
@@ -63,37 +60,22 @@ TEST=${TEST:-0}
 TEST_N=${TEST_N:-112}
 [ "$TEST" = 1 ] && TAG=${TAG%_test}_test
 
-# ── conversion ─────────────────────────────────────────────────────────────
-# 1 (default): --no_operators — M/K/G/Kp are NOT stored, the dataset rebuilds them per item
-# (train with dataset.cache_operators: false). Measured at mesh 0.10, 10 modes: full PKL 5–14 MB per
-# geometry (~9 × the H5), lean 0.7–2 MB. 0 only for small sets.
-PKL_LEAN=${PKL_LEAN:-1}
-
-# ── training / evaluation (GPU; check `sinfo` for the GPU queues and their cores-per-GPU rule) ──
+# ── training (GPU; check `sinfo` for the GPU queues and their cores-per-GPU rule) ──
 # The Ritz layer and the Kp CG run in float64: pick GPUs with real FP64 (A100 / V100 / H100),
 # not consumer cards.
 GPU_PARTITION=${GPU_PARTITION:-palamut-cuda}
 GPUS=${GPUS:-1}                        # >1: one DDP rank per GPU (srun), training.strategy=ddp
-GPU_CPUS=${GPU_CPUS:-16}               # cores per GPU (DataLoader workers rebuild lean operators)
-CONFIG=${CONFIG:-}                     # training config (empty: eigenspace_3d.yaml / field_3d.yaml by LABELS)
-TRAIN_FAMILIES=${TRAIN_FAMILIES:-}     # field: families whose H5 shards train the model (empty: group "train")
-CACHE_DIR=${CACHE_DIR:-}               # field: on-disk operator cache (~0.5 GB per geometry at p2; empty: none)
+GPU_CPUS=${GPU_CPUS:-16}               # cores per GPU (DataLoader workers assemble the operators)
+CONFIG=${CONFIG:-}                     # training config (empty: configs/field_3d.yaml)
+TRAIN_FAMILIES=${TRAIN_FAMILIES:-}     # families whose H5 shards train the model (empty: group "train")
+CACHE_DIR=${CACHE_DIR:-}               # on-disk operator cache (~0.5 GB per geometry at p2; empty: none)
 GPU_TIME=${GPU_TIME:-3-00:00:00}       # killed runs resume from last.ckpt when re-submitted
-TRAIN_PKL=${TRAIN_PKL:-}               # default: $PKL_DIR/mix_train.pkl
-OOD_PKL=${OOD_PKL:-}                   # default: $PKL_DIR/mix_ood.pkl (merge.sh ood …)
 EXP=${EXP:-base}                       # run name → $OUT_DIR/runs/$EXP
 MODEL=${MODEL:-base}                   # small 0.9M | base 2.8M | large 6.5M | xl 22M (see model_overrides)
 EPOCHS=${EPOCHS:-150}
 LR=${LR:-3.0e-4}
-if [ "$LABELS" = field ]; then
-  BATCH=${BATCH:-2}                    # p2 on ~20k curved tets: ~200k DOF per geometry
-  NUM_WORKERS=${NUM_WORKERS:-14}       # the loader workers assemble the p2 operators (~10 s per geometry)
-else
-  BATCH=${BATCH:-4}
-  NUM_WORKERS=${NUM_WORKERS:-6}        # per GPU; each worker sees the whole PKL (fork, copy-on-write)
-fi
-QOI_WEIGHT=${QOI_WEIGHT:-0}            # >0: + figures-of-merit loss (docs/24 §5)
-QOI_METRICS=${QOI_METRICS:-0}          # 1: log qoi_*_rel_err during training (QoI operators per item: slower)
+BATCH=${BATCH:-2}                      # p2 on ~20k curved tets: ~200k DOF per geometry
+NUM_WORKERS=${NUM_WORKERS:-14}         # the loader workers assemble the p2 operators (~10 s per geometry)
 TRAIN_EXTRA=${TRAIN_EXTRA:-}           # more key=value overrides for train.py --override
 
 # model size presets: embed_dim n_heads eigenspace.n_layers n_basis
@@ -108,21 +90,18 @@ model_overrides() {
 }
 
 # ── ids: geometry id = block · ID_BLOCK + i  (block per family in families.tsv) ─────
-# Unique ids across families (shards of different families can be merged into one PKL) and a
-# disjoint Sobol range per family. 2^19 = 524288 geometries per family; ids stay < 2^24, exact in
-# the float32 Theta column of the PKL as long as block ≤ 31.
+# Unique ids across families (shards of different families train together) and a disjoint Sobol
+# range per family. 2^19 = 524288 geometries per family; ids stay < 2^24 (exact in float32) as long
+# as block ≤ 31.
 ID_BLOCK=524288
 
 # ── derived ────────────────────────────────────────────────────────────────
 OUT_DIR=$DATA_ROOT/$TAG
 H5_DIR=$OUT_DIR/h5
-PKL_DIR=$OUT_DIR/pkl
 LOG_DIR=$OUT_DIR/logs
 TRUBA_DIR=$REPO_DIR/cluster/truba
 FAMILIES_TSV=${FAMILIES_TSV:-$TRUBA_DIR/families.tsv}
 RUN_DIR=$OUT_DIR/runs
-TRAIN_PKL=${TRAIN_PKL:-$PKL_DIR/mix_train.pkl}
-OOD_PKL=${OOD_PKL:-$PKL_DIR/mix_ood.pkl}
 
 # family row from families.tsv → FAM_BLOCK FAM_N FAM_SHARD FAM_GROUP (exit 1 if unknown)
 # N_PER_FAMILY (optional): geometries per family instead of families.tsv's n_total

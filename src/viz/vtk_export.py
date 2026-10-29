@@ -1,9 +1,8 @@
-"""Export N0 (Whitney/edge-element) mode fields to ParaView-readable .vtu (A3, docs/viz3d contract).
+"""Export mode fields on a linear tetrahedral mesh to ParaView-readable .vtu.
 
-Public API (see the contract in the shared scratchpad — `viz3d_contract.md`, section A3):
+Public API:
     write_modes_vtu(path, X_phys, tets, fields, point_fields=None, field_data=None) -> path
     cell_to_point(tets, n_nodes, cell_vals, weights=None) -> [Nv, ...]
-    export_prediction(path, pred, cell_H_fn=None) -> path
 
 Conventions
 -----------
@@ -11,14 +10,7 @@ Conventions
   .pvd — the contract says that's optional and unnecessary here).
 - All field data (cell and point) is written as float32 to keep files small; meshio's default
   writer for .vtu is binary + zlib-compressed XML, which is kept as-is (no format= override).
-- Coordinates are written in millimetres: X_mm = (X_norm * scale + center) * 1e3, where X_norm
-  are the NORMALISED mesh vertices used everywhere else in this codebase (see
-  src/data/dataset_converter_3d.py). The field VECTORS (H_true/H_pred/H_err and their
-  point-averaged '_pt' versions) are left in normalised-mesh DOF units — they are only ever
-  compared to each other / used for relative display (glyph length, colour-by-|H|), so no
-  rescaling is applied to them. This is intentional, not an oversight.
-- Array names carry the field letter of the prediction (pred['field'] = 'E'): E_true_k /
-  absE_true_k / E_true_k_pt; the docs below say H for short.
+- Coordinates are written verbatim (callers convert to mm, e.g. (X_norm * scale + center) * 1e3).
 - `field_data` (run-level scalars/arrays such as f_true_GHz, f_pred_GHz, rel_l2, geom_id,
   shape_type) is NOT written into the .vtu itself. meshio 5.3.5's VTU writer does not round-trip
   `meshio.Mesh(..., field_data=...)` for the 'vtu' format — writing it and reading it back gives
@@ -34,8 +26,6 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-
-from src.data.dataset_converter_3d import tet_geometry
 
 
 def _sidecar_path(path):
@@ -60,7 +50,7 @@ def write_modes_vtu(path, X_phys, tets, fields, point_fields=None, field_data=No
     Args:
         path: output path, should end in '.vtu'.
         X_phys: [Nv,3] vertex coordinates (as written to the file verbatim — callers convert
-            to mm etc. themselves; see `export_prediction`).
+            to mm etc. themselves).
         tets: [Nt,4] int, 0-based vertex indices.
         fields: dict[name -> array [Nt] or [Nt,3] (or any [Nt, ...] shape)] cell data. Cast to
             float32.
@@ -141,84 +131,3 @@ def cell_to_point(tets, n_nodes, cell_vals, weights=None):
     out = num / den_safe.reshape((n_nodes,) + (1,) * len(trailing))
     out[den == 0] = 0.0
     return out
-
-
-def export_prediction(path, pred, cell_H_fn=None):
-    """Write one geometry's true/pred/error field modes (A2 `predict()` output) to a .vtu.
-
-    The array names use the field letter F = pred['field'] ('H' default, 'E' for
-    E-formulation PKLs): F_true_k, absF_true_k, F_true_k_pt, ... (below with F = H).
-
-    Args:
-        path: output .vtu path.
-        pred: dict in the A2 contract format (`src.viz.predict.predict`):
-            'X' [Nv,3] normalised vertices, 'tets' [Nt,4], 'edges' [Ne,2],
-            'scale' float, 'center' [3], 'true'/'pred'/'err' [Ne,K] N0 DOFs,
-            'f_true'/'f_pred'/'rel_l2' [K], 'geom_id', 'shape_type'.
-        cell_H_fn: callable(X, tets, edges, u) -> H [Nt,3,K] (u: [Ne] or [Ne,K]), evaluating the
-            N0 field at tet centroids. Default None means "use A1's `cell_field`" — imported
-            lazily *inside this function*, not at module top level, so that this module can be
-            imported (and its other functions tested) even before/without src/viz/nedelec.py
-            existing. Pass a stub here in tests to stay independent of A1.
-
-    Writes, per mode k in range(K):
-        cell:  H_true_k, H_pred_k, H_err_k        [Nt,3] vectors
-               absH_true_k, absH_pred_k, absH_err_k  [Nt]  scalars (Euclidean norm of the vector)
-        point: H_true_k_pt, H_pred_k_pt, H_err_k_pt  [Nv,3] (volume-weighted cell_to_point average,
-               for smooth ParaView glyphs/streamlines)
-    plus a JSON sidecar (see module docstring) with 'f_true_GHz', 'f_pred_GHz', 'rel_l2', 'geom_id',
-    'shape_type'.
-
-    Coordinates are written in mm: (X*scale + center)*1e3. The field vectors themselves are left
-    in normalised-mesh DOF units (see module docstring).
-
-    Returns `path`.
-    """
-    if cell_H_fn is None:
-        from src.viz.nedelec import cell_field as cell_H_fn
-
-    X = np.asarray(pred["X"], dtype=np.float64)
-    tets = np.asarray(pred["tets"], dtype=np.int64)
-    edges = np.asarray(pred["edges"], dtype=np.int64)
-    scale = float(pred["scale"])
-    center = np.asarray(pred["center"], dtype=np.float64)
-
-    true = np.asarray(pred["true"], dtype=np.float64)
-    predicted = np.asarray(pred["pred"], dtype=np.float64)
-    err = np.asarray(pred.get("err", predicted - true), dtype=np.float64)
-    K = true.shape[1]
-    n_nodes = X.shape[0]
-    F = str(pred.get("field", "E") or "H")
-
-    H_true = np.asarray(cell_H_fn(X, tets, edges, true))   # [Nt,3,K]
-    H_pred = np.asarray(cell_H_fn(X, tets, edges, predicted))
-    H_err = np.asarray(cell_H_fn(X, tets, edges, err))
-
-    vol, _ = tet_geometry(X, tets)
-
-    fields, point_fields = {}, {}
-    for k in range(K):
-        ht, hp, he = H_true[:, :, k], H_pred[:, :, k], H_err[:, :, k]
-        fields[f"{F}_true_{k}"] = ht
-        fields[f"{F}_pred_{k}"] = hp
-        fields[f"{F}_err_{k}"] = he
-        fields[f"abs{F}_true_{k}"] = np.linalg.norm(ht, axis=1)
-        fields[f"abs{F}_pred_{k}"] = np.linalg.norm(hp, axis=1)
-        fields[f"abs{F}_err_{k}"] = np.linalg.norm(he, axis=1)
-
-        point_fields[f"{F}_true_{k}_pt"] = cell_to_point(tets, n_nodes, ht, vol)
-        point_fields[f"{F}_pred_{k}_pt"] = cell_to_point(tets, n_nodes, hp, vol)
-        point_fields[f"{F}_err_{k}_pt"] = cell_to_point(tets, n_nodes, he, vol)
-
-    X_mm = (X * scale + center) * 1e3
-
-    field_data = {
-        "f_true_GHz": np.asarray(pred["f_true"], dtype=np.float64),
-        "f_pred_GHz": np.asarray(pred["f_pred"], dtype=np.float64),
-        "rel_l2": np.asarray(pred["rel_l2"], dtype=np.float64),
-        "geom_id": pred.get("geom_id"),
-        "shape_type": pred.get("shape_type"),
-        "field": F,
-    }
-
-    return write_modes_vtu(path, X_mm, tets, fields, point_fields, field_data)

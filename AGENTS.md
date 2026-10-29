@@ -14,19 +14,18 @@ Method (docs/20, docs/28): geometry → trunk (mass-aware linear attention over 
 vector fields ψ_j → fixed linear map to finite-element DOFs V → kernel projection PV = V − G Kp⁻¹GᵀMV
 (CG) → Rayleigh–Ritz `VᵀKV c = θ M_div c` → frequencies f = c₀√θ/(2π·scale) and fields PV·c.
 
-Two models:
-- `EigenspaceOperator3D` (model_type `eigenspace3d`): Whitney N0 edge DOFs, straight mesh. The web
-  UI's "Model" source still uses it.
-- `EigenspaceOperatorField` (model_type `field3d`, the current direction): HCurl p2 on a curved mesh,
-  tokens = quadrature points (14 per tet), labels = adaptive p3 FE fields projected onto p2.
+The model: `EigenspaceOperatorField` (model_type `field3d`): HCurl p2 on a curved mesh, tokens =
+quadrature points (14 per tet), labels = adaptive p3 FE fields projected onto p2. The old Whitney-N0
+edge model (`eigenspace3d`) and its PKL pipeline were removed; Whitney N0 remains only as the web UI's
+display / QoI layer (`dataset_converter_3d.py`, `src/viz/nedelec.py`, `src/qoi/`).
 
 ## Map
 
 | path | what |
 |---|---|
 | `src/data_gen/` | geometry families (`cavity_shapes.py`), generator (`dataset_generator_3d.py`), curved meshes + p3 solver (`highorder.py`), adaptive refinement (`adaptive.py`), field labels (`field_labels.py`) |
-| `src/data/` | `field_dataset.py` (field3d items, operators rebuilt per item), `dataset_3d.py` / `dataset_converter_3d.py` (N0 path) |
-| `src/models/` | `hcurl.py` (projection, Ritz, CG `KpSolve`), `eigenspace_operator_3d.py`, `eigenspace_operator_field.py`, `layers.py` |
+| `src/data/` | `field_dataset.py` (field3d items, operators rebuilt per item), `sparse.py` (block-diagonal batch operators), `dataset_converter_3d.py` (N0 display / QoI geometry) |
+| `src/models/` | `hcurl.py` (projection, Ritz, CG `KpSolve`), `eigenspace_operator_field.py`, `layers.py` |
 | `src/training/lightning_module.py` | losses (span / frequency / self-supervised / ortho), metrics |
 | `src/qoi/` | figures of merit (docs/24) |
 | `src/service/` | FastAPI backend of the web UI (`api.py`, `model.py`, jobs, datasets, TRUBA, training) |

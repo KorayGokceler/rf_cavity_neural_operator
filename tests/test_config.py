@@ -67,9 +67,12 @@ def test_config_to_flat_dict():
 
 
 def test_default_config_loads():
-    """configs/eigenspace_3d.yaml parses and has the keys train.py reads."""
+    """configs/field_3d.yaml (train.py's default) parses and has the keys train.py reads."""
+    import inspect
     from pathlib import Path
-    cfg = load_config(str(Path(__file__).resolve().parent.parent / "configs" / "eigenspace_3d.yaml"))
+    assert inspect.signature(load_config).parameters["config_path"].default == "configs/field_3d.yaml"
+    cfg = load_config(str(Path(__file__).resolve().parent.parent / "configs" / "field_3d.yaml"))
+    assert cfg.model.type == "field3d"
     assert hasattr(cfg, 'model') and hasattr(cfg, 'training') and hasattr(cfg, 'dataset')
     assert isinstance(cfg.model.embed_dim, int) and isinstance(cfg.model.eigenspace.n_layers, int)
     assert isinstance(cfg.training.learning_rate, float)

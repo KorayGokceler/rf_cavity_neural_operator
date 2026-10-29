@@ -1,5 +1,7 @@
 # 26 · Web arayüzü: RF Cavity Neural Solver
 
+> **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+
 > Durum: **v0.1**. Hedef: dışarıya açık ürün/demo. Teknoloji: FastAPI +
 > React + vtk.js. v1 kapsamı: dosya yükle + tahmin, parametrik kurucu, tarama / hedef frekans,
 > güven + FE doğrulama.

@@ -1,11 +1,8 @@
-"""Train the 3D cavity eigenmode model (E field).
+"""Train the 3D cavity eigenmode model (E field, EigenspaceOperatorField: learned field in HCurl(p) on
+curved meshes; field-label H5 files of dataset_generator_3d --labels field, docs/28–29).
 
-    python train.py --config configs/eigenspace_3d.yaml --override dataset.data_path=data/x.pkl
     python train.py --config configs/field_3d.yaml --override "dataset.data_path=data/field/*.h5"
     python train.py ... --resume training_logs/<exp>/last.ckpt          # continue a run
-
-model.type: eigenspace3d (Whitney N0 edge model, PKL from convert_3d.py) or field3d (learned field in
-HCurl(p) on curved meshes, field-label H5 files of dataset_generator_3d --labels field, docs/29).
 """
 import argparse
 import os
@@ -17,7 +14,6 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 
 from src.config import config_to_flat_dict, load_config
-from src.data.dataset_3d import Maxwell3DDataset, maxwell3d_collate
 from src.data.field_dataset import FieldDataset, field_collate, loader_worker_init
 from src.training.lightning_module import CavityLightning, count_near_degenerate
 from src.training.progress import ProgressFile
@@ -25,7 +21,7 @@ from src.training.progress import ProgressFile
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train the 3D cavity eigenmode model.")
-    p.add_argument("--config", default="configs/eigenspace_3d.yaml", help="YAML config.")
+    p.add_argument("--config", default="configs/field_3d.yaml", help="YAML config.")
     p.add_argument("--override", nargs="*", default=[],
                    help="config overrides key=value (e.g. model.embed_dim=192)")
     p.add_argument("--fast_dev_run", action="store_true", help="one batch of train / val / test")
@@ -33,12 +29,6 @@ def parse_args():
     p.add_argument("--init_from", default=None,
                    help="checkpoint whose WEIGHTS start this run (fresh optimizer / schedule / epoch counter): "
                         "fine-tune an LF-trained model on HF data (docs/34); --resume continues a run instead")
-    p.add_argument("--qoi_weight", type=float, default=None,
-                   help="training.qoi_weight: weight of the QoI log-ratio loss (0 = off)")
-    p.add_argument("--qoi_terms", default=None,
-                   help="training.qoi_terms, comma separated (default Q0,R_over_Q_ohm,G_ohm)")
-    p.add_argument("--qoi_metrics", action="store_true",
-                   help="training.qoi_metrics: QoI operators + qoi_*_rel_err metrics with qoi_weight = 0")
     return p.parse_args()
 
 
@@ -74,34 +64,15 @@ def parse_overrides(override_list):
         overrides[key] = val
     return overrides
 
-_EIGENSPACE3D_KEYS = ('n_layers', 'edge_rff', 'mass_ridge', 'drop_tol', 'eig_broadening', 'grad_checkpoint',
-                      'kp_tol', 'kp_maxiter')
+_EIGENSPACE_KEYS = ('n_layers', 'edge_rff', 'mass_ridge', 'drop_tol', 'eig_broadening', 'grad_checkpoint',
+                    'kp_tol', 'kp_maxiter')
 
 
-def _eigenspace3d_kwargs(mc):
-    """EigenspaceOperator3D kwargs: top-level model keys overridden by `model.eigenspace`."""
-    kw = {k: mc[k] for k in _EIGENSPACE3D_KEYS if k in mc}
+def _eigenspace_kwargs(mc):
+    """EigenspaceOperatorField kwargs: top-level model keys overridden by `model.eigenspace`."""
+    kw = {k: mc[k] for k in _EIGENSPACE_KEYS if k in mc}
     kw.update(dict(getattr(mc, 'eigenspace', None) or {}))
     return kw or None
-
-
-def _qoi_enabled(tc):
-    """QoI operators needed: the loss is on (training.qoi_weight > 0) or only the
-    metrics are requested (training.qoi_metrics)."""
-    return float(getattr(tc, 'qoi_weight', 0.0) or 0.0) > 0 or bool(getattr(tc, 'qoi_metrics', False))
-
-
-def _datasets_3d(dc, random_seed, augment, feature_indices, qoi_ops=False):
-    """train / val / test Maxwell3DDataset."""
-    kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
-              feature_indices=feature_indices,
-              # false for large PKLs written with --no_operators: rebuild M/K/G/Kp
-              # per item instead of keeping every geometry's operators in RAM.
-              cache_operators=getattr(dc, 'cache_operators', True))
-    if qoi_ops:                    # per-geometry QoI operators (docs/24 §0.4), cached per geometry
-        kw['qoi_ops'] = True
-    return tuple(Maxwell3DDataset(dc.data_path, split=s, augment=augment and s == 'train', **kw)
-                 for s in ('train', 'val', 'test'))
 
 
 def _datasets_field(dc, random_seed, feature_indices):
@@ -118,12 +89,6 @@ def main():
     overrides = parse_overrides(args.override)
     if args.fast_dev_run:
         overrides["training.fast_dev_run"] = True
-    if args.qoi_weight is not None:
-        overrides["training.qoi_weight"] = float(args.qoi_weight)
-    if args.qoi_terms is not None:
-        overrides["training.qoi_terms"] = [t.strip() for t in args.qoi_terms.split(",") if t.strip()]
-    if args.qoi_metrics:
-        overrides["training.qoi_metrics"] = True
     cfg = load_config(args.config, overrides=overrides)
     tc, mc, dc = cfg.training, cfg.model, cfg.dataset
 
@@ -135,24 +100,17 @@ def main():
     # 'high' = TF32 on Ampere+ GPUs, exact fp32 on CPU ('medium' would run fp32 matmuls in bf16)
     torch.set_float32_matmul_precision(getattr(tc, 'matmul_precision', None) or 'high')
     feature_indices = getattr(dc, 'feature_indices', None)
-    augment = getattr(tc, 'augment', False)
     random_seed = getattr(dc, 'random_seed', 42)
-    pl.seed_everything(random_seed, workers=True)       # model init / shuffle / augmentation
-    model_type = str(getattr(mc, 'type', None) or 'eigenspace3d')
-    if model_type not in ('eigenspace3d', 'field3d'):
-        raise ValueError(f"model.type {model_type!r}: eigenspace3d or field3d")
-    field3d = model_type == 'field3d'
-    qoi_ops = _qoi_enabled(tc)
-    if field3d:
-        if qoi_ops:
-            raise ValueError("field3d: training.qoi_weight / qoi_metrics need the N0 QoI operators; set them to 0 / "
-                             "false (the p3 QoI labels are in the data)")
-        if augment:
-            raise ValueError("field3d: training.augment is not supported")
-        train_dataset, val_dataset, test_dataset = _datasets_field(dc, random_seed, feature_indices)
-    else:
-        train_dataset, val_dataset, test_dataset = _datasets_3d(dc, random_seed, augment, feature_indices,
-                                                                qoi_ops=qoi_ops)
+    pl.seed_everything(random_seed, workers=True)       # model init / shuffle
+    model_type = str(getattr(mc, 'type', None) or 'field3d')
+    if model_type != 'field3d':
+        raise ValueError(f"model.type {model_type!r}: only field3d is supported (the N0 edge model "
+                         "eigenspace3d was removed)")
+    for key in ('qoi_weight', 'qoi_metrics', 'augment'):
+        if getattr(tc, key, None):
+            raise ValueError(f"training.{key} belonged to the removed N0 model; set it to 0 / false or drop it "
+                             "(the p3 QoI labels are in the data)")
+    train_dataset, val_dataset, test_dataset = _datasets_field(dc, random_seed, feature_indices)
     for name, ds in (('train', train_dataset), ('val', val_dataset), ('test', test_dataset)):
         if len(ds) == 0:     # an empty split never logs the monitored metric: fail early instead
             raise ValueError(f"'{name}' split is empty ({len(train_dataset.geom_to_samples)} geometries, "
@@ -168,11 +126,11 @@ def main():
         raise ValueError(f"model.num_field_modes={mc.num_field_modes} but the dataset stores only "
                          f"{data_n_modes} modes per geometry.")
 
-    loader_kw = dict(collate_fn=field_collate if field3d else maxwell3d_collate, num_workers=tc.num_workers,
-                     pin_memory=False,                   # sparse COO batches cannot be pinned
+    loader_kw = dict(collate_fn=field_collate, num_workers=tc.num_workers,
+                     pin_memory=False,                   # sparse batches cannot be pinned
                      persistent_workers=tc.num_workers > 0,
                      prefetch_factor=2 if tc.num_workers > 0 else None,
-                     worker_init_fn=loader_worker_init if field3d and tc.num_workers > 0 else None)
+                     worker_init_fn=loader_worker_init if tc.num_workers > 0 else None)
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True, **loader_kw)
     val_loader = DataLoader(val_dataset, batch_size=tc.batch_size, **loader_kw)
     test_loader = DataLoader(test_dataset, batch_size=tc.batch_size, **loader_kw)
@@ -181,7 +139,7 @@ def main():
         val_dim=mc.val_dim, num_field_modes=mc.num_field_modes, hidden_dim=mc.embed_dim,
         n_heads=mc.n_heads, n_basis=mc.n_basis, rff_dim=getattr(mc, 'rff_dim', 64),
         rff_length_scale=getattr(mc, 'rff_length_scale', 0.1), dropout=getattr(mc, 'dropout', 0.0),
-        eigenspace_kwargs=_eigenspace3d_kwargs(mc),
+        eigenspace_kwargs=_eigenspace_kwargs(mc),
         lr=tc.learning_rate, weight_decay=tc.weight_decay, scheduler=tc.scheduler,
         cosine_eta_min=getattr(tc, 'cosine_eta_min', 1e-6),
         onecycle_pct_start=getattr(tc, 'onecycle_pct_start', 0.3),
@@ -196,15 +154,11 @@ def main():
         selfsup_form=getattr(tc, 'selfsup_form', 'compliance'),
         near_deg_threshold=getattr(tc, 'near_deg_threshold', 0.05),
         near_deg_rel_threshold=getattr(tc, 'near_deg_rel_threshold', None),
-        qoi_weight=float(getattr(tc, 'qoi_weight', 0.0) or 0.0),
-        qoi_terms=getattr(tc, 'qoi_terms', None) or ('Q0', 'R_over_Q_ohm', 'G_ohm'),
-        qoi_peak_p=getattr(tc, 'qoi_peak_p', None), qoi_rq_floor=getattr(tc, 'qoi_rq_floor', 1e-2),
         fidelity_weights=getattr(tc, 'fidelity_weights', None) or (1.0, 1.0),
         fidelity_freq_scale=getattr(tc, 'fidelity_freq_scale', None) or (1.0, 1.0),
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
-                      feature_indices=feature_indices, augment=augment, zero_gauge_features=bool(augment),
-                      field=getattr(train_dataset, 'field', 'E'), qoi_ops=qoi_ops,
-                      data_path=dc.data_path if field3d else None),
+                      feature_indices=feature_indices, field=getattr(train_dataset, 'field', 'E'),
+                      data_path=dc.data_path),
         model_type=model_type,
     )
     if args.init_from:

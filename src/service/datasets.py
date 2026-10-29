@@ -1,10 +1,9 @@
-"""Dataset browsing for the development UI: generator H5 shards and converted training PKLs, listed
-and opened one geometry at a time (mesh, model input features, FE modes, QoI labels, parameters).
+"""Dataset browsing for the development UI: generator H5 shards, listed and opened one geometry at a
+time (mesh, model input features, FE modes, QoI labels, parameters).
 
-Registry: RFCAV_DATA = paths separated by os.pathsep (':' on Linux); each path is a .pkl file, an
-.h5 file, or a directory searched (depth ≤ 4) for *.pkl files and for directories holding *.h5
-shards — one dataset per PKL and per H5 directory (the TRUBA layout h5/<family>/<family>_s*.h5
-gives one dataset per family).
+Registry: RFCAV_DATA = paths separated by os.pathsep (':' on Linux); each path is an .h5 file or a
+directory searched (depth ≤ 4) for directories holding *.h5 shards — one dataset per H5 directory
+(the TRUBA layout h5/<family>/<family>_s*.h5 gives one dataset per family).
 
 Field-label H5 (generator --labels field, docs/29–30; file metadata labels = 'field') open as
 FieldH5Dataset: the table adds the label quality (adaptive levels, stop reason, error estimate, label
@@ -14,7 +13,6 @@ interpolated onto Whitney N0 for display; the figures of merit shown are the sto
 import glob
 import json
 import os
-import pickle
 import threading
 
 import numpy as np
@@ -22,7 +20,6 @@ import numpy as np
 from src.data.dataset_converter_3d import (FEATURE_NAMES_3D, extract_geometry_3d, geom_params_of, h5_edges_to_canonical,
                                            require_e_field)
 
-MAX_PKL_GB = float(os.environ.get('RFCAV_MAX_PKL_GB', 8))
 _PARAM_SKIP = {'geom_params', 'fem_element', 'field', 'shape_type'}
 
 
@@ -214,63 +211,6 @@ class FieldH5Dataset:
                 'qoi_labels': labels, 'features': FEATURE_NAMES_3D, 'source_file': os.path.basename(fp)}
 
 
-class PKLDataset:
-    kind = 'pkl'
-
-    def __init__(self, path, name):
-        self.path, self.name = path, name
-        self._d, self._lock = None, threading.Lock()
-
-    def _data(self):
-        with self._lock:
-            if self._d is None:
-                gb = os.path.getsize(self.path) / 2 ** 30
-                if gb > MAX_PKL_GB:
-                    raise MemoryError(f"{self.name}: {gb:.1f} GB > RFCAV_MAX_PKL_GB={MAX_PKL_GB:g}; "
-                                      "browse its H5 shards instead")
-                with open(self.path, 'rb') as f:
-                    d = pickle.load(f)
-                require_e_field(d.get('metadata'))
-                by = {}
-                for s in d['samples']:
-                    by.setdefault(s['geom_id'], []).append(s)
-                d['_by_geom'] = {g: sorted(v, key=lambda s: float(s['Theta'][0])) for g, v in by.items()}
-                self._d = d
-            return self._d
-
-    def rows(self):
-        d = self._data()
-        out = []
-        for gid, g in d['geometry_pool'].items():
-            ss = d['_by_geom'].get(gid, [])
-            out.append({'id': int(gid), 'family': str(g.get('shape_type', '')), 'n_nodes': int(len(g['X'])),
-                        'n_edges': int(len(g['edges'])), 'n_tets': int(len(g['tets'])),
-                        'betti1': int(g.get('betti1', 0) or 0), 'deformed': None,
-                        'f_GHz': [float(s['Theta'][1]) for s in ss]})
-        return out
-
-    def open(self, gid):
-        from src.data.dataset_3d import rebuild_operators, to_csr
-        d = self._data()
-        key = next((k for k in d['geometry_pool'] if int(k) == int(gid)), None)
-        if key is None:
-            raise KeyError(gid)
-        g = dict(d['geometry_pool'][key])
-        ne = len(g['edges'])
-        if 'M' not in g:                                      # lean PKL: rebuild the operators
-            g.update(rebuild_operators(g['X'], g['tets']))
-        M = to_csr(g['M'], (ne, ne))
-        ss = d['_by_geom'].get(key, [])
-        U = np.stack([np.asarray(s['Y'], float) for s in ss], 1) if ss else np.zeros((ne, 0))
-        nodes = np.asarray(g['X'], float) * float(g['scale']) + np.asarray(g['center'], float).reshape(1, 3)
-        names = list((d.get('metadata') or {}).get('feature_names') or FEATURE_NAMES_3D)
-        labels = [s.get('qoi') for s in ss] if ss and 'qoi' in ss[0] else None
-        return {'id': int(gid), 'family': str(g.get('shape_type', '')), 'nodes': nodes,
-                'tets': np.asarray(g['tets'], np.int64), 'geom': g, 'M': M, 'U': U,
-                'f_GHz': np.array([float(s['Theta'][1]) for s in ss]), 'f_next': _float(g.get('freq_next')),
-                'params': {}, 'qoi_labels': labels, 'features': names, 'source_file': os.path.basename(self.path)}
-
-
 def discover(spec=None):
     """{name: dataset} from RFCAV_DATA (or `spec`)."""
     spec = os.environ.get('RFCAV_DATA', '') if spec is None else spec
@@ -286,16 +226,12 @@ def discover(spec=None):
     for root in [p for p in spec.split(os.pathsep) if p]:
         root = os.path.abspath(os.path.expanduser(root))
         if os.path.isfile(root):
-            if root.endswith('.pkl'):
-                add(PKLDataset(root, os.path.basename(root)))
-            elif root.endswith('.h5'):
+            if root.endswith('.h5'):
                 add((FieldH5Dataset if is_field_h5(root) else H5Dataset)([root], os.path.basename(root)))
             continue
         h5_dirs = {}
         for depth in range(5):
             pat = os.path.join(root, *(['*'] * depth))
-            for fp in glob.glob(os.path.join(pat, '*.pkl')):
-                add(PKLDataset(fp, os.path.relpath(fp, root)))
             for fp in glob.glob(os.path.join(pat, '*.h5')):
                 h5_dirs.setdefault(os.path.dirname(fp), []).append(fp)
         for dname, files in sorted(h5_dirs.items()):

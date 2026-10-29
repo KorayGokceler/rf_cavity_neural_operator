@@ -14,7 +14,6 @@ import numpy as np
 import torch
 
 from src.training.checkpoint import resolve_checkpoint
-from src.data.dataset_3d import item_from_geometry, maxwell3d_collate
 from src.data.dataset_converter_3d import extract_geometry_3d, qoi_operators_of
 from src.training.lightning_module import CavityLightning
 
@@ -60,11 +59,19 @@ def residual(K, M, U, lam, free=None):
     return np.sqrt((R ** 2 / d).sum(0)) / np.abs(lam)
 
 
+def _model_batch(geom, feature_indices):
+    """Model batch of one display geometry.  The N0 edge model that ran on these geometries was removed;
+    the field3d model needs its curved mesh and HCurl(p) operators (src.data.field_dataset) — wiring
+    pending in the service."""
+    raise NotImplementedError(
+        f"model prediction is not wired to the field3d model yet (N0 display geometry with "
+        f"{len(geom['edges'])} edges, feature_indices={feature_indices})")
+
+
 @torch.no_grad()
 def forward(lm, geom, feature_indices=None, device='cpu', warmup=True):
     """(U [Ne,K] Ritz fields, f [K] GHz, λ [K] normalised eigenvalues, model seconds)."""
-    item = item_from_geometry(geom, feature_indices=feature_indices)
-    batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in maxwell3d_collate([item]).items()}
+    batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in _model_batch(geom, feature_indices).items()}
     lm.to(device)
     if warmup:                                           # first call: allocator / sparse setup / CG warm-up
         lm.model(batch)
@@ -257,7 +264,7 @@ class ModelService:
     def predict(self, nodes, tets, family='', qoi_kw=None, warmup=False, geom=None, M=None):
         """Model solution of one mesh (build_solution dict + 'time_s'); geom / M reuse a prepared
         geometry (dataset item)."""
-        from src.data.dataset_3d import to_csr
+        from src.data.sparse import to_csr
         t0 = time.perf_counter()
         if geom is None:
             geom, M = self.geometry(nodes, tets, family)

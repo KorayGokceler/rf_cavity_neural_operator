@@ -1,18 +1,17 @@
-"""Tests for the 3D converter src/data/dataset_converter_3d.py (PKL contract of docs/19).
+"""Tests for the N0 geometry / operators of src/data/dataset_converter_3d.py (display, QoI and the
+generator's --labels n0 path) on generator H5 samples.
 
 Invariants:
 - closed-form Whitney M, K == skfem ElementTetN0 (after mapping to the contract edge order)
 - K·G = 0, Kp = GᵀMG SPD on the n_pot block, G columns ≥ n_pot zero, G rows and Y rows of the
   PEC wall edges (bnd_edge) zero, one potential per extra boundary shell
-- Rayleigh(Y) with the stored normalised K, M reproduces f = c√λ/(2π·scale); ‖Y‖_M = 1; GᵀMY = 0
-- lean PKL: geometry_operators(X, tets) rebuilds the stored operators
+- Rayleigh(Y) of the H5 N0 labels (mapped by h5_edges_to_canonical) with the normalised K, M
+  reproduces f = c√λ/(2π·scale); GᵀMY = 0
 - data of the removed H formulation is rejected
 - scale invariance: scaled / translated input → same X, features, M, K; λ_phys ∝ 1/scale²
 - edge orientation: low → high, lexicographic rows, flipped H5 edges handled by sign
 - features finite and in range; distance exact on a box
 """
-import pickle
-
 import h5py
 import numpy as np
 import pytest
@@ -35,7 +34,8 @@ def _box_mesh(a=1.0, b=0.8, d=0.6, n=5, seed=0):
     return m.p.T[perm], inv[m.t.T]
 
 
-def _make_pkl(tmp_path_factory, name, families):
+def _make_h5(tmp_path_factory, name, families):
+    """Generator H5 (N0 labels) → {sample id: (geometry dict, canonical N0 modes Y [Ne, K], f [K] GHz)}."""
     pytest.importorskip("gmsh")
     import src.data_gen.dataset_generator_3d as gen
     d = tmp_path_factory.mktemp(f"d3{name}")
@@ -46,26 +46,36 @@ def _make_pkl(tmp_path_factory, name, families):
                   "--h5_filename", str(h5), "--seed", "3", "--families", *families])
     finally:
         gen.ARGS = old
-    out = d / "s.pkl"
-    conv.RFCavity3DConverter(str(h5)).convert_dataset(str(out))
-    with open(out, "rb") as f:
-        return pickle.load(f), h5
+    out = {}
+    with h5py.File(h5, "r") as f:
+        for key in (k for k in f if k.startswith("sample_")):
+            grp = f[key]
+            geom, _ = conv.extract_geometry_3d(grp["nodes"][:], grp["tets"][:])
+            geom["shape_type"] = str(grp.attrs.get("shape_type", ""))
+            freqs = np.asarray(grp["freqs"][:], np.float64)
+            order = np.argsort(freqs, kind="stable")
+            V = np.asarray(grp["e_edges"][:], np.float64)[:, order]
+            rows, sign = conv.h5_edges_to_canonical(grp["edges"][:], geom["n_nodes"], geom["edges"])
+            Y = np.zeros_like(V)
+            Y[rows] = sign[:, None] * V
+            out[int(key.split("_")[-1])] = (geom, Y, freqs[order])
+    return out, h5
 
 
 @pytest.fixture(scope="module")
-def pkl(tmp_path_factory):
+def handles(tmp_path_factory):
     """Handle families (b1 > 0)."""
-    return _make_pkl(tmp_path_factory, "handles", ["hwr", "spoke", "dtl"])
+    return _make_h5(tmp_path_factory, "handles", ["hwr", "spoke", "dtl"])
 
 
 @pytest.fixture(scope="module")
-def pkl_balls(tmp_path_factory):
-    return _make_pkl(tmp_path_factory, "balls", ["pillbox", "composite"])
+def balls(tmp_path_factory):
+    return _make_h5(tmp_path_factory, "balls", ["pillbox", "composite"])
 
 
 @pytest.fixture(params=["handles", "balls"])
-def any_pkl(request):
-    return request.getfixturevalue("pkl" if request.param == "handles" else "pkl_balls")
+def any_h5(request):
+    return request.getfixturevalue(request.param)
 
 
 def _ops(g):
@@ -110,15 +120,10 @@ def test_edge_convention_and_gradient():
     assert np.array_equal(sign[::-1][::2], -np.ones(len(edges[::2])))
 
 
-def test_contract_structure(any_pkl):
-    data, _ = any_pkl
-    assert set(data) == {"geometry_pool", "samples", "metadata"}
-    md = data["metadata"]
-    assert md["field"] == "E" and md["element"] == "N0" and md["n_modes"] == 4
-    assert md["feature_names"] == FEATURE_NAMES_3D and len(FEATURE_NAMES_3D) == 9
-    assert md["n_geometries"] == len(data["geometry_pool"]) == 3 and md["n_samples"] == len(data["samples"]) == 12
-    assert {"mean", "std"} <= set(md["freq_stats"])
-    for g in data["geometry_pool"].values():
+def test_contract_structure(any_h5):
+    data, _ = any_h5
+    assert len(data) == 3 and len(FEATURE_NAMES_3D) == 9
+    for g, Y, f in data.values():
         nv, ne = g["n_nodes"], g["n_edges"]
         assert g["X"].dtype == np.float32 and g["X"].shape == (nv, 3)
         assert g["Input_funcs"].dtype == np.float32 and g["Input_funcs"].shape == (nv, 9)
@@ -134,16 +139,13 @@ def test_contract_structure(any_pkl):
         assert {"bnd_edge", "n_pot", "n_bnd_components", "betti1"} <= set(g)
         assert g["bnd_edge"].dtype == bool and g["bnd_edge"].shape == (ne,) and 0 < g["bnd_edge"].sum() < ne
         assert isinstance(g["n_pot"], int) and 0 < g["n_pot"] < nv and g["n_bnd_components"] >= 1
-    for s in data["samples"]:
-        g = data["geometry_pool"][s["geom_id"]]
-        assert s["Y"].dtype == np.float32 and s["Y"].shape == (g["n_edges"],)
-        assert s["Theta"].dtype == np.float32 and s["Theta"].shape == (3,) and s["Theta"][2] == s["geom_id"]
+        assert Y.shape == (ne, 4) and f.shape == (4,)
 
 
-def test_operators_and_rayleigh(any_pkl):
-    data, h5 = any_pkl
+def test_operators_and_rayleigh(any_h5):
+    data, _ = any_h5
     betti = set()
-    for g in data["geometry_pool"].values():
+    for g, Y, f in data.values():
         M, K, G, Kp = _ops(g)
         assert abs(K @ G).max() < 1e-11 * abs(K).max()
         assert abs(Kp - (G.T @ M @ G)).max() < 1e-12 * abs(Kp).max()
@@ -160,20 +162,13 @@ def test_operators_and_rayleigh(any_pkl):
         # wall edges = edges of boundary faces
         bf_edges = np.unique(np.sort(bt["faces"][:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2), axis=1), axis=0)
         assert np.array_equal(g["edges"][bnd], bf_edges)
-    assert max(betti) >= 1 or all(g["shape_type"] in ("pillbox", "composite")
-                                  for g in data["geometry_pool"].values())
-    with h5py.File(h5, "r") as f:
-        for s in data["samples"]:
-            g = data["geometry_pool"][s["geom_id"]]
-            M, K, G, Kp = _ops(g)
-            y = s["Y"].astype(np.float64)
-            assert np.all(s["Y"][g["bnd_edge"]] == 0)                           # n × E = 0 exactly
-            my = M @ y
-            assert np.isclose(y @ my, 1.0, rtol=1e-5)
-            assert np.abs(G.T @ my).max() < 1e-5 * np.abs(my).max()        # float32 round-off level
-            f_rq = C0 * np.sqrt((y @ (K @ y)) / (y @ my)) / (2 * np.pi * g["scale"]) / 1e9
-            f_h5 = f[f"sample_{s['geom_id']:04d}"]["freqs"][int(s["Theta"][0])]
-            assert np.isclose(f_rq, s["Theta"][1], rtol=1e-5) and np.isclose(f_rq, f_h5, rtol=1e-5)
+        # the generator's N0 labels on the canonical edges: wall rows 0, ⟂_M gradients, Rayleigh = f
+        assert np.all(Y[bnd] == 0)                                                  # n × E = 0 exactly
+        MY = M @ Y
+        assert np.abs(G.T @ MY).max() < 1e-6 * np.abs(MY).max()
+        f_rq = C0 * np.sqrt(np.einsum("ik,ik->k", Y, K @ Y) / np.einsum("ik,ik->k", Y, MY)) / (2 * np.pi * g["scale"])
+        np.testing.assert_allclose(f_rq / 1e9, f, rtol=1e-6)
+    assert max(betti) >= 1 or all(g["shape_type"] in ("pillbox", "composite") for g, _, _ in data.values())
 
 
 def test_scale_invariance():
@@ -224,41 +219,10 @@ def test_features_valid():
     assert F[:, 8].min() >= 0 and np.isclose(F[:, 8].max(), 1.0) and np.all(F[bnd, 8] == 0)
 
 
-def test_lean_pkl_rebuilds_operators(any_pkl, tmp_path):
-    full, h5 = any_pkl
-    out = tmp_path / "lean.pkl"
-    conv.RFCavity3DConverter(str(h5)).convert_dataset(str(out), store_operators=False, mode_indices=[0, 1])
-    with open(out, "rb") as f:
-        lean = pickle.load(f)
-    assert lean["metadata"]["operators_stored"] is False and lean["metadata"]["n_modes"] == 2
-    assert lean["metadata"]["field"] == "E"
-    for gid, g in lean["geometry_pool"].items():
-        assert not {"M", "K", "G", "Kp"} & set(g)
-        assert np.isfinite(g["freq_next"])
-        ops, M = conv.geometry_operators(g["X"].astype(np.float64), g["tets"])  # stored float32 X
-        gf = full["geometry_pool"][gid]
-        assert set(gf) - set(g) == {"M", "K", "G", "Kp"}
-        assert {k for k in ops} | set(g) == set(gf)                             # same keys as the full PKL
-        for k in set(ops) - {"M", "K", "G", "Kp"}:                              # topology: identical
-            assert np.array_equal(ops[k], gf[k]) and np.array_equal(g[k], gf[k]), k
-        A, B = ops["G"], gf["G"]                                                # G: integer, exact
-        assert all(np.array_equal(a, b) for a, b in zip(A, B, strict=True))
-        Kp, Kp_full = from_csr_tuple(ops["Kp"], (g["n_nodes"],) * 2), from_csr_tuple(gf["Kp"], (g["n_nodes"],) * 2)
-        assert abs(Kp - Kp_full).max() < 1e-5 * abs(Kp_full).max()             # float32 X round-off
-        K = from_csr_tuple(ops["K"], M.shape)
-        K_full = from_csr_tuple(gf["K"], M.shape)
-        assert abs(K - K_full).max() < 1e-5 * abs(K_full).max()
-        for s in (s for s in lean["samples"] if s["geom_id"] == gid):
-            y = s["Y"].astype(np.float64)
-            f_rq = C0 * np.sqrt((y @ (K @ y)) / (y @ (M @ y))) / (2 * np.pi * g["scale"]) / 1e9
-            assert np.isclose(f_rq, s["Theta"][1], rtol=1e-5)
-
-
-def test_shards_start_id_and_multi_file_conversion(pkl, tmp_path):
-    """dataset_generator_3d --start_id shards (same seed) reproduce the unsharded samples;
-    the converter merges them and rejects overlapping id ranges."""
+def test_shards_start_id_reproduce_the_unsharded_samples(handles, tmp_path):
+    """dataset_generator_3d --start_id shards (same seed) reproduce the unsharded samples."""
     import src.data_gen.dataset_generator_3d as gen
-    full, _ = pkl
+    full, _ = handles
     shards = [tmp_path / "a.h5", tmp_path / "b.h5"]
     old = gen.ARGS
     try:
@@ -268,15 +232,13 @@ def test_shards_start_id_and_multi_file_conversion(pkl, tmp_path):
                       "--families", "hwr", "spoke", "dtl"])
     finally:
         gen.ARGS = old
-    out = tmp_path / "merged.pkl"
-    conv.RFCavity3DConverter([str(p) for p in shards]).convert_dataset(str(out))
-    with open(out, "rb") as f:
-        merged = pickle.load(f)
-    assert sorted(merged["geometry_pool"]) == sorted(full["geometry_pool"]) == [0, 1, 2]
-    for gid, g in merged["geometry_pool"].items():
-        assert np.array_equal(g["tets"], full["geometry_pool"][gid]["tets"])
-    with pytest.raises(ValueError, match="duplicate sample ids"):
-        conv.RFCavity3DConverter([str(shards[1]), str(shards[1])]).convert_dataset(str(tmp_path / "dup.pkl"))
+    tets = {}
+    for h5 in shards:
+        with h5py.File(h5, "r") as f:
+            tets.update({int(k.split("_")[-1]): f[k]["tets"][:] for k in f if k.startswith("sample_")})
+    assert sorted(tets) == sorted(full) == [0, 1, 2]
+    for gid, t in tets.items():
+        assert np.array_equal(t, full[gid][0]["tets"])
 
 
 def test_e_operators_isolated_conductor():
@@ -306,14 +268,11 @@ def test_e_operators_isolated_conductor():
     assert np.linalg.eigvalsh(Kp[:ops["n_pot"], :ops["n_pot"]].toarray()).min() > 0
 
 
-def test_h_formulation_data_rejected(pkl, tmp_path):
+def test_h_formulation_data_rejected(balls):
     """H5 of the removed H formulation (metadata field 'H'): a clear error, not silent garbage."""
     import json
-    import shutil
-    h5 = tmp_path / "h.h5"
-    shutil.copy(pkl[1], h5)
-    with h5py.File(h5, "a") as f:
+    with h5py.File(balls[1], "r") as f:
         meta = json.loads(f.attrs["metadata"])
-        f.attrs["metadata"] = json.dumps({**meta, "field": "H"})
+    conv.require_e_field(meta)                                           # the generator writes E data
     with pytest.raises(ValueError, match="removed H formulation"):
-        conv.RFCavity3DConverter(str(h5)).convert_dataset(str(tmp_path / "x.pkl"))
+        conv.require_e_field({**meta, "field": "H"})

@@ -1,5 +1,7 @@
 # 25 · Uçtan uca pipeline: veri üretiminden modelin son tahminine (TRUBA)
 
+> **Historical:** describes the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py` pipeline); removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+
 > TRUBA'da sırayla izlenecek akış. Her aşama: **ne yapar → komut → ne üretir → nasıl kontrol
 > edilir**. Bütün komutlar repo kökünden çalışır. Ayarların tamamı `cluster/truba/config.sh` içinde.
 > Her değişken komut başında ezilebilir (`MODEL=large EXP=l1 cluster/truba/submit_train.sh`).

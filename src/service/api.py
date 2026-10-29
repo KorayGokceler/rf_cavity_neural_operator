@@ -481,7 +481,7 @@ def create_app(service=None, datasets=None):
             raise HTTPException(404, 'no such geometry') from None
         except MemoryError as e:
             raise HTTPException(413, str(e)) from None
-        from src.data.dataset_3d import to_csr
+        from src.data.sparse import to_csr
         ne = len(r['geom']['edges'])
         M = to_csr(r['M'], (ne, ne))
         resp = _geometry_response(r['nodes'], r['tets'],

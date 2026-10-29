@@ -1,5 +1,7 @@
 # 23 · Yol haritası: uzun vadeli ve genel hedefler
 
+> **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+
 > Durum: **kayıt** — ileride üzerinde çalışılacak hedefler. Kısa notlar mevcut durumu ve ilgili
 > dosyaları gösterir; henüz iş planı değildir.
 

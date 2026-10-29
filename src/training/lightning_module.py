@@ -1,9 +1,9 @@
-"""Lightning module of the 3D cavity eigenmode model (EigenspaceOperator3D, E field, Whitney N0).
+"""Lightning module of the 3D cavity eigenmode model (EigenspaceOperatorField, E field, HCurl(p) on
+curved meshes, docs/28).
 
-Loss (docs/20): NEO span / self-supervised compliance / basis-orthogonality terms on the raw trial
-space, + freq_weight · z-MSE of the Ritz frequencies, + qoi_weight · cavity figure-of-merit loss
-(docs/24 §5). Metrics: per-mode M-norm rel-L2 (subspace error inside near-degenerate clusters),
-frequency MAE / relative error, QoI relative errors.
+Loss: NEO span / self-supervised compliance / basis-orthogonality terms on the raw trial space,
++ freq_weight · z-MSE of the Ritz frequencies (per-sample fidelity weights, docs/34). Metrics: per-mode
+M-norm rel-L2 (subspace error inside near-degenerate clusters), frequency MAE / relative error.
 """
 import math
 
@@ -56,15 +56,12 @@ def detect_clusters(f_true_matched, threshold, rel_threshold=None, freq_stats=No
 
 def count_near_degenerate(dataset, threshold, rel_threshold=None):
     """(geometries with a near-degenerate cluster, modes in such clusters, geometries) of a
-    Maxwell3DDataset: the same normalized, ascending frequencies and detect_clusters threshold as
-    the metric. Cheap: reads only Theta[1] (raw freq), never fields."""
+    FieldDataset: the same normalized, ascending frequencies and detect_clusters threshold as
+    the metric. Cheap: reads only the stored frequencies (raw_freqs), never fields."""
     n_deg_geo = n_deg_modes = 0
     stats = dataset.stats
     for g_id in dataset.active_geoms:
-        if hasattr(dataset, 'raw_freqs'):                      # FieldDataset
-            raw = [float(v) for v in dataset.raw_freqs(g_id)]
-        else:
-            raw = [float(dataset.samples_metadata[j]['Theta'][1]) for j in dataset.geom_to_samples[g_id]]
+        raw = [float(v) for v in dataset.raw_freqs(g_id)]
         fn = sorted((r - stats['mean']) / stats['std'] for r in raw) if stats else sorted(raw)
         deg = [c for c in detect_clusters(torch.tensor(fn, dtype=torch.float32), threshold, rel_threshold, stats)
                if len(c) > 1]
@@ -169,30 +166,10 @@ def _chol_logdet(C):
     return 2.0 * torch.log(torch.diagonal(C, dim1=-2, dim2=-1)).sum(-1)
 
 
-# Cavity QoI (docs/24): absolute R/Q floor [Ω] below which a mode counts as
-# non-accelerating whatever the other modes of its geometry do (all-TE batches).
-_QOI_RQ_ABS = 1e-6
-
-
-def _qoi_term_tuple(terms):
-    """qoi_terms as a validated tuple of qoi_torch keys ('a,b' strings accepted)."""
-    from src.qoi.torch_qoi import QOI_KEYS
-    if terms is None:
-        return ()
-    if isinstance(terms, str):
-        terms = [t for t in (x.strip() for x in terms.split(',')) if t]
-    terms = tuple(str(t) for t in terms)
-    bad = [t for t in terms if t not in QOI_KEYS or t in ('U_J', 'L_acc_m', 'f_Hz', 'Rs_ohm')]
-    if bad:
-        raise ValueError(f"qoi_terms {bad} not usable; choose from "
-                         f"{[k for k in QOI_KEYS if k not in ('U_J', 'L_acc_m', 'f_Hz', 'Rs_ohm')]}")
-    return terms
-
-
 class CavityLightning(pl.LightningModule):
-    """Training wrapper of EigenspaceOperator3D. Argument names follow the checkpoints written so far
-    (hidden_dim = embed_dim, eigenspace_kwargs = model.eigenspace); arguments of the removed 2D models
-    in older checkpoints are accepted and ignored."""
+    """Training wrapper of EigenspaceOperatorField. Argument names follow the checkpoints written so far
+    (hidden_dim = embed_dim, eigenspace_kwargs = model.eigenspace); arguments of removed features in
+    older checkpoints (2D models, the N0 QoI loss: qoi_weight, qoi_terms, ...) are accepted and ignored."""
 
     def __init__(self, val_dim, num_field_modes=6, hidden_dim=128, n_heads=4, n_basis=24,
                  rff_dim=64, rff_length_scale=0.1, dropout=0.0, eigenspace_kwargs=None,
@@ -202,37 +179,29 @@ class CavityLightning(pl.LightningModule):
                  freq_weight=0.1, span_weight=1.0, selfsup_weight=0.01, ortho_weight=0.01,
                  span_norm='both', span_root=True, span_ridge=1e-9, selfsup_form='compliance',
                  near_deg_threshold=0.05, near_deg_rel_threshold=None,
-                 qoi_weight=0.0, qoi_terms=('Q0', 'R_over_Q_ohm', 'G_ohm'), qoi_peak_p=None,
-                 qoi_rq_floor=1e-2, fidelity_weights=(1.0, 1.0), fidelity_freq_scale=(1.0, 1.0),
-                 data_cfg=None, model_type='eigenspace3d', **_legacy):
+                 fidelity_weights=(1.0, 1.0), fidelity_freq_scale=(1.0, 1.0),
+                 data_cfg=None, model_type='field3d', **_legacy):
         """
         span_norm: 'mass' (L²), 'energy' (curl–curl, controls the Ritz eigenvalue error) or 'both'.
         span_root: use √residual (= best-approximation rel-L2, the metric) instead of the residual.
         span_ridge: relative ridge of the Jacobi-scaled Gram solves.
         selfsup_form: 'compliance' (−log Σ 1/θ_i, NEO) or 'logdet' (mean log θ_i).
-        qoi_weight: weight of the cavity figure-of-merit loss (docs/24 §5): mean squared log-ratio
-            of the QoI of the Ritz fields at the predicted frequency vs the QoI of the FE targets
-            (same per-geometry operators, src/qoi/torch_qoi.py), over isolated modes. 0 = off; the
-            qoi_<name>_rel_err metrics are logged whenever the batch carries the QoI operators.
-        qoi_terms: qoi_torch keys in the loss (list/tuple or 'a,b,c').
-        qoi_peak_p: None = exact surface peaks in the loss, else a p-norm soft max.
-        qoi_rq_floor: voltage-based quantities only count for modes whose FE R/Q exceeds
-            qoi_rq_floor · max_k R/Q of the same geometry (non-accelerating modes: V ≈ 0).
         fidelity_weights: (LF, HF) per-sample weights of the span and frequency terms of field3d batches
             that carry item["Fidelity"] (FieldDataset, docs/34); the batch loss is mean_b(w_b · loss_b).
         fidelity_freq_scale: (LF, HF) extra factors on the frequency term: LF frequencies are the discrete
             eigenvalues of the model space (the Ritz values can reach them), HF ones lie below its floor.
         data_cfg: dataset settings at train time (split, seed, feature_indices, field ...), stored in
             the checkpoint so evaluation rebuilds the same split and inputs.
-        model_type: 'eigenspace3d' (Whitney N0 edge model, Maxwell3DDataset) or 'field3d' (learned
-            field in HCurl(p) on a curved mesh, EigenspaceOperatorField + FieldDataset, docs/28–29).
+        model_type: 'field3d' (learned field in HCurl(p) on a curved mesh, EigenspaceOperatorField +
+            FieldDataset, docs/28–29), the only model; checkpoints of the removed models are rejected.
         """
         super().__init__()
-        if model_type not in ('eigenspace3d', 'field3d'):
-            raise ValueError(f"model_type {model_type!r}: 'eigenspace3d' or 'field3d' "
-                             "(checkpoints of the removed 2D models: branch legacy-2d)")
-        if model_type == 'field3d' and float(qoi_weight or 0.0) > 0:
-            raise ValueError("qoi_weight > 0 is not available for field3d (the QoI operators are N0); "
+        if model_type != 'field3d':
+            raise ValueError(f"model_type {model_type!r}: only 'field3d' is supported (checkpoints of the removed "
+                             "N0 edge model 'eigenspace3d' and of the removed 2D models (branch legacy-2d) "
+                             "cannot be loaded)")
+        if float(_legacy.get('qoi_weight', 0.0) or 0.0) > 0:
+            raise ValueError("qoi_weight > 0: the QoI training loss of the removed N0 model is not available; "
                              "the p3 QoI labels are stored in the data (Y_qoi)")
         field = str((data_cfg or {}).get('field') or 'E').upper()
         if field != 'E':
@@ -245,14 +214,11 @@ class CavityLightning(pl.LightningModule):
         self.save_hyperparameters(hp)
         self.model_type = model_type
 
-        if model_type == 'field3d':
-            from src.models.eigenspace_operator_field import EigenspaceOperatorField as Model
-        else:
-            from src.models.eigenspace_operator_3d import EigenspaceOperator3D as Model
-        self.model = Model(val_dim=val_dim, embed_dim=hidden_dim, n_heads=n_heads,
-                           n_basis=n_basis, num_field_modes=num_field_modes,
-                           rff_dim=rff_dim, rff_length_scale=rff_length_scale,
-                           dropout=dropout, **(eigenspace_kwargs or {}))
+        from src.models.eigenspace_operator_field import EigenspaceOperatorField
+        self.model = EigenspaceOperatorField(val_dim=val_dim, embed_dim=hidden_dim, n_heads=n_heads,
+                                             n_basis=n_basis, num_field_modes=num_field_modes,
+                                             rff_dim=rff_dim, rff_length_scale=rff_length_scale,
+                                             dropout=dropout, **(eigenspace_kwargs or {}))
         self.num_field_modes = num_field_modes
         self.gradient_clip_val = gradient_clip_val
         self.freq_weight = freq_weight
@@ -260,16 +226,10 @@ class CavityLightning(pl.LightningModule):
         self.span_norm, self.span_root, self.span_ridge = span_norm, bool(span_root), span_ridge
         self.selfsup_form = selfsup_form
         self.near_deg_threshold, self.near_deg_rel_threshold = near_deg_threshold, near_deg_rel_threshold
-        self.qoi_weight = float(qoi_weight or 0.0)
-        self.qoi_terms = _qoi_term_tuple(qoi_terms)
-        self.qoi_peak_p = None if qoi_peak_p in (None, 0) else float(qoi_peak_p)
-        self.qoi_rq_floor = float(qoi_rq_floor)
         self.fidelity_weights = tuple(float(w) for w in fidelity_weights)
         self.fidelity_freq_scale = tuple(float(w) for w in fidelity_freq_scale)
         if len(self.fidelity_weights) != 2 or len(self.fidelity_freq_scale) != 2:
             raise ValueError("fidelity_weights / fidelity_freq_scale: (LF, HF) pairs")
-        if self.qoi_weight > 0 and not self.qoi_terms:
-            raise ValueError("qoi_weight > 0 but qoi_terms is empty")
         self.freq_stats = None
 
         self.train_r2, self.val_r2, self.test_r2 = (torchmetrics.R2Score() for _ in range(3))
@@ -342,27 +302,25 @@ class CavityLightning(pl.LightningModule):
         return total
 
     def _compute_loss_3d(self, batch, prefix):
-        """Loss of EigenspaceOperator3D (E-field N0 edge DOFs).
+        """Loss of EigenspaceOperatorField (E-field HCurl(p) DOFs).
 
         Loss = the span / selfsup / ortho terms (_span_terms) on the Grams
         of [PV | T] from hcurl_grams: mass block VV = M_div (kernel-projected,
         so gradient content neither helps nor hurts), curl–curl blocks
         unchanged (K G = 0), T = ALL stored modes; + freq_weight · z-MSE of
-        the K Ritz frequencies.  Metrics (no grad): per-mode M-norm rel-L2 of
-        the Ritz fields vs the K lowest targets (sign-agnostic, subspace error
-        inside near-degenerate clusters; NaN = excluded for a cluster that the
-        K-th output splits, see _clusters_3d), freq MAE [GHz] and relative
-        error, the basis' gradient mass fraction 1 − diag(M_div)/diag(VᵀMV),
-        CG iterations.  Cavity figures of merit (batches with the QoI_* operator
-        keys, docs/24 §5): + qoi_weight · QoI log-ratio loss when qoi_weight > 0,
-        qoi_<name>_rel_err metrics always (_qoi_terms_3d).
+        the K Ritz frequencies (fidelity-weighted per sample, docs/34).  Metrics
+        (no grad): per-mode M-norm rel-L2 of the Ritz fields vs the K lowest
+        targets (sign-agnostic, subspace error inside near-degenerate clusters;
+        NaN = excluded for a cluster that the K-th output splits, see
+        _clusters_3d), freq MAE [GHz] and relative error, the basis' gradient
+        mass fraction 1 − diag(M_div)/diag(VᵀMV), CG iterations.
         """
         from src.models.hcurl import KpSolve, hcurl_grams, mode_rel_l2
         out = self.model(batch)
         V, T = out['basis'], batch['Y_field']
         B, _, m = V.shape
         G_M, G_A, MT = hcurl_grams(V, T, out, batch)
-        fid = batch.get('Fidelity', None)                 # field3d, mixed LF / HF labels (docs/34)
+        fid = batch.get('Fidelity', None)                 # mixed LF / HF labels (docs/34)
         w_fid = w_freq = None
         if fid is not None:
             fid = fid.reshape(-1).to(V.device)
@@ -375,9 +333,6 @@ class CavityLightning(pl.LightningModule):
         if self.freq_weight > 0.0:
             lf = loss_freq if w_freq is None else ((f_pred - f_true) ** 2).mean(-1).mul(w_freq.to(f_pred.dtype)).mean()
             total = total + self.freq_weight * lf.to(total.dtype)
-        loss_qoi = self._qoi_terms_3d(batch, out, T[..., :K], f_pred, f_true, prefix)
-        if loss_qoi is not None:
-            total = total + self.qoi_weight * loss_qoi.to(total.dtype)
         total = total.float()
 
         kw = dict(on_step=False, on_epoch=True, batch_size=B, sync_dist=True)
@@ -433,8 +388,7 @@ class CavityLightning(pl.LightningModule):
             # R2 bookkeeping: unit-M-norm targets vs sign-aligned predictions
             t_unit = Tk / (Tk * MTk).sum(1, keepdim=True).clamp(min=1e-300).sqrt()
             sgn = torch.sign(torch.einsum('bek,bek->bk', Fd, MTk)).unsqueeze(1)
-            dof_mask = batch['EdgeMask'] if 'EdgeMask' in batch else batch['DofMask']     # N0 / field3d
-            emask = dof_mask.unsqueeze(-1).expand_as(Fd)
+            emask = batch['DofMask'].unsqueeze(-1).expand_as(Fd)
             preds, targets = (Fd * sgn)[emask].float(), t_unit[emask].float()
         self.log(f'{prefix}/loss', total, on_step=True, on_epoch=True, prog_bar=True,
                  batch_size=B, sync_dist=True)
@@ -448,91 +402,6 @@ class CavityLightning(pl.LightningModule):
         if self.freq_stats:
             f = f * float(self.freq_stats['std']) + float(self.freq_stats['mean'])
         return f
-
-    def _isolated_3d(self, batch, K):
-        """bool [B, K]: output k of sample b is an isolated mode (a singleton
-        cluster of _clusters_3d), i.e. neither inside a near-degenerate cluster
-        (per-mode QoI depend on the arbitrary rotation within the eigenspace)
-        nor in a cluster that the K-th output splits."""
-        B = batch['Y_freq'].shape[0]
-        iso = torch.zeros(B, K, dtype=torch.bool)
-        for b in range(B):
-            inside, _ = self._clusters_3d(batch, b, K)
-            for c in inside:
-                if len(c) == 1:
-                    iso[b, c[0]] = True
-        return iso
-
-    def _qoi_terms_3d(self, batch, out, Tk, f_pred, f_true, prefix):
-        """Cavity figures of merit (docs/24 §5) of the Ritz fields out['field'] at
-        the predicted frequency vs those of the FE targets Tk [B, Ne, K] at the FE
-        frequency, both evaluated on the fly with the batch's QoI operators
-        (src/qoi/torch_qoi.qoi_torch), never with the stored labels.
-
-        Mask (per sample b, output k): isolated modes only (_isolated_3d); the
-        voltage-based quantities (torch_qoi.VOLTAGE_KEYS) additionally only for
-        accelerating modes, FE R/Q > max(qoi_rq_floor · max_k R/Q_b, _QOI_RQ_ABS);
-        non-finite / non-positive FE values are dropped.
-
-        Loss (qoi_weight > 0): mean over qoi_terms of the per-term mean over the
-        valid entries of (log q_pred − log q_true)²; returns None when off.
-        Metrics (no grad, whenever the batch has the operators): for every label
-        quantity {prefix}/qoi_<name>_rel_err = mean |q_pred/q_true − 1| over its
-        valid entries (exact peaks), logged with batch_size = #valid (0 → no
-        contribution; never NaN, as mode_k_rel_l2); {prefix}/qoi_loss and
-        {prefix}/qoi_<term>_log_mse when the loss is on."""
-        from src.qoi.torch_qoi import QOI_LABELS, VOLTAGE_KEYS, has_qoi_ops, qoi_torch
-        if not has_qoi_ops(batch):
-            if self.qoi_weight > 0:
-                raise ValueError("qoi_weight > 0 but the batch has no QoI operators: build the "
-                                 "datasets with Maxwell3DDataset(..., qoi_ops=True) "
-                                 "(train.py does when training.qoi_weight > 0).")
-            return None
-        B, K = f_pred.shape
-        fp, ft = self._to_ghz(f_pred), self._to_ghz(f_true)
-        tiny = 1e-300
-        with torch.no_grad():
-            q_true = qoi_torch(batch, Tk.detach(), ft)
-            iso = self._isolated_3d(batch, K).to(fp.device)
-            rq = q_true['R_over_Q_ohm']
-            acc = rq > torch.clamp(self.qoi_rq_floor * rq.amax(1, keepdim=True), min=_QOI_RQ_ABS)
-
-            def valid(name, q):
-                v = iso & torch.isfinite(q[name]) & (q[name] > 0)
-                return v & acc if name in VOLTAGE_KEYS else v
-
-        loss = q_pred = None
-        if self.qoi_weight > 0:
-            q_pred = qoi_torch(batch, out['field'], fp, peak_p=self.qoi_peak_p)
-            with torch.no_grad():
-                q_ref = q_true if self.qoi_peak_p is None else \
-                    qoi_torch(batch, Tk.detach(), ft, peak_p=self.qoi_peak_p)
-            terms = []
-            for name in self.qoi_terms:
-                v = valid(name, q_ref)
-                d = torch.log(q_pred[name].clamp(min=tiny)) - torch.log(q_ref[name].clamp(min=tiny))
-                d2 = torch.where(v, d * d, torch.zeros_like(d))
-                terms.append(d2.sum() / max(int(v.sum()), 1))
-            loss = torch.stack(terms).mean()
-
-        kw = dict(on_step=False, on_epoch=True, sync_dist=True)
-        with torch.no_grad():
-            if loss is not None:
-                self.log(f'{prefix}/qoi_loss', loss.detach().float(), **dict(kw, batch_size=B))
-                for name, t in zip(self.qoi_terms, terms, strict=True):
-                    self.log(f'{prefix}/qoi_{name}_log_mse', t.detach().float(), **dict(kw, batch_size=B))
-            if q_pred is None or self.qoi_peak_p is not None:
-                q_pred_m = qoi_torch(batch, out['field'].detach(), fp.detach())
-            else:
-                q_pred_m = {k: v.detach() for k, v in q_pred.items()}
-            for name in QOI_LABELS:
-                rel = (q_pred_m[name] / q_true[name].clamp(min=tiny) - 1.0).abs()
-                v = valid(name, q_true) & torch.isfinite(rel)
-                rel = torch.where(v, rel, torch.zeros_like(rel))
-                n = int(v.sum())
-                self.log(f'{prefix}/qoi_{name}_rel_err', (rel.sum() / max(n, 1)).float(),
-                         **dict(kw, batch_size=n))
-        return loss
 
     def _clusters_3d(self, batch, b, K):
         """(clusters inside the K outputs, split indices) of sample b, from ALL

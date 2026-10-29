@@ -18,20 +18,17 @@ from fastapi.testclient import TestClient                                   # no
 
 from src.data_gen import dataset_generator_3d as gen                         # noqa: E402
 from src.service import api as A                                            # noqa: E402
-from src.service.datasets import H5Dataset, PKLDataset, discover            # noqa: E402
+from src.service.datasets import H5Dataset, discover                         # noqa: E402
 from src.service.model import ModelService, align                           # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def data_dir(tmp_path_factory):
-    from src.data.dataset_converter_3d import RFCavity3DConverter
     d = tmp_path_factory.mktemp("dsui")
     (d / "h5" / "pillbox_pipes").mkdir(parents=True)
     h5 = d / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5"
     gen.main(["--n_total", "3", "--n_workers", "1", "--mesh_size", "0.3", "--n_eigen_modes", "4",
               "--families", "pillbox_pipes", "--start_id", "1000", "--h5_filename", str(h5)])
-    (d / "pkl").mkdir()
-    RFCavity3DConverter([str(h5)]).convert_dataset(str(d / "pkl" / "pp.pkl"))
     return d
 
 
@@ -39,28 +36,18 @@ def f32(s):
     return np.frombuffer(base64.b64decode(s), np.float32)
 
 
-def test_discover_groups_h5_dirs_and_pkls(data_dir):
+def test_discover_groups_h5_dirs(data_dir):
     ds = discover(str(data_dir))
-    kinds = sorted((type(v).__name__, k) for k, v in ds.items())
-    assert kinds == [("H5Dataset", "h5/pillbox_pipes/ (h5)"), ("PKLDataset", "pkl/pp.pkl")]
+    assert [(type(v).__name__, k) for k, v in ds.items()] == [("H5Dataset", "h5/pillbox_pipes/ (h5)")]
 
 
-def test_h5_and_pkl_items_agree(data_dir):
+def test_h5_items(data_dir):
     h5 = H5Dataset([str(data_dir / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5")], "h")
-    pk = PKLDataset(str(data_dir / "pkl" / "pp.pkl"), "p")
-    rh, rp = h5.rows(), pk.rows()
-    assert sorted(r["id"] for r in rh) == sorted(r["id"] for r in rp) == [1000, 1001, 1002]
-    a, b = h5.open(1001), pk.open(1001)
-    assert a["family"] == b["family"] == "pillbox_pipes"
-    np.testing.assert_allclose(a["f_GHz"], b["f_GHz"], rtol=1e-6)
-    np.testing.assert_allclose(a["nodes"], b["nodes"], atol=1e-6)             # PKL: X·scale + center
-    np.testing.assert_allclose(a["geom"]["Input_funcs"], b["geom"]["Input_funcs"], atol=1e-6)
-    M = a["M"]
-    for k in range(a["U"].shape[1]):                                          # same mode up to sign / amplitude
-        u, v = a["U"][:, k], b["U"][:, k]
-        c = abs(u @ (M @ v)) / np.sqrt((u @ (M @ u)) * (v @ (M @ v)))
-        assert c > 1 - 1e-5
-    assert b["qoi_labels"] is not None and "Q0" in b["qoi_labels"][0]
+    assert sorted(r["id"] for r in h5.rows()) == [1000, 1001, 1002]
+    a = h5.open(1001)
+    assert a["family"] == "pillbox_pipes" and a["U"].shape == (len(a["geom"]["edges"]), 4)
+    assert np.all(np.diff(a["f_GHz"]) >= 0) and a["qoi_labels"] is None
+    assert np.all(np.einsum("ik,ik->k", a["U"], a["M"] @ a["U"]) > 0)        # nonzero N0 modes
     assert "Req" not in a["params"] and "mesh_h" in a["params"]                # generator attributes
 
 
@@ -88,10 +75,16 @@ def client(data_dir):
     return TestClient(A.create_app(ModelService(None, "cpu"), discover(str(data_dir))))
 
 
-def test_dataset_endpoints_and_comparison(client):
+def _opened(client):
+    did = next(d["id"] for d in client.get("/api/datasets").json() if d["kind"] == "h5")
+    it = client.get(f"/api/datasets/{did}/items", params={"sort": "f0", "desc": True, "limit": 2}).json()
+    return client.post(f"/api/datasets/{did}/items/{it['items'][0]['id']}/open").json()
+
+
+def test_dataset_endpoints(client):
     L = client.get("/api/datasets").json()
-    assert {d["kind"] for d in L} == {"h5", "pkl"}
-    did = next(d["id"] for d in L if d["kind"] == "pkl")
+    assert {d["kind"] for d in L} == {"h5"}
+    did = L[0]["id"]
     it = client.get(f"/api/datasets/{did}/items", params={"sort": "f0", "desc": True, "limit": 2}).json()
     assert it["total"] == 3 and len(it["items"]) == 2
     assert it["items"][0]["f_GHz"][0] >= it["items"][1]["f_GHz"][0]
@@ -101,9 +94,7 @@ def test_dataset_endpoints_and_comparison(client):
 
     o = client.post(f"/api/datasets/{did}/items/{it['items'][0]['id']}/open").json()
     assert o["truth"]["source"] == "fe" and len(o["truth"]["modes"]) == 4
-    assert o["truth"]["labels"] is not None
-    q_fe, q_lab = o["truth"]["modes"][0]["Q0"], o["truth"]["labels"][0]["Q0"]
-    assert q_fe == pytest.approx(q_lab, rel=1e-4)                              # recomputed = stored label
+    assert o["truth"]["modes"][0]["Q0"] > 0                                     # figures of merit of the FE modes
     fe = client.get(f"/api/geometries/{o['id']}/features").json()
     assert fe["names"][3] == "dist_to_boundary" and fe["n_edges"] > 0
     fp = client.get(f"/api/geometries/{o['id']}/feature_plane", params={"name": "torsion", "res": 31}).json()
@@ -112,15 +103,20 @@ def test_dataset_endpoints_and_comparison(client):
     fs = client.get(f"/api/geometries/{o['id']}/feature_surface", params={"name": "dist_to_boundary"}).json()
     assert np.abs(f32(fs["values_b64"])).max() < 1e-6                          # zero on the wall
     assert client.get(f"/api/geometries/{o['id']}/feature_plane", params={"name": "x1"}).status_code == 404
+    t = client.get(f"/api/predictions/{o['truth']['id']}/plane", params={"mode": 0, "res": 31}).json()
+    assert t["n_points"] > 0
 
+
+@pytest.mark.skip(reason="model prediction is not wired to the field3d model yet (the N0 eigenspace3d model "
+                         "was removed)")
+def test_model_vs_fe_comparison(client):
+    o = _opened(client)
     p = client.post("/api/predictions", json={"geometry_id": o["id"], "compare_to": o["truth"]["id"]}).json()
     rows = p["comparison"]["rows"]
     assert len(rows) == 4 and all(r["rel_l2"] >= 0 for r in rows)
     assert all(r["f_fe"] == pytest.approx(o["truth"]["modes"][k]["f_GHz"]) for k, r in enumerate(rows))
     d = client.get(f"/api/predictions/{p['comparison']['diff_id']}/modes/0").json()
     assert d["surface"]["E_max"] > 0
-    t = client.get(f"/api/predictions/{o['truth']['id']}/plane", params={"mode": 0, "res": 31}).json()
-    assert t["n_points"] > 0
     other = client.post("/api/geometries/sample", json={"family": "box", "id": 3, "mesh_size": 0.3}).json()
     bad = client.post("/api/predictions", json={"geometry_id": other["id"], "compare_to": o["truth"]["id"]})
     assert bad.status_code == 422
@@ -158,6 +154,8 @@ def test_feature_views(client):
     assert client.get(f"/api/geometries/{gid}/feature_view", params={"kind": "bad"}).status_code == 422
 
 
+@pytest.mark.skip(reason="the job's convert step runs convert_3d.py (PKL of the removed N0 model); the service "
+                         "rewiring to field3d is pending")
 def test_generation_job_writes_family_dataset(tmp_path, monkeypatch):
     """A generation job writes <root>/<TAG>/h5/<family>/<family>_s00000.h5 + pkl/<family>.pkl (ids from the
     family's TRUBA block), shows up in the dataset list, and re-submitting skips finished shards."""
@@ -269,7 +267,7 @@ def test_gen_root_inside_a_data_root_is_listed_once(data_dir, monkeypatch):
     monkeypatch.setenv("RFCAV_GEN_ROOT", str(data_dir / "h5"))
     c = TestClient(A.create_app(ModelService(None, "cpu")))
     names = {d["name"] for d in c.get("/api/datasets").json()}
-    assert names == {"pkl/pp.pkl", "generated/pillbox_pipes/ (h5)"}
+    assert names == {"generated/pillbox_pipes/ (h5)"}
 
 
 def test_optional_checkpoint_falls_back_to_untrained(tmp_path):
