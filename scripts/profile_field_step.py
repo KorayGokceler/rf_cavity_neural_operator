@@ -68,7 +68,7 @@ class CGMeter:
         hcurl._pcg = timed
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *_exc):
         hcurl._pcg = self.orig
 
 

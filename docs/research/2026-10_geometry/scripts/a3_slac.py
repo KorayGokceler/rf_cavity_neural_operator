@@ -3,14 +3,12 @@ cell mid-planes -> TM0 passband modes phi = n pi/3.  Published: 2a = 1.99 cm, 2b
 d = 3.499 cm.  Assumed: iris edge = full round of radius t/2 (not given in the extract)."""
 import sys
 from pathlib import Path
-import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import a3_axisym as ax
 
 def segment(a=9.95e-3, b=40.96e-3, t=5.84e-3, d=34.99e-3, N=3):
     rho = t / 2
     S = [("line", (0, 0), (0, b))]
-    z = 0.0
     cur = (0, b)
     for i in range(N):
         zi = (i + 0.5) * d            # iris centre plane

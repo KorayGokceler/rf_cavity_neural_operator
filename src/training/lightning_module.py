@@ -204,7 +204,7 @@ class CavityLightning(pl.LightningModule):
                  near_deg_threshold=0.05, near_deg_rel_threshold=None,
                  qoi_weight=0.0, qoi_terms=('Q0', 'R_over_Q_ohm', 'G_ohm'), qoi_peak_p=None,
                  qoi_rq_floor=1e-2, fidelity_weights=(1.0, 1.0), fidelity_freq_scale=(1.0, 1.0),
-                 data_cfg=None, model_type='eigenspace3d', **legacy):
+                 data_cfg=None, model_type='eigenspace3d', **_legacy):
         """
         span_norm: 'mass' (L²), 'energy' (curl–curl, controls the Ritz eigenvalue error) or 'both'.
         span_root: use √residual (= best-approximation rel-L2, the metric) instead of the residual.
@@ -241,7 +241,7 @@ class CavityLightning(pl.LightningModule):
         assert span_norm in ('mass', 'energy', 'both'), f"span_norm: {span_norm!r}"
         assert selfsup_form in ('compliance', 'logdet'), f"selfsup_form: {selfsup_form!r}"
         hp = {k: v for k, v in locals().items()
-              if k not in ('self', 'legacy', 'field', '__class__')}
+              if k not in ('self', '_legacy', 'field', '__class__')}
         self.save_hyperparameters(hp)
         self.model_type = model_type
 

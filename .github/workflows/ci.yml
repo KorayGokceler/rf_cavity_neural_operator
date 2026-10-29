@@ -37,13 +37,12 @@ jobs:
           # CPU wheel (~200 MB) instead of the default CUDA build from PyPI (~2.5 GB).
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
-          pip install ruff vulture
 
       - name: Lint (syntax errors / undefined names / unused imports)
         run: ruff check .
 
-      - name: Dead Code Check (Vulture - Zero Bloat)
-        run: vulture src/ scripts/ train.py convert_3d.py --min-confidence 90
+      - name: Dead code (vulture, settings in pyproject.toml)
+        run: vulture
 
       - name: CLI smoke (--help of every entry point)
         run: |
@@ -51,11 +50,11 @@ jobs:
                    scripts/eval_qoi.py scripts/plot_3d.py scripts/predict_geometry.py scripts/active_sampling.py \
                    scripts/resolution_study.py scripts/qoi_validation.py scripts/dataset_stats_3d.py \
                    scripts/show_geometries.py scripts/serve_web.py scripts/colab_webui.py; do
-            if [ -f "$f" ]; then
-              echo "::group::$f --help"
-              python "$f" --help
-              echo "::endgroup::"
-            fi
+            # a removed entry point must fail here: update this list in the same change
+            [ -f "$f" ] || { echo "::error::$f is listed but does not exist"; exit 1; }
+            echo "::group::$f --help"
+            python "$f" --help
+            echo "::endgroup::"
           done
 
       - name: Unit tests

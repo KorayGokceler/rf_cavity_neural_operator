@@ -660,7 +660,6 @@ def mesh_sample(s_id, cad_path=None, post=None):
     is labelled with its edges sharp (params round_fallback = 1, n_sharp_edges > 0: peaks NaN) instead of
     being re-drawn — re-drawing would drop most ported designs from the dataset.
     Used by generate_sample_data, scripts/active_sampling.py and scripts/label_benchmark.py."""
-    import gmsh
     _gmsh_start()
     cs.MIN_FILLET = float(getattr(ARGS, "min_fillet", 0.0) or 0.0)
     rng = _sample_rng(s_id)
