@@ -61,6 +61,23 @@ checkpoint'lerini kabul eder; `serve_web.py --checkpoint auto` başka türdekile
 - **v0.1'de** sonuçlar bellekte tutulur: LRU, en fazla 64 kayıt, 1 saat, diske yazılmaz.
 - **v0.2'de** iş kuyruğu (Redis + RQ) gelir: FE doğrulama, tarama.
 
+### 1c. Yükleme birimi, sınırlar ve uyarılar
+
+- **Birim:** STEP / IGES dosyaları dosyanın bildirdiği birimde okunur (OCC içe aktarırken çevirir;
+  `Geometry.OCCTargetUnit = M` kullanılır); `unit` alanı yalnız BREP (birimsiz; üretici BREP'leri metre) ve
+  ağ dosyaları için geçerlidir, arayüzde STEP / IGES için seçici kapalıdır. Yanıt `source.unit_used`
+  ('file' ya da seçilen birim) bildirir.
+- **CAD yüklemeleri:** ışın ekseni dosya orijininden geçen z ekseni, `L_acc` = borular dahil eksen kirişi
+  (her yükleme tahmininde uyarı); çıkıntılı (re-entrant) keskin kenarlar sayılır (`source.n_sharp_edges`),
+  varsa Epk/Eacc ve Bpk/Eacc raporlanmaz.
+- **Karşılaştırma (`compare_to`):** modelin kavite sayıları tahminin kendi p2 değerleridir (izole modlar);
+  FE'nin dejenere kümesindeki modlar için '—'.
+- **Sınırlar:** `RFCAV_MAX_PREDICT_TETS` (varsayılan 30000 eğri tet) üstünde tahmin reddedilir; eğitim
+  mesh'leri ≤ 10000 tet olduğundan 10000 üstünde "doğruluğu doğrulanmadı" uyarısı verilir. Tahmin hataları
+  HTTP 422 döner. Başlangıç mesh'inin tet sayısını katı eğrilik belirler, `mesh_size` değil (ölçüm, 15000
+  sınırıyla: reentrant 25–27k, hwr 18–19k, elliptical 7,5k – 29,6k, pillbox_pipes 8,9k, spoke 4–15k, box < 0,3k).
+- **Rastgele örnek numaraları** [2^24, 2^25): `families.tsv` bloklarının hepsinin ötesinde.
+
 ## 2. API (v0.1)
 
 | uç nokta | ne yapar |

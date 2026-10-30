@@ -67,6 +67,9 @@ OOD_FAMILIES = ('box', 'coax_qw', 'pillbox_port', 'elliptical_long', 'junction')
 RANDOM_SAMPLE_IDS = (2 ** 24, 2 ** 25)
 UPLOAD_AXIS_WARNING = ('beam axis assumed: z through the origin; L_acc = axis chord incl. pipes; R/Q, R_sh, T and '
                        'peaks/Eacc depend on it')
+TRAIN_MODEL_TETS = 10_000       # field_labels.DEFAULTS['model_max_elements']: the training meshes
+BIG_MESH_WARNING = ('the curved mesh has {} tets, more than the <= {} of the training meshes: the model was '
+                    'not trained on meshes this fine, accuracy is not validated')
 SHARP_EDGE_WARNING = ('sharp edges ({} re-entrant): Epk/Eacc and Bpk/Eacc are not converged and are not reported')
 log = logging.getLogger('rfcav.api')
 
@@ -83,7 +86,7 @@ class Limits:
     max_tets = _env('RFCAV_MAX_TETS', 400_000, int)
     # curved tets the field model predicts on (CPU: ~3 GB, ~15 s at 10k tets); the training model meshes have
     # ≤ 10k tets (field_labels model_max_elements), so 15k keeps a margin without running far outside them
-    max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 15_000, int)
+    max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 30_000, int)
     min_mesh_size = 0.05
     max_items = _env('RFCAV_MAX_ITEMS', 64, int)
     ttl_s = _env('RFCAV_TTL_S', 3600.0)
@@ -350,6 +353,8 @@ def create_app(service=None, datasets=None):
                             'Epk/Eacc and Bpk/Eacc are undefined')
         if g['source'].get('ood'):
             warnings.append('out-of-distribution family: verify with a full-wave solver')
+        if p['n_tets'] > TRAIN_MODEL_TETS:
+            warnings.append(BIG_MESH_WARNING.format(p['n_tets'], TRAIN_MODEL_TETS))
         if g['source'].get('kind') == 'upload':
             warnings.append(UPLOAD_AXIS_WARNING)
         if float((g.get('geom_params') or {}).get('n_sharp_edges') or 0) > 0:

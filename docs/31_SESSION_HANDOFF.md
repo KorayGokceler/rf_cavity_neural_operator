@@ -500,6 +500,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 17 | CAD yüklemelerinde ışın ekseni seçeneği: bugün z ekseni, orijinden geçen (x = y = 0). `--axis_dir/--axis_point` field3d CLI'ında da yok (docs/25 §7). | — | — | açık |
 | 18 | `predict_blocker` serbest İngilizce metin; arayüz onu olduğu gibi gösteriyor. Öneri: yanına makinece okunur bir kod alanı (ör. `mesh_file`, `no_cad`, `n0_item`, `over_budget`) ve çeviri arayüzde. | — | — | açık |
 | 19 | `GET /api/geometries/{id}/features` çok kaba mesh'lerde 500 dönüyor (`claude/field-model-ui` oturumunda görüldü; bu PR'dan önce de vardı). Olası neden: `dataset_converter_3d.node_features`'ta `w / torsion_max`; iç düğüm yoksa torsiyon 0 → 0/0 → NaN özellikler. Yeniden üretme denemesi: kutu, id 1, mesh boyu 0,5 (12 tet) 200 döndü; tetikleyen geometri belgelenmeli. | — | — | açık |
+| 20 | Deforme (`--deform_prob`) H5 örnekleri ve deformasyonlu aile örnekleri gösterimde deformasyonsuz köşe noktalarıyla çiziliyor (`SetDeformation` `mesh.vertices`'i oynatmıyor); alanlar, Ritz ve QoI doğru, yalnız resim / `G.check` etkilenir. Uyarı yok. Düzeltme ~10–15 satır (köşelere δ(x) uygulamak). | — | — | açık |
 
 1 ve 2 birbirine dokunmuyor; paralel yürüyebilir. 15, 16 ve 19 aynı N0 koduna dokunuyor; birlikte ele alınmalı. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
