@@ -1,8 +1,16 @@
 """Geometry side of the prediction service: CAD / mesh / generator geometry → tet mesh [m], checks,
 display surface — shared by scripts/predict_geometry.py (CLI) and src/service/api.py (web).
 
-Torch-free on purpose: `run_isolated` executes the meshing of untrusted uploads (OCC / gmsh /
-meshio parsers) in a separate spawned process with a time and memory limit.
+The field3d model predicts on a CURVED netgen mesh of the CAD solid (docs/28–29), so every geometry that
+can be predicted keeps its curved mesh as bytes (`mesh_src`: netgen .vol of the straight tets + the BREP
+of the meshed solid [m] + curve order + deformation, the H5 field-label storage) and its display mesh is
+the linear (vertex) mesh of that curved mesh — prediction, display and the dataset's FE truth share one
+vertex / tet numbering.  Geometries without a CAD solid (mesh files, the discrete freeform family) are
+meshed with gmsh / meshio for display and checks only (`blocker` says why they cannot be predicted).
+
+Torch-free on purpose: `run_isolated` executes the meshing of untrusted uploads (OCC / gmsh / netgen /
+meshio parsers) in a separate spawned process with a time and memory limit; results are plain arrays
+and bytes (picklable), never netgen objects.
 """
 import multiprocessing as mp
 import os
@@ -23,6 +31,49 @@ def gen_args(mesh_size, n_modes=6, families=None):
     gen.ARGS = gen.parse_args(['--mesh_size', str(mesh_size), '--n_eigen_modes', str(n_modes),
                                *(['--families', *families] if families else [])])
     return gen.ARGS
+
+
+def linear_mesh(mesh):
+    """(vertices [Nv,3] float64, tets [Nt,4] int64) of an NGSolve mesh: the straight mesh under a curved
+    one, in NGSolve's vertex numbering (src.service.datasets.whitney_dofs uses the same)."""
+    from ngsolve import VOL
+    nodes = np.array([tuple(v.point) for v in mesh.vertices], np.float64)
+    tets = np.array([[v.nr for v in el.vertices] for el in mesh.Elements(VOL)], np.int64)
+    return nodes, tets
+
+
+def curved_from_cad(cad_path, h, deform=None, max_elements=None):
+    """Curved netgen mesh of a CAD solid [m] with the field-label settings (field_labels.start_mesh: the
+    adaptive labels' start mesh, maxh = maxh_factor·h, curvaturesafety 1.5 then 2) → dict(nodes, tets
+    [linear mesh], mesh_src {vol, brep (bytes), curve, deform}, n_tets).  Raises when netgen fails, folds
+    elements or exceeds max_elements (default field_labels.DEFAULTS['max_elements'])."""
+    import tempfile
+
+    from src.data_gen import field_labels as fl
+    s = dict(fl.DEFAULTS, **({'max_elements': int(max_elements)} if max_elements else {}))
+    mesh, shape, _ = fl.start_mesh(cad_path, h, deform, s, (s['adapt_cs'], s['curvaturesafety']))
+    with tempfile.TemporaryDirectory() as tmp:
+        brep = os.path.join(tmp, 's.brep')
+        shape.WriteBrep(brep)
+        brep_bytes = open(brep, 'rb').read()
+    nodes, tets = linear_mesh(mesh)
+    return {'nodes': nodes, 'tets': tets, 'n_tets': int(mesh.ne),
+            'mesh_src': {'vol': fl._mesh_bytes(mesh), 'brep': brep_bytes, 'curve': int(s['curve']),
+                         'deform': deform}}
+
+
+def load_mesh_src(src):
+    """The curved NGSolve mesh of a `mesh_src` dict (highorder.load_curved_mesh: identical numbering)."""
+    import tempfile
+
+    from src.data_gen import highorder as ho
+    with tempfile.TemporaryDirectory() as tmp:
+        vol, brep = os.path.join(tmp, 'm.vol'), os.path.join(tmp, 's.brep')
+        with open(vol, 'wb') as fh:
+            fh.write(src['vol'])
+        with open(brep, 'wb') as fh:
+            fh.write(src['brep'])
+        return ho.load_curved_mesh(vol, brep, int(src['curve']), src.get('deform'))
 
 
 def mesh_step(path, unit, mesh_size, vol_div=1.0, h_abs=None):
@@ -61,36 +112,79 @@ def mesh_file(path, unit):
     return np.asarray(m.points[used, :3], np.float64) * UNITS[unit], remap[tets]
 
 
-def mesh_upload(path, unit='mm', mesh_size=0.10, vol_div=1.0, h_abs=None):
-    """Any supported upload (by extension) → (nodes [m], tets)."""
+def cad_to_brep(path, unit, out_path):
+    """CAD file → one solid as BREP in metres at out_path (gmsh OCC import, fuse, scale by the unit);
+    returns its volume [m³]."""
+    import gmsh
+    gen._gmsh_start()
+    gmsh.clear()
+    gmsh.model.occ.importShapes(path)
+    gmsh.model.occ.synchronize()
+    vols = gmsh.model.getEntities(3)
+    if not vols:
+        raise ValueError("no 3D volume in the CAD file (a closed solid is needed: the cavity's vacuum region)")
+    if len(vols) > 1:
+        gmsh.model.occ.fuse(vols[:1], vols[1:])
+        gmsh.model.occ.synchronize()
+        vols = gmsh.model.getEntities(3)
+    f = UNITS[unit]
+    if f != 1.0:
+        gmsh.model.occ.dilate(gmsh.model.getEntities(), 0.0, 0.0, 0.0, f, f, f)
+        gmsh.model.occ.synchronize()
+        vols = gmsh.model.getEntities(3)
+    V = sum(gmsh.model.occ.getMass(d, t) for d, t in vols)
+    gmsh.write(str(out_path))
+    gmsh.clear()
+    return V
+
+
+def mesh_upload(path, unit='mm', mesh_size=0.10, vol_div=1.0, h_abs=None, max_elements=None):
+    """Any supported upload (by extension) → dict(nodes [m], tets, mesh_src | None, blocker | None, n_tets).
+    CAD: the solid in metres, curved netgen mesh at h = mesh_size·(V / vol_div)^(1/3) (or h_abs [m]) — when
+    that fails, the gmsh mesh for display and checks, with the reason as blocker.  Mesh files: no CAD
+    surface, so no curved mesh (blocker)."""
+    import tempfile
     ext = os.path.splitext(path)[1].lower()
     if ext in CAD_EXT:
+        with tempfile.TemporaryDirectory() as tmp:
+            brep = os.path.join(tmp, 'solid.brep')
+            V = cad_to_brep(path, unit, brep)
+            h = float(h_abs) if h_abs else mesh_size * (V / vol_div) ** (1 / 3)
+            try:
+                return dict(curved_from_cad(brep, h, max_elements=max_elements), blocker=None)
+            except Exception as e:                     # noqa: BLE001 — reported as the predict blocker
+                blocker = f"no curved mesh of the CAD solid ({type(e).__name__}: {e})"
         gen_args(mesh_size)
-        return mesh_step(path, unit, mesh_size, vol_div, h_abs)
+        nodes, tets = mesh_step(path, unit, mesh_size, vol_div, h_abs)
+        return {'nodes': nodes, 'tets': tets, 'mesh_src': None, 'blocker': blocker, 'n_tets': int(len(tets))}
     if ext in MESH_EXT:
-        return mesh_file(path, unit)
+        nodes, tets = mesh_file(path, unit)
+        return {'nodes': nodes, 'tets': tets, 'mesh_src': None, 'n_tets': int(len(tets)),
+                'blocker': 'a mesh file has no CAD surface: the field model needs the curved geometry of a solid '
+                           f"({', '.join(CAD_EXT)})"}
     raise ValueError(f"unsupported file type {ext!r} (CAD: {', '.join(CAD_EXT)}; mesh: {', '.join(MESH_EXT)})")
 
 
-def mesh_family(family, s_id, mesh_size=0.10):
-    """Generator geometry (family, id) → (nodes [m], tets, params): the same shape as in the dataset."""
-    gen_args(mesh_size, families=[family])
-    g = gen.mesh_sample(int(s_id))
-    return g['nodes'], g['tets'], {k: float(v) for k, v in g['params'].items()}
+NO_CAD_BLOCKER = 'the {} family is a discrete surface without a CAD solid: the field model needs the curved geometry'
 
 
-def from_h5(path, sample):
-    """Generator H5 group (name or index) → (nodes, tets, truth dict)."""
-    import h5py
-    with h5py.File(path, 'r') as f:
-        keys = sorted(k for k in f if k.startswith('sample_'))
-        key = keys[int(sample)] if str(sample).isdigit() and str(sample) not in keys else str(sample)
-        g = f[key]
-        if 'e_edges' not in g:
-            raise ValueError(f"{key}: no E-field DOFs (data of the removed H formulation?)")
-        return (g['nodes'][()], g['tets'][()], {'edges': g['edges'][()], 'vecs': g['e_edges'][()],
-                                                 'freqs': g['freqs'][()],
-                                                 'shape_type': str(g.attrs.get('shape_type', '')), 'key': key})
+def mesh_family(family, s_id, mesh_size=0.10, max_elements=None):
+    """Generator geometry (family, id) with the field-label settings (rounded re-entrant edges, healing, Sobol
+    sampling, seed 0: the geometry of the field datasets) and its curved mesh → dict(nodes [m], tets, params,
+    mesh_src, blocker, n_tets).  A curved mesh that fails re-draws the geometry, as the generator does.
+    The discrete families (freeform) have no CAD: gmsh mesh for display only (blocker)."""
+    import tempfile
+    if family in gen.DISCRETE_BUILDERS:
+        gen_args(mesh_size, families=[family])
+        g = gen.mesh_sample(int(s_id))
+        return {'nodes': g['nodes'], 'tets': g['tets'], 'params': {k: float(v) for k, v in g['params'].items()},
+                'mesh_src': None, 'n_tets': int(len(g['tets'])), 'blocker': NO_CAD_BLOCKER.format(family)}
+    gen.ARGS = gen.parse_args(['--labels', 'field', '--mesh_size', str(mesh_size), '--families', family,
+                               '--sampling', 'sobol'])
+    with tempfile.TemporaryDirectory() as tmp:
+        g = gen.mesh_sample(int(s_id), cad_path=os.path.join(tmp, 'solid.brep'),
+                            post=lambda path, h, dmap, _st, _prm: curved_from_cad(path, h, dmap, max_elements))
+    return dict(g['post'], params={k: float(v) for k, v in g['params'].items()}, blocker=None)
 
 
 # ─────────────────────────── checks + display surface ──────────────────

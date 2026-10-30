@@ -1,7 +1,8 @@
 #!/bin/bash
-# Pure-model prediction for ONE new cavity (CAD / mesh / generated), as a short GPU job:
-#   EXP=base cluster/truba/predict.sh --step $HOME/tesla.step --unit mm --vol_div 9 --fe
-#   EXP=base cluster/truba/predict.sh --family elliptical --id 524300 --fe
+# Pure-model prediction (field3d model) for ONE new cavity (CAD / generator family / field-label H5), as a
+# short GPU job:
+#   EXP=field_base cluster/truba/predict.sh --step $HOME/tesla.step --unit mm --vol_div 9 --fe
+#   EXP=field_base cluster/truba/predict.sh --family elliptical --id 524300 --fe
 # Arguments go to scripts/predict_geometry.py; results → $RUN_DIR/$EXP/predict/<name>/.
 set -euo pipefail
 TRUBA_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

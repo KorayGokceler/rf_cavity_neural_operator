@@ -5,18 +5,16 @@ same layout as the notebooks' training_logs/<EXP> and TRUBA's runs/<EXP>, so eve
     <runs_root>/<name>/progress.json                                 (src/training/progress.py)
     <runs_root>/<name>/train_params.json                             (what the UI started: for resume)
 
-Training data: one PKL as is, or several datasets merged from their H5 shards (convert_3d.py, lean)
-into a local cache file (scratch; rebuilt after a VM restart). Stopping keeps last.ckpt; resume
-continues from it (optionally with more epochs).
+The model is the field3d model (configs/field_3d.yaml); the training data are field-label H5 shards
+(dataset_generator_3d --labels field) of one or more datasets, passed to train.py as a list
+(dataset.data_path; FieldDataset rebuilds the curved meshes and operators per geometry). Stopping keeps
+last.ckpt; resume continues from it (optionally with more epochs).
 """
 import collections
 import glob
-import hashlib
 import json
 import os
-import shutil
 import sys
-import tempfile
 import threading
 import time
 
@@ -57,14 +55,12 @@ class TrainRun:
         self.status, self.stage, self.error = 'queued', 'starting', None
         self.created, self.finished = time.time(), None
         self.log = collections.deque(maxlen=400)
-        self.data_cached = False
         self._proc, self._cancel = None, False
 
 
 class TrainManager:
-    def __init__(self, runs_root, scratch=None, python=sys.executable, on_done=None):
+    def __init__(self, runs_root, python=sys.executable, on_done=None):
         self.runs_root = os.path.abspath(runs_root)
-        self.scratch = scratch or os.path.join(tempfile.gettempdir(), 'rfcav_train')
         self.python, self.on_done = python, on_done
         self.active = None
         self._lock = threading.Lock()
@@ -122,8 +118,7 @@ class TrainManager:
         s.update(history=[{k: h[k] for k in ('epoch', 'time', *CURVE_KEYS) if k in h}
                           for h in prog.get('history') or []],
                  test=prog.get('test'), best=prog.get('best'), params=_read_json(os.path.join(d, 'train_params.json')),
-                 stage=live.stage if live is not None else None, log=list(live.log)[-60:] if live is not None else [],
-                 data_cached=live.data_cached if live is not None else None)
+                 stage=live.stage if live is not None else None, log=list(live.log)[-60:] if live is not None else [])
         return s
 
     # ── control ──────────────────────────────────────────────────────
@@ -131,8 +126,11 @@ class TrainManager:
         return self.active is not None and self.active.status in ('queued', 'running')
 
     def start(self, name, params, data, resume=False):
-        """data: {'pkl': path} or {'h5': [files]}; params: preset, epochs, batch_size, lr, n_modes, patience,
-        qoi_weight, cache_operators (None = auto), sources (display names)."""
+        """data: {'h5': [field-label H5 files]}; params: preset, epochs, batch_size, lr, n_modes, patience,
+        sources (display names)."""
+        if not (data or {}).get('h5'):
+            raise FileNotFoundError("no field-label H5 files to train on (runs of the removed N0 model trained "
+                                    "on a PKL and cannot be resumed)")
         with self._lock:
             if self.busy():
                 raise RuntimeError(f"a training is running ({self.active.name}): stop it first")
@@ -167,41 +165,15 @@ class TrainManager:
         return run
 
     # ── worker ───────────────────────────────────────────────────────
-    def _data_pkl(self, run):
-        data = run.data
-        if data.get('pkl'):
-            return data['pkl'], os.path.getsize(data['pkl'])
-        files = sorted(data['h5'])
-        h = hashlib.sha1(json.dumps([(f, os.path.getsize(f), int(os.path.getmtime(f))) for f in files])
-                         .encode()).hexdigest()[:16]
-        os.makedirs(self.scratch, exist_ok=True)
-        out = os.path.join(self.scratch, f'train_{h}.pkl')
-        size = sum(os.path.getsize(f) for f in files)
-        if os.path.exists(out):
-            run.log.append(f"training data (cached): {out}")
-            run.data_cached = True
-            return out, size
-        run.stage = f'merging {len(files)} H5 shards → training PKL'
-        run_logged(run, [self.python, 'convert_3d.py', '--h5_filepath', *files, '--output_path', out + '.tmp',
-                         '--no_operators'], threads=4)
-        os.replace(out + '.tmp', out)
-        return out, size
-
     def _worker(self, run):
         run.status = 'running'
         p = run.params
         try:
-            pkl, size = self._data_pkl(run)
-            cache = p.get('cache_operators')
-            if cache is None:                                    # operators in RAM ≈ 9 × the H5 size
-                cache = size < 300 * 2 ** 20
             d = self.run_dir(run.name)
-            cmd = [self.python, 'train.py', '--config', 'configs/eigenspace_3d.yaml']
+            cmd = [self.python, 'train.py', '--config', 'configs/field_3d.yaml']
             if run.resume:
                 cmd += ['--resume', os.path.join(d, 'last.ckpt')]
-            if float(p.get('qoi_weight') or 0) > 0:
-                cmd += ['--qoi_weight', str(p['qoi_weight'])]
-            cmd += ['--override', f"dataset.data_path={pkl}", f"dataset.cache_operators={str(bool(cache)).lower()}",
+            cmd += ['--override', f"dataset.data_path={json.dumps(sorted(run.data['h5']))}",
                     f"training.log_dir={self.runs_root}", f"training.exp_name={run.name}",
                     f"training.max_epochs={int(p['epochs'])}", f"training.batch_size={int(p['batch_size'])}",
                     f"training.learning_rate={float(p['lr'])}", f"training.patience={int(p['patience'])}",
@@ -222,5 +194,3 @@ class TrainManager:
             except Exception as e:                               # noqa: BLE001
                 run.log.append(f"after training: {e}")
 
-    def clear_cache(self):
-        shutil.rmtree(self.scratch, ignore_errors=True)

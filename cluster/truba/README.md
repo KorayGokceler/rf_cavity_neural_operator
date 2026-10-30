@@ -21,7 +21,7 @@ $DATA_ROOT/$TAG/                         (LABELS=field: /arf/scratch/$USER/rfcav
 | `submit_all.sh [train\|ood\|all]` | gruptaki her aile için `submit_family.sh` |
 | `status.sh` | aile başına ilerleme tablosu + `squeue` |
 | `submit_train.sh` | GPU eğitimi, `LABELS=field` (`EXP`, `MODEL=small\|base\|large\|xl`, …); aynı EXP → `last.ckpt`'tan devam |
-| `predict.sh …` | yeni bir kavitede saf model tahmini (STEP / mesh / üretilmiş geometri; field3d bağlantısı bekliyor) |
+| `predict.sh …` | yeni bir kavitede saf field3d model tahmini (STEP / üretilmiş geometri / alan-etiketi H5; docs/25 §7) |
 | `gen_shard.sbatch`, `train.sbatch` | işlerin kendisi (elle çağırmaya gerek yok) |
 
 Model `field3d`'dir (docs/28–29); eski N0 modeli (`eigenspace3d`, PKL dönüştürme, `merge.sh`,

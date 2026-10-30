@@ -13,6 +13,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from scripts import predict_geometry as pg                                  # noqa: E402
+from src.service import geometry as G                                       # noqa: E402
 from src.data.dataset_converter_3d import extract_geometry_3d, qoi_operators_of   # noqa: E402
 from src.qoi.operators import beam_axis, build_qoi_operators                # noqa: E402
 from src.training.lightning_module import CavityLightning                     # noqa: E402
@@ -92,28 +93,32 @@ def test_acceleration_length_excludes_the_beam_pipes():
     assert acceleration_length("composite", {"R0": 0.03}) is None and acceleration_length("elliptical", None) is None
 
 
-@pytest.mark.skip(reason="model prediction is not wired to the field3d model yet (src.service.model.forward; "
-                         "the N0 eigenspace3d model was removed)")
-@pytest.mark.parametrize("source", ["mesh", "step"])
-def test_predict_geometry_end_to_end(tmp_path, pillbox_files, ckpt, source):
+@pytest.mark.parametrize("source", ["step", "family"])
+def test_predict_geometry_end_to_end(tmp_path, monkeypatch, pillbox_files, ckpt, source):
+    """CLI: CAD / generator geometry → curved mesh → field3d checkpoint → Ritz frequencies (upper bounds of the
+    p2 FE eigenvalues of the same mesh, --fe), p2 figures of merit, prediction.json + modes.vtu."""
+    from src.data_gen import cavity_shapes as cs
+    from src.data_gen import dataset_generator_3d as gen
+    monkeypatch.setattr(gen, "ARGS", gen.ARGS)                   # the CLI sets the generator's module state:
+    monkeypatch.setattr(cs, "MIN_FILLET", cs.MIN_FILLET)         # restored for the other tests
     out = tmp_path / "pred"
-    arg = ["--mesh", str(pillbox_files / "pillbox.msh")] if source == "mesh" else \
-        ["--step", str(pillbox_files / "pillbox.step"), "--mesh_size", "0.3"]
-    res = pg.main(["--checkpoint", str(ckpt), *arg, "--unit", "mm", "--fe", "--out_dir", str(out),
-                   "--device", "cpu", "--n_axis", "101"])
-    assert len(res["f_pred_GHz"]) == 4 and len(res["f_fe_GHz"]) == 4
+    arg = ["--step", str(pillbox_files / "pillbox.step"), "--unit", "mm", "--mesh_size", "0.3"] if source == "step" \
+        else ["--family", "box", "--id", "3", "--mesh_size", "0.2"]
+    res = pg.main(["--checkpoint", str(ckpt), *arg, "--fe", "--out_dir", str(out), "--device", "cpu"])
+    assert len(res["f_pred_GHz"]) == 4 and len(res["f_fe_GHz"]) == 4 and not res["untrained"]
     assert np.all(np.isfinite(res["f_pred_GHz"]))
-    assert res["f_fe_GHz"][0] == pytest.approx(F_TM010, rel=0.03)          # FE reference is the TM010
-    assert res["qoi_fe"]["G_ohm"][0] == pytest.approx(2.405 * 376.73 / (2 * (1 + R / L)), rel=0.15)
-    assert all(0.0 <= r <= 1.0 + 1e-9 for r in res["field_rel_l2"])
-    assert {"mesh", "operators", "model", "qoi", "fe_solve"} <= set(res["time_s"])
+    assert np.all(np.asarray(res["f_pred_GHz"]) >= np.asarray(res["f_fe_GHz"]) * (1 - 1e-6))   # Ritz upper bounds
+    if source == "step":
+        assert res["f_fe_GHz"][0] == pytest.approx(F_TM010, rel=0.01)       # p2 FE reference is the TM010
+    assert res["qoi_source"] == "p2_model" and all(m["Q0"] is None or m["Q0"] > 0 for m in res["modes"])
+    assert {"geometry", "mesh", "operators", "model", "qoi", "fe_solve"} <= set(res["time_s"])
     with open(out / "prediction.json") as f:
-        assert json.load(f)["n_edges"] == res["n_edges"]
+        assert json.load(f)["n_dof"] == res["n_dof"]
     assert (out / "modes.vtu").exists()
 
 
 def test_qoi_operators_of_uses_family_axis(pillbox_files):
-    nodes, tets = pg.mesh_file(str(pillbox_files / "pillbox.msh"), "mm")
+    nodes, tets = G.mesh_file(str(pillbox_files / "pillbox.msh"), "mm")
     geom, M = extract_geometry_3d(nodes, tets)
     z = qoi_operators_of(dict(geom, shape_type="pillbox_pipes"), M=M, n_axis=51)
     x = qoi_operators_of(dict(geom, shape_type="hwr"), M=M, n_axis=51)

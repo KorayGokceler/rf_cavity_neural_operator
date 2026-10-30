@@ -79,7 +79,7 @@ def node():
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--drive_dir', default='/content/drive/MyDrive/rf_cavity_3d',
-                    help='Drive folder: datasets (PKL / H5) and training_logs/ of the notebooks')
+                    help='Drive folder: datasets (H5) and training_logs/ of the notebooks')
     ap.add_argument('--gen_dir', default=None, help='generated datasets (default: <drive_dir>/ui_datasets)')
     ap.add_argument('--checkpoint', default='auto',
                     help='"auto" (newest run under <drive_dir>/training_logs), "" (untrained) or a path')

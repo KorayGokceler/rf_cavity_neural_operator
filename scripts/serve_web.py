@@ -78,15 +78,26 @@ def build_frontend(force=False):
         f.write(want)
 
 
+def _is_field3d(fp):
+    """True for a checkpoint of the field3d model (the only model the service runs); unreadable → False."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    try:
+        from src.service.model import checkpoint_model_type
+        return checkpoint_model_type(fp) == 'field3d'
+    except Exception:                                    # noqa: BLE001 — a broken file is skipped
+        return False
+
+
 def find_checkpoint(roots):
-    """The training run (dir directly under a root, or a .ckpt file in it) holding the newest .ckpt
-    below the given roots, or None."""
+    """The training run (dir directly under a root, or a .ckpt file in it) holding the newest field3d .ckpt
+    below the given roots, or None (checkpoints of other model types are skipped)."""
     best = None
     for root in roots:
         root = os.path.abspath(os.path.expanduser(root))
         for fp in glob.glob(os.path.join(root, '**', '*.ckpt'), recursive=True):
             t = os.path.getmtime(fp)
-            if best is None or t > best[0]:
+            if (best is None or t > best[0]) and _is_field3d(fp):
                 rel = os.path.relpath(fp, root).split(os.sep)
                 best = (t, fp if len(rel) == 1 else os.path.join(root, rel[0]))
     return best and best[1]
@@ -183,7 +194,7 @@ def main(argv=None):
     ap.add_argument('--ckpt_search', nargs='*', default=[], help='where --checkpoint auto looks (e.g. training_logs)')
     ap.add_argument('--checkpoint_optional', action='store_true',
                     help='a checkpoint that does not load → untrained model + a warning (instead of an error)')
-    ap.add_argument('--data', nargs='*', default=[], help='dataset roots (PKL files / H5 directories)')
+    ap.add_argument('--data', nargs='*', default=[], help='dataset roots (H5 files / directories)')
     ap.add_argument('--gen_root', default=None,
                     help='folder for datasets generated from the UI (e.g. a Google Drive folder); off when unset')
     ap.add_argument('--runs_root', default=None,

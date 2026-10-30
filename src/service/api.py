@@ -5,9 +5,9 @@
 
 Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suffix _b64):
     GET  /api/info                               model, families, limits
-    POST /api/geometries            (multipart)  upload CAD / mesh → checks + display surface
-    POST /api/geometries/sample     {family,id}  a generator geometry → checks + display surface
-    POST /api/predictions           {geometry_id}           mode table + figures of merit
+    POST /api/geometries            (multipart)  upload CAD / mesh → checks + display surface (+ can_predict)
+    POST /api/geometries/sample     {family,id}  a generator geometry → checks + display surface (+ can_predict)
+    POST /api/predictions           {geometry_id}           field3d model: mode table + figures of merit
     GET  /api/predictions/{id}/modes/{k}          surface E/H + beam-axis E_z of mode k
     GET  /api/predictions/{id}/plane?mode&axis&pos&res      cut plane E/H of mode k
     GET  /api/predictions/{id}/export             everything as one JSON file
@@ -25,10 +25,14 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     POST /api/train/stop · POST /api/model/load {run}   training from the UI (RFCAV_RUNS_ROOT)
     GET  /api/truba/config · POST /api/truba/command {form}   one-line TRUBA command (src/service/truba.py)
 The built frontend (web/dist) is served at / when present.
+
+Prediction runs the field3d model on the geometry's curved mesh (src/service/model.py): only geometries with a
+CAD solid (CAD uploads, generator families except freeform, field-label dataset items) and at most
+Limits.max_predict_tets curved tets can be predicted — the geometry response says so (can_predict,
+predict_blocker) and POST /api/predictions answers 422 with that reason otherwise.
 """
 import base64
 import collections
-import glob
 import hashlib
 import hmac
 import os
@@ -67,6 +71,8 @@ class Limits:
     mesh_timeout_s = _env('RFCAV_MESH_TIMEOUT', 120.0)
     mesh_mem_mb = _env('RFCAV_MESH_MEM_MB', 4096, int)
     max_tets = _env('RFCAV_MAX_TETS', 400_000, int)
+    # curved tets the field model predicts on (CPU: ~3 GB, ~15 s at 10k tets); default the field labels' budget
+    max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 30_000, int)
     min_mesh_size = 0.05
     max_items = _env('RFCAV_MAX_ITEMS', 64, int)
     ttl_s = _env('RFCAV_TTL_S', 3600.0)
@@ -203,18 +209,38 @@ def create_app(service=None, datasets=None):
     app.state.service = service
     _access_token(app, os.environ.get('RFCAV_TOKEN') or None)
 
-    def _geometry_response(nodes, tets, source, extra=None, prepared=None):
+    def _blocker(g):
+        """Why geometry record g cannot be predicted (None: it can)."""
+        if not g['check']['ok']:
+            return 'geometry failed the checks: ' + '; '.join(g['check']['problems'])
+        if g.get('blocker'):
+            return g['blocker']
+        if g.get('mesh_src') is None:
+            return 'no curved mesh of a CAD solid for this geometry'
+        n = int(g.get('n_tets_curved') or len(g['tets']))
+        if n > lim.max_predict_tets:
+            return (f"the curved mesh has {n} tets, above the prediction budget of {lim.max_predict_tets} "
+                    "(RFCAV_MAX_PREDICT_TETS): use a coarser mesh size")
+        return None
+
+    def _geometry_response(nodes, tets, source, extra=None, prepared=None, field=None):
+        """Store a geometry; field: {mesh_src, blocker, n_tets, geom_params} of its curved mesh (or why none)."""
         if len(tets) > lim.max_tets:
             raise HTTPException(413, f"mesh has {len(tets)} tets (limit {lim.max_tets}); use a coarser mesh size")
         chk = G.check(nodes, tets)
         vid, tri = G.surface(nodes, tets)
+        field = field or {}
         rec = {'nodes': nodes, 'tets': tets, 'vid': vid, 'tri': tri, 'source': source,
-               'family': (extra or {}).get('family', ''), 'params': (extra or {}).get('params'), 'check': chk}
+               'family': (extra or {}).get('family', ''), 'params': (extra or {}).get('params'), 'check': chk,
+               'mesh_src': field.get('mesh_src'), 'blocker': field.get('blocker'),
+               'n_tets_curved': field.get('n_tets'), 'geom_params': field.get('geom_params')}
         if prepared:
             rec.update(prepared)
         gid = geoms.put(rec)
         pts = np.asarray(nodes)[vid] * 1e3
+        blocker = _blocker(rec)
         return {'id': gid, 'source': source, 'check': chk, **(extra or {}),
+                'can_predict': blocker is None, 'predict_blocker': blocker,
                 'surface': {'n_points': int(len(vid)), 'n_triangles': int(len(tri)),
                             'points_b64': b64(pts), 'triangles_b64': b64(tri, np.uint32)}}
 
@@ -223,6 +249,7 @@ def create_app(service=None, datasets=None):
         return {'version': VERSION, 'model': service.info(),
                 'families': {'train': list(TRAIN_FAMILIES), 'ood': list(OOD_FAMILIES)},
                 'limits': {'max_upload_mb': lim.max_upload_mb, 'max_tets': lim.max_tets,
+                           'max_predict_tets': lim.max_predict_tets,
                            'cad': list(G.CAD_EXT), 'mesh': list(G.MESH_EXT)},
                 'conventions': {'U_J': 1.0, 'wall': 'copper, sigma = 5.8e7 S/m', 'beta': 1.0,
                                 'R_over_Q': 'linac: V^2/(omega U)', 'beam_axis': 'src.qoi.operators.beam_axis: x = y = 0 along z; hwr, ridged_box, box per family',
@@ -246,12 +273,13 @@ def create_app(service=None, datasets=None):
             with open(path, 'wb') as fo:
                 fo.write(data)
             try:
-                nodes, tets = G.run_isolated(G.mesh_upload, path, unit, mesh_size, n_cells, None,
-                                             timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
+                m = G.run_isolated(G.mesh_upload, path, unit, mesh_size, n_cells, None,
+                                   timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
             except (RuntimeError, TimeoutError) as e:
                 raise HTTPException(422, f"could not mesh the file: {e}") from None
-        return _geometry_response(nodes, tets, {'kind': 'upload', 'name': os.path.basename(file.filename or ''),
-                                                'unit': unit, 'mesh_size': mesh_size, 'n_cells': n_cells})
+        return _geometry_response(m['nodes'], m['tets'], {'kind': 'upload', 'name': os.path.basename(file.filename or ''),
+                                                          'unit': unit, 'mesh_size': mesh_size, 'n_cells': n_cells},
+                                  field=m)
 
     @app.post('/api/geometries/sample')
     def sample(req: SampleReq):
@@ -259,13 +287,13 @@ def create_app(service=None, datasets=None):
             raise HTTPException(422, f"unknown family {req.family!r}")
         s_id = req.id if req.id is not None else random.randrange(2 ** 20, 2 ** 21)   # beyond the training ids
         try:
-            nodes, tets, params = G.run_isolated(G.mesh_family, req.family, s_id, req.mesh_size,
-                                                 timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
+            m = G.run_isolated(G.mesh_family, req.family, s_id, req.mesh_size,
+                               timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
         except (RuntimeError, TimeoutError) as e:
             raise HTTPException(422, f"could not build the geometry: {e}") from None
-        return _geometry_response(nodes, tets, {'kind': 'sample', 'family': req.family, 'id': s_id,
-                                                'mesh_size': req.mesh_size, 'ood': req.family in OOD_FAMILIES},
-                                  {'family': req.family, 'params': params})
+        return _geometry_response(m['nodes'], m['tets'], {'kind': 'sample', 'family': req.family, 'id': s_id,
+                                                          'mesh_size': req.mesh_size, 'ood': req.family in OOD_FAMILIES},
+                                  {'family': req.family, 'params': m['params']}, field=dict(m, geom_params=m['params']))
 
     def _prepared(g):
         """Converter geometry (features + operators) of a stored geometry, computed once."""
@@ -280,11 +308,12 @@ def create_app(service=None, datasets=None):
     @app.post('/api/predictions')
     def predict(req: PredictReq):
         g = geoms.get(req.geometry_id)
-        if not g['check']['ok']:
-            raise HTTPException(422, 'geometry failed the checks: ' + '; '.join(g['check']['problems']))
+        blocker = _blocker(g)
+        if blocker:
+            raise HTTPException(422, blocker)
         t0 = time.perf_counter()
         geom, M = _prepared(g)
-        p = service.predict(g['nodes'], g['tets'], g['family'], geom=geom, M=M)
+        p = service.predict(g['mesh_src'], geom, M, g['family'], g.get('geom_params'), key=req.geometry_id)
         p['time_s']['total'] = time.perf_counter() - t0
         p['_geometry_id'] = req.geometry_id
         pid = preds.put(p)
@@ -298,7 +327,8 @@ def create_app(service=None, datasets=None):
         if g['source'].get('ood'):
             warnings.append('out-of-distribution family: verify with a full-wave solver')
         out = _summary(pid, p, {'geometry_id': req.geometry_id, 'time_s': p['time_s'], 'warnings': warnings,
-                                'model': service.info()})
+                                'model': service.info(), 'qoi_source': p['qoi_source'], 'n_dof': p['n_dof'],
+                                'n_tets': p['n_tets']})
         if req.compare_to:
             from src.service.model import compare
             truth = preds.get(req.compare_to)
@@ -369,6 +399,7 @@ def create_app(service=None, datasets=None):
         g = geoms.get(p['_geometry_id'])
         body = {'version': VERSION, 'model': service.info(), 'geometry': {'source': g['source'], 'check': g['check']},
                 'source': p['source'], 'modes': p['modes'], 'time_s': p.get('time_s'),
+                'qoi_source': p.get('qoi_source'),
                 'conventions': info()['conventions']}
         return JSONResponse(body, headers={'Content-Disposition': f'attachment; filename="prediction_{pid[:8]}.json"'})
 
@@ -435,10 +466,7 @@ def create_app(service=None, datasets=None):
         return ds_ids[did]
 
     def _rows(d):
-        try:
-            return d.rows()
-        except MemoryError as e:
-            raise HTTPException(413, str(e)) from None
+        return d.rows()
 
     @app.get('/api/datasets')
     def datasets_list():
@@ -479,30 +507,23 @@ def create_app(service=None, datasets=None):
             r = d.open(sid)
         except KeyError:
             raise HTTPException(404, 'no such geometry') from None
-        except MemoryError as e:
-            raise HTTPException(413, str(e)) from None
         from src.data.sparse import to_csr
         ne = len(r['geom']['edges'])
         M = to_csr(r['M'], (ne, ne))
+        field = {'mesh_src': r.get('mesh_src'), 'n_tets': r.get('n_tets_model'), 'geom_params': r['geom'].get('params'),
+                 'blocker': None if r.get('mesh_src') else 'N0-label dataset: no curved mesh is stored for the '
+                                                           'field model (field-label datasets can be predicted)'}
         resp = _geometry_response(r['nodes'], r['tets'],
                                   {'kind': 'dataset', 'dataset': d.name, 'family': r['family'], 'id': r['id'],
                                    'file': r['source_file']},
                                   {'family': r['family'], 'params': r['params']},
-                                  prepared={'_geom': r['geom'], '_M': M, 'feature_names': r['features']})
+                                  prepared={'_geom': r['geom'], '_M': M, 'feature_names': r['features']}, field=field)
         truth = None
         if r['U'].shape[1]:
-            from src.service.model import QOI_SHOW, RQ_FLOOR_OHM, VOLTAGE_QOI, build_solution
+            from src.service.model import build_solution, override_qoi
             sol = build_solution(r['geom'], M, r['U'], r['f_GHz'], 'fe')
             if d.kind == 'field' and r['qoi_labels']:        # the stored p3 labels, not the N0 display fields'
-                for row, lab in zip(sol['modes'], r['qoi_labels'], strict=False):
-                    row.update({n: lab[n] for n in QOI_SHOW if n in lab})       # finite or None
-                    if not (row.get('R_over_Q_ohm') or 0.0) > RQ_FLOOR_OHM:      # no field on the axis
-                        row.update({n: None for n in VOLTAGE_QOI})
-                rq = [-1.0 if m['degenerate'] or m['R_over_Q_ohm'] is None else m['R_over_Q_ohm']
-                      for m in sol['modes']]
-                acc = int(np.argmax(rq)) if max(rq, default=-1.0) > 0 else -1
-                for k, m in enumerate(sol['modes']):
-                    m['accelerating'] = k == acc
+                override_qoi(sol, r['qoi_labels'])
             sol['_geometry_id'] = resp['id']
             truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels'],
                                                    'qoi_source': 'p3_labels' if d.kind == 'field' else 'fe'})
@@ -525,7 +546,7 @@ def create_app(service=None, datasets=None):
 
     class GenReq(BaseModel):
         families: list[str]
-        labels: str = Field(default='n0', pattern='^(n0|field)$')
+        labels: str = Field(default='field', pattern='^field$')        # field labels only (the field3d data)
         n_total: int = Field(default=100, ge=1)
         mesh_size: float = Field(default=0.10, ge=Limits.min_mesh_size, le=0.5)
         n_modes: int = Field(default=10, ge=1, le=30)
@@ -535,10 +556,8 @@ def create_app(service=None, datasets=None):
         seed: int = Field(default=0, ge=0)
         shard_size: int = Field(default=256, ge=4, le=4096)
         workers: int | None = Field(default=None, ge=1, le=256)
-        convert: bool = True
-        lean: bool = True
         tag: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$')
-        # field labels (docs/29–30); ignored for n0
+        # field labels (docs/29–30)
         threads: int | None = Field(default=None, ge=1, le=256)     # NGSolve threads per worker (None: plan)
         label_order: int = Field(default=3, ge=2, le=5)
         model_order: int = Field(default=2, ge=1, le=4)
@@ -575,7 +594,7 @@ def create_app(service=None, datasets=None):
                 'cpu_count': host['cpus'], 'mem_gb': host['mem_gb'], 'max_total': max_gen,
                 'families': {'train': [f for f in TRAIN_FAMILIES], 'ood': [f for f in OOD_FAMILIES]},
                 'blocks': {f: blocks.get(f) for f in TRAIN_FAMILIES + OOD_FAMILIES},
-                'tag_example': J.tag_of(0.10, 10),
+                'tag_example': J.field_tag_of(0.10, 10),
                 'field': {'defaults': {k: v.default for k, v in GenReq.model_fields.items()
                                        if k in FIELD_PARAMS} | {'max_ndof': nd},
                           'plan': J.field_plan(host['cpus'], host['mem_gb'], nd),
@@ -600,26 +619,19 @@ def create_app(service=None, datasets=None):
             raise HTTPException(422, f"unknown family / no id block: {bad}")
         if req.n_total > max_gen:
             raise HTTPException(422, f"n_total ≤ {max_gen} per family (RFCAV_GEN_MAX)")
-        field = req.labels == 'field'
-        if field:
-            if 'freeform' in req.families:
-                raise HTTPException(422, 'freeform has no CAD solid: field labels need one (docs/29)')
-            if req.model_order >= req.label_order:
-                raise HTTPException(422, 'model_order must be below label_order (nested spaces)')
-            nd = req.max_ndof or _default_ndof()
-            plan = J.field_plan(host['cpus'], host['mem_gb'], nd, req.threads, req.workers)
-            tag = req.tag or J.field_tag_of(req.mesh_size, req.n_modes, req.label_order, req.model_order,
-                                            req.min_fillet, req.adapt, req.round_edges)
-        else:
-            tag = req.tag or J.tag_of(req.mesh_size, req.n_modes)
+        if 'freeform' in req.families:
+            raise HTTPException(422, 'freeform has no CAD solid: field labels need one (docs/29)')
+        if req.model_order >= req.label_order:
+            raise HTTPException(422, 'model_order must be below label_order (nested spaces)')
+        nd = req.max_ndof or _default_ndof()
+        plan = J.field_plan(host['cpus'], host['mem_gb'], nd, req.threads, req.workers)
+        tag = req.tag or J.field_tag_of(req.mesh_size, req.n_modes, req.label_order, req.model_order,
+                                        req.min_fillet, req.adapt, req.round_edges)
         out = []
         for f in req.families:
-            p = req.model_dump(exclude={'families', 'tag', 'workers', 'threads', 'max_ndof'}
-                               | (set() if field else FIELD_PARAMS))
-            p.update(family=f, block=blocks[f], tag=tag, workers=req.workers or host['cpus'],
-                     group='ood' if f in OOD_FAMILIES else 'train')
-            if field:
-                p.update(workers=plan['workers'], threads=plan['threads'], max_ndof=nd, convert=False)
+            p = req.model_dump(exclude={'families', 'tag', 'workers', 'threads', 'max_ndof'})
+            p.update(family=f, block=blocks[f], tag=tag, group='ood' if f in OOD_FAMILIES else 'train',
+                     workers=plan['workers'], threads=plan['threads'], max_ndof=nd)
             out.append(m.submit(p).public())
         return out
 
@@ -650,12 +662,11 @@ def create_app(service=None, datasets=None):
         datasets: list[str] = Field(default_factory=list)
         preset: str = Field(default='small', pattern='^(' + '|'.join(T.PRESETS) + ')$')
         epochs: int = Field(default=100, ge=1, le=10000)
-        batch_size: int = Field(default=4, ge=1, le=256)
+        batch_size: int = Field(default=2, ge=1, le=256)                  # configs/field_3d.yaml
         lr: float = Field(default=2e-4, gt=0, le=1.0)
         n_modes: int = Field(default=6, ge=1, le=30)
-        patience: int = Field(default=50, ge=1, le=10000)
-        qoi_weight: float = Field(default=0.0, ge=0.0, le=100.0)
-        cache_operators: bool | None = None
+        patience: int = Field(default=40, ge=1, le=10000)
+        num_workers: int = Field(default=2, ge=0, le=64)                   # loader workers (operator assembly)
 
     class ResumeReq(BaseModel):
         epochs: int | None = Field(default=None, ge=1, le=10000)
@@ -669,35 +680,16 @@ def create_app(service=None, datasets=None):
                                      '(e.g. <Drive>/training_logs)')
         return tm
 
-    def _h5_of(d):
-        """H5 shards of a registered dataset: its own files, or for a generated / TRUBA family PKL
-        (<TAG>/pkl/<fam>.pkl) the shards in <TAG>/h5/<fam>/."""
-        if getattr(d, 'files', None):
-            return list(d.files)
-        p = getattr(d, 'path', '')
-        base, fam = os.path.dirname(os.path.dirname(p)), os.path.splitext(os.path.basename(p))[0]
-        if os.path.basename(os.path.dirname(p)) == 'pkl':
-            return sorted(glob.glob(os.path.join(base, 'h5', fam, '*.h5')))
-        return []
-
     def _train_data(ids):
+        """{'h5': files} of the chosen field-label datasets (the field3d model's data) + their names."""
         if not ids:
             raise HTTPException(422, 'choose at least one dataset')
         ds = [_ds(i) for i in ids]
-        field = [d.name for d in ds if d.kind == 'field']
-        if field:
-            raise HTTPException(422, f"{field}: field-label datasets train the field3d model, which this page does "
-                                     "not run yet — use train.py --config configs/field_3d.yaml or the TRUBA page")
-        if len(ds) == 1 and getattr(ds[0], 'path', None):
-            return {'pkl': ds[0].path}, [ds[0].name]
-        files, missing = set(), []
-        for d in ds:
-            h = _h5_of(d)
-            (files.update(h) if h else missing.append(d.name))
-        if missing:
-            raise HTTPException(422, f"no H5 shards for {missing}: several datasets are merged from their H5 "
-                                     "shards — choose a PKL alone, or its H5 folder")
-        return {'h5': sorted(files)}, [d.name for d in ds]
+        other = [d.name for d in ds if d.kind != 'field']
+        if other:
+            raise HTTPException(422, f"{other}: not field-label data — the field3d model trains on field-label H5 "
+                                     "(generator --labels field); N0-label H5 trains no model")
+        return {'h5': sorted({f for d in ds for f in d.files})}, [d.name for d in ds]
 
     def _gpu():
         try:
@@ -724,7 +716,9 @@ def create_app(service=None, datasets=None):
                 'presets': {k: {'embed_dim': v[0], 'n_heads': v[1], 'n_layers': v[2], 'n_basis': v[3],
                                 'params_m': T.PRESET_PARAMS_M[k]} for k, v in T.PRESETS.items()},
                 'busy': bool(tm and tm.busy()), 'active': tm.active.name if tm and tm.active else None,
-                'model': service.info()}
+                'model': service.info(), 'model_type': 'field3d', 'config': 'configs/field_3d.yaml',
+                'dataset_kinds': ['field'],
+                'defaults': {k: v.default for k, v in TrainReq.model_fields.items() if k not in ('name', 'datasets')}}
 
     @app.get('/api/train/runs')
     def train_runs():
@@ -763,6 +757,8 @@ def create_app(service=None, datasets=None):
         except FileNotFoundError as e:
             raise HTTPException(404, str(e)) from None
         data = p.pop('data')
+        if not (data or {}).get('h5'):
+            raise HTTPException(422, f"{name}: trained on a PKL of the removed N0 model; it cannot be resumed")
         if req.epochs:
             p['epochs'] = req.epochs
         return _start(name, p, data, True)

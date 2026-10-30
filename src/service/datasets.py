@@ -121,11 +121,12 @@ def whitney_dofs(mesh, U, model_order):
     """Model-space fields U [ndof, K] (HCurl(model_order, dirichlet='wall') of the curved mesh) → the
     linear mesh's vertices [Nv, 3], tets [Nt, 4] and Whitney N0 DOFs on NGSolve's edges [Ne, K] with
     those edges [Ne, 2] (tail, head) — the H5 N0 convention of the browser (h5_edges_to_canonical)."""
-    from ngsolve import VOL, GridFunction, HCurl
+    from ngsolve import GridFunction, HCurl
     fes = HCurl(mesh, order=int(model_order), dirichlet='wall')
     if fes.ndof != U.shape[0]:
         raise ValueError(f"stored fields have {U.shape[0]} DOFs, the rebuilt HCurl(p{model_order}) space "
                          f"{fes.ndof}: different NGSolve version?")
+    from src.service.geometry import linear_mesh
     fes0 = HCurl(mesh, order=0)
     g, g0 = GridFunction(fes), GridFunction(fes0)
     V = np.zeros((fes0.ndof, U.shape[1]))
@@ -133,8 +134,7 @@ def whitney_dofs(mesh, U, model_order):
         g.vec.FV().NumPy()[:] = U[:, k]
         g0.Set(g, dual=True)          # projection-based (commuting) interpolation: plain Set is ~15 % off
         V[:, k] = g0.vec.FV().NumPy()
-    nodes = np.array([tuple(v.point) for v in mesh.vertices], float)
-    tets = np.array([[v.nr for v in el.vertices] for el in mesh.Elements(VOL)], np.int64)
+    nodes, tets = linear_mesh(mesh)
     edges = np.array([[v.nr for v in e.vertices] for e in mesh.edges], np.int64)
     return nodes, tets, edges, V
 
@@ -182,7 +182,9 @@ class FieldH5Dataset:
             return self._rows
 
     def open(self, sid):
-        """Model mesh + the label fields on Whitney N0 (display) + the stored p3 figures of merit."""
+        """Model mesh + the label fields on Whitney N0 (display) + the stored p3 figures of merit; mesh_src (the
+        stored curved mesh: .vol + BREP bytes, curve order, deformation) lets the field model predict on the
+        same mesh (src.service.model.ModelService.predict)."""
         import h5py
         import torch  # noqa: F401 — before NGSolve: ngsolve loaded first breaks torch later (tests/conftest.py)
 
@@ -195,6 +197,10 @@ class FieldH5Dataset:
             g = f[key]
             mesh, rec = read_field_group(g)
             attrs = {k: g.attrs[k] for k in g.attrs}
+            mesh_src = {'vol': np.asarray(g['vol']).tobytes(), 'brep': np.asarray(g['brep']).tobytes(),
+                        'curve': int(attrs['curve']), 'model_order': int(rec['model_order']),
+                        'deform': (tuple(np.asarray(g[k]) for k in ('deform_om', 'deform_a', 'deform_ph'))
+                                   if 'deform_om' in g else None)}
             nodes, tets, edges_ng, V = whitney_dofs(mesh, rec['u_model'], rec['model_order'])
         order = np.argsort(rec['freqs'], kind='stable')
         freqs, V = rec['freqs'][order], V[:, order]
@@ -208,7 +214,8 @@ class FieldH5Dataset:
         geom.update(shape_type=rec['shape_type'], params=geom_params_of(attrs))
         return {'id': sid, 'family': rec['shape_type'], 'nodes': nodes, 'tets': tets, 'geom': geom, 'M': M,
                 'U': U, 'f_GHz': freqs, 'f_next': _float(rec['freq_next']), 'params': params,
-                'qoi_labels': labels, 'features': FEATURE_NAMES_3D, 'source_file': os.path.basename(fp)}
+                'qoi_labels': labels, 'features': FEATURE_NAMES_3D, 'source_file': os.path.basename(fp),
+                'mesh_src': mesh_src, 'n_tets_model': int(mesh.ne)}
 
 
 def discover(spec=None):

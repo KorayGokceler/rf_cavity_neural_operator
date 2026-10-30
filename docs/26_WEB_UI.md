@@ -1,6 +1,8 @@
 # 26 · Web arayüzü: RF Cavity Neural Solver
 
 > **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+> Since the same PR the service's **Predict runs field3d** (§1b); generation, training and the TRUBA page
+> are field-label only.
 
 > Durum: **v0.1**. Hedef: dışarıya açık ürün/demo. Teknoloji: FastAPI +
 > React + vtk.js. v1 kapsamı: dosya yükle + tahmin, parametrik kurucu, tarama / hedef frekans,
@@ -22,6 +24,40 @@
 
 - CLI (`scripts/predict_geometry.py`), TRUBA (`cluster/truba/predict.sh`) ve web aynı servis
   katmanını kullanır.
+
+## 1b. Tahmin: field3d modeli (eğri mesh, HCurl p2)
+
+`ModelService.predict` (`src/service/model.py`), `scripts/eval_fidelity.py`'nin etiketsiz yolu:
+
+1. **Eğri mesh** (`geometry.mesh_src`: netgen `.vol` + katının BREP'i [m] + eğrilik mertebesi + deformasyon,
+   alan-etiketi H5'iyle aynı saklama). Kaynaklar:
+   - **CAD yükleme** (STEP/IGES/BREP): katı ayrı süreçte metreye ölçeklenir, `field_labels.start_mesh` ile
+     eğri mesh (maxh = 3 h, curvaturesafety 1.5 → 2). Başarısızsa gmsh mesh'i yalnız gösterim için kalır.
+   - **Aile örneği:** üretici alan-etiketi ayarlarıyla (kenar yuvarlatma, OCC onarımı, Sobol, seed 0) — alan
+     datasetlerindeki geometrinin aynısı. Eğri mesh başarısız olursa üretici gibi geometri yeniden çekilir.
+   - **Alan dataseti öğesi:** saklanan eğri mesh; tahmin, saklanan FE çözümüyle aynı gösterim mesh'inde olur
+     (model–FE karşılaştırması çalışır).
+   - **Tahmin edilemeyenler:** mesh dosyaları (.msh/.vtu…), `freeform` ailesi (CAD katısı yok), N0-etiketli H5
+     öğeleri. Geometri yanıtında `can_predict: false` ve `predict_blocker` (kısa İngilizce neden);
+     `POST /api/predictions` aynı nedenle 422 döner.
+   - **Bütçe:** eğri mesh `RFCAV_MAX_PREDICT_TETS` (30000, etiketlerin eleman bütçesi) tet'i aşarsa 422.
+2. `field_labels.model_normalisation` → `highorder.field_operators(order=2)` → `field_item` / `field_collate`
+   → model. Eğri mesh ve operatörler geometri kimliği başına önbellekte (`RFCAV_FIELD_CACHE`, son 2 geometri).
+3. **Frekanslar:** modelin Ritz değerleri (`out['freq']`, `freq_stats = (0, 1)` ile GHz). Aynı mesh'in ayrık
+   p2 özdeğerlerinin üst sınırıdır (test: kutu, CAD pillbox).
+4. **Kavite değerleri** (Q0, G, R/Q, R_sh, T, Epk/Eacc, Bpk/Eacc): tahmin edilen p2 alanlarından
+   `highorder.mode_qoi` ile, etiketlerle aynı kod, eksen ve hızlanma boyu (`qoi_source: p2_model`).
+   Hızlandırıcı mod bu değerlerle yeniden seçilir.
+5. **η:** alan operatörlerinin K, M'siyle ‖K u − λ M u‖_{D⁻¹} / λ.
+6. **Gösterim:** p2 alanları Whitney N0'a (eğri mesh'in doğrusal mesh'i, `datasets.whitney_dofs`) izdüşürülür;
+   geometrinin gösterim mesh'i zaten bu doğrusal mesh olduğundan yüzey, kesit, hacim ve `/fields` değişmeden çalışır.
+
+Süreler (`time_s`): `mesh`, `operators` (önbellekten 0), `model`, `qoi`, `display`, `total`. Yanıtta ayrıca
+`qoi_source`, `n_dof` (p2 DOF), `n_tets` (eğri tet). Ölçüm: docs/31.
+
+Eğitilmemiş demo modu: checkpoint yoksa (ya da `--checkpoint_optional` ile yüklenemezse) rastgele
+başlatılmış küçük bir field3d modeli; uyarı "untrained demo model". `load_model` yalnız `model_type: field3d`
+checkpoint'lerini kabul eder; `serve_web.py --checkpoint auto` başka türdekileri atlar.
 - **v0.1'de** sonuçlar bellekte tutulur: LRU, en fazla 64 kayıt, 1 saat, diske yazılmaz.
 - **v0.2'de** iş kuyruğu (Redis + RQ) gelir: FE doğrulama, tarama.
 
@@ -29,10 +65,10 @@
 
 | uç nokta | ne yapar |
 |---|---|
-| `GET /api/info` | model (alan, parametre sayısı, cihaz, eğitilmemiş mi), aileler, sınırlar, kurallar |
-| `POST /api/geometries` (multipart: `file`, `unit`, `mesh_size`, `n_cells`) | mesh + kontroller (tek parça / manifold, b1, hacim, bbox) + görüntü yüzeyi |
-| `POST /api/geometries/sample` `{family, id?, mesh_size}` | üretici geometrisi (id boşsa eğitimde kullanılmamış rastgele bir kimlik) |
-| `POST /api/predictions` `{geometry_id}` | mod tablosu (f, kavite değerleri, η, dejenere, hızlandırıcı mod), süreler, uyarılar |
+| `GET /api/info` | model (alan, parametre sayısı, cihaz, eğitilmemiş mi, `model_type`), aileler, sınırlar (`max_predict_tets` dahil), kurallar |
+| `POST /api/geometries` (multipart: `file`, `unit`, `mesh_size`, `n_cells`) | mesh + kontroller (tek parça / manifold, b1, hacim, bbox) + görüntü yüzeyi + `can_predict`, `predict_blocker` |
+| `POST /api/geometries/sample` `{family, id?, mesh_size}` | üretici geometrisi (id boşsa eğitimde kullanılmamış rastgele bir kimlik) + `params`, `can_predict`, `predict_blocker` |
+| `POST /api/predictions` `{geometry_id}` | mod tablosu (f, kavite değerleri, η, dejenere, hızlandırıcı mod), `qoi_source`, `n_dof`, `n_tets`, süreler, uyarılar; tahmin edilemezse 422 |
 | `GET /api/predictions/{id}/modes/{k}` | yüzey E/H (faz için iki alan) + eksen boyunca E_z |
 | `GET /api/predictions/{id}/plane?mode&axis&pos&res` | kesit düzlemi: noktalar, üçgenler, E, H |
 | `GET /api/predictions/{id}/volume?mode&n` | 3B görünüm: kutu üzerinde ~n noktalık düzenli ızgara (x en hızlı), E, H, kavite içi maskesi |
@@ -236,12 +272,12 @@ yalnız kendi girdileri değişince yeniden kuruluyor (`useMemo`).
 Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çözümüne ve modelin hatasına kadar her şey görülebilir.
 
 - **Dataset sayfası:** sunucuya `RFCAV_DATA` ile verilen datasetler listelenir (`src/service/datasets.py`).
-  - Her **PKL** dosyası bir dataset; **H5 parçaları** klasör başına bir dataset. TRUBA düzeninde `h5/<aile>/` her aile için ayrı bir dataset olur.
+  - **H5 parçaları** klasör başına bir dataset (alan etiketi: tür `field`; N0 etiketi: tür `h5`, yalnız görüntülenir). TRUBA düzeninde `h5/<aile>/` her aile için ayrı bir dataset olur.
   - **Genel bakış:** aile başına geometri sayısı (tıklayınca filtreler), en düşük mod frekansı f₀ histogramı, N0 DOF sayısı histogramı.
   - **Tablo:** id, aile, düğüm, N0, b1, f₀…f₅. Sıralanabilir, sayfalı, aileye göre filtrelenir. "Aç" geometriyi çalışma alanına gönderir.
 - **Geometri açılınca:**
   - mesh ve kontroller;
-  - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. Değerler aynı operatörlerle yeniden hesaplanır; PKL'de saklı etiket varsa değerin ipucunda gösterilir;
+  - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. alan datasetlerinde değerler saklanan p3 etiketleridir;
   - geometri bilgisi: dataset, dosya, id, N0 DOF, ölçek, torsiyon maksimumu, (K+1). mod frekansı, üretici parametreleri.
 - **"Tahmin et ve FE ile karşılaştır":**
   - **Kaynak** seçimi: FE / Model / **Fark**. Fark = hizalanmış model − FE: işaret ve dejenere çiftler hizalanır, renk ölçeği FE alanına göre.
@@ -269,17 +305,16 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 - `GET /api/geometries/{id}/features`, `…/feature_plane?name&axis&pos&res`, `…/feature_surface?name`
 - `POST /api/predictions {geometry_id, compare_to}`: ek olarak `comparison.rows` ve `comparison.diff_id` döner.
 
-**Bellek:** PKL'ler sunucu belleğine bir kez yüklenir. `RFCAV_MAX_PKL_GB` (8) sınırının üstündeki PKL'ler için H5 parçalarını göster; H5 listesi yalnız öznitelikleri okur ve hızlıdır.
+**Bellek:** H5 listesi yalnız öznitelikleri okur ve hızlıdır; bir geometri açılınca yalnız o grup okunur.
 
 ## 3c. Arayüzden dataset üretimi (Google Drive'a)
 
 **"Üretim" sayfası:**
-- **Ayarlar:** aileler (eğitim / OOD), aile başına geometri, mesh boyu, saklanan mod sayısı, örnekleme (Sobol), deformasyon, seed, parça boyu, çekirdek, TAG, PKL'e dönüştürme (lean).
+- **Ayarlar:** aileler (eğitim / OOD), aile başına geometri, mesh boyu, saklanan mod sayısı, örnekleme (Sobol), deformasyon, seed, parça boyu, işçi × thread, TAG ve alan-etiketi ayarları (aşağıda). Yalnız alan etiketi üretilir (`labels: field`; N0 seçeneği kaldırıldı, üreticinin `--labels n0`'ı elle kullanılabilir).
 - **İşler:** her aile ayrı bir iş olarak kuyruğa girer, tek bir worker sırayla çalıştırır (`src/service/jobs.py`). İlerleme çubuğu, durum ve log gösterilir; iş iptal edilebilir.
 - **Kayıt:** `RFCAV_GEN_ROOT` klasörüne, TRUBA ile aynı düzende ve aynı kimlik bloklarıyla (`cluster/truba/families.tsv`) yazılır. Bu yüzden arayüzde, Colab'da ve TRUBA'da üretilen datasetler birbiriyle karışabilir:
   ```
   <GEN_ROOT>/<TAG>/h5/<aile>/<aile>_s00000.h5 …
-  <GEN_ROOT>/<TAG>/pkl/<aile>.pkl
   <GEN_ROOT>/<TAG>/step/<aile>/<aile>_<kimlik>.step
   ```
 - **STEP dosyaları:** deforme olmayan her geometrinin CAD katısı, mm biriminde, parçasıyla birlikte `step/<aile>/`
@@ -301,7 +336,7 @@ ve aynı ayarlar:
 - etiket / model mertebesi, fillet tabanı, eleman bütçesi, maxh çarpanı, örnek zaman aşımı;
 - keskin iç kenarları yuvarlatma, OCC onarımı.
 
-`freeform` seçilemez (CAD katısı yok). Çıktı yalnız H5'tir (PKL dönüşümü yok, eğitim `field3d`). TAG,
+`freeform` seçilemez (CAD katısı yok). Çıktı yalnız H5'tir (eğitim `field3d`). TAG,
 TRUBA'nınkiyle aynı kuralla kurulur: `F_p3p2_ms0.10_k10_mf0.05_v2`, tek çözümde `_1s`, yuvarlatmasız
 `_sharp` eki.
 
@@ -338,13 +373,12 @@ ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde ç
 ## 3d. Arayüzden model eğitimi
 
 **"Eğitim" sayfası** (`src/service/training.py`, `RFCAV_RUNS_ROOT` / `--runs_root`; Colab: `<Drive>/rf_cavity_3d/training_logs`):
-- **Veri:** Dataset sayfasındaki datasetlerden bir ya da birkaçı seçilir.
-  - Tek PKL olduğu gibi kullanılır.
-  - Birden çok dataset, H5 parçalarından (üretilen / TRUBA aile PKL'lerinin yanındaki `h5/<aile>/`) lean bir eğitim PKL'ine birleştirilir (`convert_3d.py --no_operators`).
-  - Birleşik PKL yerel önbelleğe yazılır (`/tmp/rfcav_train`); VM yeniden başlarsa H5'lerden yeniden üretilir.
-  - Bölme 80/10/10 eğitim/doğrulama/test (geometri bazında, seed 42).
+- **Veri:** Dataset sayfasındaki **alan-etiketi** datasetlerinden (tür `field`) bir ya da birkaçı seçilir; H5
+  dosyaları liste olarak `train.py --config configs/field_3d.yaml --override dataset.data_path=[…]`'e verilir
+  (FieldDataset eğri mesh'leri ve operatörleri geometri başına yeniden kurar). N0 datasetleri 422 ile reddedilir.
+  - Bölme 80/10/10 eğitim/doğrulama/test (geometri bazında, seed 42; en az ~10 geometri).
 - **Model boyu:** `tiny` (0.03 M, boru hattı denemesi) · `small` 0.85 M · `base` 2.8 M · `large` 6.5 M · `xl` 21.7 M. `cluster/truba/config.sh` ile aynı ön ayarlar (testle eşitliği denetlenir).
-- **Ayarlar:** epoch, batch, öğrenme hızı, tahmin edilen mod sayısı, erken durdurma sabrı, QoI kayıp ağırlığı, operatörleri RAM'de tutma (otomatik: veri < 300 MB ise açık).
+- **Ayarlar:** epoch, batch (2), öğrenme hızı, tahmin edilen mod sayısı, erken durdurma sabrı (40), yükleyici işçi sayısı (`num_workers`, 2; operatörleri işçiler kurar). Varsayılanlar `GET /api/train/config` → `defaults`.
 - **Çalışma:** aynı anda bir eğitim (tek GPU). `train.py` alt süreç olarak çalışır; checkpoint'ler (`best-…ckpt`, `last.ckpt`) her doğrulamada doğrudan `<runs_root>/<ad>/` altına (Drive) yazılır.
 - **İlerleme:** `train.py`, her çalıştırma klasörüne `progress.json` yazar (`src/training/progress.py`): durum, epoch, batch, epoch başına metrikler, en iyi checkpoint, test sonuçları. Sayfa bundan çizer:
   - alan hatası (göreli L2, M-normu),
@@ -374,7 +408,7 @@ ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde ç
 
 - **Bölümler:**
   - İşlem: veri + eğitim, yalnız veri, yalnız eğitim, durum, kurulum.
-  - Etiket türü: yüksek mertebe alan (field3d) ya da N0.
+  - Etiket türü: yalnız yüksek mertebe alan (field3d); komut her zaman `LABELS=field` yazar (config.sh'in kendi varsayılanı hâlâ n0).
   - Aileler: eğitim ve OOD grupları.
   - Veri ayarları: geometri sayısı, mesh boyu, mod, p3/p2, fillet tabanı, thread, eleman bütçesi;
     uyarlamalı inceltme, toleranslar, model mesh ve DOF bütçesi, kenar yuvarlatma, OCC onarımı (docs/30).

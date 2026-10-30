@@ -16,10 +16,34 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient                                   # noqa: E402
 
+from src.data_gen import cavity_shapes as cs                                 # noqa: E402
 from src.data_gen import dataset_generator_3d as gen                         # noqa: E402
 from src.service import api as A                                            # noqa: E402
 from src.service.datasets import H5Dataset, discover                         # noqa: E402
 from src.service.model import ModelService, align                           # noqa: E402
+
+K_FIELD = 4
+
+
+def write_field_h5(path, ids):
+    """Cheap field-label H5 (calibration box / pillbox, coarse adaptive p3 → p2, as tests/test_field_labels.py)."""
+    import h5py
+    import json
+    old_args = gen.ARGS
+    gen.ARGS = gen.parse_args(["--labels", "field", "--mode", "calibration", "--mesh_size", "0.2",
+                               "--n_eigen_modes", str(K_FIELD), "--tol_f", "1e-4", "--tol_q", "3e-2",
+                               "--max_ndof", "40000", "--model_max_elements", "60"])
+    gen._init_worker(gen.ARGS)
+    try:
+        with h5py.File(path, "w") as f:
+            f.attrs["metadata"] = json.dumps(gen.file_metadata(gen.ARGS), default=str)
+            for s_id in ids:
+                res = gen.generate_sample_data(s_id)
+                assert res is not None and res["labels"] == "field"
+                gen.write_sample(f, res)
+    finally:
+        gen.ARGS, cs.MIN_FILLET = old_args, 0.0          # module state other tests rely on
+    return path
 
 
 @pytest.fixture(scope="module")
@@ -107,18 +131,38 @@ def test_dataset_endpoints(client):
     assert t["n_points"] > 0
 
 
-@pytest.mark.skip(reason="model prediction is not wired to the field3d model yet (the N0 eigenspace3d model "
-                         "was removed)")
-def test_model_vs_fe_comparison(client):
+def test_n0_dataset_items_cannot_be_predicted(client):
     o = _opened(client)
-    p = client.post("/api/predictions", json={"geometry_id": o["id"], "compare_to": o["truth"]["id"]}).json()
+    assert o["can_predict"] is False and "N0" in o["predict_blocker"]
+    assert client.post("/api/predictions", json={"geometry_id": o["id"]}).status_code == 422
+
+
+@pytest.fixture(scope="module")
+def field_client(tmp_path_factory):
+    d = tmp_path_factory.mktemp("dsfield")
+    write_field_h5(d / "calib.h5", [0, 1])
+    return TestClient(A.create_app(ModelService(None, "cpu"), discover(str(d))))
+
+
+def test_model_vs_fe_comparison(field_client):
+    """A field-label dataset item is predicted on its stored curved mesh: same display mesh as the stored FE
+    truth, so the model-vs-FE comparison (alignment, field rel-L2, difference fields) works."""
+    c = field_client
+    did = next(d["id"] for d in c.get("/api/datasets").json() if d["kind"] == "field")
+    o = c.post(f"/api/datasets/{did}/items/1/open").json()                    # calibration pillbox
+    assert o["can_predict"] and o["truth"]["qoi_source"] == "p3_labels"
+    p = c.post("/api/predictions", json={"geometry_id": o["id"], "compare_to": o["truth"]["id"]})
+    assert p.status_code == 200, p.text
+    p = p.json()
+    assert p["qoi_source"] == "p2_model" and len(p["modes"]) == 6
     rows = p["comparison"]["rows"]
-    assert len(rows) == 4 and all(r["rel_l2"] >= 0 for r in rows)
+    assert len(rows) == K_FIELD and all(r["rel_l2"] >= 0 for r in rows)
     assert all(r["f_fe"] == pytest.approx(o["truth"]["modes"][k]["f_GHz"]) for k, r in enumerate(rows))
-    d = client.get(f"/api/predictions/{p['comparison']['diff_id']}/modes/0").json()
+    assert all(r["f_model"] >= r["f_fe"] * (1 - 1e-3) for r in rows)        # Ritz ≥ p2 ≥ (≈) p3 labels
+    d = c.get(f"/api/predictions/{p['comparison']['diff_id']}/modes/0").json()
     assert d["surface"]["E_max"] > 0
-    other = client.post("/api/geometries/sample", json={"family": "box", "id": 3, "mesh_size": 0.3}).json()
-    bad = client.post("/api/predictions", json={"geometry_id": other["id"], "compare_to": o["truth"]["id"]})
+    other = c.post("/api/geometries/sample", json={"family": "box", "id": 3, "mesh_size": 0.3}).json()
+    bad = c.post("/api/predictions", json={"geometry_id": other["id"], "compare_to": o["truth"]["id"]})
     assert bad.status_code == 422
 
 
@@ -154,19 +198,20 @@ def test_feature_views(client):
     assert client.get(f"/api/geometries/{gid}/feature_view", params={"kind": "bad"}).status_code == 422
 
 
-@pytest.mark.skip(reason="the job's convert step runs convert_3d.py (PKL of the removed N0 model); the service "
-                         "rewiring to field3d is pending")
 def test_generation_job_writes_family_dataset(tmp_path, monkeypatch):
-    """A generation job writes <root>/<TAG>/h5/<family>/<family>_s00000.h5 + pkl/<family>.pkl (ids from the
-    family's TRUBA block), shows up in the dataset list, and re-submitting skips finished shards."""
+    """A field-label generation job writes <root>/<TAG>/h5/<family>/<family>_s00000.h5 (ids from the family's
+    TRUBA block; no PKL), shows up in the dataset list as a field dataset, and re-submitting skips finished
+    shards."""
     import time
     root = tmp_path / "drive"
     monkeypatch.setenv("RFCAV_GEN_ROOT", str(root))
     c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
     cfg = c.get("/api/jobs/config").json()
-    assert cfg["enabled"] and cfg["blocks"]["pillbox_pipes"] == 3
-    body = {"families": ["pillbox_pipes"], "n_total": 3, "mesh_size": 0.3, "n_modes": 4, "shard_size": 16,
-            "workers": 1, "deform_prob": 0.0, "tag": "t"}
+    assert cfg["enabled"] and cfg["blocks"]["box"] is not None and cfg["tag_example"].startswith("F_p3p2_")
+    # cheapest field labels: one p2 solve projected onto p1, coarse box meshes
+    body = {"families": ["box"], "n_total": 2, "mesh_size": 0.3, "n_modes": 2, "shard_size": 16,
+            "workers": 1, "threads": 1, "deform_prob": 0.0, "tag": "t", "label_order": 2, "model_order": 1,
+            "adapt": False, "max_ndof": 10000, "sample_timeout": 300}
 
     def run():
         j = c.post("/api/jobs/generate", json=body).json()[0]
@@ -179,18 +224,20 @@ def test_generation_job_writes_family_dataset(tmp_path, monkeypatch):
 
     j = run()
     assert j["status"] == "done", j["log"][-10:]
-    assert j["progress"]["done"] == 3
-    h5 = root / "t" / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5"
-    assert h5.exists() and (root / "t" / "pkl" / "pillbox_pipes.pkl").exists()
+    assert j["progress"]["done"] == 2 and j["params"]["labels"] == "field"
+    h5 = root / "t" / "h5" / "box" / "box_s00000.h5"
+    assert h5.exists() and not (root / "t" / "pkl").exists()
     import h5py
     with h5py.File(h5) as f:
-        assert sorted(f.keys())[0] == f"sample_{3 * 2 ** 19:04d}"
-    names = {d["name"] for d in c.get("/api/datasets").json()}
-    assert {"generated/t/h5/pillbox_pipes/ (h5)", "generated/t/pkl/pillbox_pipes.pkl"} <= names
+        assert sorted(f.keys())[0] == f"sample_{cfg['blocks']['box'] * 2 ** 19:04d}"
+        assert f[sorted(f.keys())[0]].attrs["labels"] == "field"
+    ds = {d["name"]: d["kind"] for d in c.get("/api/datasets").json()}
+    assert ds == {"generated/t/h5/box/ (field)": "field"}
     j2 = run()                                                                # same job again: shard skipped
     assert j2["status"] == "done" and any("skipped" in line for line in j2["log"])
     assert c.post("/api/jobs/generate", json=dict(body, families=["nope"])).status_code == 422
     assert c.post("/api/jobs/generate", json=dict(body, n_total=10 ** 9)).status_code == 422
+    assert c.post("/api/jobs/generate", json=dict(body, labels="n0")).status_code == 422          # field labels only
 
 
 def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
@@ -223,7 +270,7 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
         import time
         time.sleep(0.05)
     p = seen[0]
-    assert p["labels"] == "field" and p["convert"] is False and (p["workers"], p["threads"]) == (16, 4)
+    assert p["labels"] == "field" and "convert" not in p and (p["workers"], p["threads"]) == (16, 4)
     assert p["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2_sharp"
     tr = TR.build_command(dict(TR.defaults(ROOT)["form"], action="dataset", round_edges=False, tag=""))
     assert tr["tag"] == p["tag"]                                       # same tag as the TRUBA run
@@ -232,7 +279,6 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
                       ("--model_max_elements", "8000"), ("--max_ndof", "900000"), ("--sample_timeout", "7200")):
         assert a[a.index(flag) + 1] == val, flag
     assert "--no_round_edges" in a and "--no_adapt" not in a and "--no_heal" not in a
-    assert "--labels" not in J.generator_args(dict(p, labels="n0"))
     # rejected: a family without a CAD solid, nested orders
     assert c.post("/api/jobs/generate", json=dict(body, families=["freeform"])).status_code == 422
     assert c.post("/api/jobs/generate", json=dict(body, model_order=3)).status_code == 422
@@ -268,6 +314,15 @@ def test_gen_root_inside_a_data_root_is_listed_once(data_dir, monkeypatch):
     c = TestClient(A.create_app(ModelService(None, "cpu")))
     names = {d["name"] for d in c.get("/api/datasets").json()}
     assert names == {"generated/pillbox_pipes/ (h5)"}
+
+
+def test_n0_datasets_do_not_train(data_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("RFCAV_RUNS_ROOT", str(tmp_path / "runs"))
+    monkeypatch.delenv("RFCAV_GEN_ROOT", raising=False)
+    c = TestClient(A.create_app(ModelService(None, "cpu"), discover(str(data_dir))))
+    did = c.get("/api/datasets").json()[0]["id"]
+    r = c.post("/api/train/start", json={"name": "x", "datasets": [did]})
+    assert r.status_code == 422 and "field-label" in r.json()["detail"]
 
 
 def test_optional_checkpoint_falls_back_to_untrained(tmp_path):

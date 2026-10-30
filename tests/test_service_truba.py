@@ -31,10 +31,10 @@ def test_default_field_pipeline_is_one_runnable_line():
 
 
 def test_values_are_written_only_when_they_differ_from_config_sh():
-    r = TR.build_command(dict(FORM, action="dataset", labels="n0", families=["elliptical", "hwr"], mesh_size=0.12,
+    r = TR.build_command(dict(FORM, action="dataset", families=["elliptical", "hwr"], mesh_size=0.12,
                               test=True, n_per_family=""))
-    assert r["run_args"] == "bash cluster/truba/run.sh dataset FAMILIES=elliptical,hwr MESH_SIZE=0.12 TEST=1"
-    assert r["tag"] == "E_ms0.12_k10_v2_test"
+    assert r["run_args"] == "bash cluster/truba/run.sh dataset FAMILIES=elliptical,hwr LABELS=field MESH_SIZE=0.12 TEST=1"
+    assert r["tag"] == "F_p3p2_ms0.12_k10_mf0.05_v2_test"
     r = TR.build_command(dict(FORM, action="train", exp="f2", model="large", gpus=4, batch=1, min_fillet=0.08,
                               cache_dir="/arf/scratch/$USER/ops", train_extra=["training.patience=30"]))
     a = r["run_args"]
@@ -73,7 +73,7 @@ def test_adaptive_label_settings_and_shard_time_note():
     {"partition": "orfoz; rm -rf ~"}, {"tag": "a b"}, {"time": "12h"}, {"branch": "main && id"},
     {"repo": "https://x/y; id"}, {"train_extra": ["x=$(id)"]}, {"cache_dir": "/a/`id`"}, {"cache_dir": "/a/${USER}"},
     {"model_order": 3}, {"threads": 64, "cpus": 56}, {"families": ["nope"]}, {"families": ["freeform"]},
-    {"action": "rm"}, {"cpus": "many"}, {"n_modes": 2.5},
+    {"action": "rm"}, {"cpus": "many"}, {"n_modes": 2.5}, {"labels": "n0"},
 ])
 def test_invalid_values_are_rejected(bad):
     with pytest.raises(TR.CommandError):

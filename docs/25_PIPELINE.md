@@ -191,27 +191,29 @@ Nasıl okunur:
 
 ```bash
 # CAD dosyası (mm), 9 hücreli bir kavite: mesh yoğunluğunu eğitimle eşlemek için --vol_div 9
-EXP=large NAME=tesla cluster/truba/predict.sh --step $HOME/cad/tesla.step --unit mm --vol_div 9 --fe
-# hazır tet mesh
-EXP=large NAME=m1 cluster/truba/predict.sh --mesh $HOME/cad/cavity.msh --unit mm
-# üretilmiş bir geometri (aile + kimlik)
-EXP=large NAME=e1 cluster/truba/predict.sh --family elliptical --id 524300 --fe
+EXP=field_base NAME=tesla cluster/truba/predict.sh --step $HOME/cad/tesla.step --unit mm --vol_div 9 --fe
+# üretilmiş bir geometri (aile + kimlik; alan datasetlerindeki geometrinin aynısı)
+EXP=field_base NAME=e1 cluster/truba/predict.sh --family elliptical --id 524300 --fe
+# alan-etiketi H5'indeki bir geometri (saklanan eğri mesh; p3 etiketleri de yazılır)
+EXP=field_base NAME=h1 cluster/truba/predict.sh --h5 $DATA/F_…/h5/elliptical/elliptical_s00000.h5 --sample 0
 ```
 
-Akış (`scripts/predict_geometry.py`):
-1. **Geometri:** STEP gmsh ile tet mesh'e çevrilir; eğitimdekiyle aynı ayarlar kullanılır: `h = mesh_size·(V/vol_div)^(1/3)`.
+Akış (`scripts/predict_geometry.py`, web arayüzünün Tahmin'iyle aynı kod: docs/26 §1b):
+1. **Geometri:** katının eğri netgen mesh'i (`field_labels.start_mesh`, maxh = 3 h, `h = mesh_size·(V/vol_div)^(1/3)`).
+   Mesh dosyası kabul edilmez: field3d modeli CAD katısının eğri geometrisinde çalışır.
 2. **Ön kontrol:** topoloji kontrolü (bağlı, manifold mesh).
-3. **Model girdisi:** dönüştürücünün aynı kodu (normalize mesh, özellikler, N0 operatörleri).
-4. **Tahmin:** model frekansları ve alanları üretir (FEM çözümü yok).
-5. **Kavite değerleri:** tahmin edilen alan ve frekanstan Q0, G, R/Q, R_sh, T, Epk/Eacc ve Bpk/Eacc hesaplanır (U = 1 J, bakır).
-   - Süperiletken için `--Rs 1e-8` ver.
-   - `--beta`, `--L_acc` ve `--convention circuit` ile CST'deki tanımlara eşleyebilirsin.
-6. `--fe` verilirse aynı mesh'te FE de çözülür. Mod mod frekans hatası, alan rel-L2 ve kavite değerleri yan yana yazılır; süreler de karşılaştırılır.
-7. **Çıktılar:** `prediction.json` ve `modes.vtu`. Her mod için E ve H alanı (tahmin, `--fe` ile FE); ParaView'de aç.
+3. **Model girdisi:** `highorder.field_operators` (HCurl p2, kuadratür noktası belirteçleri), eğitimdekiyle aynı.
+4. **Tahmin:** Ritz frekansları ve p2 alanları (FEM çözümü yok).
+5. **Kavite değerleri:** tahmin edilen p2 alanlarından `highorder.mode_qoi` ile Q0, G, R/Q, R_sh, T, Epk/Eacc ve
+   Bpk/Eacc (U = 1 J, bakır, β = 1; etiketlerle aynı eksen ve hızlanma boyu).
+6. `--fe` verilirse aynı eğri mesh'te p2 FE de çözülür; Ritz frekansları bu ayrık özdeğerlerin üst sınırıdır.
+   `--h5` ile saklanan p3 etiket frekansları da yazılır.
+7. **Çıktılar:** `prediction.json` ve `modes.vtu` (tahmin edilen her modun E ve H alanı, düğümlerde); ParaView'de aç.
+   Checkpoint verilmezse eğitilmemiş bir model kullanılır (yalnız boru hattı denemesi).
 
 Kavite için koşullar:
 - **Kapalı olmalı:** PEC duvar, beam pipe uçları kapalı.
-- **Işın ekseni:** z ekseni, x = y = 0 (eğitim aileleri böyle). Değilse `--axis_dir/--axis_point` ile ver. HWR'de eksen kendiliğinden x'tir.
+- **Işın ekseni:** CAD dosyasında z ekseni, x = y = 0; aile geometrilerinde ailenin ekseni (`src.qoi.operators.beam_axis`, HWR: x). Eksen seçeneği (`--axis_dir/--axis_point`) field3d CLI'ında henüz yok.
 - **Vakum hacmi:** STEP içinde kavitenin metal kabuğu değil, vakum hacmi (iç boşluk) olmalı.
 
 ## 8. Önerilen ilk hafta takvimi
