@@ -31,20 +31,33 @@ analyses of logs the owner pastes or copies in.
 
 ## TRUBA platform facts
 
-Read `docs/36_TRUBA_REFERENCE.md` before planning a run: queues (orfoz CPU; barbun-cuda / akya-cuda GPU open to
-all; palamut-cuda / kolyoz-cuda restricted), cores-per-GPU rules, 3-day wall limit, 4 h `debug`, storage and quotas,
-access, modules, and a table comparing them with `config.sh`. Rules for using it:
+Read `docs/36_TRUBA_REFERENCE.md` before planning a run. It is written from the full text of docs.truba.gov.tr;
+the page copies are in `docs/research/truba/pages/` (`grep -rn` them for a number before quoting it). Findings that
+change what you propose:
 
-- Its numbers come from search summaries of docs.truba.gov.tr and several pages disagree. Treat them as
-  "to verify": ask the owner for `sinfo` / `scontrol show partition=<name>` output rather than trusting a number.
-- Check `GPU_PARTITION` against the owner's access first (palamut-cuda is restricted); `GPU_CPUS` must satisfy
-  the chosen queue's cores-per-GPU rule (palamut 16, akya 10, barbun 20).
-- Keep results off scratch-only storage; the scratch retention policy is unconfirmed.
-- To look something up: `WebSearch` with `allowed_domains: ["docs.truba.gov.tr"]`. Do not use `curl` / `WebFetch`
-  on the site: its certificate chain is incomplete (no intermediate), so TLS verification fails here. Never
-  disable verification or trust a CA you fetched yourself; ask the owner for the certificate or page copies.
-- When you learn a new platform fact (a limit, a queue, a quota, a policy), update docs/36 and say which page
-  and date it came from.
+- **No conda / pip installs under `/arf`** (Python guide, storage page). `setup_env.sh` currently does exactly that
+  (Miniforge in `$HOME`); the compliant route is an Apptainer `.sif` built on a `debug` node (docs/36 §5, docs/31
+  item 22). Do not "fix" runs by installing more packages into `$HOME`.
+- **Concurrent-core cap per user: 160 standard, 40 MSc, 4 BSc.** Shard jobs of 56 cores → at most 2 at once at 160.
+  Keep `MAX_PARALLEL × CPUS` within the cap or jobs sit in `AssocGrpCpuLimit`.
+- **Scratch files live at most 30 days** and nothing is backed up: copy H5 and checkpoints out (`/arf/home` has a 2 TB
+  and 500K-inode quota per filesystem, so keep file counts low).
+- **GPU queues:** `barbun-cuda` (2×P100, 20 cores/GPU) and `akya-cuda` (4×V100, 10 cores/GPU) are open to all;
+  `palamut-cuda` (A100, 16/GPU) and `kolyoz-cuda` (H100/H200, 16/GPU, `-C H100|H200`) only for research-centre and
+  contracted projects. Ask which the owner's account may use before setting `GPU_PARTITION`; `GPU_CPUS` must match.
+- `--time` is mandatory (no time = killed after 1–2 min), max 3 days, `debug` 4 h; `--output/--error/--workdir` must
+  be on scratch; no heavy work on `arf-ui*` / `cuda-ui` (compile and containers go through `srun -p debug --pty`).
+- Support is only `trubadestek@tubitak.gov.tr`; the ticket template and the `sacct` command are in docs/36 §1.
+
+Rules for using it:
+
+- Sandbox cannot reach the cluster. Limits change: ask the owner for `lssrv` / `sinfo` / `scontrol show
+  partition=<name>` output before trusting a number, and update docs/36 (page + date) when you learn a new fact.
+- Re-reading the site: it sends an incomplete TLS chain, so `curl` / `WebFetch` fail verification in the sandbox.
+  Never disable verification. The owner approved pinning this server's certificate once (docs/research/truba/README.md);
+  anything further needs their approval again. `WebSearch` with `allowed_domains: ["docs.truba.gov.tr"]` only
+  returns summaries, not text to quote.
+- Newer pages win over older ones (the training-section PyTorch page still teaches Anaconda; ignore it).
 
 ## Rules
 
