@@ -52,13 +52,6 @@ def _occ_import(path, unit):
     return 1.0 if step else UNITS[unit]
 
 
-def gen_args(mesh_size, n_modes=6, families=None):
-    """Set the generator's module-level ARGS (meshing helpers read them)."""
-    gen.ARGS = gen.parse_args(['--mesh_size', str(mesh_size), '--n_eigen_modes', str(n_modes),
-                               *(['--families', *families] if families else [])])
-    return gen.ARGS
-
-
 def linear_mesh(mesh):
     """(vertices [Nv,3] float64, tets [Nt,4] int64) of an NGSolve mesh: the straight mesh under a curved
     one, in NGSolve's vertex numbering (src.service.datasets.whitney_dofs uses the same)."""
@@ -189,7 +182,6 @@ def mesh_upload(path, unit='mm', mesh_size=0.10, vol_div=1.0, h_abs=None, max_el
                             n_sharp_edges=n_sharp)
             except Exception as e:                     # noqa: BLE001 — reported as the predict blocker
                 blocker = f"no curved mesh of the CAD solid ({type(e).__name__}: {e})"
-        gen_args(mesh_size)
         nodes, tets = mesh_step(path, unit, mesh_size, vol_div, h_abs)
         return {'nodes': nodes, 'tets': tets, 'mesh_src': None, 'blocker': blocker, 'n_tets': int(len(tets)),
                 'unit_used': used, 'n_sharp_edges': n_sharp}
@@ -212,12 +204,11 @@ def mesh_family(family, s_id, mesh_size=0.10, max_elements=None):
     The discrete families (freeform) have no CAD: gmsh mesh for display only (blocker)."""
     import tempfile
     if family in gen.DISCRETE_BUILDERS:
-        gen_args(mesh_size, families=[family])
+        gen.ARGS = gen.parse_args(['--mesh_size', str(mesh_size), '--families', family])
         g = gen.mesh_sample(int(s_id))
         return {'nodes': g['nodes'], 'tets': g['tets'], 'params': {k: float(v) for k, v in g['params'].items()},
                 'mesh_src': None, 'n_tets': int(len(g['tets'])), 'blocker': NO_CAD_BLOCKER.format(family)}
-    gen.ARGS = gen.parse_args(['--labels', 'field', '--mesh_size', str(mesh_size), '--families', family,
-                               '--sampling', 'sobol'])
+    gen.ARGS = gen.parse_args(['--mesh_size', str(mesh_size), '--families', family, '--sampling', 'sobol'])
     with tempfile.TemporaryDirectory() as tmp:
         g = gen.mesh_sample(int(s_id), cad_path=os.path.join(tmp, 'solid.brep'),
                             post=lambda path, h, dmap, _st, _prm: curved_from_cad(path, h, dmap, max_elements))

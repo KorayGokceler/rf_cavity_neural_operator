@@ -11,7 +11,7 @@ Batch (field_collate): padded tensors, block-diagonal CSR operators on the padde
 b's DOF d is row b·n_max + d, its L2 coefficient c column b·L_max + c), DofMask, ElemMask, Kp_diag —
 the layout src.models.hcurl expects, with "edges" → DOFs and "vertices" → potentials.
 
-FieldDataset reads the field-label H5 files of dataset_generator_3d --labels field (docs/29): per
+FieldDataset reads the field-label H5 files of dataset_generator_3d (docs/29): per
 geometry the curved mesh is rebuilt from the stored .vol + BREP (+ deformation), the model-order
 operators are assembled (field_operators) and the stored projected labels are checked against them
 (their Rayleigh quotients must reproduce the generator's rq_model).
@@ -211,7 +211,7 @@ class FieldDataset(Dataset):
                     g = f[key]
                     if str(g.attrs.get("labels", "")) != "field":
                         raise ValueError(f"{path}/{key}: not a field-label sample (dataset_generator_3d "
-                                         "--labels field); N0-label data trains no model")
+                                         "files); old N0-label data trains no model")
                     index.append((path, key))
                     freqs.append(np.asarray(g["freqs"], np.float64))
                     nxt.append(float(g.attrs.get("freq_next", np.nan)))

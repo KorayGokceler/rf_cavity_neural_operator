@@ -1,12 +1,12 @@
-"""Tests for the N0 geometry / operators of src/data/dataset_converter_3d.py (display, QoI and the
-generator's --labels n0 path) on generator H5 samples.
+"""Tests for the N0 geometry / operators of src/data/dataset_converter_3d.py (the display and QoI layer of
+the web service) on generator meshes (mesh_sample) with the N0 reference eigenmodes of src.qoi.analytic.fe_modes.
 
 Invariants:
 - closed-form Whitney M, K == skfem ElementTetN0 (after mapping to the contract edge order)
 - K·G = 0, Kp = GᵀMG SPD on the n_pot block, G columns ≥ n_pot zero, G rows and Y rows of the
   PEC wall edges (bnd_edge) zero, one potential per extra boundary shell
-- Rayleigh(Y) of the H5 N0 labels (mapped by h5_edges_to_canonical) with the normalised K, M
-  reproduces f = c√λ/(2π·scale); GᵀMY = 0
+- Rayleigh(Y) of the N0 reference modes (fe_modes) with the normalised K, M reproduces
+  f = c√λ/(2π·scale); GᵀMY = 0
 - data of the removed H formulation is rejected
 - scale invariance: scaled / translated input → same X, features, M, K; λ_phys ∝ 1/scale²
 - edge orientation: low → high, lexicographic rows, flipped H5 edges handled by sign
@@ -34,43 +34,37 @@ def _box_mesh(a=1.0, b=0.8, d=0.6, n=5, seed=0):
     return m.p.T[perm], inv[m.t.T]
 
 
-def _make_h5(tmp_path_factory, name, families):
-    """Generator H5 (N0 labels) → {sample id: (geometry dict, canonical N0 modes Y [Ne, K], f [K] GHz)}."""
+def _make_samples(families, n=3):
+    """Generator geometries (mesh_sample, gmsh tets) → {sample id: (geometry dict, canonical N0 modes
+    Y [Ne, 4] from fe_modes, f [4] GHz)}."""
     pytest.importorskip("gmsh")
     import src.data_gen.dataset_generator_3d as gen
-    d = tmp_path_factory.mktemp(f"d3{name}")
-    h5 = d / "s.h5"
-    old = gen.ARGS
-    try:
-        gen.main(["--n_total", "3", "--n_workers", "3", "--mesh_size", "0.2", "--n_eigen_modes", "4",
-                  "--h5_filename", str(h5), "--seed", "3", "--families", *families])
-    finally:
-        gen.ARGS = old
+    from src.data_gen import cavity_shapes as cs
+    from src.qoi.analytic import fe_modes
+    old, old_fillet = gen.ARGS, cs.MIN_FILLET
+    gen.ARGS = gen.parse_args(["--mesh_size", "0.2", "--seed", "3", "--families", *families])
     out = {}
-    with h5py.File(h5, "r") as f:
-        for key in (k for k in f if k.startswith("sample_")):
-            grp = f[key]
-            geom, _ = conv.extract_geometry_3d(grp["nodes"][:], grp["tets"][:])
-            geom["shape_type"] = str(grp.attrs.get("shape_type", ""))
-            freqs = np.asarray(grp["freqs"][:], np.float64)
-            order = np.argsort(freqs, kind="stable")
-            V = np.asarray(grp["e_edges"][:], np.float64)[:, order]
-            rows, sign = conv.h5_edges_to_canonical(grp["edges"][:], geom["n_nodes"], geom["edges"])
-            Y = np.zeros_like(V)
-            Y[rows] = sign[:, None] * V
-            out[int(key.split("_")[-1])] = (geom, Y, freqs[order])
-    return out, h5
+    try:
+        for s_id in range(n):
+            g = gen.mesh_sample(s_id)
+            geom, _ = conv.extract_geometry_3d(g["nodes"], g["tets"])
+            geom["shape_type"] = g["shape_type"]
+            _, Y, f = fe_modes(g["nodes"], g["tets"], 4)
+            out[s_id] = (geom, Y, f / 1e9)
+    finally:
+        gen.ARGS, cs.MIN_FILLET = old, old_fillet
+    return out
 
 
 @pytest.fixture(scope="module")
-def handles(tmp_path_factory):
+def handles():
     """Handle families (b1 > 0)."""
-    return _make_h5(tmp_path_factory, "handles", ["hwr", "spoke", "dtl"])
+    return _make_samples(["hwr", "spoke", "dtl"])
 
 
 @pytest.fixture(scope="module")
-def balls(tmp_path_factory):
-    return _make_h5(tmp_path_factory, "balls", ["pillbox", "composite"])
+def balls():
+    return _make_samples(["pillbox", "composite"])
 
 
 @pytest.fixture(params=["handles", "balls"])
@@ -121,7 +115,7 @@ def test_edge_convention_and_gradient():
 
 
 def test_contract_structure(any_h5):
-    data, _ = any_h5
+    data = any_h5
     assert len(data) == 3 and len(FEATURE_NAMES_3D) == 9
     for g, Y, f in data.values():
         nv, ne = g["n_nodes"], g["n_edges"]
@@ -143,7 +137,7 @@ def test_contract_structure(any_h5):
 
 
 def test_operators_and_rayleigh(any_h5):
-    data, _ = any_h5
+    data = any_h5
     betti = set()
     for g, Y, f in data.values():
         M, K, G, Kp = _ops(g)
@@ -162,7 +156,7 @@ def test_operators_and_rayleigh(any_h5):
         # wall edges = edges of boundary faces
         bf_edges = np.unique(np.sort(bt["faces"][:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2), axis=1), axis=0)
         assert np.array_equal(g["edges"][bnd], bf_edges)
-        # the generator's N0 labels on the canonical edges: wall rows 0, ⟂_M gradients, Rayleigh = f
+        # the N0 reference modes on the canonical edges: wall rows 0, ⟂_M gradients, Rayleigh = f
         assert np.all(Y[bnd] == 0)                                                  # n × E = 0 exactly
         MY = M @ Y
         assert np.abs(G.T @ MY).max() < 1e-6 * np.abs(MY).max()
@@ -219,26 +213,29 @@ def test_features_valid():
     assert F[:, 8].min() >= 0 and np.isclose(F[:, 8].max(), 1.0) and np.all(F[bnd, 8] == 0)
 
 
-def test_shards_start_id_reproduce_the_unsharded_samples(handles, tmp_path):
-    """dataset_generator_3d --start_id shards (same seed) reproduce the unsharded samples."""
+def test_shards_start_id_reproduce_the_unsharded_samples(tmp_path, run_generator):
+    """dataset_generator_3d --start_id shards (same seed) reproduce the geometry draws of the unsharded ids."""
+    pytest.importorskip("gmsh")
     import src.data_gen.dataset_generator_3d as gen
-    full, _ = handles
-    shards = [tmp_path / "a.h5", tmp_path / "b.h5"]
-    old = gen.ARGS
+    from src.data_gen import cavity_shapes as cs
+    fam = ["pillbox", "box"]
+    cheap = ["--n_workers", "1", "--mesh_size", "0.3", "--n_eigen_modes", "2", "--seed", "3", "--families", *fam,
+             "--no_adapt", "--label_order", "2", "--model_order", "1"]
+    got = {}
+    for name, (start, n) in (("a.h5", (0, 1)), ("b.h5", (1, 2))):
+        run_generator("--n_total", n, "--start_id", start, "--h5_filename", tmp_path / name, *cheap)
+        with h5py.File(tmp_path / name, "r") as f:
+            got.update({int(k.split("_")[-1]): (str(f[k].attrs["shape_type"]), float(f[k].attrs["volume"]))
+                        for k in f if k.startswith("sample_")})
+    assert sorted(got) == [0, 1, 2]
+    old, old_fillet = gen.ARGS, cs.MIN_FILLET
+    gen.ARGS = gen.parse_args(cheap)
     try:
-        for h5, (start, n) in zip(shards, ((0, 1), (1, 2)), strict=True):
-            gen.main(["--n_total", str(n), "--start_id", str(start), "--n_workers", "2", "--mesh_size", "0.2",
-                      "--n_eigen_modes", "4", "--h5_filename", str(h5), "--seed", "3",
-                      "--families", "hwr", "spoke", "dtl"])
+        for sid, (shape, vol) in got.items():                              # = the unsharded draw of that id
+            g = gen.mesh_sample(sid)
+            assert g["shape_type"] == shape and g["volume"] == pytest.approx(vol, rel=1e-12)
     finally:
-        gen.ARGS = old
-    tets = {}
-    for h5 in shards:
-        with h5py.File(h5, "r") as f:
-            tets.update({int(k.split("_")[-1]): f[k]["tets"][:] for k in f if k.startswith("sample_")})
-    assert sorted(tets) == sorted(full) == [0, 1, 2]
-    for gid, t in tets.items():
-        assert np.array_equal(t, full[gid][0]["tets"])
+        gen.ARGS, cs.MIN_FILLET = old, old_fillet
 
 
 def test_e_operators_isolated_conductor():
@@ -268,11 +265,9 @@ def test_e_operators_isolated_conductor():
     assert np.linalg.eigvalsh(Kp[:ops["n_pot"], :ops["n_pot"]].toarray()).min() > 0
 
 
-def test_h_formulation_data_rejected(balls):
-    """H5 of the removed H formulation (metadata field 'H'): a clear error, not silent garbage."""
-    import json
-    with h5py.File(balls[1], "r") as f:
-        meta = json.loads(f.attrs["metadata"])
-    conv.require_e_field(meta)                                           # the generator writes E data
+def test_h_formulation_data_rejected():
+    """Metadata of the removed H formulation (field 'H'): a clear error, not silent garbage."""
+    conv.require_e_field({"field": "E"})
+    conv.require_e_field({})
     with pytest.raises(ValueError, match="removed H formulation"):
-        conv.require_e_field({**meta, "field": "H"})
+        conv.require_e_field({"field": "H"})

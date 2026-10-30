@@ -43,7 +43,7 @@ def run_case(name, out, common):
     argv, s_id = CASES[name]
     step_dir = os.path.join(out, "_step", name)
     old = gen.ARGS, cs.MIN_FILLET, gen.BUILDERS["elliptical"]
-    gen.ARGS = gen.parse_args(["--labels", "field", "--step_dir", step_dir, *common, *argv])
+    gen.ARGS = gen.parse_args(["--step_dir", step_dir, *common, *argv])
     gen._init_worker(gen.ARGS)
     if name == "tesla_cell":                              # fixed TESLA parameters instead of a random draw
         gen.BUILDERS["elliptical"] = lambda occ, rng: cs.build_elliptical(occ, None, params=dict(TESLA))

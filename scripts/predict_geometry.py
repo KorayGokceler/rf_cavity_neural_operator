@@ -50,7 +50,7 @@ def h5_geometry(path, sample):
         key = keys[int(sample)] if str(sample).isdigit() and str(sample) not in keys else str(sample)
         g = f[key]
         if str(g.attrs.get('labels', '')) != 'field':
-            raise SystemExit(f"{key}: not a field-label sample (generator --labels field): no curved mesh stored")
+            raise SystemExit(f"{key}: not a field-label sample (generator output): no curved mesh stored")
         mesh, rec = read_field_group(g)
         src = {'vol': np.asarray(g['vol']).tobytes(), 'brep': np.asarray(g['brep']).tobytes(),
                'curve': int(g.attrs['curve']), 'model_order': int(rec['model_order']),

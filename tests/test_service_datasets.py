@@ -30,7 +30,7 @@ def write_field_h5(path, ids):
     import h5py
     import json
     old_args = gen.ARGS
-    gen.ARGS = gen.parse_args(["--labels", "field", "--mode", "calibration", "--mesh_size", "0.2",
+    gen.ARGS = gen.parse_args(["--mode", "calibration", "--mesh_size", "0.2",
                                "--n_eigen_modes", str(K_FIELD), "--tol_f", "1e-4", "--tol_q", "3e-2",
                                "--max_ndof", "40000", "--model_max_elements", "60"])
     gen._init_worker(gen.ARGS)
@@ -46,13 +46,41 @@ def write_field_h5(path, ids):
     return path
 
 
+def write_n0_h5(path, ids):
+    """Legacy N0-layout H5 (nodes / tets / edges / e_edges: the generator no longer writes it; this fixture
+    exists for the N0 viewer until it is removed): mesh_sample geometry + the N0 reference modes of fe_modes."""
+    import json
+
+    import h5py
+
+    from src.qoi.analytic import fe_modes
+    old, old_fillet = gen.ARGS, cs.MIN_FILLET
+    gen.ARGS = gen.parse_args(["--mesh_size", "0.3", "--families", "pillbox_pipes"])
+    try:
+        with h5py.File(path, "w") as f:
+            f.attrs["metadata"] = json.dumps({"field": "E", "fem_element": "N0"})
+            for s_id in ids:
+                g = gen.mesh_sample(s_id)
+                geom, Y, fr = fe_modes(g["nodes"], g["tets"], 5)
+                grp = f.create_group(f"sample_{s_id:04d}")
+                for name, data in (("nodes", g["nodes"]), ("tets", g["tets"]), ("edges", geom["edges"]),
+                                   ("e_edges", Y[:, :4]), ("freqs", fr[:4] / 1e9)):
+                    grp.create_dataset(name, data=data)
+                grp.attrs.update(shape_type=g["shape_type"], geom_params=json.dumps(g["params"]), field="E",
+                                 fem_element="N0", n_nodes=len(g["nodes"]), n_tets=len(g["tets"]),
+                                 n_edges=len(geom["edges"]), freq_next=fr[4] / 1e9, mesh_h=g["h"],
+                                 volume=g["volume"], n_bnd_components=g["topo"]["n_bnd_components"],
+                                 betti1=g["topo"]["betti1"])
+    finally:
+        gen.ARGS, cs.MIN_FILLET = old, old_fillet
+    return path
+
+
 @pytest.fixture(scope="module")
 def data_dir(tmp_path_factory):
     d = tmp_path_factory.mktemp("dsui")
     (d / "h5" / "pillbox_pipes").mkdir(parents=True)
-    h5 = d / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5"
-    gen.main(["--n_total", "3", "--n_workers", "1", "--mesh_size", "0.3", "--n_eigen_modes", "4",
-              "--families", "pillbox_pipes", "--start_id", "1000", "--h5_filename", str(h5)])
+    write_n0_h5(d / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5", range(1000, 1003))
     return d
 
 

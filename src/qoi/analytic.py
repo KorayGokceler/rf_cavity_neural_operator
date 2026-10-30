@@ -38,10 +38,12 @@ d < a, b (so this is the fundamental), corner coordinates (x', y') = (x + a/2, y
     H_pk = A π / min(a, b)  (the bilinear max of |H_t|² over the walls) ⇒ B_pk = π E0/(ω min(a, b))
 
 reference_case(...) meshes these cavities with gmsh (OCC, as src/data_gen/dataset_generator_3d) and
-solves them with the generator's E / H eigensolvers, returning the PKL-convention geometry (normalised
+solves them with the Whitney N0 E eigensolver of fe_modes, returning the PKL-convention geometry (normalised
 mesh, sorted edges, M) and unit-M-norm DOFs — the inputs of src.qoi.cavity_qoi.
 """
 import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 from scipy.constants import epsilon_0 as EPS0, mu_0 as MU0
 from scipy.special import j1, jn_zeros
 
@@ -133,29 +135,62 @@ def reference_mesh(shape, dims, h):
             gmsh.finalize()
 
 
-def fe_modes(nodes, tets, k=1):
-    """Generator eigensolve (solve_e_modes) on the converter-normalised mesh, mapped to the PKL
-    conventions.  Returns (geom dict {X, tets, edges, scale, center, M},
-    Y [Ne,k] unit M-norm in sorted-edge order, f_hz [k])."""
-    from src.data.dataset_converter_3d import (assemble_n0, edges_from_tets, h5_edges_to_canonical,
-                                               tet_geometry)
-    from src.data_gen.dataset_generator_3d import assemble_n0 as assemble_skfem, solve_e_modes
-    nodes = np.asarray(nodes, dtype=np.float64)
+def _spd_factor(A):
+    """SuperLU factorisation of an SPD matrix: symmetric minimum-degree ordering, no pivoting (~20x faster
+    than the default for these 3D N0 matrices at identical fill)."""
+    return spla.splu(sp.csc_matrix(A), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0,
+                     options=dict(SymmetricMode=True))
+
+
+def _projected_shift_invert(K, M, Gp, k, tol=1e-10):
+    """k lowest eigenpairs of K u = lam M u on the M-orthogonal complement of range(Gp) (full column rank):
+    shift-invert with sigma < 0 (K - sigma M SPD) and the projection P = I - Gp Kp^-1 GpT M after every
+    solve, so gradient fields become theta = 0 and never appear among the returned modes."""
+    lam_scale = K.diagonal().mean() / M.diagonal().mean()
+    sigma = -1e-2 * lam_scale
+    lu = _spd_factor(K - sigma * M)
+    if Gp.shape[1] == 0:                                   # no potentials (a mesh without interior vertices)
+        def P(x):
+            return x
+    else:
+        MG = (M @ Gp).tocsr()
+        lup = _spd_factor(Gp.T @ MG)                       # Kp: SPD potential Laplacian
+
+        def P(x):
+            return x - Gp @ lup.solve(MG.T @ x)
+
+    OP = spla.LinearOperator(K.shape, matvec=lambda x: P(lu.solve(x)), dtype=float)
+    v0 = P(np.random.default_rng(0).standard_normal(K.shape[0]))
+    vals, vecs = spla.eigsh(K, k=k, M=M, sigma=sigma, OPinv=OP, which="LM", v0=v0, tol=tol,
+                            ncv=min(K.shape[0] - 1, max(2 * k + 1, 30)))
+    o = np.argsort(vals)
+    return vals[o], vecs[:, o], lam_scale
+
+
+def fe_modes(nodes, tets, k=1, component_potentials=True, tol=1e-10):
+    """Whitney N0 E-formulation reference eigensolve on the converter-normalised mesh, in the PKL
+    conventions: wall edges removed (essential n x E = 0), the curl kernel (interior-vertex gradients + one
+    potential per extra boundary component, dataset_converter_3d.e_potential_matrix) projected out.
+    Returns (geom dict {X, tets, edges, scale, center, M, fe}, Y [Ne,k] unit M-norm in sorted-edge order
+    (wall rows 0), f_hz [k]); geom['fe'] = dict(K, G, n_pot, bnd_edge, vals (normalised lam), topo,
+    lam_scale) for checks.  component_potentials=False (validation only) leaves the b2 fields of isolated
+    conductors in the spectrum: the zero check then raises."""
+    from src.data.dataset_converter_3d import assemble_n0, e_potential_matrix, normalise
     tets = np.asarray(tets, dtype=np.int64)
-    vol, _ = tet_geometry(nodes, tets)
-    center = (vol[:, None] * nodes[tets].mean(1)).sum(0) / vol.sum()
-    scale = float(np.max(np.abs(nodes - center)))
-    X = (nodes - center) / scale
-    A = assemble_skfem(X, tets)
-    vals, vecs, _ = solve_e_modes(A, k)
-    edges = edges_from_tets(tets)
-    rows, sign = h5_edges_to_canonical(A["edges"], len(X), edges)
-    Y = np.zeros_like(vecs)
-    Y[rows] = sign[:, None] * vecs
-    M = assemble_n0(X, tets, edges)[0]
+    X, center, scale = normalise(nodes, tets)
+    M, K, edges = assemble_n0(X, tets)
+    G, bnd, n_pot, topo = e_potential_matrix(edges, len(X), tets, component_potentials=component_potentials)
+    free = np.flatnonzero(~bnd)
+    vals, vf, lam_scale = _projected_shift_invert(K[free][:, free].tocsr(), M[free][:, free].tocsr(),
+                                                  G[free][:, :n_pot].tocsr(), k, tol)
+    if not np.all(np.isfinite(vals)) or vals.min() <= 1e-6 * lam_scale:
+        raise RuntimeError(f"zero / non-physical eigenvalue in {vals} (scale {lam_scale:.3g})")
+    Y = np.zeros((len(edges), k))
+    Y[free] = vf
     Y /= np.sqrt(np.einsum("ij,ij->j", Y, M @ Y))[None]
     f = C0 * np.sqrt(vals) / (2 * np.pi * scale)
-    geom = {"X": X, "tets": tets, "edges": edges, "scale": scale, "center": center, "M": M}
+    geom = {"X": X, "tets": tets, "edges": edges, "scale": scale, "center": center, "M": M,
+            "fe": dict(K=K, G=G, n_pot=n_pot, bnd_edge=bnd, vals=vals, topo=topo, lam_scale=float(lam_scale))}
     return geom, Y, f
 
 

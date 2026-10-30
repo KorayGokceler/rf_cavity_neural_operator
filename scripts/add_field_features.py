@@ -1,7 +1,7 @@
 """Add the stored token-feature columns (qfeat_wall, docs/29) to existing field-label H5 files.
 
 The wall-distance / unit-direction / torsion columns of the model's token features cost ~1.3–2 s of
-every sample load at 9k tets (docs/31 §3.7); new files written by dataset_generator_3d --labels field
+every sample load at 9k tets (docs/31 §3.7); new files written by dataset_generator_3d
 carry them, older ones get them here.  Only the new dataset is written: labels, meshes and QoI are
 untouched, and files without it keep loading (the loader then computes the columns).
 

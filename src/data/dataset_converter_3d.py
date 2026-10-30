@@ -1,5 +1,6 @@
 """Whitney N0 geometry and operators of a linear tetrahedral mesh (E field): the display / QoI / viewer
-layer of the web service and the N0 label path of the generator (dataset_generator_3d --labels n0).
+layer of the web service (the generator's former N0 label path is removed; src.qoi.analytic.fe_modes is the
+N0 reference solve).
 
 Geometry dict (extract_geometry_3d; the former PKL contract of docs/19, now in memory only):
 
