@@ -8,7 +8,7 @@ Let $\Omega\subset\R^3$ be a connected, bounded cavity with a perfectly conducti
   \curl\curl\,\E = k^2\,\E \ \text{ in } \Omega,\qquad \mathbf n\times\E=\mathbf 0 \ \text{ on } \bdry,
   \qquad k=\omega/c_0 ,
 \end{equation}
-with $c_0=\SI{299792458}{m/s}$ % src: src/qoi/operators.py C0
+with $c_0=\SI{299792458}{m/s}$ % src: src/qoi/figures.py C0
 and resonant frequency $f=\omega/2\pi$. In weak form, find $\E\in\Hcurl\setminus\{0\}$ and $\lambda=k^2$ with
 \begin{equation}\label{eq:03-weak}
   (\curl\E,\curl\mathbf v)_\Omega=\lambda\,(\E,\mathbf v)_\Omega\qquad\forall\,\mathbf v\in\Hcurl ,
@@ -63,7 +63,7 @@ eigenvalues of $\Kmat$ restricted to $Z_h$. Besides $(\mathcal T_h,q,p)$ they de
 the divergence-free fields, the $\lambda_{h,k}$ are not ordered with respect to the exact $\lambda_k$. They converge to $\lambda_k$ under refinement by discrete compactness \citep{monk2003finite,boffi2010finite}; bounds in this paper are relative to $\lambda_{h,k}$ of the space in which a computation runs, not to $\lambda_k$.
 
 \paragraph{Normalisation and frequencies.}
-% src: src/data/dataset_converter_3d.py normalise(); src/data_gen/highorder.py field_operators; src/data/field_dataset.py check_labels
+% src: src/data/mesh_features.py normalise(); src/data_gen/highorder.py field_operators; src/data/field_dataset.py check_labels
 Operators are assembled on the normalised geometry $\boldsymbol\xi=(\mathbf x-\mathbf c)/s$, with $\mathbf c$ the volume centroid and $s$ the largest
 absolute coordinate deviation of a vertex from $\mathbf c$. The eigenvalues of \eqref{eq:03-gev} are then $\lambda=s^2k^2$ and
 \begin{equation}\label{eq:03-freq}
@@ -79,7 +79,7 @@ with a dense solve of \eqref{eq:03-gev} to $10^{-13}$ % src: docs/28 §2
 and $\Pmat$ is an $\Mmat$-orthogonal projector to rounding.
 
 \subsection{Figures of merit}\label{sec:03-qoi}
-% src: docs/24 §0.2, §1.1–§1.5; src/qoi/operators.py figures_of_merit, surface_resistance; src/data_gen/highorder.py mode_qoi
+% src: docs/24 §0.2, §1.1–§1.5; src/qoi/figures.py figures_of_merit, surface_resistance; src/data_gen/highorder.py mode_qoi
 We use peak (not RMS) phasors $e^{j\omega t}$, so $\Hf=(j/\omega\mu_0)\curl\E$, and the lossless field with a small surface resistance $R_s$ for the
 wall loss. Every quantity is reported for the mode scaled to stored energy $U=\SI{1}{J}$ (as CST does), so amplitude and sign of $\E$ drop out:
 \begin{align}

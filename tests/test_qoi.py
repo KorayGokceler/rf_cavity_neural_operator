@@ -1,17 +1,13 @@
-"""Cavity figures of merit (src/qoi, docs/24_CAVITY_QOI.md): closed forms, operator exactness,
-FE vs analytic on gmsh pillbox / box meshes (E and H formulation), normalisation and API invariants.
-The convergence study lives in scripts/qoi_validation.py (docs/24 §3)."""
+"""Cavity figures of merit (src/qoi, docs/24_CAVITY_QOI.md): closed forms, the QoI contract and the rescaling of
+src/qoi/figures.py, and the p2 label path (highorder.mode_qoi) against the closed forms on coarse curved pillboxes.
+The tight comparison on converged meshes is scripts/validate_field_labels.py (docs/24 §3)."""
 import numpy as np
 import pytest
-import scipy.sparse as sp
+from scipy.constants import mu_0 as MU0
 
-pytest.importorskip("skfem")
-
-from src.data.dataset_converter_3d import assemble_n0, boundary_faces, edges_from_tets, to_csr_tuple  # noqa: E402
-from src.qoi import QOI_KEYS, QOI_LABELS, build_qoi_operators, cavity_qoi, qoi_from_dofs  # noqa: E402
-from src.qoi import analytic as an  # noqa: E402
-from src.qoi.operators import (EPS0, MU0, boundary_face_data, surface_operators,  # noqa: E402
-                               surface_resistance, wall_loss_matrix)
+from src.qoi import QOI_KEYS, QOI_LABELS
+from src.qoi import analytic as an
+from src.qoi.figures import acceleration_length, axis_line, beam_axis, figures_of_merit, surface_resistance
 
 PILLBOX = (0.10, 0.10)
 BOX = (0.10, 0.08, 0.06)
@@ -54,183 +50,133 @@ def test_box_closed_form_matches_pozar():
     assert circ["R_over_Q_ohm"] == pytest.approx(ref["R_over_Q_ohm"] / 2)
 
 
-# ─────────────────────────── operator exactness ────────────────
+# ─────────────────────────── figures.py: contract, rescaling, conventions ──────
 
-@pytest.fixture(scope="module")
-def jittered_box():
-    """Small skfem tensor box, interior vertices jittered, edges in skfem (unsorted) order."""
-    from tests.maxwell3d_synth import box_geometry
-    geom, lam, vec = box_geometry((1.0, 0.8, 0.6), n=4, jitter=0.2, scale=0.1, n_modes=3)
-    return geom
+def _raw(f=1.3e9, Rs=8e-3):
+    """Raw functionals of a mode at an arbitrary amplitude (SI) for figures_of_merit."""
+    return dict(f=[f, 2 * f], Rs=[Rs, Rs], U_raw=[2.0e-3, 5.0e-3], Pc_raw=[1.5e-4, 4.0e-4], V_raw=[40.0, 90.0],
+                V0_raw=[50.0, 100.0], Epk_raw=[3.0e4, 8.0e4], Bpk_raw=[2.0e-4, 5.0e-4], L=0.1)
 
 
-def _interp(X, edges, field):
-    """N0 interpolant ∫_e F·t of a field that is linear in x (2-point Gauss is exact)."""
-    xa, xb = X[edges[:, 0]], X[edges[:, 1]]
-    s = np.array([0.5 - 0.5 / np.sqrt(3), 0.5 + 0.5 / np.sqrt(3)])
-    return sum(0.5 * (field(xa + si * (xb - xa)) * (xb - xa)).sum(-1) for si in s)
-
-
-def test_boundary_face_data_matches_converter(jittered_box):
-    X, t = jittered_box["X"].astype(float), jittered_box["tets"]
-    bf = boundary_face_data(X, t)
-    np.testing.assert_array_equal(bf["faces"], boundary_faces(X, t))
-    assert bf["area"].sum() == pytest.approx(2 * (0.8 + 0.48 + 0.6), rel=1e-6)
-    cen = X[bf["faces"]].mean(1)
-    assert np.all((bf["normal"] * cen).sum(1) > 0)                  # outward (box centred at 0)
-
-
-def test_wall_loss_exact_for_constant_and_rotational_fields(jittered_box):
-    X, t, e = jittered_box["X"].astype(float), jittered_box["tets"], jittered_box["edges"]
-    bf = boundary_face_data(X, t)
-    c = np.array([0.3, -1.2, 0.7])
-    u2 = _interp(X, e, lambda x: np.cross(c, x))                    # curl(c × x) = 2c
-    S = wall_loss_matrix(X, t, e)
-    assert abs(S - S.T).max() < 1e-12 * abs(S).max()
-    exact2 = (bf["area"] * (np.cross(bf["normal"], 2 * c) ** 2).sum(1)).sum()
-    assert u2 @ S @ u2 == pytest.approx(exact2, rel=1e-12)
-
-
-def test_axis_and_surface_operators_exact_for_constants(jittered_box):
-    g = jittered_box
-    X, t, e = g["X"].astype(float), g["tets"], g["edges"]
-    c = np.array([0.3, -1.2, 0.7])
-    u_c = _interp(X, e, lambda x: np.broadcast_to(c, x.shape))
-    u_r = _interp(X, e, lambda x: np.cross(c, x))
-    bf = boundary_face_data(X, t)
-    n = bf["normal"]
-    ops = build_qoi_operators(X, t, e, g["scale"], g["center"], n_axis=50)
-    assert ops["L_axis"] == pytest.approx(0.6, rel=1e-6)            # chord of the box along z (float32 X)
-    assert ops["q"].sum() == pytest.approx(ops["L_axis"]) and np.all(ops["q"] > 0)
-    np.testing.assert_allclose(ops["Az"] @ u_c, c[2], rtol=1e-10)   # Az: value_z of the constant field
-    for method in ("centroid", "recovered"):
-        Es, Hs = surface_operators(X, t, e, method)
-        # E = c: normal part; H ∝ curl(c × x) = 2c: tangential part
-        Ev, Hv = (Es @ u_c).reshape(-1, 3), (Hs @ u_r).reshape(-1, 3)
-        np.testing.assert_allclose(Ev, (n @ c)[:, None] * n, atol=1e-10)
-        np.testing.assert_allclose(Hv, 2 * (c - (n @ c)[:, None] * n), atol=1e-10)
-
-
-def test_build_operators_shapes_and_mass(jittered_box):
-    g = jittered_box
-    X, t, e = g["X"].astype(float), g["tets"], g["edges"]
-    ne = len(e)
-    M_ref = sp.csr_matrix((g["M"][2], g["M"][1], g["M"][0]), shape=(ne, ne))
-    ops = build_qoi_operators(X, t, e, g["scale"], g["center"])         # M assembled, unsorted edges
-    assert abs(ops["M"] - M_ref).max() < 1e-6 * abs(M_ref).max()       # skfem M from the float64 mesh
-    nf = len(ops["face_area"])
-    assert ops["Esurf"].shape == ops["Hsurf"].shape == (3 * nf, ne)
-    assert ops["Az"].shape == (401, ne) and ops["zeta"].shape == ops["q"].shape == (401,)
-    assert ops["S"].shape == (ne, ne) and isinstance(ops["S"], sp.csr_matrix)
-    assert set(ops) == {"scale", "M", "S", "Az", "zeta", "q", "L_axis", "Esurf", "Hsurf", "face_area"}
-
-
-# ─────────────────────────── FE vs analytic (gmsh) ─────────────
-
-@pytest.fixture(scope="module")
-def cases():
-    pytest.importorskip("gmsh")
-    from tests.conftest import _gmsh_available
-    if not _gmsh_available():
-        pytest.skip("gmsh not available")
-    out = {}
-    for shape, dims, h in (("pillbox", PILLBOX, 0.02), ("box", BOX, 0.01)):
-        out[shape] = an.reference_case(shape, dims, h, k=3)
-    return out
-
-
-# relative tolerances at the test meshes (Ne ≈ 3k); E-primary Q0 on the curved pillbox wall is
-# first order (docs/24 §2.2: −6.4 % here, −2.9 % at Ne = 54k)
-TOL = {"f_Hz": 0.012, "Q0": 0.02, "G_ohm": 0.02, "R_over_Q_ohm": 0.03, "R_sh_ohm": 0.03, "T_transit": 0.015,
-       "Epk_Eacc": 0.03, "Bpk_Eacc_mT_per_MVm": 0.03}
-
-
-@pytest.mark.gmsh
-@pytest.mark.parametrize("shape", ["pillbox", "box"])
-def test_fe_matches_analytic(cases, shape):
-    geom, Y, f, ref = cases[shape]
-    q = cavity_qoi(geom, Y[:, 0], f[0] / 1e9)
-    for k, tol in TOL.items():
-        if shape == "pillbox" and k in ("Q0", "G_ohm", "R_sh_ohm"):
-            tol = 0.10
-        assert q[k][0] == pytest.approx(ref[k], rel=tol), (k, q[k][0], ref[k])
-    assert q["L_acc_m"][0] == pytest.approx(ref["L_acc_m"], rel=1e-9)
-    assert q["U_J"][0] == 1.0
-
-
-@pytest.mark.gmsh
-def test_invariance_normalisation_and_conventions(cases):
-    geom, Y, f, ref = cases["box"]
-    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"],
-                              M=to_csr_tuple(geom["M"]))
-    u = Y[:, 0]
-    q = qoi_from_dofs(ops, u, f[0])
-    for k, v in qoi_from_dofs(ops, -37.5 * u, f[0]).items():            # sign / amplitude invariance
+def test_figures_of_merit_contract_and_amplitude_invariance():
+    r = _raw()
+    q = figures_of_merit(**r)
+    assert set(q) == set(QOI_KEYS) and all(v.shape == (2,) for v in q.values())
+    np.testing.assert_array_equal(q["U_J"], 1.0)
+    w = 2 * np.pi * np.asarray(r["f"])
+    np.testing.assert_allclose(q["P_c_W"] * q["Q0"], w, rtol=1e-12)                 # omega U / P_c with U = 1 J
+    np.testing.assert_allclose(q["R_over_Q_ohm"], q["V_acc_V"] ** 2 / w, rtol=1e-12)
+    np.testing.assert_allclose(q["R_sh_ohm"], q["R_over_Q_ohm"] * q["Q0"], rtol=1e-12)
+    np.testing.assert_allclose(q["G_ohm"], q["Q0"] * q["Rs_ohm"], rtol=1e-12)
+    np.testing.assert_allclose(q["T_transit"], np.asarray(r["V_raw"]) / np.asarray(r["V0_raw"]), rtol=1e-12)
+    # amplitude a: U ~ a^2, P ~ a^2, V ~ a, E_pk ~ a, B_pk ~ a -> every figure of merit is unchanged
+    a = 37.5
+    r2 = dict(r, U_raw=a ** 2 * np.asarray(r["U_raw"]), Pc_raw=a ** 2 * np.asarray(r["Pc_raw"]),
+              V_raw=a * np.asarray(r["V_raw"]), V0_raw=a * np.asarray(r["V0_raw"]),
+              Epk_raw=a * np.asarray(r["Epk_raw"]), Bpk_raw=a * np.asarray(r["Bpk_raw"]))
+    for k, v in figures_of_merit(**r2).items():
         np.testing.assert_allclose(v, q[k], rtol=1e-12, err_msg=k)
-    # U = 1 J by hand: scale u to 1 J, evaluate V and E_pk directly
-    s, w = geom["scale"], 2 * np.pi * f[0]
-    a = 1.0 / np.sqrt(0.5 * EPS0 * s ** 3 * (u @ (ops["M"] @ u)))
-    from src.viz.nedelec import eval_field        # independent axis integral of the Whitney E_z (trapezoid)
-    zeta = np.linspace(ops["zeta"][0], ops["zeta"][-1], 4001)
-    pts = np.column_stack([np.zeros_like(zeta), np.zeros_like(zeta), zeta])
-    ez = np.nan_to_num(s * eval_field(geom["X"], geom["tets"], geom["edges"], a * u, pts)[:, 2])
-    V = abs(np.trapezoid(ez * np.exp(1j * w * zeta * s / an.C0), zeta))
-    assert q["V_acc_V"][0] == pytest.approx(V, rel=2e-3)
-    Epk = np.linalg.norm((ops["Esurf"] @ (a * u)).reshape(-1, 3), axis=1).max()
-    assert q["E_pk_Vm"][0] == pytest.approx(Epk, rel=1e-12)
-    assert q["P_c_W"][0] * q["Q0"][0] == pytest.approx(w)                # ωU/P_c with U = 1 J
-    assert q["R_over_Q_ohm"][0] == pytest.approx(q["V_acc_V"][0] ** 2 / w)
-    # linac vs circuit: R/Q and R_sh halved, everything else unchanged
-    qc = qoi_from_dofs(ops, u, f[0], convention="circuit")
-    for k in QOI_KEYS:
+
+
+def test_figures_of_merit_conventions():
+    r = _raw()
+    q, qc = figures_of_merit(**r), figures_of_merit(**r, convention="circuit")
+    for k in QOI_KEYS:                                                  # circuit: R/Q and R_sh halved, rest equal
         fac = 0.5 if k in ("R_over_Q_ohm", "R_sh_ohm") else 1.0
         np.testing.assert_allclose(qc[k], fac * q[k], rtol=1e-12, err_msg=k)
-    # Rs override: Q0 = G/Rs with G unchanged; copper default = surface_resistance(f)
-    assert q["Rs_ohm"][0] == pytest.approx(surface_resistance(f[0]))
-    qn = qoi_from_dofs(ops, u, f[0], Rs=10e-9)
-    assert qn["G_ohm"][0] == pytest.approx(q["G_ohm"][0], rel=1e-12)
-    assert qn["Q0"][0] == pytest.approx(q["G_ohm"][0] / 10e-9, rel=1e-12)
-    assert qn["R_sh_ohm"][0] == pytest.approx(q["R_over_Q_ohm"][0] * qn["Q0"][0], rel=1e-12)
-    # L_acc override only rescales E_acc and the peak ratios
-    ql = qoi_from_dofs(ops, u, f[0], L_acc=2 * q["L_acc_m"][0])
-    assert ql["E_acc_Vm"][0] == pytest.approx(q["E_acc_Vm"][0] / 2)
-    assert ql["Epk_Eacc"][0] == pytest.approx(2 * q["Epk_Eacc"][0])
-    # β < 1 lowers the transit-time factor of this (constant E_z) mode
-    assert qoi_from_dofs(ops, u, f[0], beta=0.8)["T_transit"][0] < q["T_transit"][0]
+    ql = figures_of_merit(**dict(r, L=0.2))                             # L_acc only rescales E_acc and the peak ratios
+    np.testing.assert_allclose(ql["E_acc_Vm"], q["E_acc_Vm"] / 2, rtol=1e-12)
+    np.testing.assert_allclose(ql["Epk_Eacc"], 2 * q["Epk_Eacc"], rtol=1e-12)
+    np.testing.assert_allclose(ql["Q0"], q["Q0"], rtol=1e-12)
+    # copper default: R_s = sqrt(pi f mu0 / sigma)
+    assert surface_resistance(1.3e9) == pytest.approx(np.sqrt(np.pi * 1.3e9 * MU0 / 5.8e7), rel=1e-14)
 
 
-@pytest.mark.gmsh
-def test_vectorised_equals_loop(cases):
-    geom, Y, f, _ = cases["pillbox"]
-    ops = build_qoi_operators(geom["X"], geom["tets"], geom["edges"], geom["scale"], geom["center"],
-                              M=geom["M"])
-    sgn = np.array([1.0, -2.0, 0.5])
-    qv = qoi_from_dofs(ops, Y * sgn, f)
-    qr = qoi_from_dofs(ops, Y, f, Rs=np.array([1e-3, 2e-3, 3e-3]))
-    for j in range(Y.shape[1]):
-        q1 = qoi_from_dofs(ops, Y[:, j], f[j])
-        q2 = qoi_from_dofs(ops, Y[:, j], f[j], Rs=(j + 1) * 1e-3)
-        for k in QOI_KEYS:
-            assert qv[k].shape == (3,) and q1[k].shape == (1,)
-            np.testing.assert_allclose(qv[k][j], q1[k][0], rtol=1e-12, err_msg=k)
-            np.testing.assert_allclose(qr[k][j], q2[k][0], rtol=1e-12, err_msg=k)
-    # cavity_qoi forwards build / qoi kwargs and accepts a PKL geometry without M
-    g2 = {k: v for k, v in geom.items() if k != "M"}
-    qc = cavity_qoi(g2, Y, f / 1e9, n_axis=401, convention="circuit")
-    np.testing.assert_allclose(qc["R_over_Q_ohm"], qv["R_over_Q_ohm"] / 2, rtol=1e-10)
+def test_beam_axis_per_family():
+    X = np.array([[0, 0, -1.0], [0, 0, 0.5], [1, 0, 0], [0, 1, 0]])
+    assert beam_axis("elliptical", X, 0.1, np.zeros(3)) == {}
+    ax = beam_axis("hwr", X, 0.1, np.array([0, 0, 0.2]))
+    assert ax["axis_dir"] == "x" and ax["axis_point"][2] == pytest.approx(0.2 + 0.1 * (-0.25))
+    # ridged_box sits in [0, a] x [0, b] x [0, d]: the axis runs along x through the middle of the gap
+    p = {"a": 0.08, "b": 0.05, "d": 0.04, "ridge_h": 0.01, "double": 1.0, "gap": 0.02}
+    ax = beam_axis("ridged_box", X, 1.0, np.zeros(3), p)
+    assert ax["axis_dir"] == "x" and ax["axis_point"] == pytest.approx((0.0, 0.025, 0.02))
+    assert beam_axis("ridged_box", X, 1.0, np.zeros(3), {**p, "double": 0.0, "ridge_h": 0.02})["axis_point"][2] == 0.01
+    d, p0 = axis_line(**ax)
+    np.testing.assert_allclose(d, [1, 0, 0])
+    np.testing.assert_allclose(p0, ax["axis_point"])
+    d, p0 = axis_line(axis_dir=(0, 0, -2.0), axis_point=(0.1, 0.2, 0.3))       # a 3-vector is normalised
+    np.testing.assert_allclose(d, [0, 0, -1])
 
 
-@pytest.mark.gmsh
-def test_sorted_and_skfem_edge_order_agree(cases):
-    """Operators built on the canonical sorted edges and on a permuted DOF order give the same QoI."""
-    geom, Y, f, _ = cases["box"]
-    perm = np.random.default_rng(0).permutation(len(geom["edges"]))
-    e2 = geom["edges"][perm]
-    q1 = cavity_qoi(geom, Y[:, 0], f[0] / 1e9)
-    g2 = {**{k: geom[k] for k in ("X", "tets", "scale", "center")}, "edges": e2}
-    q2 = cavity_qoi(g2, Y[perm, 0], f[0] / 1e9)
-    for k in QOI_KEYS:
-        np.testing.assert_allclose(q2[k], q1[k], rtol=1e-10, err_msg=k)
-    assert np.array_equal(edges_from_tets(geom["tets"]), geom["edges"])
-    M = assemble_n0(geom["X"], geom["tets"])[0]
-    assert abs(M - geom["M"]).max() < 1e-14
+def test_acceleration_length_excludes_the_beam_pipes():
+    from src.data_gen import cavity_shapes as cs
+    p, halves, walls = cs.draw_elliptical(np.random.default_rng(4), n_cells=3)
+    assert acceleration_length("elliptical", p) == pytest.approx(cs.elliptical_chain(halves, walls, 3)[1])
+    assert acceleration_length("pillbox_pipes", {"Lc": 0.03, "Lpipe": 0.02}) == 0.03
+    assert acceleration_length("composite", {"R0": 0.03}) is None and acceleration_length("elliptical", None) is None
+
+
+def test_label_beam_axis_follows_the_family():
+    """field_labels._beam_axis (the axis and accelerating length mode_qoi gets) on the straight-axis pillbox mesh:
+    z through the origin for pillbox_pipes (L_acc = Lc), the transversal x line at mid-length for hwr (L_acc = 2 Ro)."""
+    pytest.importorskip("ngsolve")
+    from netgen.occ import Axes, Cylinder, OCCGeometry, Z
+    from ngsolve import Mesh
+
+    from src.data_gen import field_labels as fl
+    cyl = Cylinder(Axes((0, 0, -0.05), Z), r=0.1, h=0.1)
+    cyl.faces.name = "wall"
+    mesh = Mesh(OCCGeometry(cyl).GenerateMesh(maxh=0.08))
+    d, p0, L = fl._beam_axis("pillbox_pipes", mesh, {"Lc": 0.1})
+    np.testing.assert_allclose(d, [0, 0, 1])
+    np.testing.assert_allclose(p0, [0, 0, 0])
+    assert L == pytest.approx(0.1)
+    d, p0, L = fl._beam_axis("hwr", mesh, {"Ro": 0.1})
+    np.testing.assert_allclose(d, [1, 0, 0])
+    assert p0[2] == pytest.approx(0.0, abs=1e-12) and L == pytest.approx(0.2)
+
+
+# ─────────────────────────── p2 label path vs closed forms ─────────────────────
+
+def _pillbox_mode(maxh):
+    """(QoI dict of the TM010 mode, mesh) of a curved (curve 3) netgen pillbox R = L = 0.1 m, p2 modes."""
+    pytest.importorskip("ngsolve")
+    from netgen.occ import Axes, Cylinder, OCCGeometry, Z
+    from ngsolve import Mesh
+
+    from src.data_gen import highorder as ho
+    R, L = PILLBOX
+    cyl = Cylinder(Axes((0, 0, -L / 2), Z), r=R, h=L)
+    cyl.faces.name = "wall"
+    mesh = Mesh(OCCGeometry(cyl).GenerateMesh(maxh=maxh))
+    mesh.Curve(3)
+    res = ho.solve_modes(mesh, 1, order=2)
+    return ho.mode_qoi(mesh, res["gfs"][:1], res["f_hz"][:1], L_acc=L), mesh
+
+
+def test_mode_qoi_matches_the_closed_forms_on_coarse_pillboxes():
+    """highorder.mode_qoi (the label path's figures of merit, from the p2 fields) on 109 and 545 curved tets.
+    Measured error vs the closed form (maxh 0.05 / 0.03): f +1e-3 / +1e-4, T -1e-3 / -1e-4, R/Q +7e-3 / -2e-4,
+    Epk/Eacc +3.5e-2 / -4e-4, Q0 -5.9e-2 / -2.5e-2, Bpk/Eacc +7e-2 / +6e-2 (the wall quantities converge slower:
+    they need curl E on the wall; the adaptive labels reach 1e-2 on them, scripts/validate_field_labels.py)."""
+    ref = an.pillbox_tm010(*PILLBOX)
+    coarse, m1 = _pillbox_mode(0.05)
+    fine, m2 = _pillbox_mode(0.03)
+    assert m1.ne < 200 < 400 < m2.ne < 1000
+    assert set(fine) >= set(QOI_KEYS)
+    err = {k: float(np.asarray(fine[k])[0] / ref[k] - 1) for k in QOI_KEYS if k not in ("U_J",)}
+    np.testing.assert_array_equal(fine["U_J"], 1.0)
+    assert abs(err["f_Hz"]) < 2e-3 and abs(err["T_transit"]) < 2e-3
+    assert abs(err["R_over_Q_ohm"]) < 2e-3 and abs(err["Epk_Eacc"]) < 3e-3
+    assert abs(err["Q0"]) < 4e-2 and abs(err["G_ohm"]) < 4e-2 and abs(err["R_sh_ohm"]) < 4e-2
+    assert abs(err["Bpk_Eacc_mT_per_MVm"]) < 0.1
+    assert fine["L_acc_m"][0] == pytest.approx(PILLBOX[1], rel=1e-12)
+    # mesh refinement helps the wall losses (Q0 from curl E on the wall)
+    assert abs(fine["Q0"][0] / ref["Q0"] - 1) < 0.6 * abs(coarse["Q0"][0] / ref["Q0"] - 1)
+    # internal consistency of the dict (exact identities of figures_of_merit)
+    w = 2 * np.pi * fine["f_Hz"][0]
+    assert fine["P_c_W"][0] * fine["Q0"][0] == pytest.approx(w, rel=1e-12)
+    assert fine["R_sh_ohm"][0] == pytest.approx(fine["R_over_Q_ohm"][0] * fine["Q0"][0], rel=1e-12)
+    # the on-axis profile used for T, V and R/Q at any beta is returned with the figures of merit
+    assert fine["axis_ez"].shape == (1, len(fine["axis_t"]))

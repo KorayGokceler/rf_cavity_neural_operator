@@ -24,7 +24,7 @@ import yaml
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import src.models.hcurl as hcurl  # noqa: E402
-from src.data.dataset_converter_3d import normalise  # noqa: E402
+from src.data.mesh_features import normalise  # noqa: E402
 from src.data.field_dataset import field_collate, field_item  # noqa: E402
 from src.data_gen import highorder as ho  # noqa: E402
 from src.data_gen.field_labels import read_field_group  # noqa: E402

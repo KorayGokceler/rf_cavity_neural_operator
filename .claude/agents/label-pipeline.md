@@ -51,7 +51,7 @@ reproducibility underlie every training run.
    `generator_args` holds them (`h5py`: `json.loads(f.attrs['metadata'])`). Use `--ids_file` with that id,
    `--n_workers 1`, and an explicit `--threads`.
 2. Instrument with prints or a scratch script rather than editing the generator. A single-sample driver is
-   in `scripts/cst_calibration_set.py` (`run_case`), and timing tools are in `scripts/label_benchmark.py`.
+   in `scripts/cst_calibration_set.py` (`run_case`), and the per-sample label timings are stored in the H5 (`t_labels_s`, adaptive history); `scripts/validate_field_labels.py` is the accuracy reference.
 3. **Measure cost and accuracy** for any change that can affect them:
    - wall time per sample;
    - peak memory (`/usr/bin/time -v`);

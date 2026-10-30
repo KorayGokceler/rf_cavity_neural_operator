@@ -117,8 +117,11 @@ def test_dataset_endpoints(field_client):
     o = client.post(f"/api/datasets/{did}/items/{it['items'][0]['id']}/open").json()
     assert o["truth"]["source"] == "fe" and len(o["truth"]["modes"]) == K_FIELD
     assert o["truth"]["qoi_source"] == "p3_labels" and o["truth"]["modes"][0]["Q0"] > 0   # stored p3 figures of merit
-    # (the 60-tet test mesh has no interior vertex: its torsion feature is 0/0, so features / torsion are checked
-    # on a sampled geometry below)
+    fe0 = client.get(f"/api/geometries/{o['id']}/features")                    # 60-tet mesh without an interior vertex:
+    assert fe0.status_code == 200, fe0.text                                    # torsion is 0 (was 0/0 -> NaN -> HTTP 500)
+    assert fe0.json()["torsion_max"] == 0.0 and np.isfinite(fe0.json()["min"]).all() and fe0.json()["n_tets"] > 0
+    ft = client.get(f"/api/geometries/{o['id']}/feature_plane", params={"name": "torsion", "res": 31}).json()
+    assert np.isfinite(f32(ft["values_b64"])).all()
     fs = client.get(f"/api/geometries/{o['id']}/feature_surface", params={"name": "dist_to_boundary"}).json()
     assert np.abs(f32(fs["values_b64"])).max() < 1e-6                          # zero on the wall
     assert client.get(f"/api/geometries/{o['id']}/feature_plane", params={"name": "x1"}).status_code == 404
@@ -127,7 +130,7 @@ def test_dataset_endpoints(field_client):
 
     g = client.post("/api/geometries/sample", json={"family": "pillbox_pipes", "id": 5, "mesh_size": 0.3}).json()
     fe = client.get(f"/api/geometries/{g['id']}/features").json()
-    assert fe["names"][3] == "dist_to_boundary" and fe["n_edges"] > 0
+    assert fe["names"][3] == "dist_to_boundary" and fe["n_tets"] > 0
     fp = client.get(f"/api/geometries/{g['id']}/feature_plane", params={"name": "torsion", "res": 31}).json()
     v = f32(fp["values_b64"])
     assert v.size == fp["n_points"] > 0 and v.min() >= -1e-6 and v.max() <= 1 + 1e-6
@@ -156,8 +159,12 @@ def test_model_vs_fe_comparison(field_client):
         for n in QOI_SHOW:
             assert r["qoi"][n]["model"] == (None if cluster[k] else p["modes"][k][n]), (k, n)
             assert r["qoi"][n]["fe"] == o["truth"]["modes"][k][n]
-    d = c.get(f"/api/predictions/{p['comparison']['diff_id']}/modes/0").json()
-    assert d["surface"]["E_max"] > 0
+    d = c.get(f"/api/predictions/{p['comparison']['diff_id']}/fields").json()      # aligned model − FE, per node
+    t = c.get(f"/api/predictions/{o['truth']['id']}/fields").json()
+    assert d["n_nodes"] == t["n_nodes"] and d["nodes_b64"] == t["nodes_b64"] and d["n_modes"] == K_FIELD
+    assert d["n_surface"] == t["n_surface"] == o["surface"]["n_points"] and min(d["E_max"]) > 0
+    assert np.isfinite(np.frombuffer(base64.b64decode(d["E_b64"]), np.float16).astype(float)).all()
+    assert len(d["axis"]["Ez"]) == K_FIELD and len(d["axis"]["z_mm"]) == len(t["axis"]["z_mm"])
     other = c.post("/api/geometries/sample", json={"family": "box", "id": 3, "mesh_size": 0.3}).json()
     bad = c.post("/api/predictions", json={"geometry_id": other["id"], "compare_to": o["truth"]["id"]})
     assert bad.status_code == 422

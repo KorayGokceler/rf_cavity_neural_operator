@@ -13,7 +13,7 @@ Recipe (docs/18 E7, measured on the pillbox: p = 3, curve 3, 3.4k DOF → TM010 
 - space: the FULL HCurl space of order p with its own discrete gradient (fes.CreateGradient, H1 of
   order p + 1).  nograds=True with a P1-gradient projection gives ~2 % errors for p ≥ 2.
 - eigensolver (static condensation of the element-interior DOFs): shift-invert with σ < 0 (K − σM SPD) and the M-orthogonal projection
-  P = I − G Kp⁻¹ GᵀM, Kp = ∇·∇ on the H1 space, after every solve (same as the N0 generator).
+  P = I − G Kp⁻¹ GᵀM, Kp = ∇·∇ on the H1 space, after every solve.
   Both factorisations are NGSolve's multithreaded sparse Cholesky; ARPACK runs on numpy views.
   Isolated conductors (more than one wall shell) leave one spurious λ ≈ 0 mode per extra shell
   (H1 with p = 0 on every shell misses their potentials); those are filtered out.
@@ -407,12 +407,12 @@ def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), L_acc=No
     axis, E_pk / B_pk = max over the wall integration points (order wall_order) of |E| / |curl E|/ω.
     Wall values come from the adjacent volume element (BoundaryFromVolumeCF: a plain boundary
     evaluation of an HCurl field is its tangential trace, ≈ 0 on PEC).  L_acc: the accelerating
-    length (src.qoi.operators.acceleration_length; None = the axis chord inside the mesh).
+    length (src.qoi.figures.acceleration_length; None = the axis chord inside the mesh).
     Also returns 'axis_t' [P] (axis positions inside the mesh, spacing 'axis_dt') and 'axis_ez' [K, P] (E along the axis
     at U = 1 J): T, V and R/Q at any β follow from them without a new solve."""
     from ngsolve import (BND, TRIG, BoundaryFromVolumeCF, Cross, InnerProduct, IntegrationRule, Integrate,
                          curl, ds, specialcf)
-    from src.qoi.operators import figures_of_merit, surface_resistance
+    from src.qoi.figures import figures_of_merit, surface_resistance
 
     f = np.asarray(f_hz, dtype=np.float64).reshape(-1)
     w = 2 * np.pi * f
@@ -443,24 +443,6 @@ def mode_qoi(mesh, gfs, f_hz, axis_dir=(0, 0, 1), axis_point=(0, 0, 0), L_acc=No
     out = figures_of_merit(f, Rs, raw["U"], raw["P"], raw["V"], raw["V0"], raw["E"], raw["B"], L, convention)
     inside = np.asarray(loc_ax[1], bool)
     return {**out, "axis_t": tt[inside], "axis_dt": dt, "axis_ez": ez[:, inside] / np.sqrt(raw["U"])[:, None]}
-
-
-def edge_dofs(mesh, gfs, X_phys, edges, n_gauss=4):
-    """N0 interpolant of the modes on a straight-sided mesh: u_e = ∫_e E·t dl (t from edges[:,0]
-    to edges[:,1]) by n_gauss-point Gauss–Legendre.  Returns (U [Ne, K], frac_inside [Ne]) —
-    quadrature points outside the curved mesh (chords across a concave wall) contribute 0."""
-    s, wq = np.polynomial.legendre.leggauss(n_gauss)
-    s, wq = 0.5 * (s + 1), 0.5 * wq
-    xa, xb = X_phys[edges[:, 0]], X_phys[edges[:, 1]]
-    tvec = xb - xa
-    pts = (xa[:, None, :] + s[None, :, None] * tvec[:, None, :]).reshape(-1, 3)
-    U = np.zeros((len(edges), len(gfs)))
-    loc = locate(mesh, pts)
-    for j, g in enumerate(gfs):
-        Ev = evaluate(g, loc).reshape(len(edges), n_gauss, 3)
-        U[:, j] = np.einsum("q,eqc,ec->e", wq, Ev, tvec)
-    frac = loc[1].reshape(len(edges), n_gauss).mean(1)
-    return U, frac
 
 
 # ─────────────────────────── learned-field operators (model option B) ───────

@@ -1,19 +1,21 @@
 // Client-side field engine of the workspace: every mode of a solution arrives once (GET
-// /api/predictions/{id}/fields, vertex fields + the tet mesh); cut planes, the 3D volume grid, modes, phase
-// and E/H are computed here, so no interaction waits for the network.
+// /api/predictions/{id}/fields): the HCurl p2 field at the P2 nodes of the curved mesh, the 8 linear sub-tets per
+// tet on those nodes, and |E|, |H| on the curved wall; cut planes, the 3D volume grid, modes, phase and E/H are
+// computed here, so no interaction waits for the network.  The cells are linear, so everything below treats
+// `nodes` / `tets` as a plain tetrahedral mesh with one vector per node.
 //
 //   slicePlane   tets ∩ {x_axis = pos} → triangles; each point on a mesh edge (a, b) at t: F = (1−t)F_a + tF_b
 //   rasterize    regular grid over the bbox; each tet visits the grid points of its box (barycentric test)
-//   sampleSlice / sampleGrid / gather   one mode's vectors at those points (linear, as the server's planes)
+//   sampleSlice / sampleGrid / gather   one mode's vectors at those points (linear, as the display mesh)
 //   sliceArrows / thinGrid               the arrow positions (a square grid in the cut / every n-th grid line)
 
 export interface FieldBundle {
-  K: number; nv: number;
-  nodes: Float32Array;                 // [Nv,3] mm
-  tets: Uint32Array;                   // [Nt,4]
-  vid: Uint32Array;                    // surface point → vertex
+  K: number; nv: number; ns: number;   // modes, display nodes, wall points
+  nodes: Float32Array;                 // [Nv,3] mm: the P2 nodes of the curved mesh
+  tets: Uint32Array;                   // [Nc,4]: 8 linear sub-tets per element
   E: Float32Array; H: Float32Array;    // [K,Nv,3] physical (V/m, A/m), U = 1 J
-  Emax: number[]; Hmax: number[];      // per mode, max |F| over the vertices
+  surfE: Float32Array; surfH: Float32Array;   // [K,Ns] |E|, |H| at the geometry's curved wall points
+  Emax: number[]; Hmax: number[];      // per mode, max over the nodes and the wall
   f: number[];
   axis: { z: number[]; Ez: (number | null)[][] };
 }
@@ -42,11 +44,10 @@ function halfTable(): Float32Array {
   return HALF;
 }
 
-/** float16 [K,Nv,3] (each mode divided by scale[k]) → float32, physical units. */
-export function decodeModes(u16: Uint16Array, K: number, nv: number, scale: number[]): Float32Array {
+/** float16 [K,per] (each mode divided by scale[k]) → float32, physical units. */
+export function decodeHalf(u16: Uint16Array, K: number, per: number, scale: number[]): Float32Array {
   const tab = halfTable();
   const out = new Float32Array(u16.length);
-  const per = 3 * nv;
   for (let k = 0; k < K; k++) {
     const s = scale[k];
     for (let i = k * per; i < (k + 1) * per; i++) out[i] = tab[u16[i]] * s;
@@ -54,10 +55,21 @@ export function decodeModes(u16: Uint16Array, K: number, nv: number, scale: numb
   return out;
 }
 
+/** float16 [K,Nv,3] vectors → float32. */
+export function decodeModes(u16: Uint16Array, K: number, nv: number, scale: number[]): Float32Array {
+  return decodeHalf(u16, K, 3 * nv, scale);
+}
+
 /** Mode k of E or H: a view [Nv,3]. */
 export function modeField(b: FieldBundle, field: 'E' | 'H', k: number): Float32Array {
   const F = field === 'E' ? b.E : b.H;
   return F.subarray(3 * b.nv * k, 3 * b.nv * (k + 1));
+}
+
+/** Mode k of |E| or |H| on the wall points: a view [Ns]. */
+export function modeSurf(b: FieldBundle, field: 'E' | 'H', k: number): Float32Array {
+  const F = field === 'E' ? b.surfE : b.surfH;
+  return F.subarray(b.ns * k, b.ns * (k + 1));
 }
 
 export function slicePlane(b: FieldBundle, axis: 0 | 1 | 2, pos: number): Slice {
@@ -207,8 +219,8 @@ export function shareMesh(b: FieldBundle, others: FieldBundle[]): FieldBundle {
     return true;
   };
   for (const o of others) {
-    if (o.nv === b.nv && same(o.tets, b.tets) && same(o.nodes, b.nodes) && same(o.vid, b.vid)) {
-      return { ...b, nodes: o.nodes, tets: o.tets, vid: o.vid };
+    if (o.nv === b.nv && same(o.tets, b.tets) && same(o.nodes, b.nodes)) {
+      return { ...b, nodes: o.nodes, tets: o.tets };
     }
   }
   return b;

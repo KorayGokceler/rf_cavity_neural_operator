@@ -61,7 +61,7 @@ const S = {
   modesStored: { tr: 'mod/geometri', en: 'modes/geometry' },
   perFamily: { tr: 'Aile başına geometri (filtrelemek için tıklayın)', en: 'Geometries per family (click to filter)' },
   f0Hist: { tr: 'En düşük mod frekansı f₀', en: 'Lowest mode frequency f₀' },
-  meshEdges: { tr: 'kenar (gösterim mesh\'i)', en: 'edges (display mesh)' },
+  meshTets: { tr: 'tet sayısı (doğrusal mesh)', en: 'tets (linear mesh)' },
   deformed: { tr: 'düzgün deformasyonlu', en: 'smoothly deformed' },
   open: { tr: 'Aç', en: 'Open' },
   source: { tr: 'Kaynak', en: 'Source' },

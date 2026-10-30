@@ -12,7 +12,7 @@ import json
 import h5py
 import numpy as np
 
-from src.data.dataset_converter_3d import boundary_faces
+from src.data.mesh_features import boundary_faces
 
 FAMILY_CMAP = {'pillbox': 'Blues', 'axisym_cell': 'Oranges', 'blob': 'Greens', 'elliptical': 'Oranges',
                'reentrant': 'Purples', 'pillbox_pipes': 'Blues', 'freeform': 'Greens',

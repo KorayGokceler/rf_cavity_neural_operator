@@ -9,7 +9,7 @@ Geometry sources (exactly one; the field model needs the CAD solid, it predicts 
   --family NAME --id N                 a generator geometry (field-label settings: the field datasets' shape)
   --h5    SHARD.h5 [--sample sample_0000123 | index]   a field-label geometry (stored curved mesh, labels known)
 
-The beam axis and accelerating length follow the family (src.qoi.operators.beam_axis); a CAD file uses the
+The beam axis and accelerating length follow the family (src.qoi.figures.beam_axis); a CAD file uses the
 z axis through the origin.  Mesh density: h = --mesh_size · (V / --vol_div)^(1/3) (n-cell cavity: --vol_div n),
 or --h_abs [m]; the curved mesh is netgen's at maxh = 3 h (field_labels.start_mesh).
 
@@ -20,7 +20,7 @@ or --h_abs [m]; the curved mesh is netgen's at maxh = 3 h (field_labels.start_me
 --fe also solves the FE eigenproblem in the model's own space (HCurl(p2) on the same curved mesh) and prints
 the model-vs-FE frequency errors; the Ritz values are upper bounds of these discrete eigenvalues.  With --h5
 the stored p3 label frequencies and figures of merit are printed as well.  Outputs in --out_dir:
-prediction.json and modes.vtu (E / H of every predicted mode at the vertices, the display fields) for ParaView.
+prediction.json and modes.vtu (E / H of every predicted mode at the P2 nodes of the curved mesh, 8 sub-tets per tet) for ParaView.
 """
 import argparse
 import json
@@ -43,7 +43,7 @@ def h5_geometry(path, sample):
     """Field-label H5 group (name or index) → geometry dict (as geometry.mesh_family) + stored labels."""
     import h5py
 
-    from src.data.dataset_converter_3d import geom_params_of
+    from src.data.mesh_features import geom_params_of
     from src.data_gen.field_labels import read_field_group
     with h5py.File(path, 'r') as f:
         keys = sorted(k for k in f if k.startswith('sample_'))
@@ -119,8 +119,7 @@ def main(argv=None):
         raise SystemExit(f"{geo['label']}: geometry failed the checks: {'; '.join(chk['problems'])}")
 
     # 2) prediction (Ritz modes in HCurl(p2), figures of merit of the p2 fields, display fields)
-    geom, M = svc.geometry(geo['nodes'], geo['tets'], geo['family'], geo['params'])
-    sol = svc.predict(geo['mesh_src'], geom, M, geo['family'], geo['params'])
+    sol = svc.predict(geo['mesh_src'], geo['family'], geo['params'])
     f_pred = np.array([m['f_GHz'] for m in sol['modes']])
     res = {'geometry': geo['label'], 'family': geo['family'], 'untrained': svc.untrained,
            'n_tets': sol['n_tets'], 'n_dof': sol['n_dof'], 'betti1': chk['betti1'],
@@ -160,12 +159,14 @@ def main(argv=None):
         json.dump(res, fo, indent=1)
     if not args.no_vtu:
         from src.viz.vtk_export import write_modes_vtu
+        r = svc.fields(sol)                                   # the p2 fields at the P2 nodes of the curved mesh
         pts = {}
         for k in range(len(f_pred)):
-            pts[f"E_pred_{k}"], pts[f"H_pred_{k}"] = sol['_E'][:, :, k], sol['_H'][:, :, k]
-        vtu = write_modes_vtu(os.path.join(args.out_dir, 'modes.vtu'), svc.to_mm(geom, geom['X']), geom['tets'], {},
+            pts[f"E_pred_{k}"], pts[f"H_pred_{k}"] = r['E'][k], r['H'][k]
+        vtu = write_modes_vtu(os.path.join(args.out_dir, 'modes.vtu'), r['x_mm'], r['tets'], {},
                               pts, field_data={'f_pred_GHz': f_pred,
-                                               'units': 'mm; E [V/m], H [A/m] at U = 1 J (vertex-averaged N0)'})
+                                               'units': 'mm; E [V/m], H [A/m] at U = 1 J, HCurl(p2) fields at the P2 '
+                                                        'nodes of the curved mesh (8 linear sub-tets per tet)'})
         print(f"wrote {vtu}")
     print(f"wrote {os.path.join(args.out_dir, 'prediction.json')}")
     return res

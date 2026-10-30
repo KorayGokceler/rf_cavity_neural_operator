@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient                                   # no
 
 from src.service import api as A                                            # noqa: E402
 from src.service import geometry as G                                       # noqa: E402
-from src.service.model import ModelService, physical_fields                 # noqa: E402
+from src.service.model import ModelService                                  # noqa: E402
 
 
 def f32(s):
@@ -97,10 +97,6 @@ def test_predict_fields_export(client, pillbox_msh):
     assert all(m["Q0"] is None or m["Q0"] > 0 for m in p["modes"]) and any(m["Q0"] for m in p["modes"])
     assert {"mesh", "operators", "model", "qoi", "display", "total"} <= set(p["time_s"])
     assert p["model"]["model_type"] == "field3d"
-    m = client.get(f"/api/predictions/{p['id']}/modes/0").json()
-    E = f32(m["surface"]["E_b64"]).reshape(-1, 3)
-    assert E.shape == (g["surface"]["n_points"], 3) and m["surface"]["E_max"] > 0 and np.isfinite(E).all()
-    assert len(m["axis"]["z_mm"]) == len(m["axis"]["Ez"])
     q = client.get(f"/api/predictions/{p['id']}/plane", params={"mode": 0, "axis": "y", "res": 41}).json()
     P = f32(q["points_b64"]).reshape(-1, 3)
     assert P.shape[0] == q["n_points"] > 0 and np.ptp(P[:, 1]) < 1e-3 and abs(P[0, 1]) < 5   # y = centroid plane
@@ -115,18 +111,24 @@ def test_predict_fields_export(client, pillbox_msh):
     ctr = inside[nz // 2, ny // 2, nx // 2] and not inside[0, 0, 0]       # the bbox corner is outside the cylinder
     assert ctr
     assert client.get(f"/api/predictions/{p['id']}/volume", params={"n": 10}).status_code == 422
-    fb = client.get(f"/api/predictions/{p['id']}/fields").json()            # every mode, at the vertices
-    K, nv = fb["n_modes"], fb["n_vertices"]
-    E16 = np.frombuffer(base64.b64decode(fb["E_b64"]), np.float16).astype(float).reshape(K, nv, 3)
-    E0 = E16[0] * fb["E_max"][0]
+    gone = client.get(f"/api/predictions/{p['id']}/modes/0")                  # removed: /fields has it all
+    assert gone.status_code in (404, 405) or "json" not in gone.headers["content-type"]       # (the SPA answers a GET)
+    fb = client.get(f"/api/predictions/{p['id']}/fields").json()            # every mode at the P2 nodes + the wall
+    K, nv, ns = fb["n_modes"], fb["n_nodes"], fb["n_surface"]
+    half = lambda k: np.frombuffer(base64.b64decode(fb[k]), np.float16).astype(float)         # noqa: E731
+    E16, H16 = half("E_b64").reshape(K, nv, 3), half("H_b64").reshape(K, nv, 3)
     nodes = f32(fb["nodes_b64"]).reshape(nv, 3)
-    vid = np.frombuffer(base64.b64decode(fb["vid_b64"]), np.uint32)
-    assert K == 6 and nodes.shape == (nv, 3) and np.abs(nodes[:, 0]).max() == pytest.approx(100, abs=5)
-    assert np.frombuffer(base64.b64decode(fb["tets_b64"]), np.uint32).size == 4 * fb["n_tets"]
-    Es = f32(m["surface"]["E_b64"]).reshape(-1, 3)                          # mode 0 on the surface (above)
-    assert np.allclose(E0[vid], Es, rtol=2e-3, atol=2e-3 * fb["E_max"][0])      # = the per-mode surface data
-    assert np.linalg.norm(E16, axis=2).max() == pytest.approx(1, abs=1e-3)
+    sub = np.frombuffer(base64.b64decode(fb["tets_b64"]), np.uint32).reshape(-1, 4)
+    assert K == 6 and np.abs(nodes[:, 0]).max() == pytest.approx(100, abs=2) and fb["n_cells"] == 8 * fb["n_tets"] == len(sub)
+    assert nv > g["check"]["n_nodes"] and sub.max() == nv - 1             # P2 nodes: vertices + edge midpoints
+    assert ns == g["surface"]["n_points"] and half("surf_E_b64").shape == (K * ns,)   # one value per curved wall point
+    sE = half("surf_E_b64").reshape(K, ns)
+    assert np.isfinite(E16).all() and np.isfinite(H16).all() and np.isfinite(sE).all()
+    assert max(np.linalg.norm(E16, axis=2).max(), sE.max()) == pytest.approx(1, abs=1e-3)   # E_max covers nodes and wall
+    wall = f32(g["surface"]["points_b64"]).reshape(-1, 3)
+    assert np.hypot(wall[:, 0], wall[:, 1]).max() == pytest.approx(100, abs=0.5)   # the curved wall, R = 100 mm (this 1.5k-tet mesh: 0.2 mm; its linear facets would sit 5 mm inside)
     assert len(fb["axis"]["Ez"]) == K and len(fb["axis"]["Ez"][0]) == len(fb["axis"]["z_mm"])
+    assert sum(v is not None for v in fb["axis"]["Ez"][0]) > 100
     r = client.get(f"/api/predictions/{p['id']}/fields", headers={"Accept-Encoding": "gzip"})
     assert r.headers.get("content-encoding") == "gzip"
     r = client.get(f"/api/predictions/{p['id']}/export")
@@ -160,8 +162,7 @@ def test_ritz_frequencies_are_upper_bounds_on_a_box():
     geo = G.run_isolated(G.mesh_family, "box", 3, 0.1, timeout=120)
     assert geo["mesh_src"] is not None and geo["blocker"] is None
     svc = ModelService(None, "cpu")
-    geom, M = svc.geometry(geo["nodes"], geo["tets"], "box", geo["params"])
-    sol = svc.predict(geo["mesh_src"], geom, M, "box", geo["params"])
+    sol = svc.predict(geo["mesh_src"], "box", geo["params"])
     f = np.array([m["f_GHz"] for m in sol["modes"]])
     lab = ho.solve_modes(G.load_mesh_src(geo["mesh_src"]), len(f), order=2)
     f_h = lab["f_hz"][:len(f)] / 1e9
@@ -236,20 +237,25 @@ def _boom():
     raise ValueError("boom")
 
 
-def test_physical_fields_energy_normalisation(pillbox_msh):
-    """U = ½ε0∫|E|² = 1 J for the displayed E (nodal average ≈ the N0 field on a fine-enough mesh)."""
-    from src.data.dataset_converter_3d import extract_geometry_3d, tet_geometry
-    nodes, tets = G.mesh_file(str(pillbox_msh / "pillbox.msh"), "mm")
-    geom, M = extract_geometry_3d(nodes, tets)
-    rng = np.random.default_rng(0)
-    U = rng.standard_normal((len(geom["edges"]), 1))
-    U[np.asarray(geom["bnd_edge"], bool)] = 0
-    E, H = physical_fields(geom, M, U, np.array([1.0]))
-    vol, _ = tet_geometry(nodes, tets)
-    e2 = (np.linalg.norm(E[:, :, 0], axis=1) ** 2)[tets].mean(1)            # per-tet mean of |E|² at vertices
-    U_J = 0.5 * 8.8541878128e-12 * (vol * e2).sum()
-    assert 0.2 < U_J < 1.5                                                  # nodal averaging smooths a random field
-    assert np.all(np.isfinite(H))
+def test_displayed_fields_carry_one_joule(client, pillbox_msh):
+    """U = ½ε0 ∫|E|² = 1 J for the displayed E: on the drawn P1 sub-tet field of the /fields payload (it carries its
+    interpolation error: a coarse 1.5k-tet mesh here; tests/test_hcurl_display.py has the exact and fine-mesh checks)."""
+    g = _upload_step(client, pillbox_msh)
+    p = client.post("/api/predictions", json={"geometry_id": g["id"]}).json()
+    fb = client.get(f"/api/predictions/{p['id']}/fields").json()
+    K, nv = fb["n_modes"], fb["n_nodes"]
+    E = (np.frombuffer(base64.b64decode(fb["E_b64"]), np.float16).astype(float).reshape(K, nv, 3)
+         * np.asarray(fb["E_max"])[:, None, None])
+    X = f32(fb["nodes_b64"]).reshape(nv, 3).astype(float) * 1e-3
+    sub = np.frombuffer(base64.b64decode(fb["tets_b64"]), np.uint32).reshape(-1, 4)
+    P = X[sub]
+    vol = np.abs(np.einsum("ni,ni->n", np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), P[:, 3] - P[:, 0])) / 6
+    for k in range(K):
+        e = E[k][sub]                                             # P1 on a tet: ∫|E|² = V/20 (Σ|e_i|² + |Σ e_i|²)
+        u_j = 0.5 * 8.8541878128e-12 * (vol / 20 * ((e ** 2).sum((1, 2)) + (e.sum(1) ** 2).sum(1))).sum()
+        # the untrained model's modes are rough at the mesh scale: P1 on the sub-tets and the node average lose some
+        # of their energy (mode 0 is smooth: -3 %); the smooth TM010 check is in tests/test_hcurl_display.py
+        assert 0.5 < u_j < 1.02 and (k > 0 or u_j == pytest.approx(1.0, abs=0.05))
 
 
 def test_access_token(monkeypatch):

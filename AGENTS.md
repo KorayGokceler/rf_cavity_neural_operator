@@ -18,19 +18,20 @@ One model: `EigenspaceOperatorField` (model_type `field3d`): HCurl p2 on a curve
 quadrature points (14 per tet), labels = adaptive p3 FE fields projected onto p2. The web UI's Predict,
 `scripts/predict_geometry.py` and TRUBA `predict.sh` run it. The old Whitney-N0 edge model
 (`eigenspace3d`), its PKL pipeline and the N0 label type were removed: field labels are the generator's only
-label type (`--labels` is a hidden, deprecated no-op). Whitney N0 code remains only as the display / QoI layer
-(`dataset_converter_3d.py`, `src/viz/nedelec.py`, `src/qoi/operators.py`) until the high-order display PR
-replaces it (docs/31 §6, item 15).
+label type (`--labels` is a hidden, deprecated no-op). The Whitney-N0 display / QoI layer was removed too
+(docs/31 §6, item 15): the web UI draws the HCurl p2 field directly (`src/viz/hcurl_display.py`) and the figures
+of merit come from the p2 fields (`highorder.mode_qoi`, contract and rescaling in `src/qoi/figures.py`).
 
 ## Map
 
 | path | what |
 |---|---|
 | `src/data_gen/` | geometry families (`cavity_shapes.py`), generator (`dataset_generator_3d.py`), curved meshes + p3 solver (`highorder.py`), adaptive refinement (`adaptive.py`), field labels (`field_labels.py`) |
-| `src/data/` | `field_dataset.py` (field3d items, operators rebuilt per item), `sparse.py` (block-diagonal batch operators), `dataset_converter_3d.py` (N0 display / QoI geometry) |
+| `src/data/` | `field_dataset.py` (field3d items, operators rebuilt per item), `sparse.py` (block-diagonal batch operators), `mesh_features.py` (mesh helpers, boundary topology, the model's vertex features) |
 | `src/models/` | `hcurl.py` (projection, Ritz, CG `KpSolve`), `eigenspace_operator_field.py`, `layers.py` |
 | `src/training/lightning_module.py` | losses (span / frequency / self-supervised / ortho), metrics |
-| `src/qoi/` | figures of merit (docs/24) |
+| `src/viz/` | `hcurl_display.py` (p2 field → display mesh, surface, axis; docs/26), `meshsample.py` (point location, cut planes of the input features), `vtk_export.py`, `geometry.py` |
+| `src/qoi/` | figures of merit: `figures.py` (keys, conventions, beam axis, rescaling to U = 1 J), `analytic.py` (closed forms; docs/24) |
 | `src/service/` | FastAPI backend of the web UI (`api.py`, `model.py`, jobs, datasets, TRUBA, training) |
 | `web/` | React + vtk.js UI; `src/fieldlab.ts` computes cuts / 3D grid / phase client-side |
 | `cluster/truba/` | SLURM scripts, `run.sh` one-line orchestrator |
@@ -40,7 +41,7 @@ replaces it (docs/31 §6, item 15).
 ## Commands
 
 ```bash
-python -m pytest -q tests/                                    # full suite; fast subsets: test_field_model.py test_service_api.py test_viz_nedelec.py
+python -m pytest -q tests/                                    # full suite; fast subsets: test_field_model.py test_service_api.py test_hcurl_display.py
 python scripts/validate_field_labels.py --max_ndof 300000     # analytic pillbox check of the label solver (must print PASS)
 cd web && npm run build                                       # tsc + vite; the UI must build cleanly
 python scripts/serve_web.py --data <dataset root> --checkpoint_optional   # local UI on :8000

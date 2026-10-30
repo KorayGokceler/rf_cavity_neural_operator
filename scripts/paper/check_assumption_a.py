@@ -32,7 +32,7 @@ import scipy.linalg as sla
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from src.data.dataset_converter_3d import normalise  # noqa: E402
+from src.data.mesh_features import normalise  # noqa: E402
 from src.data_gen import highorder as ho  # noqa: E402
 
 J01 = 2.404825557695773          # first zero of J0: TM010 of the pillbox, k = J01 / R

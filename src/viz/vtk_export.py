@@ -108,7 +108,7 @@ def cell_to_point(tets, n_nodes, cell_vals, weights=None):
         cell_vals: [Nt, ...] array (scalar or vector/tensor per cell).
         weights: [Nt] array or None (default: uniform weights, i.e. a plain average). Callers
             wanting an exact volume-weighted average pass tet volumes, e.g. from
-            `src.data.dataset_converter_3d.tet_geometry`.
+            `src.data.mesh_features.tet_geometry`.
 
     Returns:
         [n_nodes, ...] array, same trailing shape as `cell_vals`, dtype float64.

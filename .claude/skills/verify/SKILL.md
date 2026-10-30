@@ -13,8 +13,8 @@ description: Run the checks that prove the current change works - tests chosen f
    | `src/models/`, `src/training/` | `python -m pytest -q tests/test_field_model.py tests/test_hcurl_projection.py tests/test_span_losses.py` |
    | `src/models/hcurl.py` (projection, Ritz, CG) | the above, plus `python scripts/paper/check_ritz_bound.py --data <LF H5> --threads 4`: the guarantee θ̃(1+η̄) ≥ λ_h holds in every row and there are no spurious modes with the projection |
    | `src/data_gen/` | `python -m pytest -q tests/test_field_labels.py tests/test_field_adaptive.py tests/test_data_gen_3d.py`, and `python scripts/validate_field_labels.py --max_ndof 300000 --threads 4`, which must print PASS with errors no worse than docs/31 §1 |
-   | `src/data/` | `python -m pytest -q tests/test_field_model.py tests/test_dataset_converter_3d.py` |
-   | `src/qoi/` | `python -m pytest -q tests/test_qoi.py` |
+   | `src/data/` | `python -m pytest -q tests/test_field_model.py tests/test_mesh_features.py` |
+   | `src/qoi/`, `src/viz/` | `python -m pytest -q tests/test_qoi.py tests/test_hcurl_display.py tests/test_viz_meshsample.py` |
    | `src/service/` | `python -m pytest -q tests/test_service_api.py tests/test_service_datasets.py tests/test_service_training.py tests/test_service_truba.py` |
    | `web/` | `cd web && npm run build`, `python -m pytest -q tests/test_service_api.py`, then a Playwright check against `python scripts/serve_web.py --data <root> --checkpoint_optional --no_token --port <p>`. Desktop and 390 px, light and dark, no console errors, no horizontal scroll at 390 px, timings before/after for touched interactions. Stop the server afterwards. |
    | `scripts/serve_web.py`, `scripts/colab_webui.py`, `Colab_*.ipynb` | `python -m pytest -q tests/test_serve_web.py tests/test_service_api.py`; for the notebook, check that the JSON parses and that the cell's flags exist in the script's `--help` |

@@ -3,18 +3,18 @@
     RFCAV_CHECKPOINT=runs/large uvicorn src.service.api:app --port 8000
     (no RFCAV_CHECKPOINT: an UNTRAINED demo model — for UI development only)
 
-Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suffix _b64):
+Endpoints (JSON; large arrays as base64 little-endian float32 / uint32 / float16, key suffix _b64):
     GET  /api/info                               model, families, limits
     POST /api/geometries            (multipart)  upload CAD / mesh → checks + display surface (+ can_predict)
     POST /api/geometries/sample     {family,id}  a generator geometry → checks + display surface (+ can_predict)
     POST /api/predictions           {geometry_id}           field3d model: mode table + figures of merit
-    GET  /api/predictions/{id}/modes/{k}          surface E/H + beam-axis E_z of mode k
-    GET  /api/predictions/{id}/plane?mode&axis&pos&res      cut plane E/H of mode k
+    GET  /api/predictions/{id}/plane?mode&axis&pos&res      cut plane E/H of mode k (exact p2 evaluation)
     GET  /api/predictions/{id}/export             everything as one JSON file
     GET  /api/geometries/{id}/features            model input features (names, ranges)
     GET  /api/geometries/{id}/feature_plane|feature_surface?name&…   one feature on a cut / the wall
-    GET  /api/predictions/{id}/volume?mode&n         mode on a regular 3D grid (the 3D field view)
-    GET  /api/predictions/{id}/fields               all modes at the vertices + the mesh (the workspace, client side)
+    GET  /api/predictions/{id}/volume?mode&n         mode on a regular 3D grid (exact p2 evaluation)
+    GET  /api/predictions/{id}/fields               all modes at the P2 nodes + the sub-tet mesh + the wall values
+                                                    (the workspace, client side; src/viz/hcurl_display.py)
     GET  /api/datasets                            registered datasets (RFCAV_DATA, src/service/datasets.py)
     GET  /api/datasets/{d}/items | /stats         geometry table (filter, sort, page) / overview
     POST /api/datasets/{d}/items/{id}/open        geometry + FE solution (+ labels, parameters)
@@ -26,6 +26,8 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32, key suff
     GET  /api/truba/config · POST /api/truba/command {form}   one-line TRUBA command (src/service/truba.py)
 The built frontend (web/dist) is served at / when present.
 
+The fields are the HCurl(p2) fields themselves, drawn on the P2 nodes / sub-tets of the curved mesh and its curved
+wall (docs/26 "Display pipeline"); no Whitney-N0 projection is involved.
 Prediction runs the field3d model on the geometry's curved mesh (src/service/model.py): only geometries with a
 CAD solid (CAD uploads, generator families except freeform, field-label dataset items) and at most
 Limits.max_predict_tets curved tets can be predicted — the geometry response says so (can_predict,
@@ -50,7 +52,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.data.dataset_converter_3d import FEATURE_NAMES_3D
+from src.data.mesh_features import FEATURE_NAMES_3D
 from src.service import geometry as G
 from src.service import training as T
 from src.service import truba as TR
@@ -242,21 +244,27 @@ def create_app(service=None, datasets=None):
         """Store a geometry; field: {mesh_src, blocker, n_tets, geom_params} of its curved mesh (or why none)."""
         if len(tets) > lim.max_tets:
             raise HTTPException(413, f"mesh has {len(tets)} tets (limit {lim.max_tets}); use a coarser mesh size")
-        chk = G.check(nodes, tets)
-        vid, tri = G.surface(nodes, tets)
         field = field or {}
-        rec = {'nodes': nodes, 'tets': tets, 'vid': vid, 'tri': tri, 'source': source,
+        curved = field.get('curved')                         # the curved wall lattice (hcurl_display.curved_display)
+        chk = G.check(nodes, tets, curved)
+        rec = {'nodes': nodes, 'tets': tets, 'source': source,
                'family': (extra or {}).get('family', ''), 'params': (extra or {}).get('params'), 'check': chk,
                'mesh_src': field.get('mesh_src'), 'blocker': field.get('blocker'),
                'n_tets_curved': field.get('n_tets'), 'geom_params': field.get('geom_params')}
+        if curved is not None:                               # the curved wall; vid3 / w3 carry vertex data onto it
+            pts, tri = np.asarray(curved['points']) * 1e3, curved['triangles']
+            rec.update(surf_vid3=curved['vid3'], surf_w3=curved['w3'])
+        else:                                                # no curved mesh (mesh upload, freeform): linear facets
+            rec['vid'], tri = G.surface(nodes, tets)
+            pts = np.asarray(nodes)[rec['vid']] * 1e3
+        rec['n_surface'] = int(len(pts))
         if prepared:
             rec.update(prepared)
         gid = geoms.put(rec)
-        pts = np.asarray(nodes)[vid] * 1e3
         blocker = _blocker(rec)
         return {'id': gid, 'source': source, 'check': chk, **(extra or {}),
                 'can_predict': blocker is None, 'predict_blocker': blocker,
-                'surface': {'n_points': int(len(vid)), 'n_triangles': int(len(tri)),
+                'surface': {'n_points': int(len(pts)), 'n_triangles': int(len(tri)),
                             'points_b64': b64(pts), 'triangles_b64': b64(tri, np.uint32)}}
 
     @app.get('/api/info')
@@ -268,7 +276,7 @@ def create_app(service=None, datasets=None):
                            'cad': list(G.CAD_EXT), 'mesh': list(G.MESH_EXT)},
                 'conventions': {'U_J': 1.0, 'wall': 'copper, sigma = 5.8e7 S/m', 'beta': 1.0,
                                 'R_over_Q': 'linac: V^2/(omega U)',
-                                'beam_axis': 'src.qoi.operators.beam_axis: x = y = 0 along z; hwr, ridged_box, box per '
+                                'beam_axis': 'src.qoi.figures.beam_axis: x = y = 0 along z; hwr, ridged_box, box per '
                                              'family; CAD uploads: z through the origin of the file',
                                 'L_acc': 'cavity length along the beam, pipes excluded (acceleration_length); CAD '
                                          'uploads and families without one: the axis chord inside the cavity, pipes '
@@ -319,13 +327,14 @@ def create_app(service=None, datasets=None):
                                   {'family': req.family, 'params': m['params']}, field=dict(m, geom_params=m['params']))
 
     def _prepared(g):
-        """Converter geometry (features + operators) of a stored geometry, computed once."""
+        """Display geometry (normalised linear mesh + input features) of a stored geometry, computed once (only the
+        feature views need it; the field display does not)."""
         if '_geom' not in g:
-            g['_geom'], g['_M'] = service.geometry(g['nodes'], g['tets'], g['family'], g.get('params'))
-        return g['_geom'], g['_M']
+            g['_geom'] = service.geometry(g['nodes'], g['tets'], g['family'], g.get('geom_params') or g.get('params'))
+        return g['_geom']
 
     def _summary(sid, sol, extra=None):
-        return {'id': sid, 'source': sol['source'], 'n_edges': sol['n_edges'],
+        return {'id': sid, 'source': sol['source'], 'n_dof': sol['n_dof'],
                 'modes': sol['modes'], 'axis_length_mm': sol['axis_length_mm'], **(extra or {})}
 
     @app.post('/api/predictions')
@@ -336,9 +345,8 @@ def create_app(service=None, datasets=None):
             raise HTTPException(422, blocker)
         t0 = time.perf_counter()
         try:
-            geom, M = _prepared(g)
-            p = service.predict(g['mesh_src'], geom, M, g['family'], g.get('geom_params'), key=req.geometry_id)
-        except Exception as e:                   # noqa: BLE001 — display-mesh mismatch, CG non-convergence, netgen …
+            p = service.predict(g['mesh_src'], g['family'], g.get('geom_params'), key=req.geometry_id)
+        except Exception as e:                   # noqa: BLE001 — CG non-convergence, netgen …
             log.exception('prediction of geometry %s failed', req.geometry_id)
             raise HTTPException(422, f"prediction failed ({type(e).__name__}: {str(e)[:300]})") from None
         p['time_s']['total'] = time.perf_counter() - t0
@@ -376,38 +384,35 @@ def create_app(service=None, datasets=None):
             out['comparison'] = {'rows': rows, 'diff_id': preds.put(diff), 'truth_id': req.compare_to}
         return out
 
-    @app.get('/api/predictions/{pid}/modes/{k}')
-    def mode(pid: str, k: int):
-        p = preds.get(pid)
-        if not 0 <= k < len(p['_f']):
-            raise HTTPException(404, 'no such mode')
-        g = geoms.get(p['_geometry_id'])
-        E, H = service.surface_fields(p, g['vid'], k)
-        z, ez = service.axis_profile(p, k)
-        return {'mode': k, 'f_GHz': float(p['_f'][k]),
-                'surface': {'E_b64': b64(E), 'H_b64': b64(H),
-                            'E_max': float(np.linalg.norm(p['_E'][:, :, k], axis=1).max()),
-                            'H_max': float(np.linalg.norm(p['_H'][:, :, k], axis=1).max())},
-                'axis': {'z_mm': [float(v) for v in z], 'Ez': [_clean(v) for v in ez]}}
-
     @app.get('/api/predictions/{pid}/fields')
     def fields(pid: str):
-        """Every mode of a solution at the mesh vertices + the volume mesh, in one response: the workspace
-        cuts planes, fills the 3D volume and applies modes, phase and E/H in the browser (no request per
-        change).  E, H: [K, Nv, 3] float16, each mode divided by its E_max / H_max (max over the vertices)."""
+        """Every mode of a solution on the display mesh in one response: the workspace cuts planes, fills the 3D
+        volume and applies modes, phase and E/H in the browser (no request per change).
+        nodes_b64 [n_nodes, 3] float32 mm (the P2 nodes of the curved mesh), tets_b64 [n_cells, 4] uint32 (8 linear
+        sub-tets per tet on those nodes), E_b64 / H_b64 [K, n_nodes, 3] float16 (each mode divided by its E_max /
+        H_max), surf_E_b64 / surf_H_b64 [K, n_surface] float16 (|E|, |H| on the geometry's curved wall points, same
+        divisors; E_max / H_max cover nodes and wall), axis: beam-axis E_z per mode (null outside the cavity)."""
         p = preds.get(pid)
         g = geoms.get(p['_geometry_id'])
-        geom = p['_geom']
-        E, H = (np.transpose(np.asarray(p[k], float), (2, 0, 1)) for k in ('_E', '_H'))     # [K, Nv, 3]
-        e_max, h_max = (np.maximum(np.linalg.norm(F, axis=2).max(1), 1e-300) for F in (E, H))
-        axis = [service.axis_profile(p, k) for k in range(len(p['_f']))]
-        return {'n_modes': int(len(p['_f'])), 'n_vertices': int(E.shape[1]), 'n_tets': int(len(geom['tets'])),
+        try:
+            r = service.fields(p)
+        except Exception as e:                   # noqa: BLE001 — mesh reload, NGSolve version, …
+            log.exception('fields of prediction %s failed', pid)
+            raise HTTPException(422, f"display failed ({type(e).__name__}: {str(e)[:300]})") from None
+        K, ns = r['E'].shape[0], r['sE'].shape[1]
+        if ns != g['n_surface']:
+            raise HTTPException(500, f"the wall lattice has {ns} points, the geometry's surface {g['n_surface']}")
+        e_max, h_max = r['E_max'], r['H_max']
+        return {'n_modes': int(K), 'n_nodes': int(r['E'].shape[1]), 'n_cells': int(len(r['tets'])),
+                'n_tets': int(p.get('n_tets') or 0), 'n_surface': int(ns),
                 'f_GHz': [float(v) for v in p['_f']], 'E_max': e_max.tolist(), 'H_max': h_max.tolist(),
-                'nodes_b64': b64(service.to_mm(geom, geom['X'])), 'tets_b64': b64(geom['tets'], np.uint32),
-                'vid_b64': b64(g['vid'], np.uint32),
-                'E_b64': b64(E / e_max[:, None, None], np.float16), 'H_b64': b64(H / h_max[:, None, None], np.float16),
-                'axis': {'z_mm': [float(v) for v in axis[0][0]] if axis else [],
-                         'Ez': [[_clean(v) for v in a[1]] for a in axis]}}
+                'nodes_b64': b64(r['x_mm']), 'tets_b64': b64(r['tets'], np.uint32),
+                'E_b64': b64(r['E'] / e_max[:, None, None], np.float16),
+                'H_b64': b64(r['H'] / h_max[:, None, None], np.float16),
+                'surf_E_b64': b64(r['sE'] / e_max[:, None], np.float16),
+                'surf_H_b64': b64(r['sH'] / h_max[:, None], np.float16),
+                'axis': {'z_mm': [float(v) for v in r['axis'][0]],
+                         'Ez': [[_clean(v) for v in row] for row in r['axis'][1]]}}
 
     @app.get('/api/predictions/{pid}/plane')
     def plane(pid: str, mode: int = 0, axis: str = 'y', pos: float | None = None, res: int = 121):
@@ -442,7 +447,7 @@ def create_app(service=None, datasets=None):
 
     # ── model input features ─────────────────────────────────────────
     def _feature(g, name):
-        geom, _ = _prepared(g)
+        geom = _prepared(g)
         names = list(g.get('feature_names') or FEATURE_NAMES_3D)
         if name not in names:
             raise HTTPException(404, f"unknown feature {name!r}")
@@ -451,11 +456,11 @@ def create_app(service=None, datasets=None):
     @app.get('/api/geometries/{gid}/features')
     def features(gid: str):
         g = geoms.get(gid)
-        geom, _ = _prepared(g)
+        geom = _prepared(g)
         names = list(g.get('feature_names') or FEATURE_NAMES_3D)
         F = np.asarray(geom['Input_funcs'], float)
         return {'names': names, 'min': F.min(0).tolist(), 'max': F.max(0).tolist(),
-                'n_vertices': int(len(F)), 'n_edges': int(len(geom['edges'])),
+                'n_vertices': int(len(F)), 'n_tets': int(len(geom['tets'])),
                 'scale_mm': float(geom['scale'] * 1e3), 'torsion_max': float(geom.get('torsion_max', 0.0))}
 
     @app.get('/api/geometries/{gid}/feature_plane')
@@ -471,7 +476,11 @@ def create_app(service=None, datasets=None):
     def feature_surface(gid: str, name: str):
         g = geoms.get(gid)
         _, v = _feature(g, name)
-        return {'name': name, 'values_b64': b64(v[g['vid']])}
+        if 'surf_vid3' in g:                                  # the curved wall lattice: P1 data of the face's vertices
+            v = np.einsum('pk,pk->p', v[g['surf_vid3']], g['surf_w3'])
+        else:
+            v = v[g['vid']]
+        return {'name': name, 'values_b64': b64(v)}
 
     @app.get('/api/geometries/{gid}/feature_view')
     def feature_view_ep(gid: str, kind: str, channel: str | None = None, axis: str = 'y',
@@ -480,7 +489,7 @@ def create_app(service=None, datasets=None):
         if kind not in KINDS or axis not in ('x', 'y', 'z') or not 16 <= res <= 241:
             raise HTTPException(422, f"kind in {KINDS}, axis in x|y|z, res in [16, 241]")
         g = geoms.get(gid)
-        geom, _ = _prepared(g)
+        geom = _prepared(g)
         try:
             v = feature_view(geom, kind, axis, pos, res, g.get('feature_names'), channel)
         except KeyError:
@@ -515,11 +524,11 @@ def create_app(service=None, datasets=None):
         rows = _rows(_ds(did))
         if family:
             rows = [r for r in rows if r['family'] == family]
-        keyf = {'id': lambda r: r['id'], 'family': lambda r: r['family'], 'n_edges': lambda r: r['n_edges'],
+        keyf = {'id': lambda r: r['id'], 'family': lambda r: r['family'], 'n_dof': lambda r: r['n_dof'],
                 'n_nodes': lambda r: r['n_nodes'], 'betti1': lambda r: r['betti1'],
                 'f0': lambda r: r['f_GHz'][0] if r['f_GHz'] else np.inf}.get(sort)
         if keyf is None:
-            raise HTTPException(422, 'sort by id | family | n_edges | n_nodes | betti1 | f0')
+            raise HTTPException(422, 'sort by id | family | n_dof | n_nodes | betti1 | f0')
         rows = sorted(rows, key=keyf, reverse=desc)
         limit = max(1, min(int(limit), 500))
         return {'total': len(rows), 'offset': offset, 'items': rows[offset:offset + limit]}
@@ -527,11 +536,11 @@ def create_app(service=None, datasets=None):
     @app.get('/api/datasets/{did}/stats')
     def dataset_stats(did: str):
         rows = _rows(_ds(did))
-        fam = collections.defaultdict(lambda: {'count': 0, 'f0': [], 'n_edges': []})
+        fam = collections.defaultdict(lambda: {'count': 0, 'f0': [], 'n_dof': []})
         for r in rows:
             e = fam[r['family']]
             e['count'] += 1
-            e['n_edges'].append(r['n_edges'])
+            e['n_dof'].append(r['n_dof'])
             if r['f_GHz']:
                 e['f0'].append(r['f_GHz'][0])
         return {'total': len(rows), 'families': dict(sorted(fam.items())),
@@ -544,22 +553,15 @@ def create_app(service=None, datasets=None):
             r = d.open(sid)
         except KeyError:
             raise HTTPException(404, 'no such geometry') from None
-        from src.data.sparse import to_csr
-        ne = len(r['geom']['edges'])
-        M = to_csr(r['M'], (ne, ne))
-        field = {'mesh_src': r.get('mesh_src'), 'n_tets': r.get('n_tets_model'), 'geom_params': r['geom'].get('params'),
-                 'blocker': None if r.get('mesh_src') else 'no curved mesh is stored for this item'}
+        field = {'mesh_src': r.get('mesh_src'), 'n_tets': r.get('n_tets_model'), 'geom_params': r['geom_params'],
+                 'curved': r['curved'], 'blocker': None if r.get('mesh_src') else 'no curved mesh is stored for this item'}
         resp = _geometry_response(r['nodes'], r['tets'],
                                   {'kind': 'dataset', 'dataset': d.name, 'family': r['family'], 'id': r['id'],
                                    'file': r['source_file']},
-                                  {'family': r['family'], 'params': r['params']},
-                                  prepared={'_geom': r['geom'], '_M': M, 'feature_names': r['features']}, field=field)
+                                  {'family': r['family'], 'params': r['params']}, field=field)
         truth = None
         if r['U'].shape[1]:
-            from src.service.model import build_solution, override_qoi
-            sol = build_solution(r['geom'], M, r['U'], r['f_GHz'], 'fe')
-            if r['qoi_labels']:                              # the stored p3 labels, not the N0 display fields'
-                override_qoi(sol, r['qoi_labels'])
+            sol = service.fe_solution(r, resp['id'])     # the stored p3 labels are the figures of merit shown
             sol['_geometry_id'] = resp['id']
             truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels'],
                                                    'qoi_source': 'p3_labels' if r['qoi_labels'] else 'fe'})

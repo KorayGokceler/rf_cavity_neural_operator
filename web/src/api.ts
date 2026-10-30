@@ -1,5 +1,5 @@
 // Typed client of src/service/api.py. Large arrays arrive as base64 little-endian float32 / uint32.
-import { decodeModes, type FieldBundle } from './fieldlab';
+import { decodeHalf, decodeModes, type FieldBundle } from './fieldlab';
 
 export interface ModelInfo {
   n_modes: number; n_params: number; device: string; untrained: boolean; checkpoint: string | null;
@@ -16,11 +16,11 @@ export interface Check {
 }
 export interface Surface { points: Float32Array; triangles: Uint32Array }
 export interface Solution {
-  id: string; source: 'model' | 'fe' | 'diff'; n_edges: number; modes: ModeRow[];
+  id: string; source: 'model' | 'fe' | 'diff'; n_dof: number; modes: ModeRow[];
   axis_length_mm: number; f_next?: number | null; labels?: Record<string, number>[] | null;
   qoi_source?: QoiSource;
 }
-// where the figures of merit come from: the predicted p2 fields, the stored p3 labels, the FE display fields
+// where the figures of merit come from: the predicted p2 fields, the stored p3 labels, the FE fields
 export type QoiSource = 'p2_model' | 'p3_labels' | 'fe';
 export interface Geometry {
   id: string; source: Record<string, unknown>; check: Check; family?: string;
@@ -34,7 +34,7 @@ export interface CmpRow {
   accelerating: boolean; eta: number | null; qoi: Record<string, QoiCmp>;
 }
 export interface Features {
-  names: string[]; min: number[]; max: number[]; n_vertices: number; n_edges: number; scale_mm: number;
+  names: string[]; min: number[]; max: number[]; n_vertices: number; n_tets: number; scale_mm: number;
   torsion_max: number;
 }
 export interface ScalarMesh { points: Float32Array; triangles: Uint32Array; scalars: Float32Array }
@@ -125,12 +125,12 @@ export interface FieldRowInfo {
   rounded_edges: number | null; sharp_edges: number; proj_err_max: number | null; t_labels_s: number | null;
 }
 export interface DatasetRow {
-  id: number; family: string; n_nodes: number; n_edges: number; n_tets: number; betti1: number;
+  id: number; family: string; n_nodes: number; n_dof: number; n_tets: number; betti1: number;
   deformed: boolean | null; f_GHz: number[]; field: FieldRowInfo;
 }
 export interface DatasetStats {
   total: number; n_modes: number;
-  families: Record<string, { count: number; f0: number[]; n_edges: number[] }>;
+  families: Record<string, { count: number; f0: number[]; n_dof: number[] }>;
 }
 export interface ModeRow {
   mode: number; f_GHz: number; degenerate: boolean; eta: number | null; accelerating: boolean;
@@ -138,7 +138,7 @@ export interface ModeRow {
   T_transit: number | null; Epk_Eacc: number | null; Bpk_Eacc_mT_per_MVm: number | null;
 }
 export interface Prediction {
-  id: string; geometry_id: string; source: 'model'; n_edges: number; modes: ModeRow[];
+  id: string; geometry_id: string; source: 'model'; modes: ModeRow[];
   axis_length_mm: number; warnings: string[]; model: ModelInfo;
   time_s: Record<string, number>;            // mesh, operators, model, qoi, display, total [s]
   qoi_source: QoiSource; n_dof: number; n_tets: number;     // p2 DOFs and curved tets of the model's mesh
@@ -248,15 +248,16 @@ export const api = {
   datasetStats: (did: string) => call<DatasetStats>(`/api/datasets/${did}/stats`),
   datasetOpen: async (did: string, sid: number) =>
     geometry(await call(`/api/datasets/${did}/items/${sid}/open`, { method: 'POST' })),
-  // every mode of a solution + the volume mesh, once per solution (the workspace computes cuts, the 3D grid,
-  // modes and the phase from it)
+  // every mode of a solution + the display mesh (P2 nodes, sub-tets), once per solution (the workspace computes
+  // cuts, the 3D grid, modes and the phase from it)
   fields: async (pid: string): Promise<FieldBundle> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const j: any = await call(`/api/predictions/${pid}/fields`);
-    const K = j.n_modes, nv = j.n_vertices;
-    return { K, nv, nodes: f32(j.nodes_b64), tets: u32(j.tets_b64), vid: u32(j.vid_b64),
-             E: decodeModes(new Uint16Array(u8(j.E_b64).buffer), K, nv, j.E_max),
-             H: decodeModes(new Uint16Array(u8(j.H_b64).buffer), K, nv, j.H_max),
+    const K = j.n_modes, nv = j.n_nodes, ns = j.n_surface;
+    const half = (b64: string) => new Uint16Array(u8(b64).buffer);
+    return { K, nv, ns, nodes: f32(j.nodes_b64), tets: u32(j.tets_b64),
+             E: decodeModes(half(j.E_b64), K, nv, j.E_max), H: decodeModes(half(j.H_b64), K, nv, j.H_max),
+             surfE: decodeHalf(half(j.surf_E_b64), K, ns, j.E_max), surfH: decodeHalf(half(j.surf_H_b64), K, ns, j.H_max),
              Emax: j.E_max, Hmax: j.H_max, f: j.f_GHz, axis: { z: j.axis.z_mm, Ez: j.axis.Ez } };
   },
   exportUrl: (pid: string) => `/api/predictions/${pid}/export`,

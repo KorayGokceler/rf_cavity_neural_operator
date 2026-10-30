@@ -2,7 +2,7 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-30, dal `claude/remove-n0-labels`.
+> Son güncelleme: 2026-10-30, dal `claude/high-order-display` (açık iş 15 bitti: p2 alanı doğrudan çiziliyor, N0 katmanı silindi).
 
 ## 1. Durum
 
@@ -11,13 +11,19 @@
 | Etiket çözücüsü | Adaptif p3, eğri mesh (docs/30). Analitik pillbox kontrolü geçiyor: 157k DOF'ta f 6e-7, Q0 3e-5, R/Q 1e-5, Epk 2e-4, Bpk 4e-4. |
 | Alan modeli (`field3d`) | Tek model. Kod hazır; tek örnek ezberleme testinde frekans hatası 1e-6 – 9e-6 (docs/28). **Ölçekli eğitim yapılmadı; eğitilmiş bir field3d checkpoint'i yok.** Eski N0 kenar modeli (`eigenspace3d`, PKL hattı) `claude/field-model-ui`'de kaldırıldı. |
 | Model uzayı tabanı | p2, ≤ 10k tetlik model mesh'inde ölçülen frekans tabanı %0,04–0,9 (docs/30). Model bunun altına inemez. |
-| Web arayüzü | "Model" kaynağı (Tahmin) field3d modelini çalıştırıyor: eğri mesh → HCurl p2 operatörleri → Ritz → p2 alanlarından kavite değerleri (`qoi_source: p2_model`), docs/26 §1b. Checkpoint yoksa eğitilmemiş demo modeli. Gösterim hâlâ Whitney N0 izdüşümü üzerinden (açık iş 15). Üretim, Eğitim ve TRUBA sayfaları yalnız alan etiketi; Dataset sayfası yalnız alan etiketli H5 listeler (N0-H5 görüntüleyicisi kaldırıldı). Çalışma alanı alanı tarayıcıda hesaplıyor. |
+| Web arayüzü | "Model" kaynağı (Tahmin) field3d modelini çalıştırıyor: eğri mesh → HCurl p2 operatörleri → Ritz → p2 alanlarından kavite değerleri (`qoi_source: p2_model`), docs/26 §1b. Checkpoint yoksa eğitilmemiş demo modeli. Gösterim p2 alanını doğrudan çiziyor (P2 düğümleri + alt-tet'ler, eğri duvar kafesi, tam `/plane` `/volume`; docs/26 §1d); N0 kodu ağaçta duruyor ama servis kullanmıyor (silme: açık iş 15, 3. commit). Üretim, Eğitim ve TRUBA sayfaları yalnız alan etiketi; Dataset sayfası yalnız alan etiketli H5 listeler (N0-H5 görüntüleyicisi kaldırıldı). Çalışma alanı alanı tarayıcıda hesaplıyor. |
+| N0 katmanı | **Silindi** (açık iş 15, 3. commit): `src/qoi/operators.py`, `src/viz/nedelec.py`, `scripts/qoi_validation.py`, `scripts/label_benchmark.py`, `analytic.fe_modes` / `reference_case`, `datasets.whitney_dofs` ve `dataset_converter_3d.py`'nin N0 kısımları. Kalanlar: `src/qoi/figures.py` (QoI sözleşmesi, eksen, `figures_of_merit`), `src/viz/meshsample.py` (nokta bulma, girdi özelliği kesitleri), `src/data/mesh_features.py` (eski `dataset_converter_3d.py`: mesh yardımcıları, sınır topolojisi, köşe özellikleri). |
 | TRUBA | Alan etiketi koşusu henüz yapılmadı (`TEST=1` referans koşuları açık iş). |
 | Geometri aileleri | Literatürle karşılaştırıldı ve düzeltmeler yapıldı (docs/33 §12): ridged_box / box ekseni, borusuz standart E_acc uzunluğu, eksen E_z'nin saklanması (her β için), eliptik yarım hücre çözücüsü (tolerans, çok başlangıç, re-entrant duvar), çapalar, aralıklar. Veri kümesi etiketi `_v2`. Yeni aileler ayrı iş. |
 | README | Alan modeline göre güncellendi (`claude/field-model-ui`). |
 | CI | `requirements-web.txt` de kuruluyor (web servisi testleri artık atlanmıyor); `pytest`, pillbox analitik kontrolü (`validate_field_labels.py --max_ndof 300000`) ve web derlemesi (`npm ci && npm run build`, Node 22) çalışıyor (`.github/workflows/ci.yml`). |
 
-Son commitler (`claude/remove-n0-labels`, `claude/field-model-ui` üzerine; birleşmeyi bekliyor):
+Son commitler (`claude/high-order-display`, `claude/remove-n0-labels` üzerine; birleşmeyi bekliyor):
+- `8908fab` p2 alanı doğrudan çiziliyor (`src/viz/hcurl_display.py`, `/fields` şeması, tam `/plane` `/volume`, web; §3.12);
+- `6be4763` testler: üreticinin referans çözümleri N0'dan p2'ye taşındı (`tests/p2_reference.py`; açık iş 21);
+- (sıradaki commit) N0 katmanı silindi (açık iş 15'in 3. commit'i; §3.12 "3. commit"), `dataset_converter_3d.py` → `mesh_features.py`, `/features` NaN düzeltmesi (açık iş 19).
+
+Önceki dal (`claude/remove-n0-labels`, `claude/field-model-ui` üzerine):
 - `13fdb6c` üretici: eski `--labels n0` etiket türü kaldırıldı (`--labels` gizli, etkisiz; yalnız `field`), `src/qoi/analytic.fe_modes` N0 operatörlerine taşındı;
 - (sıradaki commit) web servisi ve arayüz: N0-H5 görüntüleyicisi (`H5Dataset`) ve `require_e_field` silindi, `discover` alan etiketli olmayan H5'i atlıyor; arayüzde `viewOnly` / `edgesHist` yolları gitti (`kind` yalnız `field` değerini taşıyor); TRUBA `LABELS` varsayılanı `field`, başka değer `config.sh`'de hata veriyor; belgeler ve ajan dosyaları buna göre güncellendi. Açık iş 16 bitti. Üretici CLI testleri üreticiyi alt süreçte çalıştırır: NGSolve iş parçacıkları başladıktan sonra `fork` kilitlenir.
 
@@ -441,6 +447,117 @@ Tepe RSS (süreç, `ru_maxrss`, üç tahmin art arda) 2,8 GB.
   `origin/main`'de (`0d5805c`) 283 test toplanıyordu; fark çoğunlukla kaldırılan N0 testlerinden (yeni testler de eklendi, ör. `test_hcurl_projection.py`). CI artık `requirements-web.txt`'yi kurduğu
   için web servisi testleri CI'da da çalışıyor.
 
+### 3.12 Yüksek mertebe gösterim: p2 alanı doğrudan (`claude/high-order-display`, açık iş 15, 1.–3. commit)
+
+Plan 3 commit: (1) p2'yi doğrudan çiz (bu bölüm), (2) üreticinin referans çözümlerini (`fe_modes` testleri) p2'ye taşı,
+(3) N0 katmanını sil. Plandaki sayılar bir ajanın satır içi prototipinindi; hepsi `scripts/measure_display.py` ve
+`tests/test_hcurl_display.py` ile yeniden üretildi. Ayrıntı ve şema: docs/26 §1d.
+
+**Ne değişti:** `src/viz/hcurl_display.py` (P2 düğümleri + 8 alt-tet, eğri duvar kafesi, `BoundaryFromVolumeCF` duvar
+değerleri, eksen profili, enerji, tam nokta değerlendirmesi); `model.py` (`make_solution` tembel çözüm, `compare` p2
+kütle matrisinde, `fields` / `plane` / `volume`); `datasets.py` (`open` ham `u_model` döner, `n_edges` → `n_dof`);
+`api.py` (`/fields` şeması, `/modes/{k}` silindi, tam `/plane` `/volume`); `geometry.py` (`curved_display`, `check`
+eğri katıdan); web (`fieldlab.ts`, `api.ts`, `useFieldView.ts`, ~40 satır). `scripts/predict_geometry.py` `modes.vtu`'yu P2
+düğümlerine yazıyor. N0 operatörleri / `nedelec.py` / `whitney_dofs` 1. commit'te ağaçta duruyordu, servis yolunda
+kullanılmıyordu (ölçüm betiği "eski" yolu dondurulmuş kopyayla çalıştırıyordu); 3. commit'te silindi (aşağıda).
+
+**Ölçümler** (boş makine, 4 çekirdek, eğitilmemiş model, eliptik id 3, tek koşu; `python scripts/measure_display.py
+serve --family elliptical --tets 10000 --mesh_size 0.0266` ve `--tets 30000 --tol 0.15 --mesh_size 0.015`, sonra `js`):
+
+| | 10,7k tet önce | sonra | 27,5k tet önce | sonra |
+|---|---|---|---|---|
+| `predict` gösterim aşaması | 1,66 s | 0,26 s | 4,51 s | 0,76 s |
+| ilk `/fields` isteği (sunucu) | 0,02 s | 0,67 s | 0,02 s | 1,63 s |
+| `/fields` ham / gzip | 581 kB / 333 kB | 4,59 MB / 2,80 MB | 1,35 MB / 819 kB | 11,1 MB / 6,7 MB |
+| geometri yanıtı | 73 kB | 1,16 MB | 144 kB | 2,28 MB |
+| tepe RSS | 2111 MB | 1994 MB | 3453 MB | 3404 MB |
+| `predict` toplamı | 9,9 s | 8,6 s | 29,0 s | 24,3 s |
+| kesit kaydırıcı JS (Chromium / node, orta) | 1,2–1,7 / 1,5–2,3 ms | 7–9 / 10–12 ms | 2,6–4,8 / 3,8–4,4 ms | 19–21 / 25–29 ms |
+| 3B ızgara kurma JS (Chromium / node) | 20 / 53 ms | 49 / 71 ms | 39 / 61 ms | 76 / 145 ms |
+
+Aşama süresi artık iki parça: `predict` içinde 0,26 s (gösterim mesh'i + duvar kafesi + eksen uzunluğu), alanlar ilk
+`/fields`'ta (0,67 s). Toplam iş eskiye göre ~2 kat az, ama bir kısmı `predict`ten `/fields`'a kaydı. `/fields` 8 kat
+büyüdü (P2 düğümleri ve alt-tet'ler); 10k'da 6 MB bütçesinin içinde olduğu için mesh geometri başına bir kez gönderilmiyor.
+Geometri yanıtı 16 kat büyüdü (yüzey doğrusal yüzler yerine seviye-4 kafes).
+
+**Doğruluk** (pillbox TM010, E noktasal hata / tepe E0, maks / rms): 581 tet eski 1,4e-1 / 5,9e-2 → yeni 3,0e-2 / 7,8e-3;
+6,7k tet 5,5e-2 / 1,6e-2 → 5,5e-3 / 1,6e-3; 21,5k tet 3,9e-2 / 9,1e-3 → 2,5e-3 / 6,9e-4 (tam tablo docs/26 §1d; E ve H).
+Tam p2 değerlendirmesi 6,7k tet'te E: 6e-4 maks / 1,2e-4 rms (`/plane`, `/volume`'un doğruluğu); duvar kafesi radyal sapma
+9,6e-5 R; eğri duvar alanı `BoundaryFromVolumeCF`: kapaklarda teğetsel / normal ≤ 1e-6 (float32; çözücü düzeyinde 3e-16).
+`rel_l2` (eğitilmemiş model, kalibrasyon kutu / pillbox, ~60 tet): kutu [0,243 1,264 1,396 1,259] → [0,374 1,304 1,337
+1,379]; pillbox [0,274 0,256 0,330 0,791] → [0,306 0,408 0,414 0,879] (anlamsız model, N0 ölçüsünden gerçek p2 M-normuna geçiş).
+
+**Enerji ölçeği:** fiziksel M = `ops['M']·scale` (1e-16), U = ½ε0·scale·uᵀMu; `Integrate` (order 8) ile eşit, order 12 ile
+5e-8. N0 yolundaki `scale³` bu uzay için yanlış ölçektir (artık kullanılmıyor).
+
+**Kabul hedefleri (plan, pillbox TM010 curve 3):**
+
+| hedef | ölçülen | durum |
+|---|---|---|
+| ≥ 8k tet: gösterim E maks ≤ 1e-2, rms ≤ 2e-3 | 6,7k: 5,5e-3 / 1,6e-3; 12,2k: 4,4e-3 / 9,6e-4 (8k arası ölçülmedi) | tuttu |
+| ≥ 21k tet H rms ≤ 1,5e-3 | 21,5k: 8,8e-4 | tuttu |
+| tam `/plane` hatası ≤ 1e-3, rms ≤ 2e-4 (8k) | 6,7k: E maks 6,0e-4, rms 1,2e-4 | tuttu |
+| duvar radyal hata ≤ 2e-4 R | 9,6e-5 R | tuttu |
+| enerji 1 J'e 1e-3 içinde | ölçek tam (1e-12, kütle matrisi); çizilen P1 alanın enerjisi 6,7k tet'te −5,1e-3, 1,8k'da −1,3e-2 | **tutmadı** (P1 ara değer tepeyi keser; test sınırı 1e-2) |
+| `predict` gösterim aşaması ≤ 0,3 s (10k) | 0,26 s (10,7k); alanlar ilk `/fields`'ta 0,67 s | tuttu (iki parçaya bölündü) |
+| `/fields` ≤ 6 MB ham (10k) | 4,59 MB | tuttu |
+| `mode_qoi` kaba pillbox: f 2e-3, Q0, R/Q 1e-2 | `mode_qoi` değişmedi; ölçüm (581 / 6,7k tet): f +1,8e-4 / +7e-6, Q0 −3,0e-2 / −5,7e-3, R/Q −3,9e-4 / −1,9e-5, Epk/Eacc −5e-4 / +2e-5, Bpk/Eacc +5,7e-2 / +9,7e-3; duvar kafesinin tepe \|E\|'si `mode_qoi` Epk/Eacc'ıyla 5e-3 içinde (testli); `validate_field_labels.py` çalıştırılmadı (çözücü / etiket kodu değişmedi) | f ve R/Q tuttu; Q0 6,7k tet'te tuttu, 581 tet'te (−3%) tutmadı (mesh çok kaba) |
+| JS kesit ≤ 50 ms | Chromium 27,5k tet'te orta 21 ms, en çok 30 ms | tuttu (alt-tet ön süzgeci gerekmedi) |
+
+**Bulgular:**
+- NGSolve nokta araması (`mesh(x,y,z)`) `SetDeformation`'ı görmüyor: deforme örnekte (rastgele küçük deformasyon, 150 elemanlık
+  örnek) eşlenmiş noktaların %26'sı bulunamıyor, bulunanlar yanlış yerde değerlendiriliyor. Gösterim yolu
+  `hcurl_display.locate` ile ön görüntüyü Newton'la buluyor (testli). Aynı arama `highorder.locate` / `axis_samples` /
+  `mode_qoi` ve `field_labels.py:159`'da kullanılıyor; deforme etiketlerin ekseni için etkisi ölçülmedi (açık iş 23).
+- `MapToAllElements` deformasyonu içeriyor: deforme örnekler artık deforme çiziliyor, `check()` bbox ve hacmi eğri katıdan.
+- Eksen: `L_axis` ve profil p2'den 401 noktada; FE ve fark için de aynı kod.
+
+**Dürüst sınırlar:** çizim P1 (alt-tet), ince mesh'lerde tepenin ~1e-3'ü; elemanlar arası normal E süreksizliği düğümlerde ortalanıyor
+(duvar ayrı yoldan); 27k tet'te `/fields` 11 MB (mesh bir kez gönderme, `tet10`, H'yi istek üzerine alma yapılmadı);
+`/features` NaN'ı (açık iş 19) 1. commit'te olduğu gibi duruyordu (E2E'de kalibrasyon öğesinde 500 verdi); 3. commit'te düzeldi.
+Tarayıcı doğrulaması (Playwright, Chromium, SwiftShader): kutu + eliptik örnek → Tahmin → mod tablosu, kesit kaydırıcı,
+hacim, E/H, faz, eksen, duvar rengi; dataset öğesi (deforme) → "Tahmin et ve FE ile karşılaştır" → Fark; konsol hatası yok
+(yalnız görünüm boyutu değişirken WebGL uyarıları, 390×844'e geçişte; görünüm kodu değişmedi).
+Testler: `python -m pytest -q` → 224 geçti (168 s); öncesi 213 (+11 yeni `test_hcurl_display.py`).
+
+**3. commit: N0 katmanının silinmesi** (silmeden önce her sembol `grep` ile yeniden türetildi; 1. commit `src/service`'i değiştirdiği için
+plandaki liste yeniden doğrulandı).
+
+| silinen | satır | not |
+|---|---|---|
+| `src/qoi/operators.py` | 404 | `C0`, `SIGMA_CU`, `QOI_LABELS`, `QOI_KEYS`, `surface_resistance`, `axis_line`, `beam_axis`, `acceleration_length`, `figures_of_merit` gövdeleri **birebir** `src/qoi/figures.py`'ye taşındı (AST ile karşılaştırıldı; yalnız iki docstring silinen işlevlere atıf yapmasın diye düzeltildi); `build_qoi_operators`, `qoi_from_dofs`, `cavity_qoi`, N0 duvar kaybı / eksen / yüzey operatörleri silindi |
+| `src/viz/nedelec.py` | 324 | `locate`, `locate_grid`, `plane_grid`, `interp_vertex` **birebir** `src/viz/meshsample.py`'ye taşındı (hâlâ kullanılıyorlar: `service/features.py`, `ModelService.plane_values`, `tests/test_hcurl_display.py`); `tet_dofs`, `_whitney_vectors`, `cell_field`, `vertex_field`, `eval_field`, `plane_sample` silindi |
+| `src/data/dataset_converter_3d.py` | 425 → 243 (`mesh_features.py`) | `assemble_n0`, `discrete_gradient`, `e_potential_matrix`, `to/from_csr_tuple`, `geometry_operators`, `h5_edges_to_canonical`, `qoi_api`, `qoi_operators_of`, `QOI_LABEL_SETTINGS`, `edges_from_tets`, `_edge_index` silindi; `extract_geometry_3d` yerine `display_geometry(nodes, tets)` (normalise + `node_features`; servis yalnız girdi özelliği görünümlerinde kullanıyordu, N0 operatörleri ve `M` kimse okumuyordu) |
+| `src/qoi/analytic.py` | 202 → 89 | `reference_mesh`, `_spd_factor`, `_projected_shift_invert`, `fe_modes`, `reference_case` silindi; kapalı formüller kaldı |
+| `src/service/datasets.py` `whitney_dofs`, `src/data_gen/highorder.py` `edge_dofs` | ~23 + ~20 | `edge_dofs` (N0 interpolasyonu) hiçbir yerden çağrılmıyordu |
+| `scripts/qoi_validation.py`, `scripts/label_benchmark.py` | 124 + 346 | docs/27 tarihsel; CI duman listesinden `qoi_validation.py` çıkarıldı |
+| `tests/test_viz_nedelec.py`, `tests/maxwell3d_synth.py` | 225 + 118 | |
+
+`scripts/measure_display.py`: "eski yol" kaldırıldı (yalnız `new`; before/after sayıları yukarıdaki tabloda ve docs/26 §1d'de kayıtlı), artık
+`src.viz.meshsample` kullanıyor. `dataset_converter_3d.py` artık dönüştürücü değil (mesh yardımcıları + özellikler): **`src/data/mesh_features.py`**
+olarak yeniden adlandırıldı, `src/`, `scripts/`, `tests/`, `paper/` ve güncel belgelerdeki tüm atıflar güncellendi; docs/19 ve 21 (tarihsel) eski adı
+koruyor. Servis: `n_edges` (özellik ucu: N0 kenar sayısı; dataset satırı / istatistik: aslında p2 DOF) → `/features` `n_tets`, dataset `n_dof`; arayüzde
+"kenar (gösterim mesh'i)" → "tet sayısı (doğrusal mesh)".
+
+**Testler:** 224 → 208 (177 s). Silinen testler ve karşılıkları: `test_viz_nedelec.py` 11 testin 3'ü (`locate` merkez / dış, `locate` barisentrik, `locate_grid`) →
+`tests/test_viz_meshsample.py` (+ yeni `plane_grid`, `interp_vertex` doğrusal alan, mesh dolgusu; skfem'siz Kuhn kutusu); N0 olanlar (sabit alan, skfem
+karşılaştırması, DOF sırası, 1B/2B u, `plane_sample` ×2, `vertex_field` / curl, smooth) karşılıksız (p2 gösterim: `test_hcurl_display.py`).
+`test_dataset_converter_3d.py` → `test_mesh_features.py`: `assembly_matches_skfem`, `edge_convention_and_gradient`, `contract_structure` ×2,
+`operators_and_rayleigh` ×2 karşılıksız (N0 operatörü yok; p2 karşılığı `test_data_gen_3d.py`, 2. commit); `e_operators_isolated_conductor` →
+`boundary_topology_isolated_conductor` (yalnız topoloji); `scale_invariance` `display_geometry` üzerinde; yeni: `boundary_topology_solid_box_and_faces_outward`,
+`features_finite_without_interior_vertex`. `test_qoi.py`: kapalı form testleri kaldı; operatör testleri ×6, `fe_matches_analytic` ×2 ve
+`invariance_normalisation_and_conventions`, `vectorised_equals_loop` silindi → yeni `figures_of_merit` sözleşme / genlik değişmezliği / sözleşme
+(linac–circuit, L_acc) testleri, `mode_qoi` kaba eğri pillbox'ta kapalı formlara karşı (109 ve 545 tet; ölçülen hata f +1e-3 / +1e-4, T −1e-3 / −1e-4,
+R/Q +7e-3 / −2e-4, Epk/Eacc +3,5e-2 / −4e-4, Q0 −5,9e-2 / −2,5e-2, Bpk/Eacc +7e-2 / +6e-2; planın "Q0 ve R/Q 1e-2" hedefi bu kaba ağlarda Q0 / Bpk için
+tutmuyor: duvar büyüklükleri curl E'ye dayanıyor ve yavaş yakınsıyor, 2,4k tette Q0 −8,9e-3, Bpk +1,9e-2; sıkı sayılar `validate_field_labels.py`'de),
+`field_labels._beam_axis` aile eksenleri; `test_predict_geometry.py`: N0 eksen testleri silindi, `beam_axis` / `acceleration_length` testleri `test_qoi.py`'ye
+`figures.py` karşısında taşındı. Kutu için `mode_qoi` kapalı form testi yok (kutu TE101 görüntü doğruluğu `test_hcurl_display.py`'de).
+
+**Doğrulama:** `ruff check .` ve `vulture` temiz; `validate_field_labels.py --max_ndof 300000` PASS (1187 tet / 32,5k DOF'ta f 1,4e-6, Q0 3,6e-5, R/Q 5e-6,
+Epk 3,6e-4, Bpk 6,2e-4); `npm ci && npm run build` temiz; CI duman listesindeki her betik `--help`; uçtan uca (serve_web + Playwright, SwiftShader):
+kutu ve eliptik örnek → Tahmin → mod tablosu → 3B (kesit, hacim, H, faz, eksen, duvar rengi), dataset öğesi → FE ile karşılaştır → Fark; konsol hatası yok
+(yalnız görünüm boyutu değişirken bilinen WebGL uyarıları). `skfem` hâlâ `src/data/mesh_features.torsion_function` ve testlerde kullanılıyor: bağımlılık kalıyor.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -459,11 +576,10 @@ Tepe RSS (süreç, `ru_maxrss`, üç tahmin art arda) 2,8 GB.
 - **Tek model: field3d (2026-10-30, `claude/field-model-ui`).** N0 kenar modeli (`eigenspace3d`), PKL hattı
   (`convert_3d.py`, `eval_3d.py`, `eval_qoi.py`, torch QoI kaybı) kaldırıldı; git geçmişinde duruyor. Web
   arayüzünün Tahmin'i, `scripts/predict_geometry.py` ve `cluster/truba/predict.sh` field3d çalıştırıyor.
-- **N0 operatörleri şimdilik kalıyor (2026-10-30).** Gösterim, kavite değerlerinin N0 yolu ve N0-H5
-  görüntüleyicisi bunlara dayanıyor (`dataset_converter_3d.py`'nin N0 kısımları, `src/qoi/operators.py`,
-  `src/viz/nedelec.py`). Yüksek mertebe gösterim yapılınca silinecekler (açık iş 15). N0-H5 görüntüleyicisi
-  ve üreticinin N0 etiket türü 2026-10-30'da (`claude/remove-n0-labels`) kaldırıldı (açık iş 16): gösterim
-  katmanı artık yalnız `FieldH5Dataset` ve Tahmin tarafından kullanılıyor.
+- **N0 operatörleri silindi (2026-10-30, `claude/high-order-display` 3. commit).** Gösterim p2 alanını doğrudan çiziyor, kavite değerleri
+  `highorder.mode_qoi` ile p2 / p3 alanlarından geliyor; N0 yolu (`src/qoi/operators.py`, `src/viz/nedelec.py`, `dataset_converter_3d.py`'nin
+  N0 kısımları, `whitney_dofs`) hiçbir yerden çağrılmıyordu. N0-H5 görüntüleyicisi ve üreticinin N0 etiket türü daha önce (`claude/remove-n0-labels`,
+  açık iş 16) kaldırılmıştı. Tarihsel N0 ölçümleri (docs/19 §6, 21, 22, 27) kayıt olarak duruyor, onları üreten kod git geçmişinde.
 
 ## 5. Stratejik değerlendirme (tartışmaya açık)
 
@@ -501,16 +617,17 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | bitti (docs/34 §8, docs/35): LF eğitimi eşit ya da düşük maliyette HF ile karşılaştırılabilir (tek koşu; GP ve FE karşılaştırmaları modelden iyi, §3.10); LF mesh'i = HF model mesh'i. Açık: kontrollü ince ayar / karışık eğitim, hibrit mod |
 | 14 | Uyarlamalı etiketlerde sahte yakınsama: yeniden mesh'leme istenen inceltmeyi uygulamayınca (aynı mesh) ardışık seviye farkı ~1e-15 çıkıyor ve döngü `converged` diyor. Görüldüğü yer: kalibrasyon pillbox'ı (`--mode calibration`, 96 → 91 tet, 2.864 DOF, kendi hata tahmini 1,6e-3, TE111 hatası +1,8e-4). Öneri: `converged` için tet / DOF sayısının gerçekten büyümesini ya da `est_rel_f < tol_f` şartını da istemek. Üreteç davranışı değişeceği için sahibin onayı gerekir. | — | — | açık (bulundu 2026-10-25, `scripts/cst_calibration_set.py`) |
 
-| 15 | **Yüksek mertebe gösterim, N0 köprüsü olmadan (büyük yeniden düzenleme, bir SONRAKİ PR olarak planlandı).** Arayüz p2 / p3 alanını doğrudan çizsin; bugün Whitney N0 izdüşümünden çiziyor (`datasets.whitney_dofs`, `Set(dual=True)`) ve resim sayılardan düşük kaliteli. İzdüşüm hatası küçük mesh'lerde frekansta ~%2, QoI'de daha büyük (§3.11). Bitince N0 operatör / özellik kodu silinir: `dataset_converter_3d.py`'nin N0 kısımları, `src/qoi/operators.py`, `src/viz/nedelec.py`. | — | — | açık (sıradaki PR) |
-| 16 | Üreticinin `--labels n0` etiket türü, `cluster/truba/config.sh`'deki `LABELS=n0` ve `src/service/datasets.py`'deki N0-H5 görüntüleyicisi (`H5Dataset`). Sahibin onayıyla (seçenek A) kaldırıldı; N0 operatörleri 15'e kadar kalıyor. | Claude Code oturumu | `claude/remove-n0-labels` | bitti (2026-10-30) |
+| 15 | **Yüksek mertebe gösterim, N0 köprüsü olmadan (3 commit: 1 doğrudan çizim, 2 referans çözümlerin p2'ye taşınması, 3 N0 katmanının silinmesi).** Arayüz p2 / p3 alanını doğrudan çizsin; bugün Whitney N0 izdüşümünden çiziyor (`datasets.whitney_dofs`, `Set(dual=True)`) ve resim sayılardan düşük kaliteli. İzdüşüm hatası küçük mesh'lerde frekansta ~%2, QoI'de daha büyük (§3.11). Bitince N0 operatör / özellik kodu silindi: `dataset_converter_3d.py`'nin N0 kısımları (kalanı `mesh_features.py`), `src/qoi/operators.py` (kalanı `figures.py`), `src/viz/nedelec.py` (kalanı `meshsample.py`). | Claude Code oturumu | `claude/high-order-display` | **bitti (2026-10-30):** commit 1 (§3.12, p2 doğrudan çiziliyor), commit 2 (`fe_modes` testleri p2'ye), commit 3 (N0 katmanı silindi; §3.12 "3. commit") |
+| 16 | Üreticinin `--labels n0` etiket türü, `cluster/truba/config.sh`'deki `LABELS=n0` ve `src/service/datasets.py`'deki N0-H5 görüntüleyicisi (`H5Dataset`). Sahibin onayıyla (seçenek A) kaldırıldı; N0 operatörleri 15'e kadar kalıyordu, 15'te silindi. | Claude Code oturumu | `claude/remove-n0-labels` | bitti (2026-10-30) |
 | 17 | CAD yüklemelerinde ışın ekseni seçeneği: bugün z ekseni, orijinden geçen (x = y = 0). `--axis_dir/--axis_point` field3d CLI'ında da yok (docs/25 §7). | — | — | açık |
 | 18 | `predict_blocker` serbest İngilizce metin; arayüz onu olduğu gibi gösteriyor. Öneri: yanına makinece okunur bir kod alanı (ör. `mesh_file`, `no_cad`, `over_budget`) ve çeviri arayüzde. | — | — | açık |
-| 19 | `GET /api/geometries/{id}/features` çok kaba mesh'lerde 500 dönüyor (`claude/field-model-ui` oturumunda görüldü; bu PR'dan önce de vardı). Olası neden: `dataset_converter_3d.node_features`'ta `w / torsion_max`; iç düğüm yoksa torsiyon 0 → 0/0 → NaN özellikler. Yeniden üretme denemesi: kutu, id 1, mesh boyu 0,5 (12 tet) 200 döndü; tetikleyen geometri belgelenmeli. Yeniden üretildi (2026-10-30): model mesh'i 60 tet olan kalibrasyon alan datasetinde (`tests/test_service_datasets.py`) torsiyon özelliği NaN; JSON `ValueError` (500). Test bu yüzden `/features` ve torsiyonu örneklenmiş bir geometride sınıyor. | — | — | açık |
-| 20 | Deforme (`--deform_prob`) H5 örnekleri ve deformasyonlu aile örnekleri gösterimde deformasyonsuz köşe noktalarıyla çiziliyor (`SetDeformation` `mesh.vertices`'i oynatmıyor); alanlar, Ritz ve QoI doğru, yalnız resim / `G.check` etkilenir. Uyarı yok. Düzeltme ~10–15 satır (köşelere δ(x) uygulamak). | — | — | açık |
-| 21 | Üretici N0 etiketi kaldırılırken (`13fdb6c`) test kapsamı daraldı: `test_families_valid` yalnız mesh sertifikası (aile başına etiket kontrolü yok); `test_seeding_reproducible` yalnız düğümleri ve parametreleri karşılaştırıyor; gerçekçi (`realistic`) ve kulplu aileler hiçbir testte etiketlenmiyor. Öneri: aile başına en kaba ayarlarla (`--no_adapt --label_order 2 --model_order 1`, `--model_max_elements` küçük) tek örnek etiketleyen, `_check_reload`'u geçen yavaş-işaretli (`@pytest.mark.slow`) bir test; kulplu ailelerde b1 ve kernel projeksiyonu kontrolü de. Üretici davranışına dokunmaz. | — | — | açık |
+| 19 | `GET /api/geometries/{id}/features` çok kaba mesh'lerde 500 dönüyor (`claude/field-model-ui` oturumunda görüldü; bu PR'dan önce de vardı). Neden: `node_features`'ta `w / torsion_max`; iç düğüm yoksa torsiyon 0 → 0/0 → NaN özellikler. Yeniden üretme denemesi: kutu, id 1, mesh boyu 0,5 (12 tet) 200 döndü; tetikleyen geometri belgelenmeli. Yeniden üretildi (2026-10-30; 15'in 1. commit'inde de aynı, `features` N0 yolunu kullanmayı sürdürüyor): model mesh'i 60 tet olan kalibrasyon alan datasetinde (`tests/test_service_datasets.py`) torsiyon özelliği NaN; JSON `ValueError` (500). Test bu yüzden `/features` ve torsiyonu örneklenmiş bir geometride sınıyor. | Claude Code oturumu | `claude/high-order-display` | **çözüldü (2026-10-30, 3. commit):** iç düğümü olmayan mesh'te `torsion_max = 0` ve torsiyon sütunu 0 (`mesh_features.node_features`); `/features` 60 tetlik kalibrasyon öğesinde 200, `tests/test_service_datasets.py` bunu sınıyor, ayrıca `test_features_finite_without_interior_vertex`. Uçtan uca: kutu örneğinde artık 500 yok |
+| 20 | Deforme (`--deform_prob`) H5 örnekleri ve deformasyonlu aile örnekleri gösterimde deformasyonsuz köşe noktalarıyla çiziliyordu (`SetDeformation` `mesh.vertices`'i oynatmıyor); alanlar, Ritz ve QoI doğru, yalnız resim / `G.check` etkileniyordu. | Claude Code oturumu | `claude/high-order-display` | gösterim kısmı **düzeldi** (15'in 1. commit'i: düğümler ve duvar eşlenmiş noktalardan, `check` eğri katıdan; testli). **kapandı (2026-10-30, 3. commit):** gösterim kısmı 1. commit'te düzeldi, N0 gösterim kodu silindi; etiketlerdeki nokta araması için kalan iş 23 |
+| 21 | Üretici N0 etiketi kaldırılırken (`13fdb6c`) test kapsamı daraldı: `test_families_valid` yalnız mesh sertifikası (aile başına etiket kontrolü yok); `test_seeding_reproducible` yalnız düğümleri ve parametreleri karşılaştırıyor; gerçekçi (`realistic`) ve kulplu aileler hiçbir testte etiketlenmiyor. Öneri: aile başına en kaba ayarlarla (`--no_adapt --label_order 2 --model_order 1`, `--model_max_elements` küçük) tek örnek etiketleyen, `_check_reload`'u geçen yavaş-işaretli (`@pytest.mark.slow`) bir test; kulplu ailelerde b1 ve kernel projeksiyonu kontrolü de. Üretici davranışına dokunmaz. **`claude/high-order-display` 2. commit (yalnız tests/):** üretici testlerinin `fe_modes` (N0) referans çözümü p2 yoluna taşındı (`tests/p2_reference.py`: gmsh OCC → BREP → `highorder.netgen_mesh` → `solve_modes(order=2)`); taşınan 9 test `tests/test_data_gen_3d.py` içinde, ölçülen hata ve toleranslar: kalibrasyon kutu/pillbox 8 mod 4,8e-3 / 5,7e-3 (tol 1e-2; 442 / 355 tet), TM010 4,1e-4 (tol 1e-3); OOD kutu 2,3e-3 (tol 5e-3; 635 tet); TESLA 1,9e-4 (tol 1e-3; 2555 tet); yarım dalga koaksiyel TEM c/2L +8,5e-4, c/L +1,1e-3 (tol 3e-3; 1292 tet; N0 −6,2e-3 idi); simit (b1 = 1) f1 4,369 GHz, bant 4,33–4,40 (yakınsak p2 4,3575; eski N0 4,386–4,537 üst sınır); yalıtılmış iletken: `solve_modes` tam 1 λ = 0 modu atıyor (`info['n_zero'] == 1`), f1 2,0686 GHz (2,0688'e yakınsak); `field_operators` G'sinde küre potansiyeli fazladan sütun; çekirdek/gradyan testi (`G^T M U` 4e-15, `K G` 5e-16, Rayleigh = f 3e-15) ve `residual` göstergesi (kesin çiftler 1,4e-12, bozulmuş ≥ 1e2) p2 `field_operators` K, M ile. **Kapsam kaybı:** N0'a özgü kontroller (Whitney kenar DOF'ları, `G[:, n_pot:] = 0`, N0 `component_potentials=False` hatası) p2'de yok; karşılığı `n_zero == 1` + G'nin ek sütunu. `test_residual_indicator` artık kulplu `hwr` yerine pillbox üzerinde (gösterge geometriden bağımsız; hwr p2 çözümü 14 s). Tam takım 224 test, 177 s (taban 157 s: +20 s; taşınan testler tek başına ≈ 25 s, eski N0 çözümleri çıkınca net +20 s). N0 operatör testleri 3. commit'te silindi (karşılıklar §3.12 "Testler"). | — | — | açık |
 | 22 | TRUBA kurallarına uyum (docs/36, sayfa kopyaları `docs/research/truba/`). **Yapıldı (2026-10-30):** (a) `/arf` altında conda / pip yasağı → Apptainer imajı (`cluster/truba/rfcav.def`, `setup_env.sh` imajı `debug` düğümünde kurar, `config.sh` `container_prefix`, bütün sbatch / predict / status işleri imajın içinde); (b) varsayılan GPU kuyruğu `palamut-cuda` → `akya-cuda`, `GPU_CPUS` 16 → 10, `NUM_WORKERS` = `GPU_CPUS - 2`, `src/service/truba.py` kuyruk başına çekirdek kuralını denetler; test `test_gpu_queue_defaults_match_config_sh_…`. **Açık:** imaj derlemesi, `--fakeroot`, derleme düğümünde internet ve `--nv` TRUBA'da denenmedi; V100 16 GB'da `BATCH=2`; eşzamanlı çekirdek sınırı (160 / 40 / 4) → `MAX_PARALLEL=10` × 56 aşar (sahibin hesap tipi); scratch 30 gün → H5 ve checkpoint kopyası. | Claude Code oturumu | `claude/kind-noether-gby3vu` | kod ve doküman bitti, TRUBA'da deneme sahibin ilk `run.sh setup` çıktısını bekliyor |
+| 23 | Deforme örneklerde NGSolve nokta araması (`mesh(x,y,z)`) `SetDeformation`'ı görmüyor: `highorder.locate` / `eval_field` / `axis_samples` ve dolayısıyla `mode_qoi`'nin eksen profili (T, V, R/Q, Eacc) ve `field_labels.py:159` ön görüntü doğrusunda örnekliyor. Gösterim yolu bunu `hcurl_display.locate` (Newton ön görüntüsü) ile çözdü; etiketler için etkisi ölçülmedi (`--deform_prob` varsayılan 0, TRUBA yapılandırmaları ayarlamıyor). Etiket / üretici davranışına dokunur: sahibin onayı gerekir. | — | — | açık (bulundu 2026-10-30, `tests/test_hcurl_display.py::test_deformed_sample_is_drawn_deformed`) |
 
-1 ve 2 birbirine dokunmuyor; paralel yürüyebilir. 15 ve 19 aynı N0 koduna dokunuyor; birlikte ele alınmalı. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
+1 ve 2 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı. (15, 16, 19, 20 kapandı.)
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
 
 ## 7. Ölçümleri yeniden üretme

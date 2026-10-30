@@ -27,8 +27,8 @@ and report numbers, and the caller decides what to fix.
 |---|---|
 | `src/models/`, `src/training/` | `python -m pytest -q tests/test_field_model.py tests/test_hcurl_projection.py tests/test_span_losses.py` |
 | `src/data_gen/` | `python -m pytest -q tests/test_field_labels.py tests/test_field_adaptive.py tests/test_data_gen_3d.py` |
-| `src/data/` | `python -m pytest -q tests/test_field_model.py tests/test_dataset_converter_3d.py` |
-| `src/qoi/` | `python -m pytest -q tests/test_qoi.py` |
+| `src/data/` | `python -m pytest -q tests/test_field_model.py tests/test_mesh_features.py` |
+| `src/qoi/`, `src/viz/` | `python -m pytest -q tests/test_qoi.py tests/test_hcurl_display.py tests/test_viz_meshsample.py` |
 | `src/service/` | `python -m pytest -q tests/test_service_api.py tests/test_service_datasets.py tests/test_service_training.py tests/test_service_truba.py` |
 | several areas or unsure | `python -m pytest -q tests/` (about 10–20 min on 4 cores) |
 

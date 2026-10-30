@@ -11,7 +11,7 @@ import { useToast } from './Toasts';
 interface Props { lang: Lang; onOpen: (did: string, sid: number) => Promise<unknown> | void }
 
 const PAGE = 50;
-type SortKey = 'id' | 'family' | 'n_edges' | 'betti1' | 'f0';
+type SortKey = 'id' | 'family' | 'n_dof' | 'betti1' | 'f0';
 
 export default function DatasetPage({ lang, onOpen }: Props) {
   const toast = useToast();
@@ -40,7 +40,7 @@ export default function DatasetPage({ lang, onOpen }: Props) {
 
   const fams = useMemo(() => stats ? Object.entries(stats.families).map(([label, v]) => ({ label, value: v.count })) : [], [stats]);
   const f0 = useMemo(() => !stats ? [] : family ? stats.families[family]?.f0 ?? [] : Object.values(stats.families).flatMap((v) => v.f0), [stats, family]);
-  const ne = useMemo(() => !stats ? [] : family ? stats.families[family]?.n_edges ?? [] : Object.values(stats.families).flatMap((v) => v.n_edges), [stats, family]);
+  const ne = useMemo(() => !stats ? [] : family ? stats.families[family]?.n_dof ?? [] : Object.values(stats.families).flatMap((v) => v.n_dof), [stats, family]);
   const nModes = Math.min(stats?.n_modes ?? 0, 6);
   const sci = (v: number | null | undefined) => (v === null || v === undefined ? '—' : v.toExponential(1));
 
@@ -86,7 +86,7 @@ export default function DatasetPage({ lang, onOpen }: Props) {
               {th('id', 'id')}{th('family', t(lang, 'family'))}
               <th className="num" title={t(lang, 'modelMeshTip')}>{t(lang, 'tetsModel')}</th>
               <th className="num" title={t(lang, 'labelMeshTip')}>{t(lang, 'tetsLabel')}</th>
-              {th('n_edges', 'DOF p2', true)}
+              {th('n_dof', 'DOF p2', true)}
               <th className="num" title={t(lang, 'adaptItersTip')}>{t(lang, 'adaptIters')}</th>
               <th>{t(lang, 'adaptStop')}</th>
               <th className="num" title={t(lang, 'estErrTip')}>{t(lang, 'estErr')}</th>
@@ -103,7 +103,7 @@ export default function DatasetPage({ lang, onOpen }: Props) {
                 <td>{r.family}{r.deformed ? <span className="tag" title={t(lang, 'deformed')}>~</span> : null}</td>
                 <td className="num">{int(r.n_tets)}</td>
                 <td className="num">{r.field.n_tets_label === null ? '—' : int(r.field.n_tets_label)}</td>
-                <td className="num">{int(r.n_edges)}</td>
+                <td className="num">{int(r.n_dof)}</td>
                 <td className="num">{r.field.adapt_iters ?? '—'}</td>
                 <td><span className={`status ${r.field.adapt_stop === 'converged' ? 'good' : r.field.adapt_stop ? 'warning' : 'muted'}`}>{r.field.adapt_stop ? t(lang, `stop_${r.field.adapt_stop}` as Key) : t(lang, 'oneSolve')}</span></td>
                 <td className="num">{sci(r.field.est_rel_f)}</td>

@@ -7,8 +7,8 @@ directory searched (depth ≤ 4) for directories holding *.h5 shards — one dat
 field-label H5 are skipped.
 
 FieldH5Dataset: the table adds the label quality (adaptive levels, stop reason, error estimate, label
-mesh, rounded / sharp edges), and a geometry opens on its model mesh with the label fields
-interpolated onto Whitney N0 for display; the figures of merit shown are the stored p3 labels.
+mesh, rounded / sharp edges), and a geometry opens on its model mesh with the label fields as stored (HCurl
+p2 DOFs, drawn directly by src/viz/hcurl_display.py); the figures of merit shown are the stored p3 labels.
 """
 import glob
 import json
@@ -17,7 +17,7 @@ import threading
 
 import numpy as np
 
-from src.data.dataset_converter_3d import FEATURE_NAMES_3D, extract_geometry_3d, geom_params_of, h5_edges_to_canonical
+from src.data.mesh_features import geom_params_of
 
 _PARAM_SKIP = {'geom_params', 'fem_element', 'field', 'shape_type'}
 
@@ -56,28 +56,6 @@ def _attr(g, k, cast=float, default=None):
     return None if isinstance(out, float) and not np.isfinite(out) else out
 
 
-def whitney_dofs(mesh, U, model_order):
-    """Model-space fields U [ndof, K] (HCurl(model_order, dirichlet='wall') of the curved mesh) → the
-    linear mesh's vertices [Nv, 3], tets [Nt, 4] and Whitney N0 DOFs on NGSolve's edges [Ne, K] with
-    those edges [Ne, 2] (tail, head) — the H5 N0 convention of the browser (h5_edges_to_canonical)."""
-    from ngsolve import GridFunction, HCurl
-    fes = HCurl(mesh, order=int(model_order), dirichlet='wall')
-    if fes.ndof != U.shape[0]:
-        raise ValueError(f"stored fields have {U.shape[0]} DOFs, the rebuilt HCurl(p{model_order}) space "
-                         f"{fes.ndof}: different NGSolve version?")
-    from src.service.geometry import linear_mesh
-    fes0 = HCurl(mesh, order=0)
-    g, g0 = GridFunction(fes), GridFunction(fes0)
-    V = np.zeros((fes0.ndof, U.shape[1]))
-    for k in range(U.shape[1]):
-        g.vec.FV().NumPy()[:] = U[:, k]
-        g0.Set(g, dual=True)          # projection-based (commuting) interpolation: plain Set is ~15 % off
-        V[:, k] = g0.vec.FV().NumPy()
-    nodes, tets = linear_mesh(mesh)
-    edges = np.array([[v.nr for v in e.vertices] for e in mesh.edges], np.int64)
-    return nodes, tets, edges, V
-
-
 class FieldH5Dataset:
     kind = 'field'
 
@@ -101,7 +79,7 @@ class FieldH5Dataset:
                             pe = np.asarray(g['proj_err'][()], float) if 'proj_err' in g else np.zeros(0)
                             rows.append({
                                 'id': sid, 'family': str(g.attrs.get('shape_type', '')),
-                                'n_nodes': _attr(g, 'n_vertices', int, 0), 'n_edges': _attr(g, 'n_dof_model', int, 0),
+                                'n_nodes': _attr(g, 'n_vertices', int, 0), 'n_dof': _attr(g, 'n_dof_model', int, 0),
                                 'n_tets': _attr(g, 'n_tets', int, 0), 'betti1': _attr(g, 'betti1', int, 0),
                                 'deformed': 'deform_om' in g,
                                 'f_GHz': [float(x) for x in np.sort(np.asarray(g['freqs'][()], float))],
@@ -121,13 +99,18 @@ class FieldH5Dataset:
             return self._rows
 
     def open(self, sid):
-        """Model mesh + the label fields on Whitney N0 (display) + the stored p3 figures of merit; mesh_src (the
-        stored curved mesh: .vol + BREP bytes, curve order, deformation) lets the field model predict on the
-        same mesh (src.service.model.ModelService.predict)."""
+        """Model mesh + the label fields as stored (HCurl DOFs of the model mesh, frequency order) + the stored p3
+        figures of merit; mesh_src (the stored curved mesh: .vol + BREP bytes, curve order, deformation) lets the
+        field model predict on the same mesh (src.service.model.ModelService.predict) and the display evaluate the
+        fields; curved: the wall lattice, volume and bbox of the curved mesh (hcurl_display.curved_display); Mp: the
+        physical HCurl mass matrix (energy, alignment with a prediction); mesh: the curved NGSolve mesh itself
+        (in-process, for the display cache)."""
         import h5py
         import torch  # noqa: F401 — before NGSolve: ngsolve loaded first breaks torch later (tests/conftest.py)
 
         from src.data_gen.field_labels import read_field_group
+        from src.service.geometry import linear_mesh
+        from src.viz import hcurl_display as hd
         self.rows()
         if sid not in self._index:
             raise KeyError(sid)
@@ -140,21 +123,26 @@ class FieldH5Dataset:
                         'curve': int(attrs['curve']), 'model_order': int(rec['model_order']),
                         'deform': (tuple(np.asarray(g[k]) for k in ('deform_om', 'deform_a', 'deform_ph'))
                                    if 'deform_om' in g else None)}
-            nodes, tets, edges_ng, V = whitney_dofs(mesh, rec['u_model'], rec['model_order'])
+            U = rec['u_model']
+            from ngsolve import HCurl
+            n_dof = HCurl(mesh, order=int(rec['model_order']), dirichlet='wall').ndof
+            if n_dof != U.shape[0]:
+                raise ValueError(f"stored fields have {U.shape[0]} DOFs, the rebuilt HCurl(p{rec['model_order']}) "
+                                 f"space {n_dof}: different NGSolve version?")
+            nodes, tets = linear_mesh(mesh)
+            curved = hd.curved_display(mesh)
+            Mp = hd.mass_matrix(mesh, rec['model_order'])
+            n_tets = int(mesh.ne)
         order = np.argsort(rec['freqs'], kind='stable')
-        freqs, V = rec['freqs'][order], V[:, order]
-        geom, M = extract_geometry_3d(nodes, tets)
-        rows, sign = h5_edges_to_canonical(edges_ng, geom['n_nodes'], geom['edges'])
-        U = np.zeros((len(geom['edges']), V.shape[1]))
-        U[rows] = sign[:, None] * V
+        freqs, U = rec['freqs'][order], U[:, order]
         names = [n for n in rec['qoi_names'] if n]
         labels = [{n: _float(rec['qoi'][k, j]) for j, n in enumerate(names)} for k in order]
         params = {k: _float(v) for k, v in attrs.items() if k not in _PARAM_SKIP and _float(v) is not None}
-        geom.update(shape_type=rec['shape_type'], params=geom_params_of(attrs))
-        return {'id': sid, 'family': rec['shape_type'], 'nodes': nodes, 'tets': tets, 'geom': geom, 'M': M,
-                'U': U, 'f_GHz': freqs, 'f_next': _float(rec['freq_next']), 'params': params,
-                'qoi_labels': labels, 'features': FEATURE_NAMES_3D, 'source_file': os.path.basename(fp),
-                'mesh_src': mesh_src, 'n_tets_model': int(mesh.ne)}
+        return {'id': sid, 'family': rec['shape_type'], 'nodes': nodes, 'tets': tets, 'U': U, 'f_GHz': freqs,
+                'f_next': _float(rec['freq_next']), 'params': params, 'geom_params': geom_params_of(attrs),
+                'qoi_labels': labels, 'source_file': os.path.basename(fp), 'mesh_src': mesh_src,
+                'n_tets_model': n_tets, 'n_dof': int(n_dof), 'order': int(rec['model_order']), 'curved': curved,
+                'Mp': Mp, 'mesh': mesh}
 
 
 def discover(spec=None):

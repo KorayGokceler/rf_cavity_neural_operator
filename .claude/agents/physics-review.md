@@ -25,7 +25,7 @@ description of it.
 
 **Formulation and boundary**
 - `curl curl E = k² E` in Ω, with `n × E = 0` on the PEC wall. Wall DOFs stay zero in every space: the
-  NGSolve `dirichlet="wall"` and, in the N0 display / QoI layer, the wall-edge rows.
+  NGSolve `dirichlet="wall"` (the display evaluates the stored p2 DOFs of that space).
 - No H-formulation code comes back (it was removed for topological reasons, branch `legacy-h`).
 
 **Kernel projection and Ritz**
