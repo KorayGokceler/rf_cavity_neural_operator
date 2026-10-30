@@ -1,14 +1,15 @@
 """Tests for the 3D PEC cavity generator src/data_gen/dataset_generator_3d.py (geometry families, gmsh mesh,
-topology certificate, field-label CLI) and the Whitney N0 reference eigensolve of src/qoi/analytic.fe_modes.
+topology certificate, field-label CLI) and the physical reference solves of the p2 path (tests/p2_reference.py:
+generator solid -> BREP -> curved netgen mesh -> highorder.solve_modes at order 2).
 
-Invariants:
-- calibration box / pillbox: the N0 reference frequencies match the analytic PEC spectra within the
-  discretisation error at that mesh size (measured, --mesh_size 0.12, K = 8, max |f/f_exact - 1|; E converges
-  from below)
-- no zero / gradient modes (divergence residual ~1e-14, lambda_min >> 0); wall-edge DOFs exactly 0
+Invariants (every tolerance below is ~2x the measured error on that mesh):
+- calibration box / pillbox, OOD box, TESLA cell: the p2 frequencies match the analytic / converged values
+  within the discretisation error of a ~400-3000 tet curved mesh
+- no zero / gradient modes (wall DOFs exactly 0, Rayleigh quotient = f, M-orthogonal to the kernel
+  gradients G, K G = 0, lowest mode = TM010)
 - handles (b1 > 0) add nothing to the E kernel: torus, half-wave coax TEM at c/2L
-- isolated conductor (b2 = 1): without the boundary-component potential a spurious lambda = 0
-  mode, with it none
+- isolated conductor (b2 = 1): solve_modes meets and drops exactly one lambda = 0 mode (the shell potential
+  the interior-gradient projection does not remove); field_operators' G carries that potential as an extra column
 - per-sample seeding is reproducible; the CLI writes the field-label H5 layout
 """
 import json
@@ -22,7 +23,8 @@ pytest.importorskip("skfem")
 pytestmark = pytest.mark.gmsh
 
 import src.data_gen.dataset_generator_3d as gen  # noqa: E402
-from src.qoi.analytic import fe_modes  # noqa: E402
+import src.data_gen.highorder as ho  # noqa: E402
+from tests import p2_reference as p2  # noqa: E402
 
 CHEAP = ["--no_adapt", "--label_order", "2", "--model_order", "1"]      # one p2 solve, p1 model space: seconds
 SHARP = ["--no_round_edges", "--no_heal", "--min_fillet", "0"]          # mesh-only tests: no OCC filleting (composite: minutes)
@@ -57,18 +59,21 @@ def test_analytic_spectra():
     assert cube[3] > cube[2] * 1.2
 
 
-@pytest.mark.parametrize("s_id,shape,tol", [(0, "calib_box", 1e-2), (1, "calib_pillbox", 1e-2)])
-def test_calibration_matches_analytic(set_args, s_id, shape, tol):
-    """The N0 reference solve on the generator's calibration mesh vs the closed-form PEC spectrum."""
-    set_args("--mode", "calibration", "--mesh_size", "0.12")
-    g = gen.mesh_sample(s_id)
+@pytest.mark.parametrize("s_id,shape", [(0, "calib_box"), (1, "calib_pillbox")])
+def test_calibration_matches_analytic(set_args, tmp_path, s_id, shape):
+    """The p2 solve on the generator's calibration solid (curved netgen mesh, maxh = the generator's h,
+    ~400 tets) vs the closed-form PEC spectrum, K = 8.  Measured max |f/f_exact - 1|: box 4.8e-3 (442 tets),
+    pillbox 5.7e-3 (355 tets); TM010 4.1e-4."""
+    set_args("--mode", "calibration", "--mesh_size", "0.2")
+    g = gen.mesh_sample(s_id, cad_path=str(tmp_path / "solid.brep"))
     assert g["shape_type"] == shape
-    _, _, f = fe_modes(g["nodes"], g["tets"], 8)
+    mesh = p2.curved_mesh(tmp_path / "solid.brep", g["h"])
+    res = p2.solve(mesh, 8)
     ref = gen.eigenvalues_to_ghz(gen.analytic_k2(shape, g["params"], 8))
-    rel = f / 1e9 / ref - 1
-    assert np.abs(rel).max() < tol, rel
+    rel = res["f_hz"] / 1e9 / ref - 1
+    assert res["info"]["n_zero"] == 0 and np.abs(rel).max() < 1e-2, rel
     if shape == "calib_pillbox":   # TM010 at c·2.405/(2πR)
-        assert abs(f[0] / (gen.C0 * 2.404825557695773 / (2 * np.pi * 0.04)) - 1) < tol
+        assert abs(res["f_hz"][0] / (gen.C0 * 2.404825557695773 / (2 * np.pi * 0.04)) - 1) < 1e-3
 
 
 @pytest.mark.parametrize("s_id,shape", [(0, "calib_box"), (1, "calib_pillbox")])
@@ -83,21 +88,31 @@ def test_calibration_field_labels_match_analytic(set_args, s_id, shape):
     assert res["freq_next"] >= res["freqs"][-1] and np.all(np.diff(res["freqs"]) >= 0)
 
 
-def test_no_zero_or_gradient_modes(set_args):
-    set_args("--mode", "calibration", "--mesh_size", "0.15")
-    g = gen.mesh_sample(1)
-    geom, Y, f = fe_modes(g["nodes"], g["tets"], 6)
-    fe, M = geom["fe"], geom["M"]
-    K, G, n_pot, bnd, topo = fe["K"], fe["G"], fe["n_pot"], fe["bnd_edge"], fe["topo"]
-    assert bnd.sum() > 0 and np.all(Y[bnd] == 0)                           # n × E = 0: wall DOFs exactly 0
-    n_int = int((topo["vert_comp"] < 0).sum())
-    assert n_pot == n_int and topo["n_comp"] == 1 and abs(G[:, n_pot:]).sum() == 0
-    lam = np.einsum("ij,ij->j", Y, K @ Y) / np.einsum("ij,ij->j", Y, M @ Y)
-    np.testing.assert_allclose(gen.C0 * np.sqrt(lam) / (2 * np.pi * geom["scale"]), f, rtol=1e-8)
+@pytest.fixture(scope="module")
+def pillbox_p2(tmp_path_factory):
+    """Pillbox R = 40, L = 50 mm: curved mesh (355 tets, 4482 DOF), 6 p2 modes, field_operators' K, M, G."""
+    R, L = 0.04, 0.05
+    tmp = tmp_path_factory.mktemp("pillbox")
+    mesh, res = p2.occ_modes(lambda occ: occ.addCylinder(0, 0, 0, 0, 0, L, R), 0.0126, 6, tmp)
+    return mesh, res, ho.field_operators(mesh, order=2)
+
+
+def test_no_zero_or_gradient_modes(pillbox_p2):
+    """p2 analogue of the N0 kernel checks: the kernel projection leaves no lambda ~ 0 mode and no gradient
+    in the Ritz block.  Measured: Rayleigh quotients = f to 3e-15, GᵀMU 4e-15 relative, K G 5e-16 relative,
+    UᵀMU = I to 4e-15."""
+    mesh, res, ops = pillbox_p2
+    U, f, s = res["U"], res["f_hz"], ops["scale"]
+    K, M, G, bnd = ops["K"], ops["M"], ops["G"], ops["bnd"]
+    assert bnd.sum() > 0 and np.all(U[bnd] == 0)                           # n × E = 0: wall DOFs exactly 0
+    assert res["info"]["n_zero"] == 0 and len(ho.wall_shells(mesh)) == 1 and 0 < ops["n_pot"] < res["info"]["n_h1"]
+    lam = np.einsum("ij,ij->j", U, K @ U) / np.einsum("ij,ij->j", U, M @ U)
+    np.testing.assert_allclose(gen.C0 * np.sqrt(lam) / (2 * np.pi * s), f, rtol=1e-8)
     assert f[0] > np.sqrt(0.5) * gen.C0 * 2.405 / (2 * np.pi * 0.04)       # no λ ≈ 0 mode: TM010 is the lowest
-    MY = M @ Y
-    assert np.abs(G.T @ MY).max() / np.abs(MY).max() < 1e-10               # ⟂_M the E-kernel gradients
-    np.testing.assert_allclose(Y.T @ MY, np.eye(Y.shape[1]), atol=1e-8)
+    assert abs(K @ G).max() / abs(K).max() < 1e-12                         # the kernel columns are in ker K
+    MU = M @ U
+    assert np.abs(G.T @ MU).max() / np.abs(MU).max() < 1e-10               # ⟂_M the E-kernel gradients
+    np.testing.assert_allclose(s * (U.T @ MU), np.eye(U.shape[1]), atol=1e-8)   # unit mass norm (M is M/scale)
     assert np.all(np.diff(f) >= 0)
 
 
@@ -114,21 +129,26 @@ def _occ_mesh(build, h):
         gmsh.finalize()
 
 
-def test_handles_are_clean():
-    """Torus (b1 = 1): the handle adds nothing to the E kernel, no spurious λ = 0 mode (measured
-    f1 4.537 GHz at h = 12 mm, 4.386 at 5 mm)."""
-    nodes, tets = _occ_mesh(lambda occ: occ.addTorus(0, 0, 0, 0.05, 0.02), 0.012)
+def test_handles_are_clean(tmp_path):
+    """Torus (b1 = 1): the handle adds nothing to the E kernel, no spurious λ = 0 mode.  p2 on 1054 curved
+    tets: f1 4.369 GHz (converged p2: 4.3575 at 2.4k-7.7k tets; the old N0 values 4.537 at h = 12 mm and
+    4.386 at 5 mm bracket it from above)."""
+    build = lambda occ: occ.addTorus(0, 0, 0, 0.05, 0.02)  # noqa: E731
+    nodes, tets = _occ_mesh(build, 0.012)
     topo = gen.mesh_topology(tets, len(nodes))
     assert topo["euler"] == 0 and topo["euler_boundary"] == 0
     assert gen.is_valid_e_domain(topo) and topo["betti1"] == 1 and topo["n_bnd_components"] == 1
     gen.certify(topo)
-    geom, _, f = fe_modes(nodes, tets, 3)
-    assert geom["fe"]["topo"]["betti1"] == 1 and 4.3 < f[0] / 1e9 < 4.7
+    _, res = p2.occ_modes(build, 0.03, 3, tmp_path, curvaturesafety=0.7)
+    f = res["f_hz"] / 1e9
+    assert res["info"]["n_zero"] == 0 and np.all(np.diff(f) >= 0)
+    assert 4.33 < f[0] < 4.40, f                                          # clean spectrum, handle mode included
 
 
-def test_half_wave_coax_tem():
-    """Coax Ro = 50, ri = 15, L = 150 mm, inner conductor touching both end plates (b1 = 1), h = 8 mm:
-    the TEM λ/2 mode at c/2L (measured −0.62 %; TE11-like pair ≈ 1.80 GHz; TEM λ at c/L −0.70 %)."""
+def test_half_wave_coax_tem(tmp_path):
+    """Coax Ro = 50, ri = 15, L = 150 mm, inner conductor touching both end plates (b1 = 1), p2 on 1292
+    curved tets: the TEM λ/2 mode at c/2L (measured +0.085 %, N0 at 8 mm: -0.62 %), TEM λ at c/L (+0.11 %),
+    TE11-like pair ≈ 1.81 GHz split by 1e-4 (+0.02 % at 3000 tets)."""
     Ro, ri, L = 0.05, 0.015, 0.15
 
     def build(occ):
@@ -137,19 +157,21 @@ def test_half_wave_coax_tem():
     nodes, tets = _occ_mesh(build, 0.008)
     topo = gen.mesh_topology(tets, len(nodes))
     assert topo["betti1"] == 1 and gen.is_valid_e_domain(topo)
-    _, _, f = fe_modes(nodes, tets, 4)
-    f = f / 1e9
-    assert abs(f[0] / (gen.C0 / (2 * L) / 1e9) - 1) < 1e-2 and abs(f[3] / (gen.C0 / L / 1e9) - 1) < 1e-2
-    assert 1.7 < f[1] < f[2] < 1.9 and abs(f[2] / f[1] - 1) < 2e-3        # TE11-like degenerate pair
+    _, res = p2.occ_modes(build, 0.05, 4, tmp_path, curvaturesafety=0.7)
+    f = res["f_hz"] / 1e9
+    assert res["info"]["n_zero"] == 0
+    assert abs(f[0] / (gen.C0 / (2 * L) / 1e9) - 1) < 3e-3 and abs(f[3] / (gen.C0 / L / 1e9) - 1) < 3e-3
+    assert 1.7 < f[1] < f[2] < 1.9 and abs(f[2] / f[1] - 1) < 1e-3        # TE11-like degenerate pair
 
 
-def test_isolated_conductor_needs_component_potential():
-    """Sphere (r = 15 mm) floating inside a PEC box (b2 = 1, two boundary shells): the field ∇φ
-    with φ = 1 on the sphere, 0 on the box is curl-free with zero wall trace but not a gradient of
-    an interior potential — without the component potential it survives as λ = 0; with it the
-    spectrum is clean (measured f1 2.028 GHz at h = 8 mm, 2.049 at 5 mm; the removed H formulation, valid
-    here since b1 = 0, gave 2.123 / 2.090: both bracket the limit)."""
-    from src.data.dataset_converter_3d import discrete_gradient, e_potential_matrix
+def test_isolated_conductor_has_a_component_potential(tmp_path):
+    """Sphere (r = 15 mm) floating inside a PEC box (b2 = 1, two boundary shells): the field ∇φ with
+    φ = 1 on the sphere, 0 on the box is curl-free with zero wall trace but not the gradient of an interior
+    potential, so the interior-gradient projection of solve_modes cannot remove it: it shows up as exactly one
+    λ = 0 Ritz value, which solve_modes drops (info n_zero = 1), and field_operators' G carries it as one extra
+    column.  p2 on 516 tets: f1 2.0686 GHz (2.0688 at 2.3k tets; the old N0 values 2.028 / 2.049 and the
+    removed H formulation's 2.123 / 2.090 bracket the limit)."""
+    import scipy.sparse.linalg as spla
 
     def build(occ):
         occ.cut([(3, occ.addBox(0, 0, 0, 0.1, 0.08, 0.06))], [(3, occ.addSphere(0.05, 0.04, 0.03, 0.015))])
@@ -158,16 +180,27 @@ def test_isolated_conductor_needs_component_potential():
     topo = gen.mesh_topology(tets, len(nodes))
     assert topo["n_bnd_components"] == 2 and topo["betti2"] == 1 and topo["betti1"] == 0
     assert gen.is_valid_e_domain(topo)
-    with pytest.raises(RuntimeError, match="zero"):
-        fe_modes(nodes, tets, 3, component_potentials=False)
-    geom, _, f = fe_modes(nodes, tets, 3)
-    assert geom["fe"]["topo"]["n_comp"] == 2 and 1.9 < f[0] / 1e9 < 2.12
-    G, bnd, n_pot, bt = e_potential_matrix(geom["edges"], len(nodes), tets)
-    assert n_pot == int((bt["vert_comp"] < 0).sum()) + 1
-    sphere = bt["vert_comp"] == 1                                            # component 1 = the sphere (fewer vertices)
-    assert np.allclose(np.linalg.norm(nodes[sphere] - [0.05, 0.04, 0.03], axis=1), 0.015, rtol=1e-3)
-    np.testing.assert_array_equal(G[:, n_pot - 1].toarray().ravel(),
-                                  discrete_gradient(geom["edges"], len(nodes)) @ sphere.astype(float))
+    mesh, res = p2.occ_modes(build, 0.03, 3, tmp_path, curvaturesafety=1.5)
+    f = res["f_hz"] / 1e9
+    assert res["info"]["n_zero"] == 1                                       # the spurious λ = 0 mode, dropped
+    assert abs(f[0] / 2.0688 - 1) < 2e-3 and 2.049 < f[0] < 2.090 and np.all(np.diff(f) >= 0), f
+    ops = ho.field_operators(mesh, order=2)
+    K, M, G, Kp, bnd, n_pot = ops["K"], ops["M"], ops["G"], ops["Kp"], ops["bnd"], ops["n_pot"]
+    _, fesh1 = res["fes"].CreateGradient()
+    assert n_pot == int(np.sum(list(fesh1.FreeDofs()))) + 1                 # interior potentials + the sphere's
+    shells = ho.wall_shells(mesh)
+    assert len(shells) == 2
+    X = np.array([tuple(p.p) for p in mesh.ngmesh.Points()])
+    sphere = shells[1]                                                      # the smaller shell
+    assert np.allclose(np.linalg.norm(X[sphere] - [0.05, 0.04, 0.03], axis=1), 0.015, rtol=1e-3)
+    g = G[:, n_pot - 1].toarray().ravel()
+    assert np.all(g[bnd] == 0) and np.abs(K @ g).max() < 1e-10 * np.abs(g).max() * abs(K).max()   # curl-free, wall trace 0
+    # not in the span of the interior gradients: the M-norm left after projecting them out is O(1) of its own norm
+    Kii, kib = Kp[: n_pot - 1, : n_pot - 1].tocsc(), Kp[: n_pot - 1, n_pot - 1].toarray().ravel()
+    left = Kp[n_pot - 1, n_pot - 1] - kib @ spla.spsolve(Kii, kib)
+    assert left > 0.1 * Kp[n_pot - 1, n_pot - 1]
+    MU = M @ res["U"]
+    assert np.abs(G.T @ MU).max() / np.abs(MU).max() < 1e-8                 # the physical modes are ⟂_M the shell potential too
 
 
 def _expected_betti1(family, p):
@@ -312,30 +345,17 @@ def test_mesher_error_restarts_gmsh(set_args, monkeypatch):
 
 # ─────────────────────────── realistic cavities / free-form (cavity_shapes) ───
 
-def _mesh_params(builder, params, mesh_size=0.10):
-    import gmsh
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
-    try:
-        gmsh.model.add("t")
-        _, prm = builder(gmsh.model.occ, None, params)
-        gmsh.model.occ.synchronize()
-        vol = gmsh.model.occ.getMass(3, gmsh.model.getEntities(3)[0][1])
-        h0 = mesh_size * vol ** (1 / 3)
-        return gen._mesh_current_model(max(min(h0, prm["_h_cap"]), 0.7 * h0))
-    finally:
-        gmsh.finalize()
-
-
-def test_tesla_cell_frequency():
+def test_tesla_cell_frequency(tmp_path):
     """TESLA mid-cell dimensions (Req 103.3, Riris 35, A = B = 42, a 12, b 19, L 57.7 mm) as a
     single cell with 80 mm PEC-capped pipes: converged TM010 = 1.288 GHz (Richardson; the periodic
-    π-mode of the real structure is 1.300).  E-N0: +0.15 % at mesh 0.10, +0.03 % at 0.07."""
+    π-mode of the real structure is 1.300).  p2 on 2555 curved tets: 1.28825 (+0.019 %), 1.28814 (+0.011 %)
+    at 10k tets; the old N0 value was +0.15 % at mesh 0.10, +0.03 % at 0.07."""
     from src.data_gen import cavity_shapes as cs
     tesla = dict(Req=0.1033, Riris=0.035, L=0.0577, A=0.042, B=0.042, a=0.012, b=0.019, n_cells=1.0, Lpipe=0.08)
-    nodes, tets = _mesh_params(cs.build_elliptical, tesla)
-    err_e = fe_modes(nodes, tets, 3)[2][0] / 1e9 / 1.288 - 1
-    assert abs(err_e) < 4e-3
+    brep = p2.write_brep(lambda occ: cs.build_elliptical(occ, None, dict(tesla)), tmp_path / "tesla.brep")
+    mesh = p2.curved_mesh(brep, 0.03, split="auto", curvaturesafety=1.0)
+    err = p2.solve(mesh, 3)["f_hz"][0] / 1e9 / 1.288 - 1
+    assert abs(err) < 1e-3, err
 
 
 def test_half_cell_common_tangent():
@@ -388,12 +408,15 @@ def test_ood_families_are_topological_balls(set_args, family):
     assert topo["betti1"] == 0 and topo["n_shells"] == 1 and topo["euler"] == 1
 
 
-def test_ood_box_matches_analytic(set_args):
+def test_ood_box_matches_analytic(set_args, tmp_path):
+    """OOD box (seed 1000, id 1: 77 x 35 x 53 mm), p2 on 635 curved tets at 1.5 h: max |f/f_exact - 1| over the
+    5 lowest modes 2.3e-3 (7.6e-3 at 279 tets, 2.4e-4 at 2266)."""
     set_args("--families", "box", "--mesh_size", "0.12", "--seed", "1000", *SHARP)
-    g = gen.mesh_sample(1)
+    g = gen.mesh_sample(1, cad_path=str(tmp_path / "box.brep"))
     p = g["params"]
     ref = gen.eigenvalues_to_ghz(gen.box_spectrum(p["a"], p["b"], p["d"])[:5])
-    assert np.abs(fe_modes(g["nodes"], g["tets"], 5)[2] / 1e9 / ref - 1).max() < 1e-2
+    res = p2.solve(p2.curved_mesh(tmp_path / "box.brep", 1.5 * g["h"]), 5)
+    assert np.abs(res["f_hz"] / 1e9 / ref - 1).max() < 5e-3
 
 
 # ─────────────────────────── diversity: deformation, Sobol, elliptical v2, active sampling ───
@@ -441,15 +464,15 @@ def test_elliptical_chain_end_cells_and_ood_split():
     assert max(cs.N_CELLS) < 6                                          # OOD elliptical_long: 6–9 cells
 
 
-def test_residual_indicator(set_args):
+def test_residual_indicator(pillbox_p2):
     """Label-free indicator of the service (src.service.model.residual): exact discrete pairs have η ≈ 0,
-    perturbed ones not; the wall rows are not equations (essential BC) → excluded via the free mask."""
+    perturbed ones not; the wall rows are not equations (essential BC) → excluded via the free mask.
+    field_operators' K, M live on the normalised geometry, so λ_ξ = λ·scale².  Measured: exact pairs
+    1.4e-12, perturbed ≥ 1e2."""
     from src.service.model import residual as residual_indicator
-    set_args("--families", "hwr", "--mesh_size", "0.25", *SHARP)
-    g = gen.mesh_sample(0)
-    geom, Y, f = fe_modes(g["nodes"], g["tets"], 3)
-    K, M, free = geom["fe"]["K"], geom["M"], ~geom["fe"]["bnd_edge"]
-    vals = geom["fe"]["vals"]
+    _, res, ops = pillbox_p2
+    K, M, free = ops["K"], ops["M"], ~ops["bnd"]
+    Y, vals = res["U"][:, :3], res["lam"][:3] * ops["scale"] ** 2
     assert residual_indicator(K, M, Y, vals, free=free).max() < 1e-6
     noisy = Y + 0.05 * np.random.default_rng(0).standard_normal(Y.shape) * np.abs(Y).max()
     noisy[~free] = 0.0
