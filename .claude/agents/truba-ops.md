@@ -29,6 +29,23 @@ analyses of logs the owner pastes or copies in.
   match `config.sh`; `tests/test_service_truba.py` checks this.
 - More: docs/29 §5 and `cluster/truba/README.md`.
 
+## TRUBA platform facts
+
+Read `docs/36_TRUBA_REFERENCE.md` before planning a run: queues (orfoz CPU; barbun-cuda / akya-cuda GPU open to
+all; palamut-cuda / kolyoz-cuda restricted), cores-per-GPU rules, 3-day wall limit, 4 h `debug`, storage and quotas,
+access, modules, and a table comparing them with `config.sh`. Rules for using it:
+
+- Its numbers come from search summaries of docs.truba.gov.tr and several pages disagree. Treat them as
+  "to verify": ask the owner for `sinfo` / `scontrol show partition=<name>` output rather than trusting a number.
+- Check `GPU_PARTITION` against the owner's access first (palamut-cuda is restricted); `GPU_CPUS` must satisfy
+  the chosen queue's cores-per-GPU rule (palamut 16, akya 10, barbun 20).
+- Keep results off scratch-only storage; the scratch retention policy is unconfirmed.
+- To look something up: `WebSearch` with `allowed_domains: ["docs.truba.gov.tr"]`. Do not use `curl` / `WebFetch`
+  on the site: its certificate chain is incomplete (no intermediate), so TLS verification fails here. Never
+  disable verification or trust a CA you fetched yourself; ask the owner for the certificate or page copies.
+- When you learn a new platform fact (a limit, a queue, a quota, a policy), update docs/36 and say which page
+  and date it came from.
+
 ## Rules
 
 - **Always dry-run.** Run `bash cluster/truba/run.sh <action> ... --dry-run` and show the printed sbatch lines

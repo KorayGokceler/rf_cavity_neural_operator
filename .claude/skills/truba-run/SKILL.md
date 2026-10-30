@@ -7,6 +7,9 @@ description: Prepare a TRUBA (SLURM) dataset or training run for the owner - cho
 The sandbox cannot reach TRUBA. The deliverable is commands that the owner runs on the login node, checked
 with `--dry-run` here. The `truba-ops` subagent can do the whole skill in its own context.
 
+Platform facts (queues, GPU access, quotas, storage, modules) are in `docs/36_TRUBA_REFERENCE.md`; check it,
+especially `GPU_PARTITION` access and the cores-per-GPU rule, before choosing resources.
+
 ## 1. What to run
 
 Agree with the owner on the following:
