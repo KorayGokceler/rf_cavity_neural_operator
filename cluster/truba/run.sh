@@ -1,7 +1,7 @@
 #!/bin/bash
 # One-line TRUBA entry point — the web UI's TRUBA page writes these commands (docs/29 §5):
 #
-#   bash cluster/truba/run.sh setup                                   # conda env (once, login node)
+#   bash cluster/truba/run.sh setup                                   # Apptainer image (once; built on a debug node)
 #   bash cluster/truba/run.sh dataset LABELS=field FAMILIES=train N_PER_FAMILY=2048
 #   bash cluster/truba/run.sh train   LABELS=field EXP=field_base MODEL=base EPOCHS=150
 #   bash cluster/truba/run.sh all     LABELS=field FAMILIES=elliptical,spoke EXP=f1   # data, then training
@@ -40,13 +40,17 @@ fi
 source "$TRUBA_DIR/config.sh"
 FAMILIES=${FAMILIES:-train}
 
-ensure_env() {   # the conda env of setup_env.sh (created on first use; GPU torch for training)
-  if [ -x "$CONDA_HOME/bin/conda" ] && "$CONDA_HOME/bin/conda" env list 2>/dev/null | grep -q '^rfcav '; then
+ensure_env() {   # the Apptainer image of setup_env.sh (built on first use; blocks ~15-25 min under srun)
+  if [ -f "$CONTAINER" ]; then
+    if [ -f "$CONTAINER.requirements.sha256" ] && \
+       [ "$(sha256sum "$REPO_DIR/requirements.txt" | cut -d' ' -f1)" != "$(cat "$CONTAINER.requirements.sha256")" ]; then
+      echo "warning: requirements.txt changed since $CONTAINER was built (FORCE=1 bash $TRUBA_DIR/setup_env.sh rebuilds)" >&2
+    fi
     return 0
   fi
-  if [ "$DRY_RUN" = 1 ]; then echo "[dry-run] would run: bash $TRUBA_DIR/setup_env.sh"; return 0; fi
-  echo "conda env 'rfcav' not found: running setup_env.sh (once, ~10 min)"
-  TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu124} bash "$TRUBA_DIR/setup_env.sh"
+  if [ "$DRY_RUN" = 1 ]; then echo "[dry-run] would run: bash $TRUBA_DIR/setup_env.sh  (builds $CONTAINER)"; return 0; fi
+  echo "image $CONTAINER not found: running setup_env.sh (once, ~15-25 min; keep this terminal open)"
+  bash "$TRUBA_DIR/setup_env.sh"
 }
 
 submit_dataset() {   # every family's missing shards
@@ -74,8 +78,8 @@ dependency() {   # afterany:<every job id written to JOBID_FILE so far> (empty: 
 
 case "$ACTION" in
   setup)
-    if [ "$DRY_RUN" = 1 ]; then echo "[dry-run] would run: bash $TRUBA_DIR/setup_env.sh"; exit 0; fi
-    TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu124} bash "$TRUBA_DIR/setup_env.sh" ;;
+    if [ "$DRY_RUN" = 1 ]; then echo "[dry-run] would run: bash $TRUBA_DIR/setup_env.sh  (builds $CONTAINER)"; exit 0; fi
+    bash "$TRUBA_DIR/setup_env.sh" ;;
   status)
     ensure_env
     "$TRUBA_DIR/status.sh" ;;

@@ -35,6 +35,7 @@ venv/
 training_logs/
 lightning_logs/
 *.ckpt
+*.sif
 inference_results/
 inference_plots/
 dataset_plots/

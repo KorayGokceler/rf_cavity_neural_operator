@@ -3,13 +3,16 @@
 # short GPU job:
 #   EXP=field_base cluster/truba/predict.sh --step $HOME/tesla.step --vol_div 9 --fe   # STEP: unit from the file
 #   EXP=field_base cluster/truba/predict.sh --family elliptical --id 524300 --fe
-# Arguments go to scripts/predict_geometry.py; results → $RUN_DIR/$EXP/predict/<name>/.
+# Arguments go to scripts/predict_geometry.py; results → $RUN_DIR/$EXP/predict/<name>/. The program runs in the
+# Apptainer image; a STEP file outside $HOME / DATA_ROOT needs EXTRA_BIND=<its folder>.
 set -euo pipefail
 TRUBA_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$TRUBA_DIR/config.sh"
 NAME=${NAME:-pred_$(date +%Y%m%d_%H%M%S)}
 OUT=$RUN_DIR/$EXP/predict/$NAME
 mkdir -p "$OUT" "$LOG_DIR"
+command -v module > /dev/null && module purge || true
+container_prefix --nv
 srun $(sbatch_common "$GPU_PARTITION") --gres=gpu:1 -c "$GPU_CPUS" -t 0-01:00:00 --job-name="pred_$EXP" \
-  bash -c "$ENV_ACTIVATE && cd '$REPO_DIR' && python scripts/predict_geometry.py --checkpoint '$RUN_DIR/$EXP' --out_dir '$OUT' $*"
+  "${CX[@]}" python scripts/predict_geometry.py --checkpoint "$RUN_DIR/$EXP" --out_dir "$OUT" "$@"
 echo "→ $OUT (prediction.json, modes.vtu)"

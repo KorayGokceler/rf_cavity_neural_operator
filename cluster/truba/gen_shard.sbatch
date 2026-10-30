@@ -2,13 +2,15 @@
 # One shard of one geometry family (SLURM array task = shard index).
 # Submitted by submit_family.sh (partition / cores / time / array come from config.sh there).
 # Env from sbatch --export: TRUBA_DIR, FAMILY, plus anything overriding config.sh.
+# Python runs inside the Apptainer image (rfcav.def): container_prefix in config.sh.
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --job-name=rfgen
 set -euo pipefail
 source "$TRUBA_DIR/config.sh"
 family_row "$FAMILY"
-eval "$ENV_ACTIVATE"
+command -v module > /dev/null && module purge || true      # no host modules leaking into the container
+container_prefix
 # one BLAS thread per worker process: the parallelism is the generator's process pool
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONUNBUFFERED=1
 
@@ -33,8 +35,7 @@ LAB=(--label_order "$LABEL_ORDER" --model_order "$MODEL_ORDER" --threads "$THREA
 [ -n "$MIN_FILLET" ] && LAB+=(--min_fillet "$MIN_FILLET")
 
 echo "$(date -Is) $FAMILY shard $SHARD: ids $START_ID … $((START_ID + N - 1)) on $(hostname), $WORKERS workers, labels $LABELS"
-cd "$REPO_DIR"
-python src/data_gen/dataset_generator_3d.py \
+"${CX[@]}" python src/data_gen/dataset_generator_3d.py \
   --families "$FAMILY" --n_total "$N" --start_id "$START_ID" --seed "$SEED" \
   --n_eigen_modes "$N_STORE" --mesh_size "$MESH_SIZE" --sampling "$SAMPLING" \
   --deform_prob "$DEFORM_PROB" --deform_max "$DEFORM_MAX" \

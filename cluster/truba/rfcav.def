@@ -1,0 +1,46 @@
+# Apptainer image of the RF-cavity stack: PyTorch (CUDA) + NGSolve / netgen + gmsh + scikit-fem + h5py.
+# TRUBA forbids conda / pip installs under /arf (docs/36 §5): everything is installed inside this single
+# .sif file (one inode). The repo code is NOT baked in: it is bound at run time (config.sh container_prefix),
+# so code changes need no rebuild; only a change of requirements.txt does (setup_env.sh FORCE=1).
+#
+# Built by setup_env.sh on a `debug` compute node (never on a login node), from the repo root:
+#   apptainer build --fakeroot rfcav.sif cluster/truba/rfcav.def
+#   apptainer build --fakeroot --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu126 rfcav.sif cluster/truba/rfcav.def
+# Same system libraries and pip steps as the repo's Dockerfile (python:3.11-slim base) plus the CUDA torch wheel.
+Bootstrap: docker
+From: python:3.11-slim-bookworm
+
+%arguments
+    TORCH_INDEX=https://download.pytorch.org/whl/cu124
+
+%files
+    requirements.txt /opt/rfcav/requirements.txt
+
+%post
+    set -eu
+    apt-get update
+    apt-get install -y --no-install-recommends libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1 libgomp1
+    rm -rf /var/lib/apt/lists/*
+    export PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+    # CUDA torch first (it bundles the CUDA runtime; the host driver comes in with `apptainer exec --nv`)
+    pip install --index-url {{ TORCH_INDEX }} torch
+    pip install -r /opt/rfcav/requirements.txt
+
+%environment
+    export PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+
+%runscript
+    exec "$@"
+
+%test
+    # torch before ngsolve: importing them the other way round segfaults (AGENTS.md)
+    python -c "import torch, ngsolve, gmsh, skfem, h5py, scipy, yaml, meshio, pytorch_lightning; print('torch', torch.__version__, '| CUDA build', torch.version.cuda, '| ngsolve', ngsolve.__version__, '| gmsh', gmsh.__version__)"
+
+%labels
+    Project rf_cavity_neural_operator
+    Purpose TRUBA data generation and training (docs/36)
+
+%help
+    Run a command of the project inside the container (bind the repo and the data root; --nv for GPUs):
+      apptainer exec --nv --bind $REPO,$DATA rfcav.sif python train.py --config configs/field_3d.yaml
+    cluster/truba/config.sh builds this command line (container_prefix).
