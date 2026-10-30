@@ -3,7 +3,9 @@ figures of merit (Q0, G, R/Q, R_sh, T, Epk/Eacc, Bpk/Eacc from the predicted HCu
 eigen-solve — the end of the pipeline, the same code as the web UI's Predict (src/service/model.py).
 
 Geometry sources (exactly one; the field model needs the CAD solid, it predicts on its curved mesh):
-  --step  FILE.step|.stp|.brep|.iges   CAD (one closed solid: the cavity's vacuum; --unit of the file)
+  --step  FILE.step|.stp|.brep|.iges   CAD (one closed solid: the cavity's vacuum).  STEP / IGES are read in the
+                                       unit they declare (--unit ignored); a BREP has no unit: --unit (default m,
+                                       the generator's BREPs)
   --family NAME --id N                 a generator geometry (field-label settings: the field datasets' shape)
   --h5    SHARD.h5 [--sample sample_0000123 | index]   a field-label geometry (stored curved mesh, labels known)
 
@@ -11,7 +13,7 @@ The beam axis and accelerating length follow the family (src.qoi.operators.beam_
 z axis through the origin.  Mesh density: h = --mesh_size · (V / --vol_div)^(1/3) (n-cell cavity: --vol_div n),
 or --h_abs [m]; the curved mesh is netgen's at maxh = 3 h (field_labels.start_mesh).
 
-    python scripts/predict_geometry.py --checkpoint DIR --step tesla.step --unit mm --vol_div 9 \\
+    python scripts/predict_geometry.py --checkpoint DIR --step tesla.step --vol_div 9 \\
         [--fe] [--out_dir pred_tesla]
 
 --checkpoint omitted: an UNTRAINED field3d model (numbers meaningless; for testing the pipeline).
@@ -72,7 +74,8 @@ def main(argv=None):
     src.add_argument('--family', help='generator family (with --id)')
     ap.add_argument('--sample', default='0', help='--h5: group name (sample_…) or index')
     ap.add_argument('--id', type=int, default=0, help='--family: geometry id (e.g. block·2^19 + i)')
-    ap.add_argument('--unit', default='m', choices=sorted(G.UNITS), help='length unit of --step')
+    ap.add_argument('--unit', default=None, choices=sorted(G.UNITS),
+                    help='length unit of a --step BREP (default m); ignored for STEP / IGES (unit from the file)')
     ap.add_argument('--mesh_size', type=float, default=0.10, help='relative mesh size (field datasets: 0.10)')
     ap.add_argument('--vol_div', type=float, default=1.0, help='volume divisor of h (n cells → n)')
     ap.add_argument('--h_abs', type=float, default=None, help='absolute mesh size h [m] (overrides --mesh_size)')
@@ -89,8 +92,20 @@ def main(argv=None):
     t0 = time.perf_counter()
     labels = None
     if args.step:
-        geo = dict(G.mesh_upload(args.step, args.unit, args.mesh_size, args.vol_div, args.h_abs),
-                   family='', params=None, label=os.path.basename(args.step))
+        m = G.mesh_upload(args.step, args.unit or 'm', args.mesh_size, args.vol_div, args.h_abs)
+        if m['unit_used'] == 'file':
+            print(f"{args.step}: length unit read from the file (STEP / IGES)"
+                  + (f"; --unit {args.unit} ignored" if args.unit else ''))
+        else:
+            print(f"{args.step}: length unit {m['unit_used']} (--unit)")
+        n_sharp = m.get('n_sharp_edges')
+        if n_sharp:
+            print(f"{args.step}: {n_sharp} sharp re-entrant edges: Epk/Eacc and Bpk/Eacc are not converged and "
+                  "are not reported")
+        print("beam axis assumed: z through the origin; L_acc = axis chord incl. pipes; R/Q, R_sh, T and "
+              "peaks/Eacc depend on it")
+        geo = dict(m, family='', label=os.path.basename(args.step),
+                   params=None if n_sharp is None else {'n_sharp_edges': float(n_sharp)})
     elif args.h5:
         geo, labels = h5_geometry(args.h5, args.sample)
     else:

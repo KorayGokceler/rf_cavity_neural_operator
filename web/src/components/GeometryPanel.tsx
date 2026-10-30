@@ -42,6 +42,8 @@ export default function GeometryPanel({ lang, info, geometry, busy, predicting, 
   const cellsOk = numOk(form.nCells, { min: 1, max: 30, integer: true });
   const idOk = numOk(form.sid, { min: 0, integer: true, allowEmpty: true });
   const set = (p: Partial<GeomForm>) => setForm({ ...form, ...p });
+  // STEP / IGES declare their length unit (the server reads it from the file): the unit select is moot
+  const unitFromFile = !!file && /\.(step|stp|iges|igs)$/i.test(file.name);
   const blocker = geometry && !geometry.can_predict
     ? geometry.predict_blocker ?? (chk && !chk.ok ? chk.problems.join('; ') : '—') : null;
 
@@ -83,13 +85,15 @@ export default function GeometryPanel({ lang, info, geometry, busy, predicting, 
           <div className="row2">
             <label className="field">
               <span className="field-label">{t(lang, 'unit')}</span>
-              <select value={form.unit} onChange={(e) => set({ unit: e.target.value })}>
+              <select value={form.unit} onChange={(e) => set({ unit: e.target.value })} disabled={unitFromFile}
+                      title={unitFromFile ? t(lang, 'unitFromFile') : undefined} data-testid="unit">
                 <option value="mm">mm</option><option value="cm">cm</option><option value="m">m</option>
               </select>
             </label>
             <NumField lang={lang} label={t(lang, 'nCells')} value={form.nCells} min={1} max={30} integer
                       onChange={(v) => set({ nCells: v ?? 0 })} />
           </div>
+          {unitFromFile && <div className="note" data-testid="unit-from-file">{t(lang, 'unitFromFile')}</div>}
           <NumField lang={lang} label={t(lang, 'meshSize')} value={form.meshSize} min={0.05} max={0.5} step={0.01}
                     onChange={(v) => set({ meshSize: v ?? 0 })} />
           <button type="submit" className="btn" disabled={busy || !file || !meshOk || !cellsOk}>{t(lang, 'load')}</button>

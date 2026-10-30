@@ -241,11 +241,18 @@ def align(Up, Ut, M, f_true, rel=1e-3):
 
 
 def compare(pred, true, rel=1e-3):
-    """(rows, difference solution) for a model solution vs the FE one on the same mesh."""
+    """(rows, difference solution) for a model solution vs the FE one on the same mesh.
+    Figures of merit: the FE side keeps its own (the stored p3 labels of a field dataset); the model side
+    uses the prediction's own p2 figures of merit (pred['modes'], ModelService.predict) — the aligned vector
+    of an isolated mode is the predicted one up to its sign, which leaves them unchanged — and None inside a
+    degenerate cluster of the FE spectrum (the aligned vectors there are projections, not predicted modes).
+    The N0 display interpolant (build_solution below) only gives the difference fields."""
     geom, M = true['_geom'], true['_M']
     Ua, rl = align(pred['_U'], true['_U'], M, true['_f'], rel)
     K = Ua.shape[1]
     pa = build_solution(geom, M, Ua, pred['_f'][:K], 'model', ops=true['_ops'])
+    cluster = degenerate_mask(np.asarray(true['_f'][:K], float), rel)       # the clusters of align
+    mq = [{n: (None if cluster[k] else pred['modes'][k][n]) for n in QOI_SHOW} for k in range(K)]
     rows = []
     for k in range(K):
         tr, pr = true['modes'][k], pa['modes'][k]
@@ -253,11 +260,12 @@ def compare(pred, true, rel=1e-3):
                'rel_l2': float(rl[k]), 'degenerate': tr['degenerate'], 'accelerating': tr['accelerating'],
                'eta': pred['modes'][k]['eta'], 'qoi': {}}
         for n in QOI_SHOW:
-            a, b = tr[n], pr[n]
+            a, b = tr[n], mq[k][n]
             row['qoi'][n] = {'fe': a, 'model': b,
                              'rel_err': (None if a in (None, 0) or b is None else b / a - 1)}
         rows.append(row)
-    diff = dict(pa, source='diff', modes=[dict(m, f_GHz=true['modes'][m['mode']]['f_GHz']) for m in pa['modes']],
+    diff = dict(pa, source='diff', modes=[dict(m, f_GHz=true['modes'][m['mode']]['f_GHz'], **mq[m['mode']])
+                                          for m in pa['modes']],
                 _E=pa['_E'] - true['_E'][:, :, :K], _H=pa['_H'] - true['_H'][:, :, :K],
                 _axis=pa['_axis'] - true['_axis'][:K], _f=true['_f'][:K])
     return rows, diff

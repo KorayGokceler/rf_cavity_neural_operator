@@ -9,6 +9,7 @@ const S = {
   sample: { tr: 'Örnek kavite', en: 'Example cavity' },
   file: { tr: 'CAD (STEP) veya tet mesh', en: 'CAD (STEP) or tet mesh' },
   unit: { tr: 'Birim', en: 'Unit' },
+  unitFromFile: { tr: 'STEP/IGES: birim dosyadan okunur', en: 'STEP/IGES: units are read from the file' },
   meshSize: { tr: 'Mesh boyu (göreli)', en: 'Mesh size (relative)' },
   nCells: { tr: 'Hücre sayısı', en: 'Number of cells' },
   family: { tr: 'Aile', en: 'Family' },

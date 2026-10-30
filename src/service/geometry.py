@@ -23,7 +23,33 @@ from src.data_gen import dataset_generator_3d as gen
 
 UNITS = {'m': 1.0, 'cm': 1e-2, 'mm': 1e-3}
 CAD_EXT = ('.step', '.stp', '.brep', '.iges', '.igs')
+UNIT_FILE_EXT = ('.step', '.stp', '.iges', '.igs')    # declare their length unit: OCC converts on import
 MESH_EXT = ('.msh', '.vtu', '.vtk', '.mesh', '.inp', '.med')
+
+
+def unit_used(path, unit):
+    """Effective length unit of a geometry file: 'file' for STEP / IGES (the unit the file declares, converted
+    to metres on import; the user's `unit` is ignored), else `unit` (BREP has no unit — the generator's
+    BREPs are in metres — and mesh files carry none)."""
+    return 'file' if os.path.splitext(str(path))[1].lower() in UNIT_FILE_EXT else unit
+
+
+def _occ_import(path, unit):
+    """gmsh OCC import of a CAD file with STEP / IGES read in METRES: OpenCASCADE converts STEP / IGES to its
+    target unit (millimetres by default) whatever unit the file declares, so the target is set to 'M' for
+    the import and put back to OCC's default 'MM' afterwards (the option is process-wide).  BREP has no unit
+    and is read as it is.  Returns the factor to metres still to apply for `unit` (1 for STEP / IGES)."""
+    import gmsh
+    step = unit_used(path, unit) == 'file'
+    if step:
+        gmsh.option.setString('Geometry.OCCTargetUnit', 'M')
+    try:
+        gmsh.model.occ.importShapes(str(path))
+        gmsh.model.occ.synchronize()
+    finally:
+        if step:
+            gmsh.option.setString('Geometry.OCCTargetUnit', 'MM')
+    return 1.0 if step else UNITS[unit]
 
 
 def gen_args(mesh_size, n_modes=6, families=None):
@@ -78,12 +104,11 @@ def load_mesh_src(src):
 
 def mesh_step(path, unit, mesh_size, vol_div=1.0, h_abs=None):
     """CAD file → (nodes [m], tets): OCC import, fuse to one volume, gmsh tets (generator settings,
-    h = mesh_size · (V / vol_div)^(1/3) or h_abs [m])."""
+    h = mesh_size · (V / vol_div)^(1/3) or h_abs [m]).  `unit` applies to BREP only (unit_used)."""
     import gmsh
     gen._gmsh_start()
     gmsh.clear()
-    gmsh.model.occ.importShapes(path)
-    gmsh.model.occ.synchronize()
+    f = _occ_import(path, unit)
     vols = gmsh.model.getEntities(3)
     if not vols:
         raise ValueError("no 3D volume in the CAD file (a closed solid is needed: the cavity's vacuum region)")
@@ -91,11 +116,11 @@ def mesh_step(path, unit, mesh_size, vol_div=1.0, h_abs=None):
         gmsh.model.occ.fuse(vols[:1], vols[1:])
         gmsh.model.occ.synchronize()
         vols = gmsh.model.getEntities(3)
-    V = sum(gmsh.model.occ.getMass(d, t) for d, t in vols)                    # file units³
-    h = (h_abs / UNITS[unit]) if h_abs else mesh_size * (V / vol_div) ** (1 / 3)
+    V = sum(gmsh.model.occ.getMass(d, t) for d, t in vols)                    # model units³
+    h = (h_abs / f) if h_abs else mesh_size * (V / vol_div) ** (1 / 3)
     nodes, tets = gen._mesh_current_model(h)
     gmsh.clear()
-    return nodes * UNITS[unit], tets
+    return nodes * f, tets
 
 
 def mesh_file(path, unit):
@@ -113,13 +138,17 @@ def mesh_file(path, unit):
 
 
 def cad_to_brep(path, unit, out_path):
-    """CAD file → one solid as BREP in metres at out_path (gmsh OCC import, fuse, scale by the unit);
-    returns its volume [m³]."""
+    """CAD file → one solid as BREP in metres at out_path (gmsh OCC import — STEP / IGES in the unit they
+    declare, BREP scaled by `unit` — and fuse); returns (volume [m³], re-entrant edges left sharp).
+    The sharp edges are counted as the generator counts them (cavity_shapes.round_reentrant_edges with
+    fillet=False, radius MIN_FILLET-like 0.05·equivalent-sphere radius): E and H are singular there, so the
+    surface peaks of such a solid are not converged (its figures of merit leave them out, as the labels)."""
     import gmsh
+
+    from src.data_gen import cavity_shapes as cs
     gen._gmsh_start()
     gmsh.clear()
-    gmsh.model.occ.importShapes(path)
-    gmsh.model.occ.synchronize()
+    f = _occ_import(path, unit)
     vols = gmsh.model.getEntities(3)
     if not vols:
         raise ValueError("no 3D volume in the CAD file (a closed solid is needed: the cavity's vacuum region)")
@@ -127,39 +156,47 @@ def cad_to_brep(path, unit, out_path):
         gmsh.model.occ.fuse(vols[:1], vols[1:])
         gmsh.model.occ.synchronize()
         vols = gmsh.model.getEntities(3)
-    f = UNITS[unit]
     if f != 1.0:
         gmsh.model.occ.dilate(gmsh.model.getEntities(), 0.0, 0.0, 0.0, f, f, f)
         gmsh.model.occ.synchronize()
         vols = gmsh.model.getEntities(3)
     V = sum(gmsh.model.occ.getMass(d, t) for d, t in vols)
+    n_sharp = 0
+    if len(vols) == 1:
+        r_edge = 0.05 * (3 * V / (4 * np.pi)) ** (1 / 3)
+        n_sharp = int(cs.round_reentrant_edges(gmsh.model.occ, vols[0][1], r_edge, fillet=False)[3])
     gmsh.write(str(out_path))
     gmsh.clear()
-    return V
+    return V, n_sharp
 
 
 def mesh_upload(path, unit='mm', mesh_size=0.10, vol_div=1.0, h_abs=None, max_elements=None):
-    """Any supported upload (by extension) → dict(nodes [m], tets, mesh_src | None, blocker | None, n_tets).
-    CAD: the solid in metres, curved netgen mesh at h = mesh_size·(V / vol_div)^(1/3) (or h_abs [m]) — when
+    """Any supported upload (by extension) → dict(nodes [m], tets, mesh_src | None, blocker | None, n_tets,
+    unit_used, n_sharp_edges).  CAD: the solid in metres (STEP / IGES: the unit the file declares, `unit`
+    ignored; BREP: `unit`), curved netgen mesh at h = mesh_size·(V / vol_div)^(1/3) (or h_abs [m]) — when
     that fails, the gmsh mesh for display and checks, with the reason as blocker.  Mesh files: no CAD
     surface, so no curved mesh (blocker)."""
     import tempfile
     ext = os.path.splitext(path)[1].lower()
+    used = unit_used(path, unit)
     if ext in CAD_EXT:
         with tempfile.TemporaryDirectory() as tmp:
             brep = os.path.join(tmp, 'solid.brep')
-            V = cad_to_brep(path, unit, brep)
+            V, n_sharp = cad_to_brep(path, unit, brep)
             h = float(h_abs) if h_abs else mesh_size * (V / vol_div) ** (1 / 3)
             try:
-                return dict(curved_from_cad(brep, h, max_elements=max_elements), blocker=None)
+                return dict(curved_from_cad(brep, h, max_elements=max_elements), blocker=None, unit_used=used,
+                            n_sharp_edges=n_sharp)
             except Exception as e:                     # noqa: BLE001 — reported as the predict blocker
                 blocker = f"no curved mesh of the CAD solid ({type(e).__name__}: {e})"
         gen_args(mesh_size)
         nodes, tets = mesh_step(path, unit, mesh_size, vol_div, h_abs)
-        return {'nodes': nodes, 'tets': tets, 'mesh_src': None, 'blocker': blocker, 'n_tets': int(len(tets))}
+        return {'nodes': nodes, 'tets': tets, 'mesh_src': None, 'blocker': blocker, 'n_tets': int(len(tets)),
+                'unit_used': used, 'n_sharp_edges': n_sharp}
     if ext in MESH_EXT:
         nodes, tets = mesh_file(path, unit)
-        return {'nodes': nodes, 'tets': tets, 'mesh_src': None, 'n_tets': int(len(tets)),
+        return {'nodes': nodes, 'tets': tets, 'mesh_src': None, 'n_tets': int(len(tets)), 'unit_used': used,
+                'n_sharp_edges': None,
                 'blocker': 'a mesh file has no CAD surface: the field model needs the curved geometry of a solid '
                            f"({', '.join(CAD_EXT)})"}
     raise ValueError(f"unsupported file type {ext!r} (CAD: {', '.join(CAD_EXT)}; mesh: {', '.join(MESH_EXT)})")

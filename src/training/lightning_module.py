@@ -247,6 +247,15 @@ class CavityLightning(pl.LightningModule):
         if 'model' in self._modules:
             self.model.freq_stats = value
 
+    def on_load_checkpoint(self, checkpoint):
+        """Every field3d checkpoint stores hyper_parameters['model_type'] (it was an __init__ argument when
+        field3d was added, with default 'eigenspace3d'); one without it is an N0 or 2D model, whose weights
+        would otherwise load silently into the field3d default with strict=False (scripts/eval_fidelity.py)."""
+        hp = checkpoint.get('hyper_parameters')
+        if hp is not None and 'model_type' not in hp:
+            raise ValueError("checkpoint without hyper_parameters['model_type']: a model older than field3d "
+                             "(the removed N0 edge model or a 2D model), which cannot be loaded")
+
     def forward(self, batch):
         return self.model(batch)
 

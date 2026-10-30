@@ -159,6 +159,14 @@ def test_model_vs_fe_comparison(field_client):
     assert len(rows) == K_FIELD and all(r["rel_l2"] >= 0 for r in rows)
     assert all(r["f_fe"] == pytest.approx(o["truth"]["modes"][k]["f_GHz"]) for k, r in enumerate(rows))
     assert all(r["f_model"] >= r["f_fe"] * (1 - 1e-3) for r in rows)        # Ritz ≥ p2 ≥ (≈) p3 labels
+    # model figures of merit = the prediction's own p2 values (isolated modes), None inside an FE cluster
+    from src.service.model import QOI_SHOW, degenerate_mask
+    cluster = degenerate_mask([r["f_fe"] for r in rows])
+    assert not cluster.all()
+    for k, r in enumerate(rows):
+        for n in QOI_SHOW:
+            assert r["qoi"][n]["model"] == (None if cluster[k] else p["modes"][k][n]), (k, n)
+            assert r["qoi"][n]["fe"] == o["truth"]["modes"][k][n]
     d = c.get(f"/api/predictions/{p['comparison']['diff_id']}/modes/0").json()
     assert d["surface"]["E_max"] > 0
     other = c.post("/api/geometries/sample", json={"family": "box", "id": 3, "mesh_size": 0.3}).json()

@@ -191,6 +191,12 @@ def test_load_model_rejects_other_model_types(tmp_path):
         ModelService(str(bad), "cpu")
     s = ModelService(str(bad), "cpu", optional=True)
     assert s.untrained and "eigenspace3d" in s.load_error
+    del ck["hyper_parameters"]["model_type"]                                 # older than field3d: N0 / 2D
+    old = tmp_path / "old.ckpt"
+    torch.save(ck, str(old))
+    with pytest.raises(ValueError, match="model_type"):                     # also outside the service
+        CavityLightning.load_from_checkpoint(str(old), map_location="cpu", strict=False)
+    assert CavityLightning.load_from_checkpoint(str(good), map_location="cpu").model_type == "field3d"
 
 
 def test_example_geometry_and_validation(client):
@@ -257,6 +263,105 @@ def test_access_token(monkeypatch):
     assert "httponly" in r.headers["set-cookie"].lower()
     assert c.get("/api/info").status_code == 200                              # cookie kept by the client
     assert TestClient(c.app).get("/api/info", headers={"X-RFCAV-Token": "s3cret"}).status_code == 200
+
+
+@pytest.fixture(scope="module")
+def unit_files(tmp_path_factory):
+    """The same 0.1 × 0.2 × 0.3 m box as a STEP declared in mm (coordinates 100 …), a STEP declared in metres
+    (coordinates 0.1 …), a BREP with coordinates 100 … (no unit), and a pillbox with beam pipes (sharp 90°
+    re-entrant junctions) as STEP [mm]."""
+    gmsh = pytest.importorskip("gmsh")
+    d = tmp_path_factory.mktemp("units")
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    for name, size in (("box_mm.step", 100.0), ("box_m_raw.step", 0.1), ("box_100.brep", 100.0)):
+        gmsh.clear()
+        gmsh.model.occ.addBox(0, 0, 0, size, 2 * size, 3 * size)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(d / name))
+    txt = (d / "box_m_raw.step").read_text()
+    assert "SI_UNIT(.MILLI.,.METRE.)" in txt                    # gmsh writes STEP declared in mm
+    (d / "box_m.step").write_text(txt.replace("SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT($,.METRE.)"))
+    gmsh.clear()
+    c = gmsh.model.occ.addCylinder(0, 0, -40, 0, 0, 80, 100)
+    p = gmsh.model.occ.addCylinder(0, 0, -100, 0, 0, 200, 30)
+    gmsh.model.occ.fuse([(3, c)], [(3, p)])
+    gmsh.model.occ.synchronize()
+    gmsh.write(str(d / "pillbox_pipes.step"))
+    gmsh.clear()
+    return d
+
+
+def test_step_units_come_from_the_file(unit_files):
+    """OCC converts STEP to its target unit whatever the file declares: STEP is read in its declared unit
+    (the same box from mm and from metres), the user unit applies to BREP only."""
+    for f in ("box_mm.step", "box_m.step"):
+        for unit in G.UNITS:
+            V, n_sharp = G.cad_to_brep(str(unit_files / f), unit, str(unit_files / "out.brep"))
+            assert V == pytest.approx(6e-3, rel=1e-6), (f, unit, V)
+            assert n_sharp == 0                                    # a box has only convex edges
+            assert G.unit_used(f, unit) == "file"
+    assert G.cad_to_brep(str(unit_files / "box_100.brep"), "mm", str(unit_files / "out.brep"))[0] == pytest.approx(6e-3)
+    assert G.cad_to_brep(str(unit_files / "box_100.brep"), "m", str(unit_files / "out.brep"))[0] == pytest.approx(6e6)
+    assert G.unit_used("x.brep", "cm") == "cm"
+    V, n_sharp = G.cad_to_brep(str(unit_files / "pillbox_pipes.step"), "m", str(unit_files / "out.brep"))
+    assert n_sharp == 2 and V == pytest.approx(np.pi * (0.1 ** 2 * 0.08 + 0.03 ** 2 * 0.12), rel=1e-4)
+
+
+def test_upload_step_units_and_sharp_edges(client, unit_files):
+    """Upload: STEP boxes declared in mm and in m give the same bbox for any unit field (unit_used 'file');
+    an uploaded pillbox with sharp pipe junctions has no surface peaks, and every upload warns about the
+    assumed beam axis."""
+    boxes = []
+    for f in ("box_mm.step", "box_m.step"):
+        for unit in ("mm", "m"):
+            with open(unit_files / f, "rb") as fh:
+                r = client.post("/api/geometries", files={"file": (f, fh)}, data={"unit": unit, "mesh_size": "0.3"})
+            assert r.status_code == 200, r.text
+            g = r.json()
+            assert g["source"]["unit_used"] == "file" and g["source"]["n_sharp_edges"] == 0
+            boxes.append(np.array(g["check"]["bbox_mm"]))
+    for b in boxes:
+        np.testing.assert_allclose(b, [[0, 0, 0], [100, 200, 300]], atol=1e-6)
+    with open(unit_files / "box_100.brep", "rb") as fh:
+        g = client.post("/api/geometries", files={"file": ("b.brep", fh)}, data={"unit": "mm", "mesh_size": "0.3"}).json()
+    assert g["source"]["unit_used"] == "mm" and g["check"]["bbox_mm"][1] == pytest.approx([100, 200, 300])
+    with open(unit_files / "pillbox_pipes.step", "rb") as fh:
+        g = client.post("/api/geometries", files={"file": ("pp.step", fh)}, data={"unit": "m", "mesh_size": "0.3"}).json()
+    assert g["source"]["n_sharp_edges"] == 2 and g["can_predict"], g.get("predict_blocker")
+    p = client.post("/api/predictions", json={"geometry_id": g["id"]})
+    assert p.status_code == 200, p.text
+    p = p.json()
+    assert any("beam axis assumed" in w for w in p["warnings"]) and any("sharp edges" in w for w in p["warnings"])
+    assert all(m["Epk_Eacc"] is None and m["Bpk_Eacc_mT_per_MVm"] is None for m in p["modes"])
+    assert any(m["Q0"] for m in p["modes"])                    # the other figures of merit stay
+
+
+def test_prediction_errors_are_422(pillbox_msh, monkeypatch):
+    """An exception inside the prediction (display-mesh mismatch, CG, netgen) is a 422 with a short message."""
+    svc = ModelService(None, "cpu")
+    c = TestClient(A.create_app(svc, datasets={}))
+    g = _upload_step(c, pillbox_msh)
+
+    def boom(*a, **k):
+        raise ValueError("the display geometry is not the linear mesh")
+    monkeypatch.setattr(svc, "predict", boom)
+    r = c.post("/api/predictions", json={"geometry_id": g["id"]})
+    assert r.status_code == 422 and "ValueError" in r.json()["detail"] and "display geometry" in r.json()["detail"]
+
+
+def test_random_sample_ids_are_beyond_every_dataset_block():
+    """Random example ids never hit a dataset id: blocks of cluster/truba/families.tsv (ids block·2^19 + i)."""
+    from src.service import jobs as J
+    blocks = J.family_blocks()
+    assert blocks and max(blocks.values()) <= 31
+    lo, hi = A.RANDOM_SAMPLE_IDS
+    for b in blocks.values():
+        b_lo, b_hi = b * J.ID_BLOCK, (b + 1) * J.ID_BLOCK
+        assert b_hi <= lo or b_lo >= hi, b
+    assert 32 * J.ID_BLOCK <= lo < hi                                       # beyond any block a new family may get
+    assert A.SampleReq(family="box", id=hi - 1).id == hi - 1                 # a shown random id can be re-entered
 
 
 def test_serve_web_helpers():

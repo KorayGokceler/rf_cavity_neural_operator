@@ -35,6 +35,7 @@ import base64
 import collections
 import hashlib
 import hmac
+import logging
 import os
 import random
 import re
@@ -59,6 +60,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 TRAIN_FAMILIES = ('elliptical', 'reentrant', 'pillbox_pipes', 'ridged_box', 'composite', 'freeform',
                   'hwr', 'spoke', 'dtl')
 OOD_FAMILIES = ('box', 'coax_qw', 'pillbox_port', 'elliptical_long', 'junction')
+# Random example ids (POST /api/geometries/sample without an id): beyond every dataset id.  Dataset ids are
+# block·2^19 + i with block ≤ 31 (cluster/truba/families.tsv: train 1–9, ood 20–24, new families ≤ 31), i.e.
+# all below 32·2^19 = 2^24; the random ids use [2^24, 2^25) (blocks 32–63, never assigned).  An explicit id
+# is used as given (deterministic geometry).
+RANDOM_SAMPLE_IDS = (2 ** 24, 2 ** 25)
+UPLOAD_AXIS_WARNING = ('beam axis assumed: z through the origin; L_acc = axis chord incl. pipes; R/Q, R_sh, T and '
+                       'peaks/Eacc depend on it')
+SHARP_EDGE_WARNING = ('sharp edges ({} re-entrant): Epk/Eacc and Bpk/Eacc are not converged and are not reported')
+log = logging.getLogger('rfcav.api')
 
 
 def _env(name, default, cast=float):
@@ -71,8 +81,9 @@ class Limits:
     mesh_timeout_s = _env('RFCAV_MESH_TIMEOUT', 120.0)
     mesh_mem_mb = _env('RFCAV_MESH_MEM_MB', 4096, int)
     max_tets = _env('RFCAV_MAX_TETS', 400_000, int)
-    # curved tets the field model predicts on (CPU: ~3 GB, ~15 s at 10k tets); default the field labels' budget
-    max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 30_000, int)
+    # curved tets the field model predicts on (CPU: ~3 GB, ~15 s at 10k tets); the training model meshes have
+    # ≤ 10k tets (field_labels model_max_elements), so 15k keeps a margin without running far outside them
+    max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 15_000, int)
     min_mesh_size = 0.05
     max_items = _env('RFCAV_MAX_ITEMS', 64, int)
     ttl_s = _env('RFCAV_TTL_S', 3600.0)
@@ -120,7 +131,7 @@ def _clean(v):
 
 class SampleReq(BaseModel):
     family: str
-    id: int | None = Field(default=None, ge=0, lt=2 ** 24)
+    id: int | None = Field(default=None, ge=0, lt=RANDOM_SAMPLE_IDS[1])   # a random id can be re-entered
     mesh_size: float = Field(default=0.10, ge=Limits.min_mesh_size, le=0.5)
 
 
@@ -220,7 +231,8 @@ def create_app(service=None, datasets=None):
         n = int(g.get('n_tets_curved') or len(g['tets']))
         if n > lim.max_predict_tets:
             return (f"the curved mesh has {n} tets, above the prediction budget of {lim.max_predict_tets} "
-                    "(RFCAV_MAX_PREDICT_TETS): use a coarser mesh size")
+                    "(RFCAV_MAX_PREDICT_TETS): try a coarser mesh size (the curvature of the solid can keep "
+                    "the curved mesh fine)")
         return None
 
     def _geometry_response(nodes, tets, source, extra=None, prepared=None, field=None):
@@ -252,8 +264,12 @@ def create_app(service=None, datasets=None):
                            'max_predict_tets': lim.max_predict_tets,
                            'cad': list(G.CAD_EXT), 'mesh': list(G.MESH_EXT)},
                 'conventions': {'U_J': 1.0, 'wall': 'copper, sigma = 5.8e7 S/m', 'beta': 1.0,
-                                'R_over_Q': 'linac: V^2/(omega U)', 'beam_axis': 'src.qoi.operators.beam_axis: x = y = 0 along z; hwr, ridged_box, box per family',
-                                'L_acc': 'cavity length along the beam, pipes excluded (acceleration_length)'}}
+                                'R_over_Q': 'linac: V^2/(omega U)',
+                                'beam_axis': 'src.qoi.operators.beam_axis: x = y = 0 along z; hwr, ridged_box, box per '
+                                             'family; CAD uploads: z through the origin of the file',
+                                'L_acc': 'cavity length along the beam, pipes excluded (acceleration_length); CAD '
+                                         'uploads and families without one: the axis chord inside the cavity, pipes '
+                                         'included'}}
 
     @app.post('/api/geometries')
     def upload(file: UploadFile = File(...), unit: str = Form('mm'), mesh_size: float = Form(0.10),
@@ -277,15 +293,19 @@ def create_app(service=None, datasets=None):
                                    timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
             except (RuntimeError, TimeoutError) as e:
                 raise HTTPException(422, f"could not mesh the file: {e}") from None
+        # unit_used: 'file' for STEP / IGES (the unit the file declares; `unit` ignored), else `unit`
+        n_sharp = m.get('n_sharp_edges')
         return _geometry_response(m['nodes'], m['tets'], {'kind': 'upload', 'name': os.path.basename(file.filename or ''),
-                                                          'unit': unit, 'mesh_size': mesh_size, 'n_cells': n_cells},
-                                  field=m)
+                                                          'unit': unit, 'unit_used': m.get('unit_used', unit),
+                                                          'mesh_size': mesh_size, 'n_cells': n_cells,
+                                                          'n_sharp_edges': n_sharp},
+                                  field=dict(m, geom_params=None if n_sharp is None else {'n_sharp_edges': float(n_sharp)}))
 
     @app.post('/api/geometries/sample')
     def sample(req: SampleReq):
         if req.family not in TRAIN_FAMILIES + OOD_FAMILIES:
             raise HTTPException(422, f"unknown family {req.family!r}")
-        s_id = req.id if req.id is not None else random.randrange(2 ** 20, 2 ** 21)   # beyond the training ids
+        s_id = req.id if req.id is not None else random.randrange(*RANDOM_SAMPLE_IDS)   # beyond all dataset ids
         try:
             m = G.run_isolated(G.mesh_family, req.family, s_id, req.mesh_size,
                                timeout=lim.mesh_timeout_s, mem_mb=lim.mesh_mem_mb)
@@ -312,8 +332,12 @@ def create_app(service=None, datasets=None):
         if blocker:
             raise HTTPException(422, blocker)
         t0 = time.perf_counter()
-        geom, M = _prepared(g)
-        p = service.predict(g['mesh_src'], geom, M, g['family'], g.get('geom_params'), key=req.geometry_id)
+        try:
+            geom, M = _prepared(g)
+            p = service.predict(g['mesh_src'], geom, M, g['family'], g.get('geom_params'), key=req.geometry_id)
+        except Exception as e:                   # noqa: BLE001 — display-mesh mismatch, CG non-convergence, netgen …
+            log.exception('prediction of geometry %s failed', req.geometry_id)
+            raise HTTPException(422, f"prediction failed ({type(e).__name__}: {str(e)[:300]})") from None
         p['time_s']['total'] = time.perf_counter() - t0
         p['_geometry_id'] = req.geometry_id
         pid = preds.put(p)
@@ -326,6 +350,10 @@ def create_app(service=None, datasets=None):
                             'Epk/Eacc and Bpk/Eacc are undefined')
         if g['source'].get('ood'):
             warnings.append('out-of-distribution family: verify with a full-wave solver')
+        if g['source'].get('kind') == 'upload':
+            warnings.append(UPLOAD_AXIS_WARNING)
+        if float((g.get('geom_params') or {}).get('n_sharp_edges') or 0) > 0:
+            warnings.append(SHARP_EDGE_WARNING.format(int(g['geom_params']['n_sharp_edges'])))
         out = _summary(pid, p, {'geometry_id': req.geometry_id, 'time_s': p['time_s'], 'warnings': warnings,
                                 'model': service.info(), 'qoi_source': p['qoi_source'], 'n_dof': p['n_dof'],
                                 'n_tets': p['n_tets']})
@@ -334,7 +362,11 @@ def create_app(service=None, datasets=None):
             truth = preds.get(req.compare_to)
             if truth.get('_geometry_id') != req.geometry_id:
                 raise HTTPException(422, 'compare_to must be the FE solution of the same geometry')
-            rows, diff = compare(p, truth)
+            try:
+                rows, diff = compare(p, truth)
+            except Exception as e:               # noqa: BLE001
+                log.exception('comparison of geometry %s failed', req.geometry_id)
+                raise HTTPException(422, f"comparison failed ({type(e).__name__}: {str(e)[:300]})") from None
             diff['_geometry_id'] = req.geometry_id
             out['comparison'] = {'rows': rows, 'diff_id': preds.put(diff), 'truth_id': req.compare_to}
         return out
