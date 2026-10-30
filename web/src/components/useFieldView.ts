@@ -2,7 +2,7 @@
 // (solution, mode, E/H) at the current phase. The workspace calls it once per pane (twice in the split view).
 // Cuts and grids are cached per mesh (workspace.ts), so a second pane on the same mesh adds only the sampling.
 import { useMemo } from 'react';
-import { fillGrid, gather, magnitude, modeField, sampleArrows, sampleGrid, sampleSlice, scaled, sliceArrows, thinGrid,
+import { fillGrid, gather, magnitude, modeField, modeSurf, sampleArrows, sampleGrid, sampleSlice, scaled, sliceArrows, thinGrid,
          gridPoints, type FieldBundle, type Slice } from '../fieldlab';
 import { CUT_ARROWS, MAX_ARROWS, arrowBase, cutOf, gridOf, type Display, type Source, type View3D } from '../workspace';
 import { phaseFactor, type Arrows, type VolumeScalars } from './Viewer3D';
@@ -35,7 +35,7 @@ export function useFieldView(p: PaneInput) {
   const cutV = useMemo(() => (cut && F ? sampleSlice(cut, F) : null), [cut, F]);
   const gridV = useMemo(() => (grid && F ? sampleGrid(grid, F) : null), [grid, F]);
   const planeAmp = useMemo(() => (cutV ? magnitude(cutV) : null), [cutV]);
-  const surfAmp = useMemo(() => (bundle && F ? magnitude(gather(F, bundle.vid)) : null), [bundle, F]);
+  const surfAmp = useMemo(() => (onField && bundle ? modeSurf(bundle, field, mode) : null), [onField, bundle, field, mode]);   // |E| / |H| on the curved wall
   const volAmp = useMemo(() => (grid && gridV ? fillGrid(grid, magnitude(gridV)) : null), [grid, gridV]);
   const cutSel = useMemo(() => (cut && arrowsOn ? sliceArrows(cut, CUT_ARROWS) : null), [cut, arrowsOn]);
   const gridSel = useMemo(() => {

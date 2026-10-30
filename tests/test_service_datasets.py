@@ -156,8 +156,12 @@ def test_model_vs_fe_comparison(field_client):
         for n in QOI_SHOW:
             assert r["qoi"][n]["model"] == (None if cluster[k] else p["modes"][k][n]), (k, n)
             assert r["qoi"][n]["fe"] == o["truth"]["modes"][k][n]
-    d = c.get(f"/api/predictions/{p['comparison']['diff_id']}/modes/0").json()
-    assert d["surface"]["E_max"] > 0
+    d = c.get(f"/api/predictions/{p['comparison']['diff_id']}/fields").json()      # aligned model − FE, per node
+    t = c.get(f"/api/predictions/{o['truth']['id']}/fields").json()
+    assert d["n_nodes"] == t["n_nodes"] and d["nodes_b64"] == t["nodes_b64"] and d["n_modes"] == K_FIELD
+    assert d["n_surface"] == t["n_surface"] == o["surface"]["n_points"] and min(d["E_max"]) > 0
+    assert np.isfinite(np.frombuffer(base64.b64decode(d["E_b64"]), np.float16).astype(float)).all()
+    assert len(d["axis"]["Ez"]) == K_FIELD and len(d["axis"]["z_mm"]) == len(t["axis"]["z_mm"])
     other = c.post("/api/geometries/sample", json={"family": "box", "id": 3, "mesh_size": 0.3}).json()
     bad = c.post("/api/predictions", json={"geometry_id": other["id"], "compare_to": o["truth"]["id"]})
     assert bad.status_code == 422

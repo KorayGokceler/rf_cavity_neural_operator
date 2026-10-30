@@ -48,8 +48,8 @@
    `highorder.mode_qoi` ile, etiketlerle aynı kod, eksen ve hızlanma boyu (`qoi_source: p2_model`).
    Hızlandırıcı mod bu değerlerle yeniden seçilir.
 5. **η:** alan operatörlerinin K, M'siyle ‖K u − λ M u‖_{D⁻¹} / λ.
-6. **Gösterim:** p2 alanları Whitney N0'a (eğri mesh'in doğrusal mesh'i, `datasets.whitney_dofs`) izdüşürülür;
-   geometrinin gösterim mesh'i zaten bu doğrusal mesh olduğundan yüzey, kesit, hacim ve `/fields` değişmeden çalışır.
+6. **Gösterim:** p2 alanı doğrudan çizilir, Whitney N0 izdüşümü yok (§1d). Çözüm tembeldir: `predict` yalnız DOF'ları,
+   frekansları, değerleri ve η'yı tutar; alanlar ilk `/fields` isteğinde hesaplanır.
 
 Süreler (`time_s`): `mesh`, `operators` (önbellekten 0), `model`, `qoi`, `display`, `total`. Yanıtta ayrıca
 `qoi_source`, `n_dof` (p2 DOF), `n_tets` (eğri tet). Ölçüm: docs/31.
@@ -77,6 +77,79 @@ checkpoint'lerini kabul eder; `serve_web.py --checkpoint auto` başka türdekile
   sınırıyla: reentrant 25–27k, hwr 18–19k, elliptical 7,5k – 29,6k, pillbox_pipes 8,9k, spoke 4–15k, box < 0,3k).
 - **Rastgele örnek numaraları** [2^24, 2^25): `families.tsv` bloklarının hepsinin ötesinde.
 
+### 1d. Gösterim hattı: p2 alanı doğrudan (`src/viz/hcurl_display.py`)
+
+Eskiden p2 alanı doğrusal mesh'e Whitney N0 olarak (`Set(dual)`) izdüşürülüp köşelerde ortalanıyordu; resmin
+hatası sayılardan çok büyüktü (§ aşağıdaki tablo). Şimdi eğri mesh'in p2 alanı kendisi çizilir. Model tahmini ve
+FE etiketi (dataset öğesi) aynı yoldan geçer; ikisi de `HCurl(p2, dirichlet='wall')` DOF vektörüdür.
+
+| öğe | nasıl |
+|---|---|
+| **düğümler** | her tet'in 10 P2 noktası (4 köşe + 6 kenar ortası), eğri eleman haritasıyla (`MapToAllElements`) metre cinsinden; ortak düğümler ortalanır. `SetDeformation` dahildir: deforme örnekler artık deforme çizilir (açık iş 20'nin gösterim kısmı) |
+| **hücreler** | tet başına 8 doğrusal alt-tet (4 köşe tet'i + iç sekizyüzlü en kısa köşegenle 4 tet'e bölünür). Konform, hepsi pozitif hacimli; yarım eleman boyunda doğrusal bir mesh |
+| **alanlar** | düğümlerde E ve H = −curl E/(ωμ0) (p2'nin tam değerlendirmesi, düğümlerde ortalama), U = ½ε0∫\|E\|² = 1 J. Tarayıcı alt-tet içinde doğrusal ara değer alır |
+| **duvar** | her sınır yüzünde üçgen kafes, seviye 4 (9k yüze kadar; üstünde 3, 16k yüzden sonra 2; en çok ~150k üçgen), eğri yüzeyden (doğrusal yüzey değil); kaynaklanmış, dışa bakan. Değerler komşu hacim elemanından `BoundaryFromVolumeCF` ile (Epk / Bpk'nin yolu, tek taraflı); \|E\| ve \|H\| float16. Geometri yanıtının `surface`'ı da bu kafestir; `check` hacmi ve bbox'ı eğri katıdan (`Integrate(1)` ve kafes) gelir |
+| **eksen** | E_z profili 401 noktada p2'den, kavite dışı `null`; merkez = alt-tet hacim merkezi. FE ve fark için de aynı yol |
+| **kesit, hacim** | `/plane` ve `/volume` sunucuda tam p2 değerlendirmesi (`eval_points`; NGSolve nokta arama), arayüz bunları kullanmaz ama test ve dış kullanım için doğruluk ölçütüdür. Deforme örnekte nokta araması deformasyonu görmez: `hcurl_display.locate` ön görüntüyü Newton ile bulur |
+
+**Enerji ölçeği** ölçüldü (varsayım değil): alan operatörlerinin M'si fiziksel M / `scale`'dir
+(`\|M·scale − M_fiziksel\|` = 1e-16 bağıl), yani U = ½ε0 · scale · uᵀMu (N0 yolundaki `scale³` değil). Aynı kuralla
+(order 8) `Integrate` ile makine hassasiyetinde, order 12 ile 5e-8 içinde eşit (`tests/test_hcurl_display.py`).
+
+**`/fields` şeması** (bir çözüm için tek istek):
+
+| anahtar | içerik |
+|---|---|
+| `n_modes`, `n_nodes`, `n_cells`, `n_tets`, `n_surface`, `f_GHz` | boyutlar (`n_cells` = 8·`n_tets`, `n_surface` geometrinin `surface.n_points`'ı) |
+| `nodes_b64` | P2 düğümleri [n_nodes, 3] float32, mm |
+| `tets_b64` | alt-tet'ler [n_cells, 4] uint32 |
+| `E_b64`, `H_b64` | [K, n_nodes, 3] float16, her mod kendi `E_max` / `H_max`'ına bölünmüş |
+| `surf_E_b64`, `surf_H_b64` | [K, n_surface] float16, duvar noktalarında \|E\|, \|H\| (aynı bölenler) |
+| `E_max`, `H_max` | mod başına, düğümler **ve** duvar üzerinden en büyük değer |
+| `axis` | `z_mm`, `Ez[K][P]` (kavite dışı `null`) |
+
+Fark çözümü (model − FE): düğüm alanları çıkarılır, duvar değeri vektör farkının büyüklüğüdür (sunucuda).
+Karşılaştırma `align`'ı p2 DOF uzayında gerçek kütle matrisiyle yapar (`rel_l2` artık iki p2 alanın gerçek M
+normundaki hatasıdır, eski N0 ölçüsünden biraz farklı çıkar).
+
+**Ölçümler** (`scripts/measure_display.py`; boş makine, 4 çekirdek, eğitilmemiş model, tek koşu, eliptik id 3):
+
+| | 10,7k tet önce | 10,7k sonra | 27,5k tet önce | 27,5k sonra |
+|---|---|---|---|---|
+| `predict` gösterim aşaması | 1,66 s | 0,26 s | 4,51 s | 0,76 s |
+| ilk `/fields` isteği (sunucu) | 0,02 s | 0,67 s | 0,02 s | 1,63 s |
+| `/fields` ham / gzip | 581 kB / 333 kB | 4,59 MB / 2,80 MB | 1,35 MB / 819 kB | 11,1 MB / 6,7 MB |
+| geometri yanıtı (yüzey dahil) | 73 kB | 1,16 MB | 144 kB | 2,28 MB |
+| tepe RSS (geometri + tahmin + `/fields`) | 2111 MB | 1994 MB | 3453 MB | 3404 MB |
+| kesit kaydırıcı, JS (Chromium, orta / en çok) | 1,2–1,7 / 7 ms | 7–9 / 16 ms | 2,6–4,8 / 13 ms | 19–21 / 30 ms |
+| 3B ızgara (`rasterize`, Chromium) | 20 ms | 49 ms | 39 ms | 76 ms |
+
+Hedefler: gösterim aşaması ≤ 0,3 s (10k) tutuyor; `/fields` ≤ 6 MB ham (10k) tutuyor, bu yüzden şema basit
+kaldı (mesh geometri başına bir kez gönderilmiyor). 30k tet'te 11 MB ham / 6,7 MB gzip: sıradaki azaltma
+adımları (`GET /api/geometries/{gid}/display_mesh` ile mesh'i bir kez göndermek, alt-tet'leri `tet10` olarak
+gönderip istemcide açmak, H'yi anahtarda istemek) yapılmadı. JS kesit süresi 50 ms altında kaldığı için alt-tet
+ön süzgeci eklenmedi.
+
+**Doğruluk** (pillbox TM010, R = 40 mm, L = 50 mm, curve 3, p2; gösterilen alanın tam alandan noktasal hatası,
+tepe E0 / H0'ın kesri; 5000 rastgele iç nokta, tarayıcının yaptığı barisentrik ara değerle):
+
+| tet | eski E maks / rms | yeni E maks / rms | eski H maks / rms | yeni H maks / rms |
+|---|---|---|---|---|
+| 124 | 2,4e-1 / 1,2e-1 | 8,1e-2 / 2,0e-2 | 2,5e-1 / 1,3e-1 | 9,8e-2 / 3,2e-2 |
+| 581 | 1,4e-1 / 5,9e-2 | 3,0e-2 / 7,8e-3 | 1,3e-1 / 5,3e-2 | 4,5e-2 / 9,2e-3 |
+| 1773 | 9,6e-2 / 3,3e-2 | 1,6e-2 / 3,9e-3 | 6,7e-2 / 2,9e-2 | 2,0e-2 / 4,5e-3 |
+| 6678 | 5,5e-2 / 1,6e-2 | 5,5e-3 / 1,6e-3 | 3,6e-2 / 1,4e-2 | 9,1e-3 / 1,9e-3 |
+| 12170 | 4,0e-2 / 1,1e-2 | 4,4e-3 / 9,6e-4 | 2,6e-2 / 9,1e-3 | 4,8e-3 / 1,1e-3 |
+| 21537 | 3,9e-2 / 9,1e-3 | 2,5e-3 / 6,9e-4 | 2,0e-2 / 7,4e-3 | 3,9e-3 / 8,8e-4 |
+
+**Dürüst sınır:** gösterilen alan, P2 düğümlerinin alt-tet'lerinde P1'dir. İnce mesh'lerde hatası tepenin ~1e-3'ü
+(21k tet'te E: 2,5e-3 maks, 7e-4 rms) kalır; 6,7k tet'te p2 çözümün kendi noktasal hatası E için 6e-4 maks / 1,2e-4 rms,
+yani gösterim bunun ~10 katı. N0 yoluna göre ~13–15 kat iyidir ama sıfır değildir. Tam görmek için `/plane`, `/volume` (tam p2) kullanılır. Düğümlerde ortalama,
+elemanlar arası normal E sıçramasını (HCurl yalnız teğetsel sürekliliği korur) yumuşatır; duvarın kendisi ortalanmamış
+sınır yolundan çizilir. Çizilen P1 alanın enerjisi tam 1 J değildir: ölçek tam (kütle matrisi) ama P1 ara değer tepeyi hafif
+keser (6,7k tet'te −%0,5, 1,8k'da −%1,3; hedef 1e-3 tutmadı, tam enerji `field_energy` ile alınır). Duvar
+kafesinin radyal sapması seviye-4'te 9,6e-5 R (doğrusal yüzeyde en çok %2 R).
+
 ## 2. API (v0.1)
 
 | uç nokta | ne yapar |
@@ -85,16 +158,15 @@ checkpoint'lerini kabul eder; `serve_web.py --checkpoint auto` başka türdekile
 | `POST /api/geometries` (multipart: `file`, `unit`, `mesh_size`, `n_cells`) | mesh + kontroller (tek parça / manifold, b1, hacim, bbox) + görüntü yüzeyi + `can_predict`, `predict_blocker` |
 | `POST /api/geometries/sample` `{family, id?, mesh_size}` | üretici geometrisi (id boşsa eğitimde kullanılmamış rastgele bir kimlik) + `params`, `can_predict`, `predict_blocker` |
 | `POST /api/predictions` `{geometry_id}` | mod tablosu (f, kavite değerleri, η, dejenere, hızlandırıcı mod), `qoi_source`, `n_dof`, `n_tets`, süreler, uyarılar; tahmin edilemezse 422 |
-| `GET /api/predictions/{id}/modes/{k}` | yüzey E/H (faz için iki alan) + eksen boyunca E_z |
-| `GET /api/predictions/{id}/plane?mode&axis&pos&res` | kesit düzlemi: noktalar, üçgenler, E, H |
-| `GET /api/predictions/{id}/volume?mode&n` | 3B görünüm: kutu üzerinde ~n noktalık düzenli ızgara (x en hızlı), E, H, kavite içi maskesi |
-| `GET /api/predictions/{id}/fields` | bütün modlar düğümlerde + hacim mesh'i, tek yanıtta (çalışma alanı bunu kullanır) |
+| `GET /api/predictions/{id}/plane?mode&axis&pos&res` | kesit düzlemi, tam p2 değerlendirmesi: noktalar, üçgenler, E, H |
+| `GET /api/predictions/{id}/volume?mode&n` | kutu üzerinde ~n noktalık düzenli ızgara (x en hızlı), tam p2 değerlendirmesi: E, H, kavite içi maskesi |
+| `GET /api/predictions/{id}/fields` | bütün modlar P2 düğümlerinde + alt-tet mesh'i + duvar değerleri, tek yanıtta (§1d; çalışma alanı bunu kullanır). `/modes/{k}` kaldırıldı |
 | `GET /api/predictions/{id}/export` | JSON dosyası |
 
 **Çalışma alanı alanı tarayıcıda hesaplar** (`web/src/fieldlab.ts`). Bir çözüm için tek istek atılır:
-`/fields`. İçinde bütün modların düğüm alanları (float16, her mod kendi E_max / H_max'ına bölünmüş), düğümler,
-tet'ler ve yüzey düğümleri var. Yanıt gzip'li (tünel: Colab, telefon). Sonrası tarayıcıda:
-- **kesit:** tet'ler düzlemle kesilir (mesh'in gerçek kesiti), kenar üstündeki değer kenar boyunca doğrusal;
+`/fields` (§1d). İçinde bütün modların P2 düğümlerindeki alanları (float16, her mod kendi E_max / H_max'ına bölünmüş),
+düğümler, alt-tet'ler ve duvar noktalarındaki \|E\|, \|H\| var. Yanıt gzip'li (tünel: Colab, telefon). Sonrası tarayıcıda:
+- **kesit:** alt-tet'ler düzlemle kesilir (gösterim mesh'inin gerçek kesiti), kenar üstündeki değer kenar boyunca doğrusal;
 - **3B ızgara:** `locate_grid`'in aynısı (her tet kutusundaki ızgara noktalarını barisentrik testle bulur);
 - **mod, E/H, faz:** yalnız hangi diziden okunacağı değişir.
 
@@ -403,8 +475,7 @@ Varsayılan DOF bütçesi, en az bir işçinin belleğe sığdığı en büyük 
 **Dataset sayfası, alan datasetleri** (tür `field`): tabloda model ve etiket mesh'i (tet), model DOF,
 uyarlamalı seviye sayısı, durma nedeni (yakınsadı / bütçe / en çok seviye), tahmini δf/f, yuvarlatılan
 ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde çalışma alanına getirir:
-- **Alanlar:** p2 etiket alanları gösterim için Whitney N0'a izdüşürülür (projeksiyon tabanlı
-  interpolasyon). N0 Rayleigh oranı, 11–13k tetlik mesh'lerde etiket frekansının %1.3 içinde.
+- **Alanlar:** p2 etiket alanları (`u_model`) olduğu gibi çizilir (§1d); N0 izdüşümü yok. Fiziksel kütle matrisi ve eğri duvar kafesi `open` sırasında hesaplanır.
 - **Değerler:** Q0, R/Q ve tepe değerleri saklanan p3 etiketleridir (`qoi_source: p3_labels`). Eksende
   alanı olmayan modlarda gerilime bağlı büyüklükler "—" olarak gösterilir.
 
@@ -572,7 +643,7 @@ Colab notları:
 ## 7. Bilinen sınırlar (v0.1)
 
 - **Bellek deposu:** tek süreç için tasarlandı. Çok worker'lı uvicorn ya da yeniden başlatma sonuçları kaybeder (v0.2: Redis).
-- **Gösterim N0 üzerinden:** tahmin edilen p2 alanları ve alan datasetlerinin saklanan p2 alanları (`u_model`) Whitney N0'a izdüşürülüp çiziliyor (§1b adım 6);
-  resim sayılardan (Ritz frekansları, p2 kavite değerleri) daha kaba. Yüksek mertebe gösterim sıradaki PR (docs/31 açık iş 15).
+- **Gösterim P1:** p2 alanı P2 düğümlerinin alt-tet'lerinde doğrusal çiziliyor (§1d); ince mesh'lerde tepenin ~1e-3'ü kadar hata taşır
+  (p2 çözümün kendisinden ~10–15 kat fazla). Tam değerler `/plane`, `/volume`'dadır. Büyük örneklerde `/fields` büyük (27k tet: 11 MB ham).
 - **Kesit kenarları:** düzlem düzenli bir ızgarayla örnekleniyor; duvar kenarı ızgara çözünürlüğünde basamaklı görünür.
 - **Docker imajı:** derleme bu geliştirme ortamında yalnız kısmen doğrulandı. Frontend aşaması (`npm ci`) geçti. Debian paketleri ve download.pytorch.org ağ politikası nedeniyle indirilemedi. Gerçek bir makinede `docker compose up --build` ile denenmeli.

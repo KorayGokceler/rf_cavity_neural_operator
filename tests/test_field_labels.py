@@ -140,10 +140,11 @@ def test_fast_dev_run_train_py(field_h5, tmp_path, monkeypatch):
 
 def test_field_datasets_in_the_ui_browser(field_h5):
     """The web UI lists field-label H5 as kind 'field' with the label quality, and opens a geometry on its
-    model mesh: label fields on Whitney N0 for display (unit energy, frequencies from their own Rayleigh
-    quotient), the stored p3 figures of merit."""
-    from src.data.dataset_converter_3d import geometry_operators
-    from src.data.sparse import to_csr
+    model mesh: the label fields as stored (HCurl p2 DOFs, drawn directly — no Whitney N0 projection), with
+    unit energy and the frequencies from their own Rayleigh quotient, and the stored p3 figures of merit."""
+    from ngsolve import BilinearForm, HCurl, curl
+
+    from src.data_gen import highorder as ho
     from src.service.datasets import FieldH5Dataset, discover
     ds = discover(str(field_h5))
     d = next(iter(ds.values()))
@@ -154,18 +155,20 @@ def test_field_datasets_in_the_ui_browser(field_h5):
     assert r1["n_edges"] > 0 and r1["n_tets"] > 0 and r1["n_nodes"] > 0
     assert r1["field"]["adapt_stop"] in ("converged", "budget", "max_iter") and r1["field"]["adapt_iters"] >= 1
     rec = d.open(1)                                                   # calibration pillbox
-    g, U = rec["geom"], rec["U"]
-    ne = len(g["edges"])
-    assert U.shape == (ne, K) and np.isfinite(U).all()
-    ops = geometry_operators(np.asarray(g["X"], np.float64), np.asarray(g["tets"], np.int64))[0]
-    Kn, Mn = to_csr(ops["K"], (ne, ne)), to_csr(ops["M"], (ne, ne))
-    lam = np.einsum("ik,ik->k", U, Kn @ U) / np.einsum("ik,ik->k", U, Mn @ U)
-    f_n0 = np.sqrt(lam) * 299792458.0 / (2 * np.pi * g["scale"]) / 1e9
-    # the N0 interpolant is the same mode (a sign / edge-order error would put it far off; the coarse
-    # 57-tet model mesh of the fixture costs N0 up to ~15 %)
-    assert abs(f_n0[0] / rec["f_GHz"][0] - 1) < 0.02 and np.all(np.abs(f_n0 / rec["f_GHz"] - 1) < 0.25)
+    U, mesh = rec["U"], rec["mesh"]
+    assert U.shape == (rec["n_dof"], K) == (r1["n_edges"], K) and np.isfinite(U).all()   # raw HCurl DOFs, no N0
+    assert rec["Mp"].shape == (rec["n_dof"], rec["n_dof"]) and rec["order"] == 2
+    assert set(rec["curved"]) >= {"points", "triangles", "vid3", "w3", "volume_m3", "bbox_m"}
+    fes = HCurl(mesh, order=rec["order"], dirichlet="wall")
+    u, v = fes.TnT()
+    Kp = ho._tosp(BilinearForm(curl(u) * curl(v) * ho.volume_measure(rec["order"]), symmetric=True).Assemble().mat)
+    lam = np.einsum("ik,ik->k", U, Kp @ U) / np.einsum("ik,ik->k", U, rec["Mp"] @ U)
+    f_p2 = np.sqrt(lam) * 299792458.0 / (2 * np.pi) / 1e9
+    # the stored p2 field is the label mode (a sign / DOF-order error would put it far off; the 57-tet model mesh
+    # of the fixture costs the p2 projection of the p3 mode a few percent)
+    assert np.all(f_p2 >= rec["f_GHz"] * (1 - 1e-3)) and np.all(np.abs(f_p2 / rec["f_GHz"] - 1) < 0.1)
     assert rec["qoi_labels"][0]["Q0"] > 1e3                           # stored p3 label of the copper TM010
-    # the API shows the stored p3 figures of merit (not those of the N0 display fields)
+    # the API shows the stored p3 figures of merit
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     from src.service import api as A
@@ -176,8 +179,9 @@ def test_field_datasets_in_the_ui_browser(field_h5):
     items = c.get(f"/api/datasets/{did['id']}/items").json()["items"]
     assert items[0]["field"]["n_tets_label"] >= items[0]["n_tets"] > 0
     out = c.post(f"/api/datasets/{did['id']}/items/1/open").json()
-    assert out["truth"]["qoi_source"] == "p3_labels"
+    assert out["truth"]["qoi_source"] == "p3_labels" and out["truth"]["n_dof"] == rec["n_dof"]
     assert out["truth"]["modes"][0]["Q0"] == pytest.approx(rec["qoi_labels"][0]["Q0"])
+    assert out["check"]["volume_cm3"] == pytest.approx(rec["curved"]["volume_m3"] * 1e6)    # the curved solid's volume
 
 
 def test_truba_one_line_run_dry_run(tmp_path):

@@ -65,7 +65,9 @@ def curved_from_cad(cad_path, h, deform=None, max_elements=None):
     """Curved netgen mesh of a CAD solid [m] with the field-label settings (field_labels.start_mesh: the
     adaptive labels' start mesh, maxh = maxh_factor·h, curvaturesafety 1.5 then 2) → dict(nodes, tets
     [linear mesh], mesh_src {vol, brep (bytes), curve, deform}, n_tets).  Raises when netgen fails, folds
-    elements or exceeds max_elements (default field_labels.DEFAULTS['max_elements'])."""
+    elements or exceeds max_elements (default field_labels.DEFAULTS['max_elements']).  'curved': the curved wall
+    lattice, volume and bbox of the mesh (hcurl_display.curved_display) — the display surface and the geometry
+    checks use the curved solid, not its linear facets."""
     import tempfile
 
     from src.data_gen import field_labels as fl
@@ -75,10 +77,12 @@ def curved_from_cad(cad_path, h, deform=None, max_elements=None):
         brep = os.path.join(tmp, 's.brep')
         shape.WriteBrep(brep)
         brep_bytes = open(brep, 'rb').read()
+    from src.viz import hcurl_display as hd
     nodes, tets = linear_mesh(mesh)
     return {'nodes': nodes, 'tets': tets, 'n_tets': int(mesh.ne),
             'mesh_src': {'vol': fl._mesh_bytes(mesh), 'brep': brep_bytes, 'curve': int(s['curve']),
-                         'deform': deform}}
+                         'deform': deform},
+            'curved': hd.curved_display(mesh)}
 
 
 def load_mesh_src(src):
@@ -217,8 +221,10 @@ def mesh_family(family, s_id, mesh_size=0.10, max_elements=None):
 
 # ─────────────────────────── checks + display surface ──────────────────
 
-def check(nodes, tets):
-    """Mesh facts and the formulation's validity certificate (no exception: 'ok' + 'problems')."""
+def check(nodes, tets, curved=None):
+    """Mesh facts and the formulation's validity certificate (no exception: 'ok' + 'problems').
+    curved: the geometry's hcurl_display.curved_display (volume ∫1 dV and bbox of the curved solid) replaces the
+    linear mesh's volume and bbox in the report."""
     nodes = np.asarray(nodes, np.float64)
     tets = np.asarray(tets, np.int64)
     problems = []
@@ -233,13 +239,17 @@ def check(nodes, tets):
         problems.append("non-manifold mesh")
     vol, _ = tet_geometry(nodes, tets)
     lo, hi = nodes.min(0), nodes.max(0)
+    volume = float(vol.sum())
+    if curved is not None:
+        volume, (lo, hi) = float(curved['volume_m3']), (np.asarray(curved['bbox_m'][0]), np.asarray(curved['bbox_m'][1]))
     return {'ok': not problems, 'problems': problems, 'n_nodes': int(len(nodes)), 'n_tets': int(len(tets)),
-            'volume_cm3': float(vol.sum() * 1e6), 'bbox_mm': [(lo * 1e3).tolist(), (hi * 1e3).tolist()],
+            'volume_cm3': volume * 1e6, 'bbox_mm': [(lo * 1e3).tolist(), (hi * 1e3).tolist()],
             'betti1': int(topo['betti1']), 'n_bnd_components': int(topo['n_shells'])}
 
 
 def surface(nodes, tets):
-    """Display surface: (vertex ids into nodes [Nb], triangles into those [Nf,3], outward)."""
+    """Display surface of the LINEAR mesh: (vertex ids into nodes [Nb], triangles into those [Nf,3], outward) —
+    only for geometries without a curved mesh; a curved one is drawn from hcurl_display.surface_lattice."""
     f = boundary_faces(np.asarray(nodes, np.float64), np.asarray(tets, np.int64))
     vid, tri = np.unique(f, return_inverse=True)
     return vid, tri.reshape(-1, 3)

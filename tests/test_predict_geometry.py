@@ -115,6 +115,10 @@ def test_predict_geometry_end_to_end(tmp_path, monkeypatch, pillbox_files, ckpt,
     with open(out / "prediction.json") as f:
         assert json.load(f)["n_dof"] == res["n_dof"]
     assert (out / "modes.vtu").exists()
+    import meshio                                                # the p2 fields on the P2 nodes of the curved mesh
+    vtu = meshio.read(out / "modes.vtu")
+    assert len(vtu.cells_dict["tetra"]) == 8 * res["n_tets"] and len(vtu.points) > res["n_tets"] // 2
+    assert {"E_pred_0", "H_pred_3"} <= set(vtu.point_data) and np.isfinite(vtu.point_data["E_pred_0"]).all()
 
 
 def test_qoi_operators_of_uses_family_axis(pillbox_files):
