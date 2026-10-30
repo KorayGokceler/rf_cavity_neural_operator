@@ -189,8 +189,9 @@ Knobs, from cheapest to most accurate:
   - `FAMILIES`: train, ood, all, or a comma list;
   - `N_PER_FAMILY`;
   - `TRAIN_FAMILIES`.
-- It creates the conda environment on first use (`setup_env.sh`, CUDA 12.4 torch, NGSolve, with a
-  field-label self-check).
+- It builds the Apptainer image on first use (`setup_env.sh` + `rfcav.def`: CUDA 12.4 torch, NGSolve, gmsh,
+  built under `srun` on a `debug` node, with a field-label self-check). All jobs run inside it; TRUBA forbids
+  conda / pip under `/arf` (docs/36 §5). GPU default: `akya-cuda`, 10 cores per GPU.
 - It submits each family's missing shards, then the training with `--dependency=afterany:<jobs>`:
   - `LABELS=field` (the default and the only value; `config.sh` rejects anything else): generation →
     training on the H5 shard directories of the train-group families. OOD families are never trained on,

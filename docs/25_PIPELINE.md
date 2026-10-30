@@ -38,20 +38,19 @@ böylece farklı ayarlarla üretilmiş veriler birbirine karışmaz.
 cd $HOME
 git clone https://github.com/KorayGokceler/rf_cavity_neural_operator.git
 cd rf_cavity_neural_operator && git checkout main
-bash cluster/truba/setup_env.sh          # Miniforge + "rfcav" ortamı + 2 geometrilik kontrol
+bash cluster/truba/setup_env.sh          # Apptainer imajı (debug düğümünde) + 2 geometrilik kontrol
 ```
 
 - **Kontrol:** son satır `Environment OK`.
 - `config.sh`'de gözden geçir:
   - `PARTITION`: CPU kuyruğu, varsayılan `orfoz`, 56 çekirdek.
-  - `GPU_PARTITION`: varsayılan `palamut-cuda`.
-  - `GPU_CPUS`: TRUBA GPU başına belirli çekirdek ister; değeri `sinfo` ve kuyruk dokümanından kontrol et.
+  - `GPU_PARTITION`: varsayılan `akya-cuda` (herkese açık; `palamut-cuda` kısıtlı, docs/36 §2).
+  - `GPU_CPUS`: GPU başına çekirdek kuralı kuyruğa göre (akya 10, barbun 20, palamut 16).
   - `ACCOUNT`: proje kodu gerekiyorsa.
   - `DATA_ROOT`.
-- **Eğitim ortamı:** `setup_env.sh` varsayılan olarak CPU torch kurar; bu üretim ve dönüştürme için
-  yeterli. Eğitim için CUDA torch gerekir. Kurulumu `TORCH_INDEX=https://download.pytorch.org/whl/cu121 bash cluster/truba/setup_env.sh`
-  ile yap; CUDA sürümünü GPU sürücüsüne göre seç. CUDA torch, GPU'suz CPU düğümlerinde de çalışır.
-  `$HOME` kotası darsa, Miniforge'u `CONDA_HOME=/arf/home/...` ya da scratch altına kur.
+- **Eğitim ortamı:** imaj CUDA 12.4 torch içerir (GPU için `--nv`, konteyner dışında kurulum yok). Başka CUDA
+  sürümü için `TORCH_INDEX=… FORCE=1 bash cluster/truba/setup_env.sh`. TRUBA `/arf` altına conda / pip kurulumunu
+  yasaklar (docs/36 §5); bu yüzden Miniforge kullanılmıyor.
 
 ## 2. Deneme koşusu (aile başına 112 geometri, `<TAG>_test`)
 

@@ -24,6 +24,9 @@ TRAIN_FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "com
                   "hwr", "spoke", "dtl")
 OOD_FAMILIES = ("box", "coax_qw", "pillbox_port", "elliptical_long", "junction")
 MODELS = ("small", "base", "large", "xl")
+# TRUBA GPU queues: minimum cores per GPU (docs/36 §2). akya-cuda / barbun-cuda are open to every user,
+# palamut-cuda / kolyoz-cuda only to research-centre and contract projects.
+CORES_PER_GPU = {"akya-cuda": 10, "barbun-cuda": 20, "palamut-cuda": 16, "kolyoz-cuda": 16}
 DEFAULT_REPO = "https://github.com/KorayGokceler/rf_cavity_neural_operator.git"
 
 # config.sh defaults (a value equal to its default is not written into the command)
@@ -34,7 +37,7 @@ DEFAULTS = {
     "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 10000, "MAX_NDOF": 900000,
     "ROUND_EDGES": 1, "HEAL": 1,
     "TAG": "", "TEST": 0,
-    "GPU_PARTITION": "palamut-cuda", "GPUS": 1, "GPU_CPUS": 16, "GPU_TIME": "3-00:00:00",
+    "GPU_PARTITION": "akya-cuda", "GPUS": 1, "GPU_CPUS": 10, "GPU_TIME": "3-00:00:00",
     "EXP": "base", "MODEL": "base", "EPOCHS": 150, "LR": 3.0e-4, "CACHE_DIR": "", "TRAIN_EXTRA": "",
 }
 DATASET_KEYS = ("LABELS", "PARTITION", "CPUS", "TIME", "ACCOUNT", "MAX_PARALLEL", "MESH_SIZE", "N_STORE",
@@ -173,9 +176,12 @@ def build_command(req):
     group, fams = _families(r.get("families") or list(TRAIN_FAMILIES))
     n_per = r.get("n_per_family")
     n_per = None if n_per in (None, "") else _num(n_per, 1, 524288, "n_per_family", True)
-    v["GPU_PARTITION"] = _pat(r.get("gpu_partition", "palamut-cuda"), _NAME, "gpu_partition", False)
+    v["GPU_PARTITION"] = _pat(r.get("gpu_partition", "akya-cuda"), _NAME, "gpu_partition", False)
     v["GPUS"] = _num(r.get("gpus", 1), 1, 16, "gpus", True)
-    v["GPU_CPUS"] = _num(r.get("gpu_cpus", 16), 1, 256, "gpu_cpus", True)
+    v["GPU_CPUS"] = _num(r.get("gpu_cpus", 10), 1, 256, "gpu_cpus", True)
+    need = CORES_PER_GPU.get(v["GPU_PARTITION"])
+    if need and v["GPU_CPUS"] < need:
+        raise CommandError(f"gpu_cpus: {v['GPU_PARTITION']} needs at least {need} cores per GPU (TRUBA queue rule, docs/36 §2)")
     v["GPU_TIME"] = _pat(r.get("gpu_time", "3-00:00:00"), _SLURM_TIME, "gpu_time", False)
     v["EXP"] = _pat(r.get("exp", "field_base"), _NAME, "exp", False)
     v["MODEL"] = r.get("model", "base")
@@ -269,7 +275,7 @@ def defaults(root):
                      "adapt": True, "tol_f": 1e-6, "tol_q": 1e-3, "model_max_elements": 10000, "max_ndof": 900000,
                      "round_edges": True, "heal": True, "deform_prob": 0.5, "deform_max": 0.5, "sampling": "sobol", "seed": 0, "tag": "",
                      "partition": "orfoz", "cpus": 56, "time": "0-12:00:00", "account": "", "max_parallel": 10,
-                     "test": False, "gpu_partition": "palamut-cuda", "gpus": 1, "gpu_cpus": 16,
+                     "test": False, "gpu_partition": "akya-cuda", "gpus": 1, "gpu_cpus": 10,
                      "gpu_time": "3-00:00:00", "exp": "field_base", "model": "base", "epochs": 150, "batch": "",
                      "lr": 3e-4, "num_workers": "", "cache_dir": "", "train_extra": [], "dry_run": False,
                      "repo": repo, "branch": branch, "repo_dir": "rf_cavity_neural_operator"}}

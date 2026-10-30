@@ -16,7 +16,8 @@ $DATA_ROOT/$TAG/                         (LABELS=field: /arf/scratch/$USER/rfcav
 |---|---|
 | `config.sh` | **tek ayar dosyası**: yollar, kuyruk, çekirdek, süre, fizik (MESH_SIZE, N_STORE, …), TAG |
 | `families.tsv` | aile → blok numarası, istenen geometri sayısı, parça boyu, grup (train / ood) |
-| `setup_env.sh` | bir kere: Miniforge + `rfcav` ortamı (conda-forge gmsh), kısa kontrol üretimi |
+| `setup_env.sh` | bir kere: `rfcav.def`'ten Apptainer imajını (`$CONTAINER`, tek `.sif`) bir `debug` düğümünde kurar, 2 geometrilik kontrol üretimi yapar. TRUBA `/arf` altına conda / pip kurulumunu yasaklar (docs/36 §5) |
+| `rfcav.def` | imajın tanımı: python:3.11-slim + CUDA 12.4 torch + NGSolve + gmsh + scikit-fem + h5py (`requirements.txt`). Repo kodu imaja girmez, çalışırken bağlanır |
 | `submit_family.sh <aile>` | ailenin **eksik** parçalarını bir SLURM iş dizisi olarak gönderir |
 | `submit_all.sh [train\|ood\|all]` | gruptaki her aile için `submit_family.sh` |
 | `status.sh` | aile başına ilerleme tablosu + `squeue` |
@@ -46,7 +47,10 @@ bash cluster/truba/run.sh status LABELS=field
   - `N_PER_FAMILY`;
   - `TRAIN_FAMILIES`.
 - `--dry-run`: her `sbatch` komutunu bağımlılıklarıyla yazdırır, hiçbir iş göndermez.
-- Ortam yoksa ilk çağrı `setup_env.sh`'yi çalıştırır (~10 dk).
+- İmaj (`CONTAINER`, varsayılan `~/containers/rfcav.sif`) yoksa ilk çağrı `setup_env.sh`'yi çalıştırır: imaj bir `debug`
+  düğümünde `srun` altında kurulur (~15–25 dk, terminal açık kalmalı; `tmux` kullan). Tüm Python işleri imajın içinde koşar
+  (`config.sh` `container_prefix`: `apptainer exec [--nv] --bind <repo>,<DATA_ROOT>[,CACHE_DIR,EXTRA_BIND] …`).
+  `requirements.txt` değişince `FORCE=1 bash cluster/truba/setup_env.sh` ile yeniden kur.
 - `LABELS=field` (varsayılan ve tek etiket türü; docs/29):
   - NGSolve p3 etiketleri eğri mesh üzerinde üretilir, p2 model uzayına izdüşürülür; dönüştürme adımı yoktur.
   - Eğitim, train grubundaki ailelerin H5 parça klasörlerinden yapılır (OOD aileleri eğitime girmez).
@@ -60,7 +64,7 @@ bash cluster/truba/run.sh status LABELS=field
 # 0) login düğümünde, bir kere
 cd $HOME && git clone <repo> rf_cavity_neural_operator && cd rf_cavity_neural_operator
 git checkout main
-bash cluster/truba/setup_env.sh               # ~10 dk; sonunda "Environment OK"
+bash cluster/truba/setup_env.sh               # ~15-25 dk (debug düğümünde Apptainer imajı); sonunda "Environment OK"
 nano cluster/truba/config.sh                  # PARTITION / ACCOUNT / TIME / DATA_ROOT'u kontrol et
 
 # 1) deneme: aile başına 112 geometri, ayrı klasörde (<TAG>_test)
@@ -127,6 +131,9 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
 
 ## Kuyruk notları
 
+- GPU: varsayılan `GPU_PARTITION=akya-cuda` (4 × V100 16 GB, GPU başına en az 10 çekirdek, herkese açık), `GPU_CPUS=10`.
+  `barbun-cuda` (2 × P100) için `GPU_CPUS=20` şart; `palamut-cuda` / `kolyoz-cuda` yalnız araştırma merkezi / sözleşmeli
+  projelere açık (docs/36 §2). Çok GPU: `GPUS=4` (bir akya düğümü, DDP).
 - Varsayılan `PARTITION=orfoz`, `CPUS=56`. orfoz düğümü 112 çekirdekli ve işler 56'nın katı çekirdek
   ister. Güncel sınırları `sinfo` ve TRUBA dokümanlarındaki "Kuyruk Bilgisi" sayfasından kontrol et.
 - Hesabın bir proje kodu gerektiriyorsa `ACCOUNT=...` ayarla.

@@ -185,7 +185,7 @@ def test_field_datasets_in_the_ui_browser(field_h5):
 
 
 def test_truba_one_line_run_dry_run(tmp_path):
-    env = dict(os.environ, DATA_ROOT=str(tmp_path), CONDA_HOME=str(tmp_path / "noconda"), USER="t")
+    env = dict(os.environ, DATA_ROOT=str(tmp_path), CONTAINER=str(tmp_path / "none.sif"), USER="t")
     r = subprocess.run(["bash", "cluster/truba/run.sh", "all", "LABELS=field", "FAMILIES=elliptical,box",
                         "N_PER_FAMILY=1024", "EXP=f1", "THREADS=4", "--dry-run"],
                        cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
