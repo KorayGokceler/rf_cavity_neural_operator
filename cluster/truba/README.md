@@ -38,8 +38,8 @@ bash cluster/truba/run.sh status LABELS=field
 - İşlemler:
   - `setup`: conda ortamı; CUDA torch ve NGSolve dahil.
   - `dataset`: ailelerin eksik parçaları.
-  - `train`: GPU eğitimi (yalnız `LABELS=field`).
-  - `all`: veri, ardından eğitim; eğitim `--dependency=afterany` ile veri işlerini bekler (yalnız `LABELS=field`).
+  - `train`: GPU eğitimi.
+  - `all`: veri, ardından eğitim; eğitim `--dependency=afterany` ile veri işlerini bekler.
   - `status`: aile başına ilerleme tablosu.
 - `KEY=VALUE`: `config.sh`'deki her değişken (PARTITION, CPUS, TIME, ACCOUNT, MESH_SIZE, MODEL, EPOCHS, …), ayrıca:
   - `FAMILIES`: `train` | `ood` | `all` | virgüllü liste;
@@ -47,13 +47,12 @@ bash cluster/truba/run.sh status LABELS=field
   - `TRAIN_FAMILIES`.
 - `--dry-run`: her `sbatch` komutunu bağımlılıklarıyla yazdırır, hiçbir iş göndermez.
 - Ortam yoksa ilk çağrı `setup_env.sh`'yi çalıştırır (~10 dk).
-- `LABELS=field` (docs/29):
+- `LABELS=field` (varsayılan ve tek etiket türü; docs/29):
   - NGSolve p3 etiketleri eğri mesh üzerinde üretilir, p2 model uzayına izdüşürülür; dönüştürme adımı yoktur.
   - Eğitim, train grubundaki ailelerin H5 parça klasörlerinden yapılır (OOD aileleri eğitime girmez).
   - Ayrı TAG kullanılır: `F_p3p2_ms0.10_k10_mf0.05_v2`.
   - İş başına `CPUS / THREADS` örnek aynı anda çalışır (`THREADS=8` → 7 örnek, örnek başına ~5 GB).
-- `LABELS=n0` (`config.sh` varsayılanı): yalnız N0 etiketli H5 üretir (`dataset`); bu etiketlerle eğitilen
-  model kalmadı, `train` / `all` hata verir.
+- Eski `LABELS=n0` (N0 etiketleri) kaldırıldı: `config.sh` `LABELS=field` dışındaki her değerde hata verir.
 
 ## Adımlar
 
@@ -104,7 +103,7 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
 - Parça boyu 1024 (2'nin kuvveti): Sobol blokları dengeli.
 - Kimlikler < 2^24 kalır (float32'de tam).
 
-## Maliyet (LABELS=n0 ölçümü: mesh 0.10, 10 mod, 1 çekirdek, aile başına 4 geometri; field etiketleri: docs/29–30)
+## Maliyet (TARİHSEL: eski N0 etiketlerinin ölçümü, artık üretilmiyor — mesh 0.10, 10 mod, 1 çekirdek, aile başına 4 geometri; güncel field etiket maliyetleri: docs/29–30)
 
 | aile | s / geometri | H5 MB / geometri |
 |---|---|---|
@@ -124,7 +123,7 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
   mümkün: MESH_SIZE 0.07 ile kenar sayısı ~3×, süre ~4–5× olur. İşler çok kısa kalırsa
   `families.tsv`'de yeni bir aile için daha büyük `shard_size` (2048 / 4096) seçebilirsin. Ölçüm 4
   çekirdekli bir makinede yapıldı; TRUBA'da gerçek süreyi deneme koşusunun loglarından oku.
-- **Disk:** H5 ~1 MB/geometri → ~100 GB (N0). Field etiketli H5 için docs/29 §3'e bak. Scratch kotanı kontrol et.
+- **Disk:** eski N0 H5'i ~1 MB/geometri idi (tarihsel); field etiketli H5 için docs/29 §3'e bak. Scratch kotanı kontrol et.
 
 ## Kuyruk notları
 

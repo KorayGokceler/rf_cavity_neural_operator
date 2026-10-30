@@ -22,17 +22,14 @@ mkdir -p "$(dirname "$OUT")"
 if [ -f "$OUT" ]; then echo "exists, skipped: $OUT"; exit 0; fi
 
 CORES=${SLURM_CPUS_PER_TASK:-$CPUS}
-WORKERS=$CORES
-LAB=(--labels "$LABELS")
-if [ "$LABELS" = field ]; then          # docs/29: NGSolve threads per sample, CORES / THREADS samples at a time
-  WORKERS=$(( CORES / THREADS )); [ "$WORKERS" -ge 1 ] || WORKERS=1
-  LAB+=(--label_order "$LABEL_ORDER" --model_order "$MODEL_ORDER" --threads "$THREADS"
-        --field_max_elements "$FIELD_MAX_ELEMENTS" --maxh_factor "$MAXH_FACTOR"
-        --tol_f "$TOL_F" --tol_q "$TOL_Q" --model_max_elements "$MODEL_MAX_ELEMENTS" --max_ndof "$MAX_NDOF")
-  [ "$ADAPT" = 1 ] || LAB+=(--no_adapt)
-  [ "$ROUND_EDGES" = 1 ] || LAB+=(--no_round_edges)
-  [ "$HEAL" = 1 ] || LAB+=(--no_heal)
-fi
+# docs/29: NGSolve threads per sample, CORES / THREADS samples at a time
+WORKERS=$(( CORES / THREADS )); [ "$WORKERS" -ge 1 ] || WORKERS=1
+LAB=(--label_order "$LABEL_ORDER" --model_order "$MODEL_ORDER" --threads "$THREADS"
+     --field_max_elements "$FIELD_MAX_ELEMENTS" --maxh_factor "$MAXH_FACTOR"
+     --tol_f "$TOL_F" --tol_q "$TOL_Q" --model_max_elements "$MODEL_MAX_ELEMENTS" --max_ndof "$MAX_NDOF")
+[ "$ADAPT" = 1 ] || LAB+=(--no_adapt)
+[ "$ROUND_EDGES" = 1 ] || LAB+=(--no_round_edges)
+[ "$HEAL" = 1 ] || LAB+=(--no_heal)
 [ -n "$MIN_FILLET" ] && LAB+=(--min_fillet "$MIN_FILLET")
 
 echo "$(date -Is) $FAMILY shard $SHARD: ids $START_ID … $((START_ID + N - 1)) on $(hostname), $WORKERS workers, labels $LABELS"

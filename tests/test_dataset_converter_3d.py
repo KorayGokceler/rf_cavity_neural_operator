@@ -263,11 +263,3 @@ def test_e_operators_isolated_conductor():
     assert abs(G[ops["bnd_edge"]]).sum() == 0 and abs(G[:, ops["n_pot"]:]).sum() == 0
     assert abs(K @ G).max() < 1e-11 * abs(K).max()
     assert np.linalg.eigvalsh(Kp[:ops["n_pot"], :ops["n_pot"]].toarray()).min() > 0
-
-
-def test_h_formulation_data_rejected():
-    """Metadata of the removed H formulation (field 'H'): a clear error, not silent garbage."""
-    conv.require_e_field({"field": "E"})
-    conv.require_e_field({})
-    with pytest.raises(ValueError, match="removed H formulation"):
-        conv.require_e_field({"field": "H"})

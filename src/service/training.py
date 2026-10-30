@@ -6,7 +6,7 @@ same layout as the notebooks' training_logs/<EXP> and TRUBA's runs/<EXP>, so eve
     <runs_root>/<name>/train_params.json                             (what the UI started: for resume)
 
 The model is the field3d model (configs/field_3d.yaml); the training data are field-label H5 shards
-(dataset_generator_3d --labels field) of one or more datasets, passed to train.py as a list
+(dataset_generator_3d) of one or more datasets, passed to train.py as a list
 (dataset.data_path; FieldDataset rebuilds the curved meshes and operators per geometry). Stopping keeps
 last.ckpt; resume continues from it (optionally with more epochs).
 """
@@ -129,8 +129,7 @@ class TrainManager:
         """data: {'h5': [field-label H5 files]}; params: preset, epochs, batch_size, lr, n_modes, patience,
         sources (display names)."""
         if not (data or {}).get('h5'):
-            raise FileNotFoundError("no field-label H5 files to train on (runs of the removed N0 model trained "
-                                    "on a PKL and cannot be resumed)")
+            raise FileNotFoundError("no field-label H5 files to train on")
         with self._lock:
             if self.busy():
                 raise RuntimeError(f"a training is running ({self.active.name}): stop it first")

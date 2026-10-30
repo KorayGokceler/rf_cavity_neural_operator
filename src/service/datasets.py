@@ -1,11 +1,11 @@
-"""Dataset browsing for the development UI: generator H5 shards, listed and opened one geometry at a
-time (mesh, model input features, FE modes, QoI labels, parameters).
+"""Dataset browsing for the development UI: generator field-label H5 shards (docs/29–30; file metadata
+labels = 'field'), listed and opened one geometry at a time.
 
 Registry: RFCAV_DATA = paths separated by os.pathsep (':' on Linux); each path is an .h5 file or a
 directory searched (depth ≤ 4) for directories holding *.h5 shards — one dataset per H5 directory
-(the TRUBA layout h5/<family>/<family>_s*.h5 gives one dataset per family).
+(the TRUBA layout h5/<family>/<family>_s*.h5 gives one dataset per family). H5 files that are not
+field-label H5 are skipped.
 
-Field-label H5 (generator --labels field, docs/29–30; file metadata labels = 'field') open as
 FieldH5Dataset: the table adds the label quality (adaptive levels, stop reason, error estimate, label
 mesh, rounded / sharp edges), and a geometry opens on its model mesh with the label fields
 interpolated onto Whitney N0 for display; the figures of merit shown are the stored p3 labels.
@@ -17,8 +17,7 @@ import threading
 
 import numpy as np
 
-from src.data.dataset_converter_3d import (FEATURE_NAMES_3D, extract_geometry_3d, geom_params_of, h5_edges_to_canonical,
-                                           require_e_field)
+from src.data.dataset_converter_3d import FEATURE_NAMES_3D, extract_geometry_3d, geom_params_of, h5_edges_to_canonical
 
 _PARAM_SKIP = {'geom_params', 'fem_element', 'field', 'shape_type'}
 
@@ -31,71 +30,11 @@ def _float(v):
         return None
 
 
-class H5Dataset:
-    kind = 'h5'
-
-    def __init__(self, files, name):
-        self.files, self.name = sorted(files), name
-        self._rows, self._index, self._lock = None, None, threading.Lock()
-
-    def rows(self):
-        """One summary row per sample (attributes only: cheap)."""
-        import h5py
-        with self._lock:
-            if self._rows is None:
-                rows, index = [], {}
-                for fp in self.files:
-                    with h5py.File(fp, 'r') as f:
-                        require_e_field(json.loads(f.attrs.get('metadata', '{}') or '{}'))
-                        for key in f:
-                            if not key.startswith('sample_'):
-                                continue
-                            g = f[key]
-                            sid = int(key.split('_')[-1])
-                            fr = np.sort(np.asarray(g['freqs'][()], float))
-                            rows.append({'id': sid, 'family': str(g.attrs.get('shape_type', '')),
-                                         'n_nodes': int(g['nodes'].shape[0]), 'n_edges': int(g['edges'].shape[0]),
-                                         'n_tets': int(g['tets'].shape[0]),
-                                         'betti1': int(g.attrs.get('betti1', 0)),
-                                         'deformed': 'deform_lip' in g.attrs,
-                                         'f_GHz': [float(x) for x in fr]})
-                            index[sid] = (fp, key)
-                self._rows, self._index = rows, index
-            return self._rows
-
-    def open(self, sid):
-        """Full record of sample sid (features are recomputed exactly as the converter does)."""
-        import h5py
-        self.rows()
-        if sid not in self._index:
-            raise KeyError(sid)
-        fp, key = self._index[sid]
-        with h5py.File(fp, 'r') as f:
-            g = f[key]
-            if 'e_edges' not in g:
-                raise ValueError(f"{key}: no E-field DOFs (data of the removed H formulation?)")
-            nodes, tets, edges_h5 = g['nodes'][()], g['tets'][()], g['edges'][()]
-            V, freqs = np.asarray(g['e_edges'][()], float), np.asarray(g['freqs'][()], float)
-            attrs = {k: g.attrs[k] for k in g.attrs}
-        order = np.argsort(freqs, kind='stable')
-        freqs, V = freqs[order], V[:, order]
-        geom, M = extract_geometry_3d(nodes, tets)
-        rows, sign = h5_edges_to_canonical(edges_h5, geom['n_nodes'], geom['edges'])
-        U = np.zeros_like(V)
-        U[rows] = sign[:, None] * V
-        params = {k: _float(v) for k, v in attrs.items() if k not in _PARAM_SKIP and _float(v) is not None}
-        geom.update(shape_type=str(attrs.get('shape_type', '')), params=geom_params_of(attrs))
-        return {'id': sid, 'family': geom['shape_type'], 'nodes': np.asarray(nodes, float),
-                'tets': np.asarray(tets, np.int64), 'geom': geom, 'M': M, 'U': U, 'f_GHz': freqs,
-                'f_next': _float(attrs.get('freq_next')), 'params': params, 'qoi_labels': None,
-                'features': FEATURE_NAMES_3D, 'source_file': os.path.basename(fp)}
-
-
 _NG_LOCK = threading.Lock()          # NGSolve from the API's request threads: one call at a time
 
 
 def is_field_h5(fp):
-    """True for a field-label H5 (generator --labels field)."""
+    """True for a field-label H5 (generator output)."""
     import h5py
     try:
         with h5py.File(fp, 'r') as f:
@@ -219,7 +158,7 @@ class FieldH5Dataset:
 
 
 def discover(spec=None):
-    """{name: dataset} from RFCAV_DATA (or `spec`)."""
+    """{name: dataset} from RFCAV_DATA (or `spec`): field-label H5 only; other H5 directories / files are skipped."""
     spec = os.environ.get('RFCAV_DATA', '') if spec is None else spec
     out = {}
 
@@ -233,8 +172,8 @@ def discover(spec=None):
     for root in [p for p in spec.split(os.pathsep) if p]:
         root = os.path.abspath(os.path.expanduser(root))
         if os.path.isfile(root):
-            if root.endswith('.h5'):
-                add((FieldH5Dataset if is_field_h5(root) else H5Dataset)([root], os.path.basename(root)))
+            if root.endswith('.h5') and is_field_h5(root):
+                add(FieldH5Dataset([root], os.path.basename(root)))
             continue
         h5_dirs = {}
         for depth in range(5):
@@ -242,8 +181,8 @@ def discover(spec=None):
             for fp in glob.glob(os.path.join(pat, '*.h5')):
                 h5_dirs.setdefault(os.path.dirname(fp), []).append(fp)
         for dname, files in sorted(h5_dirs.items()):
+            if not is_field_h5(sorted(files)[0]):
+                continue
             rel = os.path.relpath(dname, root)
-            field = is_field_h5(sorted(files)[0])
-            add((FieldH5Dataset if field else H5Dataset)(
-                files, (rel if rel != '.' else os.path.basename(root)) + ('/ (field)' if field else '/ (h5)')))
+            add(FieldH5Dataset(files, (rel if rel != '.' else os.path.basename(root)) + '/ (field)'))
     return out

@@ -20,7 +20,7 @@ One curved mesh per geometry; two polynomial orders on it.
 | model space | `field_labels.project_to_model` | M-orthogonal projection of the p3 fields onto HCurl **p2** of the same mesh (nested spaces, so this is the exact best approximation) |
 | storage | `field_labels.write_field_group` | per geometry: netgen `.vol` + BREP of the meshed shape (+ deformation map), `freqs`, `u_model` (float32), `qoi`, `axis_t` / `axis_ez` (E_z along the beam axis at U = 1 J, float32: T and R/Q at any β), `rq_model`, `proj_err`, `qfeat_wall` (float32 [Nt, nq, 5]: the wall-distance, direction and torsion columns of the token features, §3.4) |
 | dataset | `FieldDataset` | rebuilds the curved mesh exactly, assembles the p2 operators, checks the stored labels against them (§3.3) |
-| model | `CavityLightning(model_type='field3d')` | `EigenspaceOperatorField` (docs/28), same losses and metrics as the N0 model |
+| model | `CavityLightning(model_type='field3d')` | `EigenspaceOperatorField` (docs/28), same losses and metrics as the removed N0 model |
 
 Commands:
 
@@ -33,8 +33,8 @@ bash cluster/truba/run.sh all LABELS=field FAMILIES=train N_PER_FAMILY=1024 EXP=
 
 Generator options for field labels: `--min_fillet` (default 0.05), `--label_order 3`, `--model_order 2`,
 `--curve 3`, `--maxh_factor 3`, `--field_max_elements 30000`, `--max_ndof 900000`, `--threads`,
-`--no_heal`. The default `--labels n0` reproduces the v2 N0 datasets unchanged (fillet floor 0, no
-healing). The discrete `freeform` family has no CAD solid and is skipped for field labels.
+`--no_heal`. Field labels are the generator's only label type (the old `--labels n0` Whitney-N0 labels were
+removed on 2026-10-30; `--labels` is a hidden, deprecated no-op that accepts only `field`). The discrete `freeform` family has no CAD solid and is skipped for field labels.
 
 ## 2. Curved meshes
 
@@ -58,7 +58,7 @@ after the local repair of §2.2):
 | 0.08 | 4.5 mm | 18k |
 
 The count drops more slowly than 1/ρ because the pipe radius and the other fillets also set the
-size. The same geometry has 6k tets in the gmsh N0 mesh at 0.10.
+size. The same geometry had 6k tets in the (removed) gmsh N0 label mesh at 0.10.
 
 ### 2.2 Element quality decides the wall quantities
 
@@ -188,18 +188,17 @@ Knobs, from cheapest to most accurate:
 - Every `config.sh` variable can be set as KEY=VALUE, plus:
   - `FAMILIES`: train, ood, all, or a comma list;
   - `N_PER_FAMILY`;
-  - `TRAIN_FAMILIES`;
-  - `MIX`, the name of the n0 merged PKL.
+  - `TRAIN_FAMILIES`.
 - It creates the conda environment on first use (`setup_env.sh`, CUDA 12.4 torch, NGSolve, with a
   field-label self-check).
 - It submits each family's missing shards, then the training with `--dependency=afterany:<jobs>`:
-  - `LABELS=field`: generation → training on the H5 shard directories of the train-group families.
-    OOD families are never trained on, and there is no conversion step.
-  - `LABELS=n0`: generation → per-family conversion → `merge.sh` → training on `mix_<MIX>.pkl`.
+  - `LABELS=field` (the default and the only value; `config.sh` rejects anything else): generation →
+    training on the H5 shard directories of the train-group families. OOD families are never trained on,
+    and there is no conversion step.
 - `--dry-run` prints every sbatch command with its dependencies and submits nothing
   (`dry_sbatch.sh`).
 - Re-running is safe: finished shards are skipped, and the same `EXP` resumes from `last.ckpt`.
-- The field TAG is `F_p3p2_ms0.10_k10_mf0.05_v2`, separate from the N0 TAG.
+- The TAG is `F_p3p2_ms0.10_k10_mf0.05_v2` (the former N0 tag `E_…` no longer exists).
 
 The web UI's **TRUBA** tab (`src/service/truba.py`, `/api/truba/config`, `/api/truba/command`)
 turns a form into the line to paste on a login node:

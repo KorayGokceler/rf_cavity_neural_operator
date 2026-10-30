@@ -12,7 +12,7 @@
 #   FAMILIES        train | ood | all | comma list (default train)
 #   N_PER_FAMILY    geometries per family (default: families.tsv)
 #   TRAIN_FAMILIES  families the model trains on (default: the dataset's train-group FAMILIES)
-# Training (train / all) needs LABELS=field (model field3d); LABELS=n0 only generates N0-label H5.
+# LABELS=field is the only label type (config.sh rejects anything else; the model is field3d).
 # --dry-run: print every sbatch command (with its dependencies), submit nothing.
 # Re-running is safe: finished shards are skipped, a training run with the same EXP resumes.
 set -euo pipefail
@@ -66,11 +66,6 @@ train_families() {   # the train-group families among FAMILIES (OOD families nev
   echo $out
 }
 
-need_field() {   # the model trains on field labels only (the N0 model eigenspace3d was removed)
-  [ "$LABELS" = field ] || { echo "LABELS=$LABELS cannot train: the model trains on field labels (LABELS=field);" \
-    "LABELS=n0 generates N0-label H5 only (run.sh dataset)" >&2; exit 2; }
-}
-
 dependency() {   # afterany:<every job id written to JOBID_FILE so far> (empty: none)
   local ids
   ids=$(paste -sd: "$JOBID_FILE" 2>/dev/null || true)
@@ -88,13 +83,11 @@ case "$ACTION" in
     ensure_env
     submit_dataset ;;
   train)
-    need_field
     ensure_env
     TRAIN_FAMILIES=${TRAIN_FAMILIES:-$(train_families)}; export TRAIN_FAMILIES
     echo "== training: LABELS=$LABELS, EXP=$EXP, MODEL=$MODEL"
     "$TRUBA_DIR/submit_train.sh" ;;
   all)
-    need_field
     ensure_env
     JOBID_FILE=$(mktemp); export JOBID_FILE
     submit_dataset

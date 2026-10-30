@@ -285,8 +285,9 @@ differentiable at ties; `qoi_torch(peak_p=…)` provides a p-norm soft max.
 
 ## 3. Validation
 
-`python scripts/qoi_validation.py --md out.md` (gmsh OCC meshes as in the generator, generator E / H
-eigensolvers, converter normalisation; lowest mode; copper, β = 1, 'linac'). Relative error vs the
+`python scripts/qoi_validation.py --md out.md` (gmsh OCC meshes as in the generator, the Whitney N0 reference
+solve `src.qoi.analytic.fe_modes` (ported onto `src/qoi/operators.py` when the generator's N0 label path was
+removed), converter normalisation; lowest mode; copper, β = 1, 'linac'). Relative error vs the
 closed forms of §1.6. Total run ≈ 3 min on one core. "resid. flux": E-primary Q0 with the
 consistent boundary flux of §2.2 (not the contract S).
 

@@ -18,11 +18,15 @@ $$\nabla\times\nabla\times\mathbf E = k^2\,\mathbf E \ \text{ in } \Omega, \qqua
 ## Akış
 
 ```
-src/data_gen/dataset_generator_3d.py --labels field ──► H5 parçaları ──► train.py ──► checkpoint
+src/data_gen/dataset_generator_3d.py ──────────────► H5 parçaları ──► train.py ──► checkpoint
   (gmsh CAD → eğri netgen mesh, NGSolve p3 etiketleri,     (FieldDataset operatörleri      │
    uyarlamalı inceltme, p2 model uzayına izdüşüm)            öğe başına yeniden kurar)       ▼
                                                               scripts/eval_fidelity.py · web arayüzü
 ```
+
+Alan etiketleri tek etiket türüdür; üreticinin eski `--labels n0` (Whitney N0) seçeneği kaldırıldı, `--labels`
+gizli ve etkisizdir (yalnız `field` kabul eder). N0 operatörleri yalnız gösterim / QoI katmanı olarak kalır
+(`dataset_converter_3d.py`, `src/qoi/operators.py`, `src/viz/nedelec.py`; docs/31 madde 15'e kadar).
 
 - **Geometri aileleri** (`src/data_gen/cavity_shapes.py`): `elliptical` (TESLA tipi, 1–5 hücre), `reentrant`,
   `pillbox_pipes`, `ridged_box`, `composite`, `freeform`, `hwr`, `spoke`, `dtl`; dağılım dışı test için
@@ -54,7 +58,7 @@ Yalnız CPU için `pip install torch` yeterlidir; GPU için pytorch.org'daki CUD
 
 ```bash
 # 1) Alan etiketli FEM verisi (H5; docs/29)
-python src/data_gen/dataset_generator_3d.py --labels field --n_total 100 --families elliptical reentrant \
+python src/data_gen/dataset_generator_3d.py --n_total 100 --families elliptical reentrant \
     --h5_filename data/field/s0.h5
 python scripts/validate_field_labels.py --max_ndof 300000     # analitik pillbox kontrolü (PASS yazmalı)
 

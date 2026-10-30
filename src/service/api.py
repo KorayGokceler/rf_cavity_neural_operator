@@ -548,8 +548,7 @@ def create_app(service=None, datasets=None):
         ne = len(r['geom']['edges'])
         M = to_csr(r['M'], (ne, ne))
         field = {'mesh_src': r.get('mesh_src'), 'n_tets': r.get('n_tets_model'), 'geom_params': r['geom'].get('params'),
-                 'blocker': None if r.get('mesh_src') else 'N0-label dataset: no curved mesh is stored for the '
-                                                           'field model (field-label datasets can be predicted)'}
+                 'blocker': None if r.get('mesh_src') else 'no curved mesh is stored for this item'}
         resp = _geometry_response(r['nodes'], r['tets'],
                                   {'kind': 'dataset', 'dataset': d.name, 'family': r['family'], 'id': r['id'],
                                    'file': r['source_file']},
@@ -559,11 +558,11 @@ def create_app(service=None, datasets=None):
         if r['U'].shape[1]:
             from src.service.model import build_solution, override_qoi
             sol = build_solution(r['geom'], M, r['U'], r['f_GHz'], 'fe')
-            if d.kind == 'field' and r['qoi_labels']:        # the stored p3 labels, not the N0 display fields'
+            if r['qoi_labels']:                              # the stored p3 labels, not the N0 display fields'
                 override_qoi(sol, r['qoi_labels'])
             sol['_geometry_id'] = resp['id']
             truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels'],
-                                                   'qoi_source': 'p3_labels' if d.kind == 'field' else 'fe'})
+                                                   'qoi_source': 'p3_labels' if r['qoi_labels'] else 'fe'})
         resp.update(truth=truth)
         return resp
 
@@ -722,10 +721,6 @@ def create_app(service=None, datasets=None):
         if not ids:
             raise HTTPException(422, 'choose at least one dataset')
         ds = [_ds(i) for i in ids]
-        other = [d.name for d in ds if d.kind != 'field']
-        if other:
-            raise HTTPException(422, f"{other}: not field-label data — the field3d model trains on field-label H5 "
-                                     "(generator --labels field); N0-label H5 trains no model")
         return {'h5': sorted({f for d in ds for f in d.files})}, [d.name for d in ds]
 
     def _gpu():
@@ -795,7 +790,7 @@ def create_app(service=None, datasets=None):
             raise HTTPException(404, str(e)) from None
         data = p.pop('data')
         if not (data or {}).get('h5'):
-            raise HTTPException(422, f"{name}: trained on a PKL of the removed N0 model; it cannot be resumed")
+            raise HTTPException(422, f"{name}: train_params.json lists no field-label H5 files; it cannot be resumed")
         if req.epochs:
             p['epochs'] = req.epochs
         return _start(name, p, data, True)

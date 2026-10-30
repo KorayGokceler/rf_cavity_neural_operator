@@ -57,7 +57,7 @@ For comparison, the N0 model's frequency floor on the same kind of cavities is 2
 
 ## 4. Cost: mesh size is the critical issue
 
-pillbox_pipes #0 (the current N0 label mesh has 10k tets / 13.5k edges):
+pillbox_pipes #0 (the former N0 label mesh has 10k tets / 13.5k edges):
 
 | curved mesh | tets | p | DOF | potentials | tokens | nnz (K, M, G, Kp, C) | operator build (1 thread) |
 |---|---|---|---|---|---|---|---|

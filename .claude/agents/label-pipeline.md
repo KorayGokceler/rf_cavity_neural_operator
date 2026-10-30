@@ -41,6 +41,7 @@ reproducibility underlie every training run.
   - then `write_sample`.
 - **Labels:** the docs/29 storage table is at the top of `field_labels.py`. Adaptive labels: docs/30.
   Multi-fidelity (LF = one p2 solve on the HF start mesh): docs/34.
+  Field labels are the only label type (`--labels` is a hidden, deprecated no-op; the N0 labels were removed).
 - **Known open problem:** false convergence of the adaptive loop when remeshing does not refine (docs/31 §6
   item 14). It is waiting for the owner's decision.
 

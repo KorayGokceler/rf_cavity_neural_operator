@@ -115,8 +115,8 @@ export interface RunDetail extends RunSummary {
   params: (Omit<TrainParams, 'name' | 'datasets'> & { sources: string[] }) | null;
   stage: string | null; log: string[];
 }
-// kind 'field': field-label H5 (predictable, trainable); 'h5': N0-label H5 (opened for viewing only)
-export interface DatasetRef { id: string; name: string; kind: 'h5' | 'field' }
+// every dataset is a field-label H5 dataset (kind 'field': predictable, trainable)
+export interface DatasetRef { id: string; name: string; kind: 'field' }
 // field-label datasets: label quality per geometry (src/service/datasets.FieldH5Dataset)
 export interface FieldRowInfo {
   n_tets_label: number | null; n_dof_label: number | null; n_tets_start: number | null;
@@ -126,7 +126,7 @@ export interface FieldRowInfo {
 }
 export interface DatasetRow {
   id: number; family: string; n_nodes: number; n_edges: number; n_tets: number; betti1: number;
-  deformed: boolean | null; f_GHz: number[]; field?: FieldRowInfo;
+  deformed: boolean | null; f_GHz: number[]; field: FieldRowInfo;
 }
 export interface DatasetStats {
   total: number; n_modes: number;

@@ -8,7 +8,6 @@ source "$TRUBA_DIR/config.sh"
 eval "$ENV_ACTIVATE"
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=2
 cd "$REPO_DIR"
-[ "$LABELS" = field ] || { echo "LABELS=$LABELS: the model trains on field labels only (LABELS=field)"; exit 1; }
 CONFIG=${CONFIG:-configs/field_3d.yaml}
 DIRS=()                               # docs/29: the H5 shard directories of TRAIN_FAMILIES
 for fam in ${TRAIN_FAMILIES:-$(family_list train)}; do

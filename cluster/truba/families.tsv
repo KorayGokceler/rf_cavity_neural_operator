@@ -1,5 +1,5 @@
-# One row per geometry group; each group is generated, converted and stored SEPARATELY:
-#   $DATA_ROOT/$TAG/h5/<family>/<family>_s00000.h5 …   →   $DATA_ROOT/$TAG/pkl/<family>.pkl
+# One row per geometry group; each group is generated and stored SEPARATELY (the model trains on the H5 directly):
+#   $DATA_ROOT/$TAG/h5/<family>/<family>_s00000.h5 …
 #
 # family         block  n_total  shard_size  group
 #   block       FIXED forever for a family (ids = block·2^19 + i). Never reuse or renumber a block;

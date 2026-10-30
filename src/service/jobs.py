@@ -6,7 +6,7 @@ the TRUBA layout (cluster/truba) so the results mix with cluster datasets:
 
 Field labels only (the data of the field3d model): adaptive NGSolve HCurl p3 labels on a curved mesh,
 docs/29–30, H5 only, `threads` NGSolve threads per worker; field_plan sizes workers × threads from the
-machine's cores and memory.  (The generator's own --labels n0 is not offered here: no model trains on it.)
+machine's cores and memory.
 
 Geometry ids = block · 2^19 + i with the family's fixed block from cluster/truba/families.tsv, so the
 same (family, i) is the same geometry everywhere. Shards are written to a local scratch directory
@@ -122,7 +122,7 @@ def generator_args(p):
          '--mesh_size', str(p['mesh_size']), '--sampling', p['sampling'],
          '--deform_prob', str(p['deform_prob']), '--deform_max', str(p['deform_max']),
          '--n_workers', str(p['workers'])]
-    a += ['--labels', 'field', '--sample_timeout', str(int(p.get('sample_timeout') or 3600)),
+    a += ['--sample_timeout', str(int(p.get('sample_timeout') or 3600)),
           '--threads', str(p['threads']), '--label_order', str(p['label_order']),
           '--model_order', str(p['model_order']), '--min_fillet', str(p['min_fillet']),
           '--maxh_factor', str(p['maxh_factor']), '--field_max_elements', str(p['field_max_elements']),

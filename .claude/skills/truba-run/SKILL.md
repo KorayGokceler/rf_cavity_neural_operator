@@ -13,7 +13,7 @@ Agree with the owner on the following:
 
 - **Action:** `dataset`, `train` or `all` (data, then training with a dependency). Use `setup` once per
   account.
-- **LABELS:** `field` (current direction: curved mesh, p3 labels → p2 model mesh, H5 only) or `n0`.
+- **LABELS:** `field` (the only label type: curved mesh, p3 labels → p2 model mesh, H5 only); `config.sh` rejects anything else.
 - **FAMILIES:** `train`, `ood`, `all`, or a comma list. Also choose N_PER_FAMILY.
   - The default is `cluster/truba/families.tsv`.
   - Blocks are fixed, and shard_size is never changed for existing shards.
@@ -46,7 +46,7 @@ bash cluster/truba/run.sh <action> LABELS=field FAMILIES=... N_PER_FAMILY=... [K
   output paths under `$DATA_ROOT/$TAG/`, and the generator arguments.
 - If a script was edited:
   - run `bash -n` on it and `python -m pytest -q tests/test_service_truba.py`;
-  - dry-run both `LABELS=field` and `LABELS=n0`.
+  - dry-run `dataset`, `train` and `all` with `LABELS=field`; `LABELS=n0` must fail with a clear message.
 
 ## 4. Hand over
 
