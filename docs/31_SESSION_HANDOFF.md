@@ -2,22 +2,29 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-26, dal `claude/field-model`.
+> Son güncelleme: 2026-10-30, dal `claude/field-model-ui`.
 
 ## 1. Durum
 
 | alan | durum |
 |---|---|
 | Etiket çözücüsü | Adaptif p3, eğri mesh (docs/30). Analitik pillbox kontrolü geçiyor: 157k DOF'ta f 6e-7, Q0 3e-5, R/Q 1e-5, Epk 2e-4, Bpk 4e-4. |
-| Alan modeli (`field3d`) | Kod hazır; tek örnek ezberleme testinde frekans hatası 1e-6 – 9e-6 (docs/28). **Ölçekli eğitim yapılmadı.** |
+| Alan modeli (`field3d`) | Tek model. Kod hazır; tek örnek ezberleme testinde frekans hatası 1e-6 – 9e-6 (docs/28). **Ölçekli eğitim yapılmadı; eğitilmiş bir field3d checkpoint'i yok.** Eski N0 kenar modeli (`eigenspace3d`, PKL hattı) `claude/field-model-ui`'de kaldırıldı. |
 | Model uzayı tabanı | p2, ≤ 10k tetlik model mesh'inde ölçülen frekans tabanı %0,04–0,9 (docs/30). Model bunun altına inemez. |
-| Web arayüzü | Çalışma alanı alanı tarayıcıda hesaplıyor (docs/26). "Model" kaynağı hâlâ N0 modeli; alan modeli arayüze bağlanmadı. |
+| Web arayüzü | "Model" kaynağı (Tahmin) field3d modelini çalıştırıyor: eğri mesh → HCurl p2 operatörleri → Ritz → p2 alanlarından kavite değerleri (`qoi_source: p2_model`), docs/26 §1b. Checkpoint yoksa eğitilmemiş demo modeli. Gösterim hâlâ Whitney N0 izdüşümü üzerinden (açık iş 15). Üretim, Eğitim ve TRUBA sayfaları yalnız alan etiketi. Çalışma alanı alanı tarayıcıda hesaplıyor. |
 | TRUBA | Alan etiketi koşusu henüz yapılmadı (`TEST=1` referans koşuları açık iş). |
 | Geometri aileleri | Literatürle karşılaştırıldı ve düzeltmeler yapıldı (docs/33 §12): ridged_box / box ekseni, borusuz standart E_acc uzunluğu, eksen E_z'nin saklanması (her β için), eliptik yarım hücre çözücüsü (tolerans, çok başlangıç, re-entrant duvar), çapalar, aralıklar. Veri kümesi etiketi `_v2`. Yeni aileler ayrı iş. |
-| README | Model bölümü N0 modelini anlatıyor; alan modeline göre güncellenmeli. |
+| README | Alan modeline göre güncellendi (`claude/field-model-ui`). |
+| CI | `requirements-web.txt` de kuruluyor (web servisi testleri artık atlanmıyor); `pytest`, pillbox analitik kontrolü (`validate_field_labels.py --max_ndof 300000`) ve web derlemesi (`npm ci && npm run build`, Node 22) çalışıyor (`.github/workflows/ci.yml`). |
 
-Son commitler:
-- bu oturumun son commit'i: geometri incelemesi (docs/33, docs/research/2026-10_geometry);
+Son commitler (`claude/field-model-ui`, birleşmeyi bekliyor; taban `0d5805c` = `origin/main`):
+- `138a1bd` eski N0 modeli (`eigenspace3d`) ve yalnız ona hizmet eden kod kaldırıldı;
+- `95fcefe` web servisi: Tahmin field3d modelini çalıştırıyor, eski model tesisatı kaldırıldı;
+- `4eb42c0` web arayüzü field3d arka ucuna uyarlandı, eski model seçenekleri kaldırıldı;
+- `75456a3` CI: web servisi testleri gerçekten çalışıyor, pillbox analitik kontrolü ve web derlemesi eklendi.
+
+Önceki oturumlar (`claude/field-model`):
+- geometri incelemesi (docs/33, docs/research/2026-10_geometry);
 - `6ccb65f` inceleme düzeltmeleri (burulma CG yedeği, paylaşılmayan batch değerleri, int64 ofsetler);
 - `843146f` gövdede gradyan kontrol noktası (eğitim belleği 9,9 → 3,8 GB);
 - `d832941` blok köşegen CSR'yi doğrudan kuran collate;
@@ -41,7 +48,8 @@ CAD → eğri mesh → token'lar: tet başına 14 kuadratür noktası, 9 özelli
   saf gradyan θ = 0 verir.
 - Kayıp: `1,0·ort √r_k` (span, kütle + enerji normu) + `0,1·frekans MSE` + `0,01·(−log Σ 1/θ)` +
   `0,01·korelasyon`. Hedef alanlar p3 etiketin model mesh'indeki p2'ye izdüşümü; frekanslar p3'ten.
-  `qoi_weight = 0` (QoI kayıp operatörleri N0'a göre yazılmış).
+  QoI kayıp terimi yok: N0 modelinin torch QoI kaybı onunla birlikte kaldırıldı; `qoi_weight > 0` olan bir
+  ayar hata verir (`lightning_module.py`). p3 QoI etiketleri veride (`Y_qoi`) duruyor.
 
 ## 3. Bu oturumdaki ölçümler
 
@@ -395,6 +403,40 @@ ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyon
     doğruluk avantajı yok. GP için de LF 8 ≈ HF 8: belirleyici olan geometri sayısı.
   - docs/34'teki iki birim hatası (+0,006 % / +0,009 %) ve 0,2–0,6 → 0,2–0,7 puan düzeltildi.
 
+### 3.11 Web arayüzünde field3d tahmini (`claude/field-model-ui`, açık iş 5)
+
+Akış ve süre alanları docs/26 §1b'de. Hepsi CPU, **eğitilmemiş** field3d modeli (checkpoint yok), tek koşu.
+
+**(a) Ana oturumda ölçülen** (`time_s.total`; örnek kimlikleri ve mesh boyu bu belgeye yazılmadı):
+
+| geometri | tahmin toplamı | tepe sunucu RSS |
+|---|---|---|
+| kutu | 0,8 s | |
+| pillbox_pipes | 4,0 s | |
+| eliptik | 6,5 s | ~1,5 GB (oturum boyunca) |
+
+**(b) Yeniden ölçüm, yükte** (`TestClient` ile `/api/geometries/sample` + `/api/predictions`, id 1, mesh boyu 0,10
+= API varsayılanı, torch 4 iş parçacığı, 4 çekirdekli sandbox; aynı anda başka ajanların `pytest`'i çalışıyordu,
+yük ortalaması 1,6 → 5,0):
+
+| geometri | eğri tet | p2 DOF | mesh | operatörler | model | değerler | gösterim | toplam |
+|---|---|---|---|---|---|---|---|---|
+| kutu | 178 | 2 217 | 0,20 | 0,09 | 1,46 | 0,03 | 0,03 | 2,1 s |
+| pillbox_pipes | 8 786 | 92 595 | 0,09 | 2,45 | 17,2 | 0,53 | 1,32 | 22,8 s |
+| eliptik | 12 424 | 130 437 | 0,30 | 6,36 | 12,4 | 0,76 | 2,01 | 24,4 s |
+
+Tepe RSS (süreç, `ru_maxrss`, üç tahmin art arda) 2,8 GB.
+
+- (a) ile (b) arasındaki 3–6 kat fark yük ve büyük olasılıkla mesh boyundan; (a)'nın koşulları yazılmadığı için
+  ayrılamıyor. docs/26 §3.8'deki arayüz ölçümü (eliptik 4,9k tet, tahmin → mod tablosu 5,4 s; operatörler ~1,3–2 s,
+  model ~0,7–0,9 s) (a) ile aynı ölçekte. Boş bir makinede, id ve mesh boyu yazılarak yeniden ölçülmeli.
+- (b)'de süreyi model adımı belirliyor (eğitilmemiş modelin CG'si; eğitilmiş modelde farklı olabilir).
+- Gösterim izdüşümünün (p2 → Whitney N0, `Set(dual=True)`) hatası: küçük mesh'lerde frekansta ~%2, QoI'de daha
+  büyük (ana oturumun gözlemi; betik depoda yok). Açık iş 15.
+- Testler: `python -m pytest -q` → 210 geçti, 0 atlandı (184 s, 4 çekirdek, yükte; fastapi / httpx kurulu).
+  `origin/main`'de (`0d5805c`) 283 test toplanıyordu; fark çoğunlukla kaldırılan N0 testlerinden (yeni testler de eklendi, ör. `test_hcurl_projection.py`). CI artık `requirements-web.txt`'yi kurduğu
+  için web servisi testleri CI'da da çalışıyor.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
@@ -410,6 +452,12 @@ ile; 1 mm kaydırmada), eski ve yeni dönüşümde aynı davranış: deformasyon
     empedans sınır koşuluyla doğrudan Q, AMR. Her aileden küçük bir alt kümeyi çapraz doğrulamak için.
   - MFEM/PyMFEM (HypreAME) yeniden yazım gerektiriyor. dolfinx'in avantajı yok. ACE3P açık kaynak değil.
     FDTD (openEMS, MEEP) Q0 ve R/Q için yeterince hassas değil.
+- **Tek model: field3d (2026-10-30, `claude/field-model-ui`).** N0 kenar modeli (`eigenspace3d`), PKL hattı
+  (`convert_3d.py`, `eval_3d.py`, `eval_qoi.py`, torch QoI kaybı) kaldırıldı; git geçmişinde duruyor. Web
+  arayüzünün Tahmin'i, `scripts/predict_geometry.py` ve `cluster/truba/predict.sh` field3d çalıştırıyor.
+- **N0 operatörleri şimdilik kalıyor (2026-10-30).** Gösterim, kavite değerlerinin N0 yolu ve N0-H5
+  görüntüleyicisi bunlara dayanıyor (`dataset_converter_3d.py`'nin N0 kısımları, `src/qoi/operators.py`,
+  `src/viz/nedelec.py`). Yüksek mertebe gösterim yapılınca silinecekler (açık iş 15).
 
 ## 5. Stratejik değerlendirme (tartışmaya açık)
 
@@ -435,7 +483,7 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 2 | Veri hattı: token özelliklerini veri üretilirken H5'e yazmak (örnek başına −2,8 s); operatörleri yerel diske önbelleklemek ya da yüklenen örnekleri birkaç adım yeniden kullanmak. | ajan "train-data-speed" | worktree → `claude/field-model` | özellikler yapıldı, önbellek değmedi: iş 12, §3.7 |
 | 3 | CG'yi eğitim grafiğinden çıkarmak: Kp'yi örnek başına bir kez Cholesky ile ayrıştırıp üçgensel çözüm. Alternatifler: p-multigrid ön koşullayıcı, tol 1e-6 denemesi. | — | — | açık |
 | 4 | TRUBA referans koşuları (`TEST=1`, `MAX_NDOF` 900k) ve örnek başına belleğin ölçümü (§3.4). | — | — | açık |
-| 5 | Alan modelini web arayüzüne bağlamak; README'yi alan modeline göre güncellemek. | — | — | açık |
+| 5 | Alan modelini web arayüzüne bağlamak; README'yi alan modeline göre güncellemek. | Claude Code oturumu | `claude/field-model-ui` | bitti (2026-10-30): Tahmin field3d çalıştırıyor (docs/26 §1b, §3.11), README güncellendi, N0 modeli kaldırıldı |
 | 6 | Hibrit mod prototipi (model alt uzayı → LOBPCG). | — | — | açık |
 | 7 | Görev E: gövdede token alt örnekleme. | — | — | açık |
 | 8 | Google Drive bağlayıcısı oturumda "Forbidden" döndü; kullanıcının araç izinlerini açması gerekiyor. | sahip | — | kullanıcıda |
@@ -447,7 +495,13 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 13 | Çoklu doğruluk: düşük doğruluklu etiketle (p2, tek çözüm) eğitim, yüksek doğruluklu (p3 uyarlamalı) veride çıkarım. | ajan "multi-fidelity" | worktree → `claude/field-model` | bitti (docs/34 §8, docs/35): LF eğitimi eşit ya da düşük maliyette HF ile karşılaştırılabilir (tek koşu; GP ve FE karşılaştırmaları modelden iyi, §3.10); LF mesh'i = HF model mesh'i. Açık: kontrollü ince ayar / karışık eğitim, hibrit mod |
 | 14 | Uyarlamalı etiketlerde sahte yakınsama: yeniden mesh'leme istenen inceltmeyi uygulamayınca (aynı mesh) ardışık seviye farkı ~1e-15 çıkıyor ve döngü `converged` diyor. Görüldüğü yer: kalibrasyon pillbox'ı (`--mode calibration`, 96 → 91 tet, 2.864 DOF, kendi hata tahmini 1,6e-3, TE111 hatası +1,8e-4). Öneri: `converged` için tet / DOF sayısının gerçekten büyümesini ya da `est_rel_f < tol_f` şartını da istemek. Üreteç davranışı değişeceği için sahibin onayı gerekir. | — | — | açık (bulundu 2026-10-25, `scripts/cst_calibration_set.py`) |
 
-1, 2 ve 5 birbirine dokunmuyor; paralel yürüyebilir. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
+| 15 | **Yüksek mertebe gösterim, N0 köprüsü olmadan (büyük yeniden düzenleme, bir SONRAKİ PR olarak planlandı).** Arayüz p2 / p3 alanını doğrudan çizsin; bugün Whitney N0 izdüşümünden çiziyor (`datasets.whitney_dofs`, `Set(dual=True)`) ve resim sayılardan düşük kaliteli. İzdüşüm hatası küçük mesh'lerde frekansta ~%2, QoI'de daha büyük (§3.11). Bitince N0 operatör / özellik kodu silinir: `dataset_converter_3d.py`'nin N0 kısımları, `src/qoi/operators.py`, `src/viz/nedelec.py`. | — | — | açık (sıradaki PR) |
+| 16 | Üreticinin `--labels n0` varsayılanı (`dataset_generator_3d.py`; `cluster/truba/config.sh`'de `LABELS=n0`) ve `src/service/datasets.py`'deki N0-H5 görüntüleyicisi 15'e kadar kalıyor. Varsayılanı `field` yapmak üretici davranışı değişikliği. | sahip | — | sahibin kararı bekleniyor |
+| 17 | CAD yüklemelerinde ışın ekseni seçeneği: bugün z ekseni, orijinden geçen (x = y = 0). `--axis_dir/--axis_point` field3d CLI'ında da yok (docs/25 §7). | — | — | açık |
+| 18 | `predict_blocker` serbest İngilizce metin; arayüz onu olduğu gibi gösteriyor. Öneri: yanına makinece okunur bir kod alanı (ör. `mesh_file`, `no_cad`, `n0_item`, `over_budget`) ve çeviri arayüzde. | — | — | açık |
+| 19 | `GET /api/geometries/{id}/features` çok kaba mesh'lerde 500 dönüyor (`claude/field-model-ui` oturumunda görüldü; bu PR'dan önce de vardı). Olası neden: `dataset_converter_3d.node_features`'ta `w / torsion_max`; iç düğüm yoksa torsiyon 0 → 0/0 → NaN özellikler. Yeniden üretme denemesi: kutu, id 1, mesh boyu 0,5 (12 tet) 200 döndü; tetikleyen geometri belgelenmeli. | — | — | açık |
+
+1 ve 2 birbirine dokunmuyor; paralel yürüyebilir. 15, 16 ve 19 aynı N0 koduna dokunuyor; birlikte ele alınmalı. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
 
 ## 7. Ölçümleri yeniden üretme

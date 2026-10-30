@@ -521,7 +521,7 @@ docker compose up --build                                                 # http
 
    Her adım yapılmışsa atlanır: aynı VM'de yeniden çalıştırmak saniyeler sürer.
 3. Checkpoint: `CHECKPOINT = "auto"` → `<DRIVE_DIR>/training_logs` altında en yeni `.ckpt`'yi içeren eğitim (o klasörde en iyi `val_rel_l2`, yoksa `last.ckpt`). Bulunamaz ya da yüklenemezse eğitilmemiş demo modeli + arayüzde uyarı (`--checkpoint_optional`, `RFCAV_CHECKPOINT_OPTIONAL=1`).
-4. Sunucu: `--data <DATA_DIRS>` (varsayılan hücrede `[GEN_DIR]`; `[DRIVE_DIR]` verilirse Drive'daki bütün PKL / H5'ler) + `--gen_root <GEN_DIR>` + `--runs_root <DRIVE_DIR>/training_logs` (eğitim) + tünel + QR. `GEN_DIR`, `DRIVE_DIR`'in içindeyse oradaki datasetler yalnız bir kez, `generated/…` adıyla listelenir.
+4. Sunucu: `--data <DATA_DIRS>` (varsayılan hücrede `[GEN_DIR]`; `[DRIVE_DIR]` verilirse Drive'daki bütün H5'ler) + `--gen_root <GEN_DIR>` + `--runs_root <DRIVE_DIR>/training_logs` (eğitim) + tünel + QR. `GEN_DIR`, `DRIVE_DIR`'in içindeyse oradaki datasetler yalnız bir kez, `generated/…` adıyla listelenir.
 
 Colab notları:
 - **Bağlantı açılmıyorsa:** `--tunnel` bağlantısı artık tünel Cloudflare'e kaydolup dışarıdan yanıt verene kadar basılmaz (HTTP/2, UDP kapalı ağlarda da çalışır). Erken açılan yeni `trycloudflare.com` adı DNS hatası verir ve telefon / operatör DNS'i bunu birkaç dakika önbellekte tutar: bir dakika bekleyip yeniden deneyin ya da Wi-Fi ile mobil veri arasında geçin. Bağlantı yalnız hücre çalıştığı sürece yaşar ve `?token=…` kısmı olmadan "access token required" döner; bazı kurum ağları `trycloudflare.com`'u engeller.
@@ -557,5 +557,7 @@ Colab notları:
 ## 7. Bilinen sınırlar (v0.1)
 
 - **Bellek deposu:** tek süreç için tasarlandı. Çok worker'lı uvicorn ya da yeniden başlatma sonuçları kaybeder (v0.2: Redis).
+- **Gösterim N0 üzerinden:** tahmin edilen p2 alanları ve alan datasetlerinin saklanan p2 alanları (`u_model`) Whitney N0'a izdüşürülüp çiziliyor (§1b adım 6);
+  resim sayılardan (Ritz frekansları, p2 kavite değerleri) daha kaba. Yüksek mertebe gösterim sıradaki PR (docs/31 açık iş 15).
 - **Kesit kenarları:** düzlem düzenli bir ızgarayla örnekleniyor; duvar kenarı ızgara çözünürlüğünde basamaklı görünür.
 - **Docker imajı:** derleme bu geliştirme ortamında yalnız kısmen doğrulandı. Frontend aşaması (`npm ci`) geçti. Debian paketleri ve download.pytorch.org ağ politikası nedeniyle indirilemedi. Gerçek bir makinede `docker compose up --build` ile denenmeli.

@@ -14,10 +14,12 @@ Method (docs/20, docs/28): geometry → trunk (mass-aware linear attention over 
 vector fields ψ_j → fixed linear map to finite-element DOFs V → kernel projection PV = V − G Kp⁻¹GᵀMV
 (CG) → Rayleigh–Ritz `VᵀKV c = θ M_div c` → frequencies f = c₀√θ/(2π·scale) and fields PV·c.
 
-The model: `EigenspaceOperatorField` (model_type `field3d`): HCurl p2 on a curved mesh, tokens =
-quadrature points (14 per tet), labels = adaptive p3 FE fields projected onto p2. The old Whitney-N0
-edge model (`eigenspace3d`) and its PKL pipeline were removed; Whitney N0 remains only as the web UI's
-display / QoI layer (`dataset_converter_3d.py`, `src/viz/nedelec.py`, `src/qoi/`).
+One model: `EigenspaceOperatorField` (model_type `field3d`): HCurl p2 on a curved mesh, tokens =
+quadrature points (14 per tet), labels = adaptive p3 FE fields projected onto p2. The web UI's Predict,
+`scripts/predict_geometry.py` and TRUBA `predict.sh` run it. The old Whitney-N0 edge model
+(`eigenspace3d`) and its PKL pipeline were removed. Whitney N0 code remains only as the display / QoI /
+N0-H5 viewer layer (`dataset_converter_3d.py`, `src/viz/nedelec.py`, `src/qoi/operators.py`) until the
+high-order display PR replaces it (docs/31 §6, item 15).
 
 ## Map
 

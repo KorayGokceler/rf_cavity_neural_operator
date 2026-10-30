@@ -21,7 +21,7 @@ Araştırma ve inceleme kayıtları (tarihsel; kararların gerekçesi burada, ko
 |---|---|
 | [19_3D_DATA_PIPELINE](19_3D_DATA_PIPELINE.md) | kaldırılan N0 modelinin veri hattı: geometri aileleri, N0 E-alanı üreticisi, H5 / PKL sözleşmesi, doğruluk ölçümleri (§6) |
 | [20_3D_MODEL](20_3D_MODEL.md) | kaldırılan N0 modeli EigenspaceOperator3D (`eigenspace3d`): gövde, kenar başlığı, kernel projeksiyonu, Ritz, kayıplar |
-| [25_PIPELINE](25_PIPELINE.md) | N0 modelinin uçtan uca akışı: üretim → PKL birleştirme → eğitim → değerlendirme → tahmin |
+| [25_PIPELINE](25_PIPELINE.md) | N0 modelinin uçtan uca akışı: üretim → PKL birleştirme → eğitim → değerlendirme; §7 (yeni kavitenin tahmini) field3d için güncel |
 | [18_3D_EXTENSION](18_3D_EXTENSION.md) | 3B'ye geçiş araştırması: çözücü seçenekleri, N0 / NGSolve yüksek mertebe deneyleri (E2'), eksenel simetrik çözüm |
 | [21_3D_REVIEW_PHYSICS](21_3D_REVIEW_PHYSICS.md) | fizik / sayısal analiz incelemesi ve bulguları |
 | [22_3D_REVIEW_MODEL](22_3D_REVIEW_MODEL.md) | model / eğitim kodu incelemesi ve bulguları |
