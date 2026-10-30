@@ -8,7 +8,7 @@ pytest.importorskip("ngsolve")
 from netgen.occ import Axes, Cylinder, OCCGeometry, Z  # noqa: E402
 from ngsolve import Mesh  # noqa: E402
 
-from src.data.dataset_converter_3d import normalise  # noqa: E402
+from src.data.mesh_features import normalise  # noqa: E402
 from src.data.field_dataset import field_collate, field_item  # noqa: E402
 from src.data_gen import highorder as ho  # noqa: E402
 from src.models.eigenspace_operator_field import EigenspaceOperatorField  # noqa: E402

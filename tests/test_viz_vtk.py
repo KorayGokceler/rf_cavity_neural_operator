@@ -5,7 +5,7 @@ import meshio
 import numpy as np
 import pytest
 
-from src.data.dataset_converter_3d import tet_geometry
+from src.data.mesh_features import tet_geometry
 from src.viz.vtk_export import cell_to_point, write_modes_vtu
 
 # ─────────────────────────── toy meshes ─────────────────────────

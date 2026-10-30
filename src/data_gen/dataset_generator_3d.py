@@ -29,7 +29,7 @@ from scipy.special import jn_zeros, jnp_zeros
 
 if __package__ in (None, ""):            # run as a script (python src/data_gen/dataset_generator_3d.py)
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-from src.data.dataset_converter_3d import boundary_topology                      # noqa: E402
+from src.data.mesh_features import boundary_topology                             # noqa: E402
 from src.data_gen import cavity_shapes as cs                                     # noqa: E402
 
 logging.getLogger('skfem').setLevel(logging.ERROR)
@@ -368,7 +368,7 @@ def mesh_topology(tets, n_nodes):
     manifold, betti1 = 1 + b2 − χ, betti2 = n_shells − 1).  A topological ball has euler=1,
     n_components=1, n_shells=1, euler_boundary=2 (⇒ b1 = b2 = 0).  Raises on a face shared by
     more than two tets.  Boundary components: connected components of the boundary faces (sharing
-    an edge or a vertex) — dataset_converter_3d.boundary_topology."""
+    an edge or a vertex) — mesh_features.boundary_topology."""
     from scipy.sparse.csgraph import connected_components
     t = np.asarray(tets, dtype=np.int64)
     bt = boundary_topology(t, n_nodes)
@@ -533,7 +533,7 @@ def mesh_sample(s_id, cad_path=None, post=None):
     junction fillets fold the curved netgen mesh at their vertices, whatever the mesh size), the SAME draw
     is labelled with its edges sharp (params round_fallback = 1, n_sharp_edges > 0: peaks NaN) instead of
     being re-drawn — re-drawing would drop most ported designs from the dataset.
-    Used by generate_sample_data and scripts/label_benchmark.py."""
+    Used by generate_sample_data."""
     _gmsh_start()
     cs.MIN_FILLET = float(getattr(ARGS, "min_fillet", 0.0) or 0.0)
     rng = _sample_rng(s_id)

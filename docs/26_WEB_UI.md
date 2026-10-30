@@ -192,7 +192,7 @@ Hız için:
 Önceden her mod değişimi ve kesit konumu yeni bir istekti. Yanıt gecikince bir sonraki değişiklik onu iptal
 ediyordu; görüntü bazen hiç değişmiyordu. Artık ilk indirmeden sonra hiçbir etkileşim ağa gitmez.
 
-**Kesit ve hacim örneklemesi** (`nedelec.locate_grid`): her tet, sınır kutusundaki ızgara noktalarını
+**Kesit ve hacim örneklemesi** (`meshsample.locate_grid`; girdi özelliği kesitleri, doğrusal mesh): her tet, sınır kutusundaki ızgara noktalarını
 barisentrik testle bulur. Maliyet ızgaraya doğrusal. Eski `locate`, kavite dışındaki her nokta için 16
 → 256 aday tet arıyordu:
 - merkezden uzak bir kesit saniyeler sürüyordu, kaydırıcı ilerledikçe önceki yanıt iptal edildiği için
@@ -396,12 +396,12 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 - **Geometri açılınca:**
   - mesh ve kontroller;
   - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. alan datasetlerinde değerler saklanan p3 etiketleridir;
-  - geometri bilgisi: dataset, dosya, id, kenar (gösterim mesh'i), ölçek, torsiyon maksimumu, (K+1). mod frekansı, üretici parametreleri.
+  - geometri bilgisi: dataset, dosya, id, tet sayısı (doğrusal mesh; `features.n_tets`), ölçek, torsiyon maksimumu, (K+1). mod frekansı, üretici parametreleri.
 - **"Tahmin et ve FE ile karşılaştır":**
   - **Kaynak** seçimi: FE / Model / **Fark**. Fark = hizalanmış model − FE: işaret ve dejenere çiftler hizalanır, renk ölçeği FE alanına göre.
   - Mod mod f_FE, f_model, Δf, alan rel-L2 ve η.
   - Seçili mod için kavite değerleri yan yana: FE, model, Δ%.
-- **Gösterim → Girdi özelliği:** her özellik kendi doğasına uygun biçimde gösterilir (`src/service/features.py`), skaler harita tek tip değil:
+- **Gösterim → Girdi özelliği:** her özellik kendi doğasına uygun biçimde gösterilir (`src/service/features.py`), skaler harita tek tip değil. Özellikler geometrinin doğrusal mesh'inde `mesh_features.display_geometry` ile (normalise mesh + 9 köşe özelliği; N0 kenar operatörleri yok) bir kez hesaplanır, kesitler `meshsample` ile örneklenir:
 
   | grup | kanallar | gösterim |
   |---|---|---|
@@ -417,7 +417,7 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 
 **Uç noktalar:**
 - `GET /api/datasets`
-- `GET /api/datasets/{d}/items?family&offset&limit&sort=id|family|n_edges|n_nodes|betti1|f0&desc`
+- `GET /api/datasets/{d}/items?family&offset&limit&sort=id|family|n_dof|n_nodes|betti1|f0&desc`
 - `GET /api/datasets/{d}/stats`
 - `POST /api/datasets/{d}/items/{id}/open`
 - `GET /api/geometries/{id}/features`, `…/feature_plane?name&axis&pos&res`, `…/feature_surface?name`

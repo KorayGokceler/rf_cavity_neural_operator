@@ -34,7 +34,7 @@ export interface CmpRow {
   accelerating: boolean; eta: number | null; qoi: Record<string, QoiCmp>;
 }
 export interface Features {
-  names: string[]; min: number[]; max: number[]; n_vertices: number; n_edges: number; scale_mm: number;
+  names: string[]; min: number[]; max: number[]; n_vertices: number; n_tets: number; scale_mm: number;
   torsion_max: number;
 }
 export interface ScalarMesh { points: Float32Array; triangles: Uint32Array; scalars: Float32Array }
@@ -125,12 +125,12 @@ export interface FieldRowInfo {
   rounded_edges: number | null; sharp_edges: number; proj_err_max: number | null; t_labels_s: number | null;
 }
 export interface DatasetRow {
-  id: number; family: string; n_nodes: number; n_edges: number; n_tets: number; betti1: number;
+  id: number; family: string; n_nodes: number; n_dof: number; n_tets: number; betti1: number;
   deformed: boolean | null; f_GHz: number[]; field: FieldRowInfo;
 }
 export interface DatasetStats {
   total: number; n_modes: number;
-  families: Record<string, { count: number; f0: number[]; n_edges: number[] }>;
+  families: Record<string, { count: number; f0: number[]; n_dof: number[] }>;
 }
 export interface ModeRow {
   mode: number; f_GHz: number; degenerate: boolean; eta: number | null; accelerating: boolean;

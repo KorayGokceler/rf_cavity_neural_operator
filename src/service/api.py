@@ -52,7 +52,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.data.dataset_converter_3d import FEATURE_NAMES_3D
+from src.data.mesh_features import FEATURE_NAMES_3D
 from src.service import geometry as G
 from src.service import training as T
 from src.service import truba as TR
@@ -276,7 +276,7 @@ def create_app(service=None, datasets=None):
                            'cad': list(G.CAD_EXT), 'mesh': list(G.MESH_EXT)},
                 'conventions': {'U_J': 1.0, 'wall': 'copper, sigma = 5.8e7 S/m', 'beta': 1.0,
                                 'R_over_Q': 'linac: V^2/(omega U)',
-                                'beam_axis': 'src.qoi.operators.beam_axis: x = y = 0 along z; hwr, ridged_box, box per '
+                                'beam_axis': 'src.qoi.figures.beam_axis: x = y = 0 along z; hwr, ridged_box, box per '
                                              'family; CAD uploads: z through the origin of the file',
                                 'L_acc': 'cavity length along the beam, pipes excluded (acceleration_length); CAD '
                                          'uploads and families without one: the axis chord inside the cavity, pipes '
@@ -327,12 +327,11 @@ def create_app(service=None, datasets=None):
                                   {'family': req.family, 'params': m['params']}, field=dict(m, geom_params=m['params']))
 
     def _prepared(g):
-        """Converter geometry (input features) of a stored geometry on its linear mesh, computed once (only the
+        """Display geometry (normalised linear mesh + input features) of a stored geometry, computed once (only the
         feature views need it; the field display does not)."""
         if '_geom' not in g:
-            g['_geom'], g['_M'] = service.geometry(g['nodes'], g['tets'], g['family'],
-                                                   g.get('geom_params') or g.get('params'))
-        return g['_geom'], g['_M']
+            g['_geom'] = service.geometry(g['nodes'], g['tets'], g['family'], g.get('geom_params') or g.get('params'))
+        return g['_geom']
 
     def _summary(sid, sol, extra=None):
         return {'id': sid, 'source': sol['source'], 'n_dof': sol['n_dof'],
@@ -448,7 +447,7 @@ def create_app(service=None, datasets=None):
 
     # ── model input features ─────────────────────────────────────────
     def _feature(g, name):
-        geom, _ = _prepared(g)
+        geom = _prepared(g)
         names = list(g.get('feature_names') or FEATURE_NAMES_3D)
         if name not in names:
             raise HTTPException(404, f"unknown feature {name!r}")
@@ -457,11 +456,11 @@ def create_app(service=None, datasets=None):
     @app.get('/api/geometries/{gid}/features')
     def features(gid: str):
         g = geoms.get(gid)
-        geom, _ = _prepared(g)
+        geom = _prepared(g)
         names = list(g.get('feature_names') or FEATURE_NAMES_3D)
         F = np.asarray(geom['Input_funcs'], float)
         return {'names': names, 'min': F.min(0).tolist(), 'max': F.max(0).tolist(),
-                'n_vertices': int(len(F)), 'n_edges': int(len(geom['edges'])),
+                'n_vertices': int(len(F)), 'n_tets': int(len(geom['tets'])),
                 'scale_mm': float(geom['scale'] * 1e3), 'torsion_max': float(geom.get('torsion_max', 0.0))}
 
     @app.get('/api/geometries/{gid}/feature_plane')
@@ -490,7 +489,7 @@ def create_app(service=None, datasets=None):
         if kind not in KINDS or axis not in ('x', 'y', 'z') or not 16 <= res <= 241:
             raise HTTPException(422, f"kind in {KINDS}, axis in x|y|z, res in [16, 241]")
         g = geoms.get(gid)
-        geom, _ = _prepared(g)
+        geom = _prepared(g)
         try:
             v = feature_view(geom, kind, axis, pos, res, g.get('feature_names'), channel)
         except KeyError:
@@ -525,11 +524,11 @@ def create_app(service=None, datasets=None):
         rows = _rows(_ds(did))
         if family:
             rows = [r for r in rows if r['family'] == family]
-        keyf = {'id': lambda r: r['id'], 'family': lambda r: r['family'], 'n_edges': lambda r: r['n_edges'],
+        keyf = {'id': lambda r: r['id'], 'family': lambda r: r['family'], 'n_dof': lambda r: r['n_dof'],
                 'n_nodes': lambda r: r['n_nodes'], 'betti1': lambda r: r['betti1'],
                 'f0': lambda r: r['f_GHz'][0] if r['f_GHz'] else np.inf}.get(sort)
         if keyf is None:
-            raise HTTPException(422, 'sort by id | family | n_edges | n_nodes | betti1 | f0')
+            raise HTTPException(422, 'sort by id | family | n_dof | n_nodes | betti1 | f0')
         rows = sorted(rows, key=keyf, reverse=desc)
         limit = max(1, min(int(limit), 500))
         return {'total': len(rows), 'offset': offset, 'items': rows[offset:offset + limit]}
@@ -537,11 +536,11 @@ def create_app(service=None, datasets=None):
     @app.get('/api/datasets/{did}/stats')
     def dataset_stats(did: str):
         rows = _rows(_ds(did))
-        fam = collections.defaultdict(lambda: {'count': 0, 'f0': [], 'n_edges': []})
+        fam = collections.defaultdict(lambda: {'count': 0, 'f0': [], 'n_dof': []})
         for r in rows:
             e = fam[r['family']]
             e['count'] += 1
-            e['n_edges'].append(r['n_edges'])
+            e['n_dof'].append(r['n_dof'])
             if r['f_GHz']:
                 e['f0'].append(r['f_GHz'][0])
         return {'total': len(rows), 'families': dict(sorted(fam.items())),

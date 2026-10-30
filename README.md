@@ -25,8 +25,9 @@ src/data_gen/dataset_generator_3d.py ──────────────�
 ```
 
 Alan etiketleri tek etiket türüdür; üreticinin eski `--labels n0` (Whitney N0) seçeneği kaldırıldı, `--labels`
-gizli ve etkisizdir (yalnız `field` kabul eder). N0 operatörleri yalnız gösterim / QoI katmanı olarak kalır
-(`dataset_converter_3d.py`, `src/qoi/operators.py`, `src/viz/nedelec.py`; docs/31 madde 15'e kadar).
+gizli ve etkisizdir (yalnız `field` kabul eder). Gösterim ve QoI katmanındaki N0 kodu da kaldırıldı (docs/31 madde 15):
+alan doğrudan HCurl p2 olarak çizilir (`src/viz/hcurl_display.py`), kavite büyüklükleri p2 alanlarından hesaplanır
+(`highorder.mode_qoi`, `src/qoi/figures.py`).
 
 - **Geometri aileleri** (`src/data_gen/cavity_shapes.py`): `elliptical` (TESLA tipi, 1–5 hücre), `reentrant`,
   `pillbox_pipes`, `ridged_box`, `composite`, `freeform`, `hwr`, `spoke`, `dtl`; dağılım dışı test için
@@ -79,11 +80,11 @@ python scripts/serve_web.py --checkpoint training_logs/small --data data --gen_r
 src/data_gen/    geometri aileleri (cavity_shapes.py), üretici (dataset_generator_3d.py), eğri mesh + p3 çözücü
                  (highorder.py), uyarlamalı inceltme (adaptive.py), alan etiketleri (field_labels.py)
 src/data/        field_dataset.py (field3d öğeleri + collate), sparse.py (blok-köşegen operatörler),
-                 dataset_converter_3d.py (gösterim / QoI için N0 geometri ve operatörleri)
+                 mesh_features.py (mesh yardımcıları, sınır topolojisi, modelin girdi öznitelikleri)
 src/models/      EigenspaceOperatorField, H(curl) cebiri (hcurl.py), yapı taşları (layers.py)
 src/training/    Lightning modülü (kayıplar, metrikler), checkpoint bulma, progress.json
-src/qoi/         kavite büyüklükleri: numpy referansı, analitik referanslar
-src/viz/         N0 alan rekonstrüksiyonu (nedelec.py), ParaView .vtu, yüzey geometrisi
+src/qoi/         kavite büyüklükleri: sözleşme ve ölçekleme (figures.py), analitik referanslar
+src/viz/         HCurl p2 alanını doğrudan çizme (hcurl_display.py), mesh örnekleme (meshsample.py), ParaView .vtu, yüzey geometrisi
 src/service/     web API (FastAPI): tahmin, dataset gezgini, üretim ve eğitim işleri
 web/             arayüz (React + vtk.js)
 scripts/         doğrulama, değerlendirme, tahmin, sunucu başlatma

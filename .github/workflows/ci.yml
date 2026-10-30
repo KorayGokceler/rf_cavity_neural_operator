@@ -48,8 +48,8 @@ jobs:
       - name: CLI smoke (--help of every entry point)
         run: |
           for f in train.py src/data_gen/dataset_generator_3d.py scripts/predict_geometry.py \
-                   scripts/qoi_validation.py scripts/dataset_stats_3d.py \
-                   scripts/show_geometries.py scripts/serve_web.py scripts/colab_webui.py; do
+                   scripts/dataset_stats_3d.py scripts/show_geometries.py scripts/serve_web.py \
+                   scripts/colab_webui.py; do
             # a removed entry point must fail here: update this list in the same change
             [ -f "$f" ] || { echo "::error::$f is listed but does not exist"; exit 1; }
             echo "::group::$f --help"

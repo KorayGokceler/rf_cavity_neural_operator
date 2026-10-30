@@ -1,5 +1,10 @@
 # 27 — Etiket kalitesi: N0 etiketleri ve yüksek mertebe (NGSolve) etiketleri
 
+> **TARİHSEL (2026-10-30):** bu belgedeki ölçümler yapıldı, ama onları üreten betikler ve N0 çözücüsü artık depoda yok:
+> `scripts/label_benchmark.py`, `scripts/qoi_validation.py`, `src.qoi.analytic.fe_modes`, `src/qoi/operators.py` ve
+> `src/viz/nedelec.py` silindi (docs/31 §6 madde 15). Aşağıdaki komutlar çalışmaz; tablolar kaydı olarak durur. Güncel
+> p2/p3 doğruluk sınaması: `scripts/validate_field_labels.py` ve docs/29–30.
+
 **Soru.** Mevcut etiketler (mesh 0.10'da Whitney N0) CST'ye ne kadar yakın — frekansta **ve alanda**?
 NGSolve p2/p3 eğri eleman etiketleri ne kazandırır, ne kadara mal olur?
 

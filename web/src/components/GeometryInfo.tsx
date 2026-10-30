@@ -16,7 +16,7 @@ export default function GeometryInfo({ lang, geometry, features }: Props) {
     ...(src.name ? [['file', `${src.name}`] as [string, string]] : []),
     ...(src.family ? [[t(lang, 'family'), `${src.family}`] as [string, string]] : []),
     ...(src.id !== undefined ? [['id', `${src.id}`] as [string, string]] : []),
-    ...(features ? [[t(lang, 'meshEdges'), int(features.n_edges)] as [string, string],
+    ...(features ? [[t(lang, 'meshTets'), int(features.n_tets)] as [string, string],
                     ['scale', `${features.scale_mm.toFixed(1)} mm`] as [string, string],
                     ['torsion max', sci(features.torsion_max)] as [string, string]] : []),
     ...(geometry.truth?.f_next ? [[t(lang, 'fNext'), `${geometry.truth.f_next.toFixed(4)} GHz`] as [string, string]] : []),

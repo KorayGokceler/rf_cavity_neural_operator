@@ -19,7 +19,7 @@ Storage (dataset_generator_3d, H5 group per geometry; read by load_field_sample)
     freqs    [K]     label (p3) frequencies, GHz
     u_model  [n2, K] float32  projected label fields, model-order DOFs (wall rows 0)
     qoi      [K, Q]  label QoI (qoi_names attr), U = 1 J, copper, β = 1; L_acc from
-                     src.qoi.operators.acceleration_length (axis chord without a standard length)
+                     src.qoi.figures.acceleration_length (axis chord without a standard length)
     axis_t   [P]     positions along the beam axis inside the label mesh [m] (attrs axis_dir, axis_point,
                      axis_dt; L_acc attr = the accelerating length, NaN = axis chord)
     axis_ez  [K, P]  E along the axis there [V/m] at U = 1 J (float32): T, V, R/Q at any β
@@ -215,7 +215,7 @@ def _check_reload(vol_bytes, shape, curve, deform, model_order, ndof):
 def model_normalisation(mesh):
     """(center, scale) of the model's normalised geometry for a (reloaded) model mesh: what FieldDataset
     passes to highorder.field_operators."""
-    from src.data.dataset_converter_3d import normalise
+    from src.data.mesh_features import normalise
     Xv = np.array([tuple(p.p) for p in mesh.ngmesh.Points()], dtype=np.float64)
     tets = np.array([[v.nr - 1 for v in el.vertices] for el in mesh.ngmesh.Elements3D()], dtype=np.int64)
     _, center, scale = normalise(Xv, tets)
@@ -230,8 +230,8 @@ def wall_feature_array(mesh, model_order):
 
 
 def _beam_axis(shape_type, mesh, params=None):
-    """(axis_dir, axis_point, L_acc) of mode_qoi for the family (src.qoi.operators)."""
-    from src.qoi.operators import acceleration_length, axis_line, beam_axis
+    """(axis_dir, axis_point, L_acc) of mode_qoi for the family (src.qoi.figures)."""
+    from src.qoi.figures import acceleration_length, axis_line, beam_axis
     X = np.array([tuple(p.p) for p in mesh.ngmesh.Points()])
     d, p0 = axis_line(**beam_axis(shape_type, X, 1.0, np.zeros(3), params))
     return d, p0, acceleration_length(shape_type, params)
@@ -243,7 +243,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
     adaptive (default): adaptive refinement until the frequencies change < tol_f and the figures of merit
     < tol_q (docs/30).  sharp_edges > 0 (re-entrant edges the generator could not round): the surface
     peaks are singular there, so they are left out of the convergence check and stored as NaN."""
-    from src.qoi.operators import QOI_LABELS
+    from src.qoi.figures import QOI_LABELS
     s = {**DEFAULTS, **(settings or {})}
     K = n_modes
     t0 = time.perf_counter()

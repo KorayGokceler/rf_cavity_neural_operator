@@ -2,10 +2,19 @@
 
 > **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
 
-> Status: **implemented**. The fields are E primary (the H formulation was removed; its formulas and
-> measurements below are kept as the historical cross-check). §0 is the binding interface shared by
-> `src/qoi/operators.py` (numpy, reference), `src/data/*` (labels, batching), `src/qoi/torch_qoi.py`
-> (differentiable, training). §1–§3 physics, discretisation, validation; §4 data & evaluation; §5 training.
+> **Update (2026-10-30, branch `claude/high-order-display`, docs/31 §6 item 15):** the Whitney-N0 QoI layer is gone.
+> `src/qoi/operators.py` (`build_qoi_operators`, `qoi_from_dofs`, `cavity_qoi`, the N0 wall-loss / axis / surface
+> operators), `scripts/qoi_validation.py` and `src.qoi.analytic.fe_modes` / `reference_case` were deleted. Today the
+> figures of merit are computed from the HCurl(p2/p3) fields of the curved mesh by `src.data_gen.highorder.mode_qoi`
+> (§0.3 below); `src/qoi/figures.py` holds the key list, the conventions, the beam axis, the accelerating length and the
+> rescaling to U = 1 J (`figures_of_merit`). §1 (physics, definitions) and §1.6 (closed forms) stay valid; **§2, §3 and
+> §4–§5 describe the removed N0 implementation and are kept as a historical record** (their numbers are the N0
+> discretisation errors, not those of the current labels: docs/29 §2 and `scripts/validate_field_labels.py` for the
+> p2/p3 numbers).
+
+> Status: **implemented** (p2/p3 fields, E primary; the H formulation was removed, its formulas and
+> measurements below are kept as the historical cross-check). §0 is the interface: the keys and conventions
+> are `src/qoi/figures.py`, the evaluation is `highorder.mode_qoi`. §1 physics and definitions.
 
 ## 0. Contract
 
@@ -28,8 +37,8 @@ the same operators are applied to the FE field.
 ### 0.2 Units, normalisation, conventions
 
 - Mesh: normalised coordinates ξ = (x − center)/scale (PKL `X`); `scale` s [m], `center` [m] (3,).
-- DOFs u: N0 edge DOFs on the normalised mesh, arbitrary amplitude and sign (labels have
-  uᵀMu = 1). The physical field is defined as F(x) = F̃(ξ) (amplitude is arbitrary; every
+- DOFs u (historical N0 form; today the p2/p3 HCurl DOFs on the physical curved mesh, `mode_qoi` works in SI units): N0
+  edge DOFs on the normalised mesh, arbitrary amplitude and sign (labels have uᵀMu = 1). The physical field is defined as F(x) = F̃(ξ) (amplitude is arbitrary; every
   reported value is normalised to **U = 1 J**, like CST).
 - Peak-amplitude (standing-wave) convention: U = ½ε0∫|E|² dV = ½μ0∫|H|² dV,
   P_c = ½ R_s ∮|H_t|² dS, Q0 = ωU/P_c.
@@ -44,9 +53,9 @@ the same operators are applied to the FE field.
   - V = |Σ_p q_p (curl_ξ H̃)_z(ξ_p) e^{j ω s ζ_p /(βc)}| / (ωε0)
 - Beam axis: the physical line x = y = 0 along z (the cavity families are built on z = beam
   axis), i.e. ξ_xy = −center_xy/s. **Exception hwr**: its coaxial line runs along z and the beam
-  crosses it along x at mid-length, so `qoi_operators_of` (labels, dataset, eval, prediction) uses
-  `beam_axis(shape_type, …)` → axis_dir 'x' through (0, 0, z_mid). General axes: `axis_dir` /
-  `axis_point` of `build_qoi_operators`. Shapes without a beam (ridged_box, composite, freeform)
+  crosses it along x at mid-length, so the label path (`field_labels._beam_axis`, the web UI's prediction) uses
+  `figures.beam_axis(shape_type, …)` → axis_dir 'x' through (0, 0, z_mid). General axes: `axis_dir` /
+  `axis_point` of `mode_qoi` (`figures.axis_line`). Shapes without a beam (ridged_box, composite, freeform)
   keep the nominal z line: their "R/Q" is a defined functional, not an accelerator figure. Axis points ζ_p (normalised axial coordinate) with midpoint
   quadrature weights q_p (normalised length); points outside the mesh get q_p = 0.
 - R_s: default copper σ = 5.8e7 S/m, R_s(f) = √(π f μ0/σ) at the mode's own frequency (predicted
@@ -56,51 +65,37 @@ the same operators are applied to the FE field.
   else the axis chord length inside Ω.
 - Convention `'linac'` (default): R/Q = V²/(ωU), R_sh = V²/P_c. `'circuit'`: both halved.
 
-### 0.3 numpy API — `src/qoi/operators.py` (exported from `src/qoi/__init__.py`)
+### 0.3 API — `src/qoi/figures.py` and `highorder.mode_qoi`
 
 ```python
-build_qoi_operators(X, tets, edges, scale, center, M=None, n_axis=401,
-                    axis_xy=(0.0, 0.0), axis_dir=None, axis_point=None) -> dict
-    # keys (all for the NORMALISED mesh, numpy / scipy CSR float64):
-    'scale'   float s [m]
-    'M'       CSR [Ne×Ne]   volume mass (assembled if M is None)
-    'S'       CSR [Ne×Ne]   wall-loss quadratic form (§0.2)
-    'Az'      CSR [P×Ne]    Ẽ along the beam axis at the axis points
-    'zeta'    float [P]     axial coordinate of the points (normalised, relative to center)
-    'q'       float [P]     quadrature weights (normalised length), 0 outside Ω
-    'L_axis'  float         chord length of the axis inside Ω (normalised)
-    'Esurf'   CSR [3Nf×Ne]  rows 3i..3i+2 = Cartesian components of Ẽ at surface point i
-    'Hsurf'   CSR [3Nf×Ne]  curl Ẽ at the surface points
-    'face_area' float [Nf]  (surface points = boundary-face centroids, one per boundary face)
-
-qoi_from_dofs(ops, U, f_hz, Rs=None, sigma=5.8e7, beta=1.0, L_acc=None,
-              convention='linac') -> dict[str, ndarray [K]]
-    # U [Ne] or [Ne,K]; f_hz scalar or [K]. Keys (U = 1 J normalisation):
-    'f_Hz','Rs_ohm','U_J','P_c_W','Q0','G_ohm','V_acc_V','T_transit','R_over_Q_ohm',
-    'R_sh_ohm','L_acc_m','E_acc_Vm','E_pk_Vm','B_pk_T','Epk_Eacc','Bpk_Eacc_mT_per_MVm'
-
-cavity_qoi(geom, U, f_ghz, **kw) -> dict
-    # geom = PKL geometry_pool entry (X, tets, edges, scale, center[, M]); builds the operators
-    # (cache the result yourself if reused).
-
+# src/qoi/figures.py  (re-exported by src/qoi/__init__.py: QOI_KEYS, QOI_LABELS, SIGMA_CU, surface_resistance)
+QOI_KEYS   = ('f_Hz','Rs_ohm','U_J','P_c_W','Q0','G_ohm','V_acc_V','T_transit','R_over_Q_ohm',
+              'R_sh_ohm','L_acc_m','E_acc_Vm','E_pk_Vm','B_pk_T','Epk_Eacc','Bpk_Eacc_mT_per_MVm')
 QOI_LABELS = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc',
-              'Bpk_Eacc_mT_per_MVm')    # what the PKL stores per sample (§0.4)
+              'Bpk_Eacc_mT_per_MVm')                      # what the H5 stores per mode (§0.4)
+surface_resistance(f_hz, sigma=5.8e7)                     # R_s = sqrt(pi f mu0 / sigma)
+axis_line(axis_xy, axis_dir, axis_point) -> (d, p)        # unit direction, physical point of the beam axis
+beam_axis(shape_type, X, scale, center, params) -> dict   # per-family axis kwargs ({} = z through the origin)
+acceleration_length(shape_type, params) -> float | None   # E_acc = V / L; None = the axis chord inside Omega
+figures_of_merit(f, Rs, U_raw, Pc_raw, V_raw, V0_raw, Epk_raw, Bpk_raw, L, convention='linac')
+    # raw functionals of a mode at ANY amplitude (SI) -> QOI_KEYS dict [K], rescaled to U = 1 J
+
+# src/data_gen/highorder.py
+mode_qoi(mesh, gfs, f_hz, axis_dir, axis_point, L_acc=None, sigma=5.8e7, beta=1.0, convention='linac',
+         n_axis=2001, wall_order=8) -> QOI_KEYS dict + 'axis_t', 'axis_dt', 'axis_ez'
+    # U = 1/2 eps0 int |E|^2, P_c = 1/2 R_s/(omega mu0)^2 int_wall |n x curl E|^2, V = |int E_z e^{j omega z/(beta c)}|
+    # on the axis, E_pk / B_pk = max over the wall integration points of |E| and |curl E|/omega
+    # (values of the adjacent volume element via BoundaryFromVolumeCF).
 ```
 
-T_transit = V / (s·Σ_p q_p |Ẽ_z|) (E-primary; analogous for H with curl).
+T_transit = V / Σ_p q_p |E_z(p)| (axis midpoint quadrature, points outside the mesh get q_p = 0).
+Closed forms: `src/qoi/analytic.py` (`pillbox_tm010`, `box_te101`, `transit_time_factor`).
+Tests: `tests/test_qoi.py` (contract and rescaling of `figures_of_merit`, closed forms, `mode_qoi` on coarse curved
+pillboxes, the label beam axis); tight numbers: `scripts/validate_field_labels.py` (docs/29 §2).
 
-Implementation notes (clarifications of the above, no change of names / keys / shapes):
-- A 1-D `U` gives arrays of shape `[1]` (K = 1), never 0-d; `float(v[0])` per value.
-- `Esurf` / `Hsurf` hold only the components the exact PEC wall field has — the normal part
-  n nᵀE of E and the tangential part (I − n nᵀ)H of H, n the face normal — so ‖row triplet‖ is the
-  wall |E| / |H|. E is the value of the face's own tet at the centroid, H the nodally recovered
-  (vertex-averaged) field interpolated to the centroid (§2.4; `surface_operators(..., method=)`
-  gives the other variants). Still one point per boundary face, rows 3i..3i+2.
-- `edges` may be in any row order (PKL sorted order or skfem DOF order); `M` may be a CSR
-  matrix or the PKL CSR tuple `(indptr, indices, data)`. V = 0 (no E_z on the axis) gives
-  E_acc = 0 and `inf` peak ratios, T = NaN only if E_z ≡ 0.
-- Extra public helpers: `surface_resistance(f, sigma)`, `QOI_KEYS` (the 16 output keys),
-  `SIGMA_CU`; closed forms + reference meshes in `src/qoi/analytic.py`.
+**Historical (N0, removed):** `build_qoi_operators(X, tets, edges, scale, center, M, n_axis, axis_xy, axis_dir, axis_point)`
+built the sparse per-geometry operators `M`, `S` (wall loss), `A_z` (axis), `E_surf`, `H_surf`, `qoi_from_dofs(ops, U,
+f_hz, …)` evaluated them on N0 edge DOFs and `cavity_qoi(geom, U, f_ghz)` wrapped both; §2 below describes them.
 
 ### 0.4 Data contract (converter / dataset / collate)
 
@@ -212,7 +207,7 @@ naming, TM110 w.r.t. z): k² = (π/a)² + (π/b)²; Q0 = k³ηabd/(4R_s[abk²/2 
 (= Pozar's TE101 formula, test-checked); T = sin(kd/2β)/(kd/2β); R/Q = 8ηdT²/(kab);
 E_pk/E_acc = 1/T; B_pk = πE0/(ω min(a, b)) ⇒ B_pk/E_acc = π/(kc·min(a, b)·T).
 
-## 2. Discretisation (N0 / Whitney, `src/qoi/operators.py`)
+## 2. Discretisation (N0 / Whitney, `src/qoi/operators.py`) — HISTORICAL, the file was removed (docs/31 §6 item 15)
 
 Basis w_e = λ_a∇λ_b − λ_b∇λ_a (a < b global), curl w_e = 2∇λ_a×∇λ_b constant per tet; DOF lookup
 via `nedelec.tet_dofs` (any edge row order). Everything is vectorised over tets / faces / points
@@ -283,7 +278,7 @@ on coarse / curved meshes. Peaks at sharp re-entrant edges are field singulariti
 converge with any method (CST included) — the families round their irises. The max is not
 differentiable at ties; `qoi_torch(peak_p=…)` provides a p-norm soft max.
 
-## 3. Validation
+## 3. Validation (N0 implementation — HISTORICAL, `scripts/qoi_validation.py` was removed)
 
 `python scripts/qoi_validation.py --md out.md` (gmsh OCC meshes as in the generator, the Whitney N0 reference
 solve `src.qoi.analytic.fe_modes` (ported onto `src/qoi/operators.py` when the generator's N0 label path was

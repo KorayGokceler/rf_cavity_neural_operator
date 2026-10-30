@@ -9,7 +9,7 @@ Geometry sources (exactly one; the field model needs the CAD solid, it predicts 
   --family NAME --id N                 a generator geometry (field-label settings: the field datasets' shape)
   --h5    SHARD.h5 [--sample sample_0000123 | index]   a field-label geometry (stored curved mesh, labels known)
 
-The beam axis and accelerating length follow the family (src.qoi.operators.beam_axis); a CAD file uses the
+The beam axis and accelerating length follow the family (src.qoi.figures.beam_axis); a CAD file uses the
 z axis through the origin.  Mesh density: h = --mesh_size · (V / --vol_div)^(1/3) (n-cell cavity: --vol_div n),
 or --h_abs [m]; the curved mesh is netgen's at maxh = 3 h (field_labels.start_mesh).
 
@@ -43,7 +43,7 @@ def h5_geometry(path, sample):
     """Field-label H5 group (name or index) → geometry dict (as geometry.mesh_family) + stored labels."""
     import h5py
 
-    from src.data.dataset_converter_3d import geom_params_of
+    from src.data.mesh_features import geom_params_of
     from src.data_gen.field_labels import read_field_group
     with h5py.File(path, 'r') as f:
         keys = sorted(k for k in f if k.startswith('sample_'))

@@ -88,7 +88,7 @@ def test_exact_field_at_points_matches_tm010(tm010):
 
 def test_display_nodes_match_tm010_and_carry_one_joule(tm010):
     """The drawn field: P1 on the sub-tets of the P2 nodes, sampled the way the browser does (barycentric)."""
-    from src.viz.nedelec import interp_vertex, locate
+    from src.viz.meshsample import interp_vertex, locate
     c = tm010
     dm, fld = c["dm"], c["fld"]
     pts = _random_points(5000, seed=1)

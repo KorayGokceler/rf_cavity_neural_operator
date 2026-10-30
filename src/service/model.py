@@ -26,7 +26,7 @@ import time
 import numpy as np
 import torch
 
-from src.data.dataset_converter_3d import extract_geometry_3d
+from src.data.mesh_features import display_geometry
 from src.training.checkpoint import resolve_checkpoint
 from src.training.lightning_module import CavityLightning
 
@@ -276,11 +276,11 @@ class ModelService:
                 'run': self.checkpoint and os.path.basename(os.path.dirname(os.path.abspath(self.checkpoint)))}
 
     def geometry(self, nodes, tets, family='', params=None):
-        """(converter geometry dict with features + operators, CSR mass) of a linear mesh [m] — the input-feature
-        views (cut planes of the model's input channels); params: the family's geom_params."""
-        geom, M = extract_geometry_3d(nodes, tets)
+        """Normalised linear mesh with the model's input features (mesh_features.display_geometry) of a mesh [m] — the
+        input-feature views (cut planes of the model's input channels); params: the family's geom_params."""
+        geom = display_geometry(nodes, tets)
         geom.update(shape_type=family or '', params=params)
-        return geom, (M.tocsr() if hasattr(M, 'tocsr') else M)
+        return geom
 
     def _operators(self, mesh_src, key, order, t):
         """(curved mesh, field_operators) of a mesh_src, cached per key (caller holds the locks)."""
@@ -470,14 +470,14 @@ class ModelService:
         return {'dims': [int(x) for x in dims], 'origin_mm': (lo * 1e3).tolist(), 'spacing_mm': d * 1e3,
                 'inside': inside, 'E': E, 'H': H}
 
-    # ── input-feature views (linear display geometry of the N0-free feature code) ──
+    # ── input-feature views (linear mesh of display_geometry) ──
     @staticmethod
     def to_mm(geom, X):
         return (np.asarray(X) * geom['scale'] + np.asarray(geom['center']).reshape(1, 3)) * 1e3
 
     def plane_values(self, geom, nodal, axis='y', pos_mm=None, res=121):
         """Vertex arrays `nodal` (list of [Nv,…]) interpolated on a cut plane (points mm, triangles, values)."""
-        from src.viz.nedelec import interp_vertex, locate_grid
+        from src.viz.meshsample import interp_vertex, locate_grid
         ia = 'xyz'.index(axis)
         c, s = float(np.asarray(geom['center']).reshape(3)[ia]), float(geom['scale'])
         off = 0.0 if pos_mm is None else (pos_mm * 1e-3 - c) / s

@@ -18,7 +18,7 @@ import traceback
 
 import numpy as np
 
-from src.data.dataset_converter_3d import boundary_faces, tet_geometry
+from src.data.mesh_features import boundary_faces, tet_geometry
 from src.data_gen import dataset_generator_3d as gen
 
 UNITS = {'m': 1.0, 'cm': 1e-2, 'mm': 1e-3}
@@ -54,7 +54,7 @@ def _occ_import(path, unit):
 
 def linear_mesh(mesh):
     """(vertices [Nv,3] float64, tets [Nt,4] int64) of an NGSolve mesh: the straight mesh under a curved
-    one, in NGSolve's vertex numbering (src.service.datasets.whitney_dofs uses the same)."""
+    one, in NGSolve's vertex numbering."""
     from ngsolve import VOL
     nodes = np.array([tuple(v.point) for v in mesh.vertices], np.float64)
     tets = np.array([[v.nr for v in el.vertices] for el in mesh.Elements(VOL)], np.int64)

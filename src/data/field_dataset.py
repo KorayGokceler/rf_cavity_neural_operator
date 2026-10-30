@@ -39,7 +39,7 @@ _QOI_LABELS_FALLBACK = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 
 
 def default_qoi_names():
     try:
-        from src.qoi import QOI_LABELS
+        from src.qoi.figures import QOI_LABELS
         return tuple(QOI_LABELS)
     except ImportError:
         return _QOI_LABELS_FALLBACK
@@ -245,7 +245,7 @@ class FieldDataset(Dataset):
 
     def data_dims(self):
         """(val_dim, n_modes)."""
-        from src.data.dataset_converter_3d import FEATURE_NAMES_3D
+        from src.data.mesh_features import FEATURE_NAMES_3D
         nf = len(self.feature_indices) if self.feature_indices is not None else len(FEATURE_NAMES_3D)
         return nf, self.n_modes
 

@@ -16,8 +16,8 @@ cells {points, triangles, scalars} | None, segments [{role, points [S,2,3]}], ra
 """
 import numpy as np
 
-from src.data.dataset_converter_3d import FEATURE_NAMES_3D
-from src.viz.nedelec import interp_vertex, locate, plane_grid
+from src.data.mesh_features import FEATURE_NAMES_3D
+from src.viz.meshsample import interp_vertex, locate, plane_grid
 
 KINDS = ('position', 'wall', 'torsion', 'mesh', 'raw')
 _AX = {'x': 0, 'y': 1, 'z': 2}

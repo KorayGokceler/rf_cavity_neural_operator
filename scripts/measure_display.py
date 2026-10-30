@@ -6,11 +6,10 @@
     python scripts/measure_display.py js payload.json                               # browser-side slicing time
 
 accuracy   pointwise error of the drawn E and H against the exact TM010 of a netgen pillbox (R = 40 mm,
-           L = 50 mm, curve 3, p2 solution), in units of the peak E0 / H0, for
-             old  = the Whitney-N0 display of the first web UI (N0 `Set(dual)` + vertex average; only when the
-                    N0 layer is still in the tree), and
-             new  = src.viz.hcurl_display (P2 nodes + 8 sub-tets per tet, linear in each sub-tet),
-           sampled at random points inside both displays through the same P1 interpolation the browser uses.
+           L = 50 mm, curve 3, p2 solution), in units of the peak E0 / H0, for src.viz.hcurl_display (P2 nodes + 8
+           sub-tets per tet, linear in each sub-tet), sampled at random points through the same P1 interpolation the
+           browser uses.  The display of the first web UI (Whitney-N0 `Set(dual)` + vertex average) was removed with
+           docs/31 §6 item 15; its numbers stay in the "before" columns of docs/26 and docs/31.
 serve      the API on a pillbox STEP meshed to about --tets curved tets (untrained model): geometry, predict
            (display stage), /fields payload raw and gzip, request times, peak RSS of the process.
 js         src/fieldlab.ts (run by node) on a saved /fields payload: decode, slicePlane + sampleSlice per
@@ -72,30 +71,6 @@ def sample_points(n, seed=0):
     return np.stack([r * np.cos(a), r * np.sin(a), rng.uniform(-0.49 * L, 0.49 * L, n)], 1)
 
 
-def old_display(mesh, U, f_ghz):
-    """The display of the first web UI (a frozen copy of the pre-change service code: N0 `Set(dual)` interpolation
-    onto the linear mesh + vertex average, energy of the N0 field) for one mode: (nodes [Nv,3] m, tets, E [Nv,3],
-    H [Nv,3], seconds).  Needs the N0 layer (src/viz/nedelec.py, dataset_converter_3d.py), removed with docs/31 §6
-    item 15 — then only the new path is measured."""
-    from src.data.dataset_converter_3d import extract_geometry_3d, h5_edges_to_canonical
-    from src.service.datasets import whitney_dofs
-    from src.viz.nedelec import vertex_field
-    t0 = time.perf_counter()
-    nodes, tets, edges_ng, V = whitney_dofs(mesh, U[:, None], 2)
-    geom, M = extract_geometry_3d(nodes, tets)
-    rows, sign = h5_edges_to_canonical(edges_ng, geom["n_nodes"], geom["edges"])
-    Ud = np.zeros((len(geom["edges"]), V.shape[1]))
-    Ud[rows] = sign[:, None] * V
-    X, tl, ed, s = geom["X"], geom["tets"], geom["edges"], float(geom["scale"])
-    M = M.tocsr() if hasattr(M, "tocsr") else M
-    m = np.einsum("ek,ek->k", Ud, M @ Ud)
-    w = 2 * np.pi * f_ghz * 1e9
-    a = np.sqrt(1.0 / (0.5 * EPS0 * s ** 3 * m))
-    E = a * vertex_field(X, tl, ed, Ud)
-    H = -(a / (w * MU0 * s)) * vertex_field(X, tl, ed, Ud, curl=True)
-    return nodes, tets, E[:, :, 0], H[:, :, 0], time.perf_counter() - t0
-
-
 def new_display(mesh, U, f_ghz):
     """The p2 display: (P2 nodes [Nn,3] m, sub-tets, E, H, seconds)."""
     from src.viz import hcurl_display as hd
@@ -106,7 +81,7 @@ def new_display(mesh, U, f_ghz):
 
 
 def p1_at(nodes, tets, F, pts):
-    from src.viz.nedelec import interp_vertex, locate
+    from src.viz.meshsample import interp_vertex, locate
     tid, bary = locate(nodes, tets, pts)
     out = np.full((len(pts), 3), np.nan)
     ok = tid >= 0
@@ -123,6 +98,7 @@ def errors(approx, exact, peak):
 
 def cmd_accuracy(a):
     from src.data_gen import highorder as ho
+    from src.viz.meshsample import locate
     pts0 = sample_points(a.n_points * 3)
     rows = []
     for maxh in a.maxh:
@@ -130,35 +106,20 @@ def cmd_accuracy(a):
         sol = ho.solve_modes(mesh, 1, order=2)
         U, f = sol["gfs"][0].vec.FV().NumPy().copy(), float(sol["f_hz"][0]) / 1e9
         out = {"maxh": maxh, "tets": int(mesh.ne), "f_GHz": f}
-        views = {}
-        try:
-            views["old"] = old_display(mesh, U, f)
-        except Exception as e:  # noqa: BLE001 — the N0 layer is gone (docs/31 §6 item 15)
-            out["old"] = f"n/a ({type(e).__name__})"
-        try:
-            views["new"] = new_display(mesh, U, f)
-        except ImportError:
-            out["new"] = "n/a (src.viz.hcurl_display missing)"
-        # common sample: inside both displays
-        from src.viz.nedelec import locate
-        keep = np.ones(len(pts0), bool)
-        for v in views.values():
-            keep &= locate(v[0], v[1], pts0)[0] >= 0
+        nodes, tets, E, H, sec = new_display(mesh, U, f)
+        keep = locate(nodes, tets, pts0)[0] >= 0                       # sample points inside the display
         pts = pts0[keep][:a.n_points]
         Ex, Hx, e0, h0 = tm010(pts)
-        out["n_samples"] = int(len(pts))
-        for name, (nodes, tets, E, H, sec) in views.items():
-            ee = errors(p1_at(nodes, tets, E, pts), Ex, e0)
-            he = errors(p1_at(nodes, tets, H, pts), Hx, h0)
-            out[name] = {"E_max": ee[0], "E_rms": ee[1], "H_max": he[0], "H_rms": he[1], "seconds": sec}
+        ee = errors(p1_at(nodes, tets, E, pts), Ex, e0)
+        he = errors(p1_at(nodes, tets, H, pts), Hx, h0)
+        out.update(n_samples=int(len(pts)),
+                   new={"E_max": ee[0], "E_rms": ee[1], "H_max": he[0], "H_rms": he[1], "seconds": sec})
         rows.append(out)
     print(json.dumps(rows, indent=1))
-    print(f"\n{'tets':>7} {'path':>4} {'E max':>9} {'E rms':>9} {'H max':>9} {'H rms':>9} {'stage s':>8}   (fractions of peak E0 / H0)")
+    print(f"\n{'tets':>7} {'E max':>9} {'E rms':>9} {'H max':>9} {'H rms':>9} {'stage s':>8}   (fractions of peak E0 / H0)")
     for o in rows:
-        for name in ("old", "new"):
-            v = o.get(name)
-            if isinstance(v, dict):
-                print(f"{o['tets']:>7} {name:>4} {v['E_max']:9.2e} {v['E_rms']:9.2e} {v['H_max']:9.2e} {v['H_rms']:9.2e} {v['seconds']:8.2f}")
+        v = o["new"]
+        print(f"{o['tets']:>7} {v['E_max']:9.2e} {v['E_rms']:9.2e} {v['H_max']:9.2e} {v['H_rms']:9.2e} {v['seconds']:8.2f}")
 
 
 # ───────────────────────────── API payload ─────────────────────────────

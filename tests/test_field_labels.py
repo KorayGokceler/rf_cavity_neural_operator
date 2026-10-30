@@ -152,11 +152,11 @@ def test_field_datasets_in_the_ui_browser(field_h5):
     rows = d.rows()
     assert len(rows) == 4 and {r["family"] for r in rows} == {"calib_box", "calib_pillbox"}
     r1 = next(r for r in rows if r["id"] == 1)
-    assert r1["n_edges"] > 0 and r1["n_tets"] > 0 and r1["n_nodes"] > 0
+    assert r1["n_dof"] > 0 and r1["n_tets"] > 0 and r1["n_nodes"] > 0
     assert r1["field"]["adapt_stop"] in ("converged", "budget", "max_iter") and r1["field"]["adapt_iters"] >= 1
     rec = d.open(1)                                                   # calibration pillbox
     U, mesh = rec["U"], rec["mesh"]
-    assert U.shape == (rec["n_dof"], K) == (r1["n_edges"], K) and np.isfinite(U).all()   # raw HCurl DOFs, no N0
+    assert U.shape == (rec["n_dof"], K) == (r1["n_dof"], K) and np.isfinite(U).all()   # raw HCurl DOFs, no N0
     assert rec["Mp"].shape == (rec["n_dof"], rec["n_dof"]) and rec["order"] == 2
     assert set(rec["curved"]) >= {"points", "triangles", "vid3", "w3", "volume_m3", "bbox_m"}
     fes = HCurl(mesh, order=rec["order"], dirichlet="wall")

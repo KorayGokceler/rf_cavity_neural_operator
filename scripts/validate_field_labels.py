@@ -23,7 +23,8 @@ from scipy.special import jn_zeros, jnp_zeros
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.data_gen import adaptive as ad  # noqa: E402
-from src.qoi.analytic import C0, pillbox_tm010  # noqa: E402
+from src.qoi.analytic import pillbox_tm010  # noqa: E402
+from src.qoi.figures import C0  # noqa: E402
 
 R, L = 0.040, 0.050
 TARGETS = {"f": 1e-5, "Q0": 2e-3, "G": 2e-3, "R/Q": 2e-3, "Epk/Eacc": 1e-2, "Bpk/Eacc": 1e-2}
