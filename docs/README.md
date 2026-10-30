@@ -6,7 +6,7 @@ Güncel çalışma belgeleri (kod bunlara göre yazılır):
 |---|---|
 | [24_CAVITY_QOI](24_CAVITY_QOI.md) | kavite büyüklükleri (Q0, G, R/Q, R_sh, T, Epk/Eacc, Bpk/Eacc): sözleşme, fizik, doğrulama |
 | [26_WEB_UI](26_WEB_UI.md) | web arayüzü: API, dataset gezgini, üretim, eğitim, Colab / telefon |
-| [27_LABEL_BENCHMARK](27_LABEL_BENCHMARK.md) | etiket kalitesi: N0 ve NGSolve p2/p3 eğri eleman etiketleri, frekans + alan + QoI |
+| [27_LABEL_BENCHMARK](27_LABEL_BENCHMARK.md) | tarihsel (N0 etiket türü kaldırıldı; ölçümler geçerli): etiket kalitesi: N0 ve NGSolve p2/p3 eğri eleman etiketleri, frekans + alan + QoI |
 | [28_FIELD_MODEL](28_FIELD_MODEL.md) | model (`field3d`, EigenspaceOperatorField): yüksek mertebe H(curl) uzayında öğrenilen alan, gövde, kernel projeksiyonu, Ritz |
 | [29_FIELD_LABELS](29_FIELD_LABELS.md) | alan etiketleri: eğri mesh + p3 etiket → p2 model uzayı, maliyet, TRUBA tek satır komut ve arayüz sayfası |
 | [30_ADAPTIVE_LABELS](30_ADAPTIVE_LABELS.md) | adaptif etiketler: hata göstergesi (hacim + duvar), yeniden mesh'leme, keskin kenar yuvarlatma, etiket / model mesh ayrımı, ölçümler |

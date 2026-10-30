@@ -1,4 +1,4 @@
-"""Field labels (docs/29): generator --labels field → H5 → FieldDataset → field3d model, and the
+"""Field labels (docs/29): generator → H5 → FieldDataset → field3d model, and the
 TRUBA one-line orchestrator (run.sh --dry-run)."""
 import json
 import os
@@ -24,7 +24,7 @@ def field_h5(tmp_path_factory):
     """Calibration box + pillbox with field labels (p3 → p2), written like the generator does."""
     path = tmp_path_factory.mktemp("field") / "calib.h5"
     old_args = gen.ARGS
-    gen.ARGS = gen.parse_args(["--labels", "field", "--mode", "calibration", "--mesh_size", "0.2",
+    gen.ARGS = gen.parse_args(["--mode", "calibration", "--mesh_size", "0.2",
                                "--n_eigen_modes", str(K), "--tol_f", "1e-4", "--tol_q", "3e-2",
                                "--max_ndof", "40000", "--model_max_elements", "60"])
     gen._init_worker(gen.ARGS)
@@ -40,11 +40,13 @@ def field_h5(tmp_path_factory):
     return path
 
 
-def test_generator_defaults_per_label_kind():
-    a = gen.parse_args(["--labels", "field"])
-    assert a.min_fillet == 0.05 and a.heal and a.sample_timeout == 3600 and "freeform" not in a.families
-    b = gen.parse_args([])
-    assert b.min_fillet == 0.0 and not b.heal and b.sample_timeout == 300 and "freeform" in b.families
+def test_generator_defaults():
+    """Field labels are the only label type: fillets, healing and the long sample timeout are the defaults, the
+    discrete freeform family stays in the parsed list (main() drops it); --no_* switch them off."""
+    a = gen.parse_args([])
+    assert a.min_fillet == 0.05 and a.heal and a.round_edges and a.sample_timeout == 3600 and "freeform" in a.families
+    b = gen.parse_args(["--no_heal", "--no_round_edges", "--min_fillet", "0"])
+    assert b.min_fillet == 0 and not b.heal and not b.round_edges
     # the fillet floor only ever enlarges a radius, up to the builder's own cap
     cs.MIN_FILLET = 0.05
     try:

@@ -14,7 +14,7 @@ analyses of logs the owner pastes or copies in.
   - KEY is any `config.sh` variable: PARTITION, CPUS, TIME, ACCOUNT, MESH_SIZE, N_STORE, MIN_FILLET,
     LABEL_ORDER, MODEL_ORDER, THREADS, TAG, GPU_PARTITION, GPUS, MODEL, EPOCHS, BATCH, LR, …
   - It also takes FAMILIES (train | ood | all | list), N_PER_FAMILY and TRAIN_FAMILIES.
-  - `train` / `all` need LABELS=field (the only labels a model trains on); LABELS=n0 only generates H5.
+  - LABELS=field is the only label type (`config.sh` rejects anything else, e.g. LABELS=n0).
 - **Building blocks:**
   - `submit_family.sh` → `gen_shard.sbatch`, one job per missing shard;
   - `submit_train.sh` → `train.sbatch`;
@@ -45,8 +45,8 @@ analyses of logs the owner pastes or copies in.
 - **Re-running is safe by design:** finished shards are skipped, and a training run with the same EXP resumes.
   Keep it that way in every change.
 - **Changes to the cluster scripts** keep `python -m pytest -q tests/test_service_truba.py` passing and pass
-  `bash -n` on every edited script. Dry-run `dataset`, `train` and `all` for both `LABELS=n0` and
-  `LABELS=field`.
+  `bash -n` on every edited script. Dry-run `dataset`, `train` and `all` with `LABELS=field`;
+  `LABELS=n0` must fail with a clear message.
 
 ## Reading logs
 

@@ -10,8 +10,8 @@ Every value is validated (numbers by range, names by pattern) and shell-quoted, 
 variables that differ from cluster/truba/config.sh's defaults are written, so the line stays short
 and the cluster-side defaults stay the single source of truth.  Nothing here touches the cluster.
 
-Field labels only (the field3d model's data): LABELS=field is always written — config.sh's own default is
-still n0, which generates N0-label H5 that no model trains on (run.sh dataset LABELS=n0 by hand).
+Field labels only (the field3d model's data): LABELS=field is always written (config.sh's default is field too;
+run.sh rejects anything else).
 """
 import re
 import shlex
@@ -135,7 +135,7 @@ def build_command(req):
     if action not in ACTIONS:
         raise CommandError(f"action must be one of {ACTIONS}")
     if r.get("labels", "field") != "field":
-        raise CommandError("labels: field only (the field3d model's data; N0 labels train no model)")
+        raise CommandError("labels: field only (the field3d model's data)")
     v = {"LABELS": "field"}
     v["PARTITION"] = _pat(r.get("partition", "orfoz"), _NAME, "partition", False)
     v["CPUS"] = _num(r.get("cpus", 56), 1, 1024, "cpus", True)

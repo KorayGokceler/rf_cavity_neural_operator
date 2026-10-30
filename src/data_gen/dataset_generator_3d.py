@@ -1,34 +1,17 @@
-"""3D PEC cavity eigenmode dataset generator (lowest-order Nédélec N0, E field).
+"""3D PEC cavity eigenmode dataset generator: CAD geometry -> curved HCurl labels (E field).
 
-Physics (docs/18 §1.4, §2.2; docs/19 "E formülasyonu"), f = c·√λ/(2π), skfem ``ElementTetN0``:
+Problem: curl curl E = k^2 E in the cavity, n x E = 0 on the PEC wall; f = c k / (2 pi).  Per sample the
+generator draws a geometry from a family (src/data_gen/cavity_shapes.py), meshes the CAD solid with gmsh
+(mesh_sample: certified connected manifold, any number of handles / isolated conductors) and labels it
+with src/data_gen/field_labels.py: a curved netgen mesh, adaptive HCurl p3 FE modes, their L2 projection
+onto the model's p2 space, and the cavity figures of merit.  The H5 layout (one group ``sample_XXXX`` per
+geometry, file attr ``metadata``) is documented there and in docs/29_FIELD_LABELS.md; the common attrs
+written here are shape_type, geom_params (JSON) + one float attr per parameter, freq_next (GHz, mode K+1),
+mesh_h, volume, t_mesh, t_solve, field ('E'), n_bnd_components, betti1 (and freqs_analytic for the
+calibration shapes).
 
-Find E ∈ H0(curl, Ω):  ∫ curl E · curl v = k² ∫ E · v  for all
-v ∈ H0(curl, Ω).  n × E = 0 on the PEC wall is ESSENTIAL: the DOFs of the wall edges (edges of
-boundary faces) are removed.  Kernel of curl in the discrete H0(curl) = {Gφ : φ P1, φ = 0 on the
-first boundary component, constant on every other one}: the interior-vertex gradients plus one
-potential per extra boundary component (the b2 harmonic Dirichlet fields of isolated inner
-conductors).  Handles (b1 > 0: spoke, half-wave coax, DTL stems, tori) add NOTHING to this kernel,
-so every connected, manifold PEC cavity is admissible.  Kp = GᵀMG is SPD without pinning.
-
-Solved with the validated research recipe (scripts/research_3d/n0lib.py, ``solve_projected``):
-shift-invert with σ < 0 (K − σM SPD) and the M-orthogonal projection P = I − G Kp⁻¹ GᵀM after
-every solve, so gradient fields become θ = 0 (λ = ∞) and never appear among the returned modes.
-
-H5 layout (one group ``sample_XXXX`` per geometry):
-    nodes   [Nv,3] float64   vertex coordinates [m]
-    tets    [Nt,4] int64     vertex indices (the skfem MeshTet.t used for the solve)
-    edges   [Ne,2] int64     edges[i] = (tail, head) of the edge carrying DOF i, in
-                             skfem ``ElementTetN0`` DOF order; tail < head always
-                             (skfem orients each edge from the lower to the higher
-                             global vertex index)
-    e_edges [Ne,K] float64   E-field N0 DOFs e_edges[i,j] = ∫_{tail→head} E_j · dl on ALL
-                             edges, wall-edge rows exactly 0; M-orthonormal in physical units
-    freqs   [K]    float64   GHz, ascending
-    attrs: shape_type, geom_params (JSON) + one float attr per parameter, n_nodes,
-           n_edges, n_tets, freq_next (GHz, mode K+1: shows whether K splits a
-           degenerate cluster), div_residual, mesh_h, t_mesh, t_solve, field ('E'),
-           fem_element, n_bnd_components, betti1
-File attr ``metadata`` (JSON): generator args, formulation, conventions, units.
+``--mode calibration`` labels a PEC box / pillbox, whose spectra are known in closed form
+(box_spectrum / pillbox_spectrum); main() prints the relative error.
 """
 import argparse
 import json
@@ -42,19 +25,18 @@ from multiprocessing import Pool, TimeoutError as MPTimeoutError, cpu_count
 import h5py
 import numpy as np
 import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 from scipy.special import jn_zeros, jnp_zeros
 
 if __package__ in (None, ""):            # run as a script (python src/data_gen/dataset_generator_3d.py)
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-from src.data.dataset_converter_3d import boundary_topology, e_potential_matrix  # noqa: E402
+from src.data.dataset_converter_3d import boundary_topology                      # noqa: E402
 from src.data_gen import cavity_shapes as cs                                     # noqa: E402
 
 logging.getLogger('skfem').setLevel(logging.ERROR)
 
 C0 = 299792458.0  # speed of light [m/s]
 # default families: realistic RF cavities + free-form solids (src/data_gen/cavity_shapes.py);
-# "pillbox", "axisym_cell", "blob" stay available via --families (v1 datasets)
+# "pillbox", "axisym_cell", "blob" stay available via --families
 FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "composite", "freeform",
             "hwr", "spoke", "dtl")
 
@@ -66,16 +48,19 @@ ARGS = None
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="Generate 3D PEC cavity eigenmode dataset (Nédélec N0, E field).")
+    p = argparse.ArgumentParser(description="Generate 3D PEC cavity eigenmode dataset: curved-mesh HCurl field labels "
+                                            "(src/data_gen/field_labels.py, docs/29).")
     p.add_argument("--h5_filename", type=str, default="rf_cavity_3d_dataset.h5", help="Output H5 filename.")
     p.add_argument("--n_total", type=int, default=100, help="Number of geometries to generate.")
     p.add_argument("--mode", type=str, default="random", choices=["random", "calibration"],
                    help="random families, or calibration (PEC box / pillbox with analytic spectra).")
     p.add_argument("--families", type=str, nargs="+", default=None, choices=ALL_FAMILIES,
-                   help="Geometry families drawn uniformly in random mode (default: FAMILIES).")
+                   help="Geometry families drawn uniformly in random mode (default: FAMILIES). The discrete "
+                        "families (freeform) have no CAD solid: main() drops them.")
     p.add_argument("--n_eigen_modes", type=int, default=6, help="Number K of physical modes stored.")
     p.add_argument("--mesh_size", type=float, default=0.12,
-                   help="Target tet size relative to the characteristic length V^(1/3) of the cavity.")
+                   help="Target gmsh tet size h relative to the characteristic length V^(1/3) of the cavity "
+                        "(the curved mesh size follows from it, --maxh_factor).")
     p.add_argument("--mesh_size_abs", type=float, default=None,
                    help="Absolute target tet size [m]; overrides --mesh_size.")
     p.add_argument("--seed", type=int, default=0, help="Base seed; sample s uses default_rng([seed, s]).")
@@ -98,65 +83,52 @@ def parse_args(argv=None):
                    help="Continue an interrupted run: append to <h5_filename>.partial and skip the ids already in "
                         "it (cluster jobs killed by the wall-time limit lose nothing).")
     p.add_argument("--n_workers", type=int, default=None,
-                   help="Worker processes (default: min(cpu_count, 4); field labels: cpu_count // threads).")
-    p.add_argument("--sample_timeout", type=float, default=None,
-                   help="Seconds before a sample is skipped (default 300; field labels 3600).")
+                   help="Worker processes (default: cpu_count // threads).")
+    p.add_argument("--sample_timeout", type=float, default=3600.0, help="Seconds before a sample is skipped.")
     p.add_argument("--max_geom_tries", type=int, default=6,
-                   help="Re-draws when a random geometry fails the boolean/topology checks "
-                        "(field labels: also the curved-mesh / element-budget checks).")
-    # high-order field labels (docs/29): NGSolve p3 on a curved mesh, projected onto the model's p2 space
-    p.add_argument("--labels", type=str, default="n0", choices=["n0", "field"],
-                   help="n0: Whitney N0 labels on the gmsh mesh (default); field: curved-mesh HCurl labels "
-                        "(src/data_gen/field_labels.py) for the learned-field model (model.type field3d).")
-    p.add_argument("--min_fillet", type=float, default=None,
-                   help="Fillet radius floor as a fraction of the cavity size (cavity_shapes.MIN_FILLET; "
-                        "default 0 for n0 labels — the v2 geometries — and 0.05 for field labels).")
-    p.add_argument("--label_order", type=int, default=3, help="field labels: HCurl order of the labels.")
+                   help="Re-draws when a random geometry fails the boolean / topology / curved-mesh / "
+                        "element-budget checks.")
+    p.add_argument("--labels", type=str, default="field", help=argparse.SUPPRESS)   # deprecated, see below
+    p.add_argument("--min_fillet", type=float, default=0.05,
+                   help="Fillet radius floor as a fraction of the cavity size (cavity_shapes.MIN_FILLET).")
+    p.add_argument("--label_order", type=int, default=3, help="HCurl order of the labels.")
     p.add_argument("--model_order", type=int, default=2,
-                   help="field labels: HCurl order of the model space the labels are projected onto "
+                   help="HCurl order of the model space the labels are projected onto "
                         "(2: field floor ~0.2 %%, frequency ~1e-4; 1: ~6x cheaper training, ~1 %% frequency floor).")
-    p.add_argument("--curve", type=int, default=3, help="field labels: geometry order of the curved mesh.")
+    p.add_argument("--curve", type=int, default=3, help="Geometry order of the curved mesh.")
     p.add_argument("--maxh_factor", type=float, default=3.0,
-                   help="field labels: netgen maxh = maxh_factor × the N0 mesh size h (curvature sets the "
+                   help="netgen maxh = maxh_factor × the gmsh mesh size h (curvature sets the "
                         "element size on curved faces).")
     p.add_argument("--curvaturesafety", type=float, default=None,
-                   help="field labels: netgen curvaturesafety of the curved mesh (default 2.0; adaptive labels start at "
+                   help="netgen curvaturesafety of the curved mesh (default 2.0; adaptive labels start at "
                         "1.5). Smaller = coarser mesh: cheap low-fidelity labels (docs/34).")
     p.add_argument("--field_max_elements", type=int, default=30000,
-                   help="field labels: curved meshes with more tets are re-drawn (training cost bound).")
-    p.add_argument("--max_ndof", type=int, default=900000, help="field labels: label-space DOF guard (memory).")
-    p.add_argument("--threads", type=int, default=1, help="field labels: NGSolve threads per worker.")
+                   help="Curved meshes with more tets are re-drawn (training cost bound).")
+    p.add_argument("--max_ndof", type=int, default=900000, help="Label-space DOF guard (memory).")
+    p.add_argument("--threads", type=int, default=1, help="NGSolve threads per worker.")
     p.add_argument("--no_heal", action="store_true",
-                   help="field labels: skip the OCC shape healing (small edges / faces, sewing) before meshing.")
+                   help="Skip the OCC shape healing (small edges / faces, sewing) before meshing.")
     p.add_argument("--no_adapt", action="store_true",
-                   help="field labels: one solve on the curvature-sized mesh instead of adaptive refinement.")
+                   help="One solve on the curvature-sized mesh instead of adaptive refinement.")
     p.add_argument("--tol_f", type=float, default=1e-6,
-                   help="field labels: adaptive stop, relative frequency change between refinements.")
+                   help="Adaptive stop, relative frequency change between refinements.")
     p.add_argument("--tol_q", type=float, default=1e-3,
-                   help="field labels: adaptive stop, relative change of Q0 / G / R/Q / surface peaks.")
+                   help="Adaptive stop, relative change of Q0 / G / R/Q / surface peaks.")
     p.add_argument("--model_max_elements", type=int, default=10000,
-                   help="field labels (adaptive): the model mesh is the finest refinement level with at most "
+                   help="Adaptive: the model mesh is the finest refinement level with at most "
                         "this many tets; the final-level labels are L2-projected onto it (training cost).")
     p.add_argument("--no_round_edges", action="store_true",
-                   help="field labels: keep re-entrant edges sharp (by default they are filleted with radius "
+                   help="Keep re-entrant edges sharp (by default they are filleted with radius "
                         "min_fillet × equivalent-sphere radius: singular fields there make the surface peaks "
                         "mesh-dependent).")
     args = p.parse_args(argv)
+    if args.labels != "field":    # --labels n0 (Whitney N0 labels on the gmsh mesh) was removed; "field" stays a no-op
+        p.error(f"--labels {args.labels}: the N0 label type was removed; the generator writes curved-mesh HCurl "
+                "field labels only (drop --labels, or pass --labels field)")
     if args.families is None:
         args.families = list(FAMILIES)
-    if args.min_fillet is None:
-        args.min_fillet = 0.05 if args.labels == "field" else 0.0
-    if args.sample_timeout is None:
-        args.sample_timeout = 3600.0 if args.labels == "field" else 300.0
-    args.heal = args.labels == "field" and not args.no_heal
-    args.round_edges = args.labels == "field" and not args.no_round_edges
-    if args.labels == "field":
-        dropped = [f for f in args.families if f in DISCRETE_BUILDERS]
-        args.families = [f for f in args.families if f not in DISCRETE_BUILDERS]
-        if dropped:
-            print(f"field labels need a CAD solid: dropping the discrete families {dropped}")
-        if not args.families and args.mode != "calibration":
-            p.error("--labels field: no CAD family left in --families")
+    args.heal = not args.no_heal
+    args.round_edges = not args.no_round_edges
     return args
 
 
@@ -164,9 +136,8 @@ def _init_worker(args):
     global ARGS
     ARGS = args
     os.environ.setdefault("OMP_NUM_THREADS", "1")
-    if getattr(args, "labels", "n0") == "field":
-        import ngsolve
-        ngsolve.SetNumThreads(max(1, int(args.threads)))
+    import ngsolve
+    ngsolve.SetNumThreads(max(1, int(args.threads)))
 
 
 def eigenvalues_to_ghz(vals):
@@ -419,103 +390,6 @@ def certify(topo):
         raise RuntimeError(f"not a connected manifold mesh: {topo}")
 
 
-# ─────────────────────────── N0 solver ─────────
-
-def assemble_n0(nodes, tets):
-    """skfem N0 assembly on all edges (no essential BC). Returns dict with K, M [Ne×Ne]
-    (skfem DOF order), G [Ne×Nv] discrete gradient (G[i,head]=+1, G[i,tail]=−1),
-    edges [Ne,2] (tail, head) per DOF, and the skfem mesh/basis."""
-    from skfem import Basis, BilinearForm, ElementTetN0, MeshTet
-    from skfem.helpers import curl, dot
-
-    @BilinearForm
-    def curlcurl(u, v, w):
-        return dot(curl(u), curl(v))
-
-    @BilinearForm
-    def mass(u, v, w):
-        return dot(u, v)
-
-    mesh = MeshTet(np.ascontiguousarray(nodes.T), np.ascontiguousarray(np.asarray(tets).T))
-    basis = Basis(mesh, ElementTetN0())
-    K = curlcurl.assemble(basis).tocsr()
-    M = mass.assemble(basis).tocsr()
-    dof = basis.edge_dofs[0]
-    e = mesh.edges
-    edges = np.empty((basis.N, 2), dtype=np.int64)
-    edges[dof] = e.T                                       # skfem orients low → high vertex index
-    if not np.all(edges[:, 0] < edges[:, 1]):
-        raise RuntimeError("unexpected skfem edge orientation (tail ≥ head)")
-    ne = e.shape[1]
-    G = sp.csr_matrix((np.r_[-np.ones(ne), np.ones(ne)], (np.r_[dof, dof], np.r_[e[0], e[1]])),
-                      shape=(basis.N, mesh.p.shape[1]))
-    return dict(K=K, M=M, G=G, edges=edges, mesh=mesh, basis=basis)
-
-
-def spd_factor(A):
-    """SuperLU factorisation of an SPD matrix: symmetric minimum-degree ordering on AᵀA+A
-    and no pivoting (diag_pivot_thresh=0, SymmetricMode). ~20× faster than the default
-    for these 3D N0 matrices (10k DOF: 0.35 s vs 7.2 s) with identical fill."""
-    return spla.splu(sp.csc_matrix(A), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0,
-                     options=dict(SymmetricMode=True))
-
-
-def _projected_shift_invert(K, M, Gp, k, tol, sigma):
-    """Shared recipe: k lowest eigenpairs of K u = λ M u on the M-orthogonal complement of range(Gp)
-    (Gp full column rank).  Shift-invert with σ < 0, projection P = I − Gp Kp⁻¹ GpᵀM after every
-    solve.  Returns (vals, vecs, sigma, lam_scale)."""
-    if sigma is None:                                      # scale-aware small negative shift
-        sigma = -1e-2 * (K.diagonal().mean() / M.diagonal().mean())
-    lu = spd_factor(K - sigma * M)
-    if Gp.shape[1] == 0:                                   # no potentials (E on a mesh without interior
-        def P(x):                                          # vertices): trivial kernel, P = I
-            return x
-    else:
-        MG = (M @ Gp).tocsr()
-        lup = spd_factor(Gp.T @ MG)                        # Kp: SPD potential Laplacian
-
-        def P(x):
-            return x - Gp @ lup.solve(MG.T @ x)
-
-    OP = spla.LinearOperator(K.shape, matvec=lambda x: P(lu.solve(x)), dtype=float)
-    v0 = P(np.random.default_rng(0).standard_normal(K.shape[0]))
-    vals, vecs = spla.eigsh(K, k=k, M=M, sigma=sigma, OPinv=OP, which="LM", v0=v0, tol=tol,
-                            ncv=min(K.shape[0] - 1, max(2 * k + 1, 30)))
-    o = np.argsort(vals)
-    return vals[o], vecs[:, o], sigma, K.diagonal().mean() / M.diagonal().mean()
-
-
-def solve_e_modes(A, k, tol=1e-10, sigma=None, component_potentials=True):
-    """k lowest non-zero eigenpairs of the E formulation: N0 with the PEC wall edges removed
-    (essential n × E = 0), gradient kernel removed by projection with the E potentials
-    (dataset_converter_3d.e_potential_matrix: interior vertices + one potential per boundary
-    component except the first; Kp SPD, no pinning).  Eigenvectors are returned expanded to ALL
-    edges (skfem DOF order, wall rows exactly 0), M-orthonormal.
-    component_potentials=False (validation only) omits the component potentials: an isolated
-    conductor (b2 > 0) then leaves a spurious λ ≈ 0 mode and the zero check raises."""
-    K, M = A["K"], A["M"]
-    Gfull, bnd, n_pot, topo = e_potential_matrix(A["edges"], A["mesh"].p.shape[1], A["mesh"].t.T,
-                                                 component_potentials=component_potentials)
-    free = np.flatnonzero(~bnd)
-    Kf, Mf = K[free][:, free].tocsr(), M[free][:, free].tocsr()
-    Gp = Gfull[free][:, :n_pot].tocsr()
-    vals, vf, sigma, lam_scale = _projected_shift_invert(Kf, Mf, Gp, k, tol, sigma)
-    vecs = np.zeros((K.shape[0], k))
-    vecs[free] = vf
-    # ── checks: no zero / gradient modes (E-kernel potentials), M-orthonormal ──
-    Mv = M @ vecs
-    div = np.abs(Gfull[:, :n_pot].T @ Mv).max(axis=0, initial=0.0) / np.abs(Mv).max(axis=0)
-    if not np.all(np.isfinite(vals)) or vals.min() <= 1e-6 * lam_scale:
-        raise RuntimeError(f"zero / non-physical eigenvalue in {vals} (scale {lam_scale:.3g})")
-    if div.max() > 1e-6:
-        raise RuntimeError(f"mode not M-orthogonal to the E-kernel gradients (div residual {div.max():.2e})")
-    if np.abs(vecs.T @ Mv - np.eye(k)).max() > 1e-6:
-        raise RuntimeError("eigenvectors not M-orthonormal")
-    return vals, vecs, dict(sigma=sigma, div_residual=float(div.max()), lam_scale=float(lam_scale),
-                            n_free=int(len(free)), n_pot=n_pot, n_bnd_components=topo["n_comp"],
-                            betti1=topo["betti1"])
-
-
 # ─────────────────────────── sample ────────────────────────────
 
 def _seeds(s_id):
@@ -728,7 +602,7 @@ def _sample_geometry(s_id, attempt, fam, rng, cad_path, post, t0, rounded):
             vols = gmsh.model.getEntities(3)
             if len(vols) != 1:
                 raise RuntimeError(f"{len(vols)} volumes")
-            if getattr(ARGS, "round_edges", False):          # field labels: no singular edges (docs/30 §3)
+            if getattr(ARGS, "round_edges", False):          # no singular edges (docs/30 §3)
                 v0 = gmsh.model.occ.getMass(3, vols[0][1])
                 r_edge = cs.MIN_FILLET * (3 * v0 / (4 * np.pi)) ** (1 / 3)
                 _, n_round, r_used, n_sharp = cs.round_reentrant_edges(occ, vols[0][1], r_edge,
@@ -802,45 +676,16 @@ def generate_field_sample(s_id):
 
 def generate_sample_data(s_id):
     import gmsh
-    if getattr(ARGS, "labels", "n0") == "field":
+    try:
+        return generate_field_sample(s_id)
+    except Exception as e:
+        print(f"Error generating sample {s_id}: {e}")
+        return None
+    finally:
         try:
-            return generate_field_sample(s_id)
-        except Exception as e:
-            print(f"Error generating sample {s_id}: {e}")
-            return None
-        finally:
-            try:
-                gmsh.clear()
-            except Exception:
-                pass
-    with tempfile.TemporaryDirectory() as tmp:                     # CAD for the STEP copy (--step_dir)
-        try:
-            g = mesh_sample(s_id, cad_path=os.path.join(tmp, "solid.brep") if getattr(ARGS, "step_dir", None) else None)
-            nodes, tets, shape_type, params, h, volume, t_mesh = (
-                g[k] for k in ("nodes", "tets", "shape_type", "params", "h", "volume", "t_mesh"))
-            t0 = time.perf_counter()
-            A = assemble_n0(nodes, tets)
-            k = ARGS.n_eigen_modes
-            vals, vecs, info = solve_e_modes(A, k + 1)
-            t_solve = time.perf_counter() - t0
-            _save_step(g, s_id)
-            return {
-                "id": s_id, "nodes": np.ascontiguousarray(A["mesh"].p.T), "tets": np.ascontiguousarray(A["mesh"].t.T),
-                "edges": A["edges"], "e_edges": vecs[:, :k],
-                "freqs": eigenvalues_to_ghz(vals[:k]),
-                "freq_next": float(eigenvalues_to_ghz(vals[k])), "shape_type": shape_type, "geom_params": params,
-                "div_residual": info["div_residual"], "mesh_h": float(h), "volume": float(volume),
-                "t_mesh": t_mesh, "t_solve": t_solve, "n_bnd_components": int(g["topo"]["n_bnd_components"]),
-                "betti1": int(g["topo"]["betti1"]), "size": (len(A["mesh"].p.T), len(A["edges"])),
-            }
-        except Exception as e:
-            print(f"Error generating sample {s_id}: {e}")
-            return None
-        finally:
-            try:
-                gmsh.clear()
-            except Exception:
-                pass
+            gmsh.clear()
+        except Exception:
+            pass
 
 
 def _save_step(g, s_id):
@@ -868,36 +713,12 @@ def _write_common_attrs(g, res):
 
 
 def write_sample(f_h5, res):
+    from src.data_gen.field_labels import write_field_group
     g = f_h5.create_group(f"sample_{res['id']:04d}")
-    if res.get("labels") == "field":
-        from src.data_gen.field_labels import write_field_group
-        write_field_group(g, res["field"])
-        _write_common_attrs(g, res)
-        a = res["field"]["attrs"]
-        g.attrs["fem_element"] = f"HCurl p{a['model_order']} (labels p{a['label_order']}, curve {a['curve']})"
-        return g
-    z = dict(compression="gzip", compression_opts=4)
-    g.create_dataset("nodes", data=res["nodes"], **z)
-    g.create_dataset("tets", data=res["tets"].astype(np.int64), **z)
-    g.create_dataset("edges", data=res["edges"].astype(np.int64), **z)
-    g.create_dataset("e_edges", data=res["e_edges"], **z)
-    g.create_dataset("freqs", data=res["freqs"])
-    g.attrs["shape_type"] = res["shape_type"]
-    g.attrs["geom_params"] = json.dumps({k: float(v) for k, v in res["geom_params"].items()})
-    for k_, v_ in res["geom_params"].items():
-        g.attrs[k_] = float(v_)
-    g.attrs["n_nodes"] = int(len(res["nodes"]))
-    g.attrs["n_tets"] = int(len(res["tets"]))
-    g.attrs["n_edges"] = int(len(res["edges"]))
-    g.attrs["fem_element"] = "N0"
-    g.attrs["field"] = "E"
-    for k_ in ("freq_next", "div_residual", "mesh_h", "volume", "t_mesh", "t_solve"):
-        g.attrs[k_] = float(res[k_])
-    for k_ in ("n_bnd_components", "betti1"):
-        g.attrs[k_] = int(res.get(k_, 1 if k_ == "n_bnd_components" else 0))
-    if res["shape_type"].startswith("calib_"):
-        ref = eigenvalues_to_ghz(analytic_k2(res["shape_type"], res["geom_params"], len(res["freqs"])))
-        g.attrs["freqs_analytic"] = ref
+    write_field_group(g, res["field"])
+    _write_common_attrs(g, res)
+    a = res["field"]["attrs"]
+    g.attrs["fem_element"] = f"HCurl p{a['model_order']} (labels p{a['label_order']}, curve {a['curve']})"
     return g
 
 
@@ -917,42 +738,35 @@ def _run_chunk(pool, chunk_range, timeout, on_result=None):
 
 
 def file_metadata(args):
-    if getattr(args, "labels", "n0") == "field":
-        return {"generator_args": vars(args), "field": "E", "labels": "field",
-                "fem_element": f"HCurl p{args.model_order} on a curved mesh (curve {args.curve}); "
-                               f"labels HCurl p{args.label_order} on the same mesh, M-projected",
-                "dataset": "u_model",
-                "formulation": "curl-curl E = k^2 E in H0(curl), PEC wall 'wall' (NGSolve dirichlet)",
-                "storage": "per sample: netgen .vol + BREP of the meshed shape (+ deformation map); "
-                           "src.data_gen.field_labels.read_field_group rebuilds the curved mesh",
-                "freq_unit": "GHz", "length_unit": "m", "c0": C0, "docs": "docs/29_FIELD_LABELS.md"}
-    return {"generator_args": vars(args), "field": "E", "fem_element": "N0 (skfem ElementTetN0, all edges)",
-            "dataset": "e_edges",
-            "formulation": "curl-curl E = k^2 E in H0(curl): n x E = 0 essential (PEC wall edge DOFs removed)",
-            "kernel": "gradients of P1 potentials: interior vertices + one constant per boundary component except "
-                      "the first (b2 harmonic Dirichlet fields), removed by M-orthogonal projection (Kp SPD)",
-            "topology": "any connected manifold domain: handles (b1 > 0) and isolated conductors (b2 > 0) allowed",
-            "dof_convention": "e_edges[i] = line integral of E along edges[i,0] -> edges[i,1]; "
-                              "edges[i,0] < edges[i,1]; wall-edge rows exactly 0",
-            "normalisation": "e_edges columns M-orthonormal in physical units; sign arbitrary",
-            "freq_unit": "GHz", "length_unit": "m", "c0": C0}
+    return {"generator_args": vars(args), "field": "E", "labels": "field",
+            "fem_element": f"HCurl p{args.model_order} on a curved mesh (curve {args.curve}); "
+                           f"labels HCurl p{args.label_order} on the same mesh, M-projected",
+            "dataset": "u_model",
+            "formulation": "curl-curl E = k^2 E in H0(curl), PEC wall 'wall' (NGSolve dirichlet)",
+            "storage": "per sample: netgen .vol + BREP of the meshed shape (+ deformation map); "
+                       "src.data_gen.field_labels.read_field_group rebuilds the curved mesh",
+            "freq_unit": "GHz", "length_unit": "m", "c0": C0, "docs": "docs/29_FIELD_LABELS.md"}
 
 
 def main(argv=None):
     global ARGS
     ARGS = parse_args(argv)
-    field = ARGS.labels == "field"
-    n_workers = ARGS.n_workers or (max(1, cpu_count() // max(1, ARGS.threads)) if field else min(cpu_count(), 4))
+    dropped = [f for f in ARGS.families if f in DISCRETE_BUILDERS]       # no CAD solid → no curved mesh
+    ARGS.families = [f for f in ARGS.families if f not in DISCRETE_BUILDERS]
+    if dropped:
+        print(f"field labels need a CAD solid: dropping the discrete families {dropped}")
+    if not ARGS.families and ARGS.mode != "calibration":
+        raise SystemExit("no CAD family left in --families")
+    n_workers = ARGS.n_workers or max(1, cpu_count() // max(1, ARGS.threads))
     print(f"Generating {'ids from ' + ARGS.ids_file if ARGS.ids_file else ARGS.n_total} 3D samples "
           f"({ARGS.mode}, "
-          f"families={ARGS.families}, sampling={ARGS.sampling}, deform_prob={ARGS.deform_prob}, labels={ARGS.labels}"
-          f"{f', p{ARGS.label_order}->p{ARGS.model_order}, min_fillet={ARGS.min_fillet}' if field else ''}) "
+          f"families={ARGS.families}, sampling={ARGS.sampling}, deform_prob={ARGS.deform_prob}, "
+          f"p{ARGS.label_order}->p{ARGS.model_order}, min_fillet={ARGS.min_fillet}) "
           f"with {n_workers} workers")
     tmp_path = ARGS.h5_filename + ".partial"
     n_ok, n_fail, times, calib = 0, 0, [], []
-    # maxtasksperchild: recycle workers (fresh gmsh / OCC state and memory) every 50 samples; field labels:
-    # one sample per process (minutes each; gmsh + netgen OCC and NGSolve state never accumulate)
-    per_child = 1 if field else 50
+    # maxtasksperchild: one sample per process (minutes each; gmsh + netgen OCC and NGSolve state never accumulate)
+    per_child = 1
     new_pool = lambda: Pool(n_workers, initializer=_init_worker, initargs=(ARGS,), maxtasksperchild=per_child)  # noqa: E731
     ids = [int(x) for x in open(ARGS.ids_file).read().split()] if ARGS.ids_file else \
         list(range(ARGS.start_id, ARGS.start_id + ARGS.n_total))
@@ -1006,8 +820,7 @@ def main(argv=None):
     os.replace(tmp_path, ARGS.h5_filename)
     t = np.array(times) if times else np.zeros((1, 4))
     print(f"\nDone: {n_ok} samples ({n_fail} failed) -> {ARGS.h5_filename}")
-    a, b = ("tets", "model DOF") if field else ("Nv", "Ne")
-    print(f"  {a} {t[:, 2].min():.0f}-{t[:, 2].max():.0f}, {b} {t[:, 3].min():.0f}-{t[:, 3].max():.0f}; "
+    print(f"  tets {t[:, 2].min():.0f}-{t[:, 2].max():.0f}, model DOF {t[:, 3].min():.0f}-{t[:, 3].max():.0f}; "
           f"mean t_mesh {t[:, 0].mean():.2f}s, t_solve {t[:, 1].mean():.2f}s per sample (one worker)")
     for st, f, ref in calib:
         print(f"  {st}: rel err f/f_exact-1 = {np.array2string(f / ref - 1, precision=2)}")

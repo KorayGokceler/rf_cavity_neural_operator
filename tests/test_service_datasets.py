@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient                                   # no
 from src.data_gen import cavity_shapes as cs                                 # noqa: E402
 from src.data_gen import dataset_generator_3d as gen                         # noqa: E402
 from src.service import api as A                                            # noqa: E402
-from src.service.datasets import H5Dataset, discover                         # noqa: E402
+from src.service.datasets import discover                                       # noqa: E402
 from src.service.model import ModelService, align                           # noqa: E402
 
 K_FIELD = 4
@@ -30,7 +30,7 @@ def write_field_h5(path, ids):
     import h5py
     import json
     old_args = gen.ARGS
-    gen.ARGS = gen.parse_args(["--labels", "field", "--mode", "calibration", "--mesh_size", "0.2",
+    gen.ARGS = gen.parse_args(["--mode", "calibration", "--mesh_size", "0.2",
                                "--n_eigen_modes", str(K_FIELD), "--tol_f", "1e-4", "--tol_q", "3e-2",
                                "--max_ndof", "40000", "--model_max_elements", "60"])
     gen._init_worker(gen.ARGS)
@@ -47,12 +47,10 @@ def write_field_h5(path, ids):
 
 
 @pytest.fixture(scope="module")
-def data_dir(tmp_path_factory):
-    d = tmp_path_factory.mktemp("dsui")
-    (d / "h5" / "pillbox_pipes").mkdir(parents=True)
-    h5 = d / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5"
-    gen.main(["--n_total", "3", "--n_workers", "1", "--mesh_size", "0.3", "--n_eigen_modes", "4",
-              "--families", "pillbox_pipes", "--start_id", "1000", "--h5_filename", str(h5)])
+def field_dir(tmp_path_factory):
+    d = tmp_path_factory.mktemp("dsfield")
+    (d / "h5" / "calib").mkdir(parents=True)
+    write_field_h5(d / "h5" / "calib" / "calib_s00000.h5", [0, 1])
     return d
 
 
@@ -60,19 +58,25 @@ def f32(s):
     return np.frombuffer(base64.b64decode(s), np.float32)
 
 
-def test_discover_groups_h5_dirs(data_dir):
-    ds = discover(str(data_dir))
-    assert [(type(v).__name__, k) for k, v in ds.items()] == [("H5Dataset", "h5/pillbox_pipes/ (h5)")]
-
-
-def test_h5_items(data_dir):
-    h5 = H5Dataset([str(data_dir / "h5" / "pillbox_pipes" / "pillbox_pipes_s00000.h5")], "h")
-    assert sorted(r["id"] for r in h5.rows()) == [1000, 1001, 1002]
-    a = h5.open(1001)
-    assert a["family"] == "pillbox_pipes" and a["U"].shape == (len(a["geom"]["edges"]), 4)
-    assert np.all(np.diff(a["f_GHz"]) >= 0) and a["qoi_labels"] is None
-    assert np.all(np.einsum("ik,ik->k", a["U"], a["M"] @ a["U"]) > 0)        # nonzero N0 modes
-    assert "Req" not in a["params"] and "mesh_h" in a["params"]                # generator attributes
+def test_discover_groups_field_dirs_and_skips_other_h5(field_dir, tmp_path):
+    """One field dataset per H5 directory; H5 files that are not field-label H5 (other metadata, no metadata,
+    not even HDF5) are ignored without an error."""
+    import h5py
+    ds = discover(str(field_dir))
+    assert [(type(v).__name__, k) for k, v in ds.items()] == [("FieldH5Dataset", "h5/calib/ (field)")]
+    assert [r["id"] for r in ds["h5/calib/ (field)"].rows()] == [0, 1]
+    other = tmp_path / "other"
+    (other / "old").mkdir(parents=True)
+    with h5py.File(other / "old" / "old_s00000.h5", "w") as f:                  # metadata of an old label type
+        f.attrs["metadata"] = '{"field": "E", "fem_element": "N0"}'
+        f.create_group("sample_0000")
+    with h5py.File(other / "plain.h5", "w"):                                    # no metadata at all
+        pass
+    (other / "junk").mkdir()
+    (other / "junk" / "junk.h5").write_bytes(b"not hdf5")
+    assert discover(str(other)) == {}
+    assert discover(str(other / "plain.h5")) == {}
+    assert list(discover(os.pathsep.join([str(other), str(field_dir)]))) == ["h5/calib/ (field)"]
 
 
 def test_align_recovers_sign_and_degenerate_rotation():
@@ -95,53 +99,38 @@ def test_align_recovers_sign_and_degenerate_rotation():
 
 
 @pytest.fixture(scope="module")
-def client(data_dir):
-    return TestClient(A.create_app(ModelService(None, "cpu"), discover(str(data_dir))))
+def field_client(field_dir):
+    return TestClient(A.create_app(ModelService(None, "cpu"), discover(str(field_dir))))
 
 
-def _opened(client):
-    did = next(d["id"] for d in client.get("/api/datasets").json() if d["kind"] == "h5")
-    it = client.get(f"/api/datasets/{did}/items", params={"sort": "f0", "desc": True, "limit": 2}).json()
-    return client.post(f"/api/datasets/{did}/items/{it['items'][0]['id']}/open").json()
-
-
-def test_dataset_endpoints(client):
+def test_dataset_endpoints(field_client):
+    client = field_client
     L = client.get("/api/datasets").json()
-    assert {d["kind"] for d in L} == {"h5"}
+    assert {d["kind"] for d in L} == {"field"}
     did = L[0]["id"]
-    it = client.get(f"/api/datasets/{did}/items", params={"sort": "f0", "desc": True, "limit": 2}).json()
-    assert it["total"] == 3 and len(it["items"]) == 2
-    assert it["items"][0]["f_GHz"][0] >= it["items"][1]["f_GHz"][0]
+    it = client.get(f"/api/datasets/{did}/items", params={"sort": "f0", "desc": True, "limit": 1}).json()
+    assert it["total"] == 2 and len(it["items"]) == 1
     st = client.get(f"/api/datasets/{did}/stats").json()
-    assert st["families"]["pillbox_pipes"]["count"] == 3 and st["n_modes"] == 4
+    assert st["total"] == 2 and sum(e["count"] for e in st["families"].values()) == 2 and st["n_modes"] == K_FIELD
     assert client.get(f"/api/datasets/{did}/items", params={"sort": "nope"}).status_code == 422
 
     o = client.post(f"/api/datasets/{did}/items/{it['items'][0]['id']}/open").json()
-    assert o["truth"]["source"] == "fe" and len(o["truth"]["modes"]) == 4
-    assert o["truth"]["modes"][0]["Q0"] > 0                                     # figures of merit of the FE modes
-    fe = client.get(f"/api/geometries/{o['id']}/features").json()
-    assert fe["names"][3] == "dist_to_boundary" and fe["n_edges"] > 0
-    fp = client.get(f"/api/geometries/{o['id']}/feature_plane", params={"name": "torsion", "res": 31}).json()
-    v = f32(fp["values_b64"])
-    assert v.size == fp["n_points"] > 0 and v.min() >= -1e-6 and v.max() <= 1 + 1e-6
+    assert o["truth"]["source"] == "fe" and len(o["truth"]["modes"]) == K_FIELD
+    assert o["truth"]["qoi_source"] == "p3_labels" and o["truth"]["modes"][0]["Q0"] > 0   # stored p3 figures of merit
+    # (the 60-tet test mesh has no interior vertex: its torsion feature is 0/0, so features / torsion are checked
+    # on a sampled geometry below)
     fs = client.get(f"/api/geometries/{o['id']}/feature_surface", params={"name": "dist_to_boundary"}).json()
     assert np.abs(f32(fs["values_b64"])).max() < 1e-6                          # zero on the wall
     assert client.get(f"/api/geometries/{o['id']}/feature_plane", params={"name": "x1"}).status_code == 404
     t = client.get(f"/api/predictions/{o['truth']['id']}/plane", params={"mode": 0, "res": 31}).json()
     assert t["n_points"] > 0
 
-
-def test_n0_dataset_items_cannot_be_predicted(client):
-    o = _opened(client)
-    assert o["can_predict"] is False and "N0" in o["predict_blocker"]
-    assert client.post("/api/predictions", json={"geometry_id": o["id"]}).status_code == 422
-
-
-@pytest.fixture(scope="module")
-def field_client(tmp_path_factory):
-    d = tmp_path_factory.mktemp("dsfield")
-    write_field_h5(d / "calib.h5", [0, 1])
-    return TestClient(A.create_app(ModelService(None, "cpu"), discover(str(d))))
+    g = client.post("/api/geometries/sample", json={"family": "pillbox_pipes", "id": 5, "mesh_size": 0.3}).json()
+    fe = client.get(f"/api/geometries/{g['id']}/features").json()
+    assert fe["names"][3] == "dist_to_boundary" and fe["n_edges"] > 0
+    fp = client.get(f"/api/geometries/{g['id']}/feature_plane", params={"name": "torsion", "res": 31}).json()
+    v = f32(fp["values_b64"])
+    assert v.size == fp["n_points"] > 0 and v.min() >= -1e-6 and v.max() <= 1 + 1e-6
 
 
 def test_model_vs_fe_comparison(field_client):
@@ -174,7 +163,8 @@ def test_model_vs_fe_comparison(field_client):
     assert bad.status_code == 422
 
 
-def test_feature_views(client):
+def test_feature_views(field_client):
+    client = field_client
     """Each feature group has its own display: frame grid, wall arrows, torsion iso-lines, cut tets."""
     g = client.post("/api/geometries/sample", json={"family": "pillbox_pipes", "id": 5, "mesh_size": 0.3}).json()
     gid = g["id"]
@@ -283,7 +273,8 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
     tr = TR.build_command(dict(TR.defaults(ROOT)["form"], action="dataset", round_edges=False, tag=""))
     assert tr["tag"] == p["tag"]                                       # same tag as the TRUBA run
     a = J.generator_args(p)
-    for flag, val in (("--labels", "field"), ("--threads", "4"), ("--n_workers", "16"), ("--tol_q", "0.002"),
+    assert "--labels" not in a                                              # field labels are the generator's only type
+    for flag, val in (("--threads", "4"), ("--n_workers", "16"), ("--tol_q", "0.002"),
                       ("--model_max_elements", "8000"), ("--max_ndof", "900000"), ("--sample_timeout", "7200")):
         assert a[a.index(flag) + 1] == val, flag
     assert "--no_round_edges" in a and "--no_adapt" not in a and "--no_heal" not in a
@@ -315,22 +306,13 @@ def test_generation_disabled_without_root(monkeypatch):
     assert c.post("/api/jobs/generate", json={"families": ["box"]}).status_code == 503
 
 
-def test_gen_root_inside_a_data_root_is_listed_once(data_dir, monkeypatch):
+def test_gen_root_inside_a_data_root_is_listed_once(field_dir, monkeypatch):
     """Colab: --data <drive> and --gen_root <drive>/ui_datasets → the generated sets appear only as generated/…"""
-    monkeypatch.setenv("RFCAV_DATA", str(data_dir))
-    monkeypatch.setenv("RFCAV_GEN_ROOT", str(data_dir / "h5"))
+    monkeypatch.setenv("RFCAV_DATA", str(field_dir))
+    monkeypatch.setenv("RFCAV_GEN_ROOT", str(field_dir / "h5"))
     c = TestClient(A.create_app(ModelService(None, "cpu")))
     names = {d["name"] for d in c.get("/api/datasets").json()}
-    assert names == {"generated/pillbox_pipes/ (h5)"}
-
-
-def test_n0_datasets_do_not_train(data_dir, tmp_path, monkeypatch):
-    monkeypatch.setenv("RFCAV_RUNS_ROOT", str(tmp_path / "runs"))
-    monkeypatch.delenv("RFCAV_GEN_ROOT", raising=False)
-    c = TestClient(A.create_app(ModelService(None, "cpu"), discover(str(data_dir))))
-    did = c.get("/api/datasets").json()[0]["id"]
-    r = c.post("/api/train/start", json={"name": "x", "datasets": [did]})
-    assert r.status_code == 422 and "field-label" in r.json()["detail"]
+    assert names == {"generated/calib/ (field)"}
 
 
 def test_optional_checkpoint_falls_back_to_untrained(tmp_path):

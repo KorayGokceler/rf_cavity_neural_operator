@@ -11,7 +11,7 @@ M-orthogonal projection  u₂ = argmin ‖E u₂ − u₃‖_M₃  (E = the exac
 representation the model can reach.  The frequencies stay the p3 ones (the targets the Ritz values
 are trained towards); proj_err records how much of each label field lies outside the model space.
 
-Storage (dataset_generator_3d --labels field, H5 group per geometry; read by load_field_sample):
+Storage (dataset_generator_3d, H5 group per geometry; read by load_field_sample):
     vol      uint8   the netgen .vol file of the MODEL mesh (straight tets + geometry info; with adaptive
                      labels the finest refinement level with ≤ model_max_elements tets, docs/30 §4)
     brep     uint8   the meshed OCC shape (BREP): curving on load

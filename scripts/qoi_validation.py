@@ -2,8 +2,8 @@
 
 Reference cavities (src/qoi/analytic.py): copper pillbox TM010 (R = L = 0.1 m) and the E ∥ z
 fundamental ('TE101') of the box 0.10 × 0.08 × 0.06 m, both with the beam axis x = y = 0.  Each is
-meshed with gmsh at several sizes h, solved with the generator's E eigensolver, and run
-through src.qoi.cavity_qoi; the table lists the relative error vs the closed form.  A second table
+meshed with gmsh at several sizes h, solved with the Whitney N0 E eigensolver
+(src.qoi.analytic.fe_modes) and run through src.qoi.cavity_qoi; the table lists the relative error vs the closed form.  A second table
 compares the surface-peak evaluation methods (src.qoi.operators.surface_operators).
 
     python scripts/qoi_validation.py [--h 0.02 0.01] [--shapes pillbox box] [--md out.md]

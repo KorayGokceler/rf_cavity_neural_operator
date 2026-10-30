@@ -18,7 +18,7 @@ description: Run the checks that prove the current change works - tests chosen f
    | `src/service/` | `python -m pytest -q tests/test_service_api.py tests/test_service_datasets.py tests/test_service_training.py tests/test_service_truba.py` |
    | `web/` | `cd web && npm run build`, `python -m pytest -q tests/test_service_api.py`, then a Playwright check against `python scripts/serve_web.py --data <root> --checkpoint_optional --no_token --port <p>`. Desktop and 390 px, light and dark, no console errors, no horizontal scroll at 390 px, timings before/after for touched interactions. Stop the server afterwards. |
    | `scripts/serve_web.py`, `scripts/colab_webui.py`, `Colab_*.ipynb` | `python -m pytest -q tests/test_serve_web.py tests/test_service_api.py`; for the notebook, check that the JSON parses and that the cell's flags exist in the script's `--help` |
-   | `cluster/truba/` | `bash -n` on edited scripts, `bash cluster/truba/run.sh <dataset\|train\|all> LABELS=field ... --dry-run` (and `LABELS=n0 dataset`; `train` / `all` must refuse `LABELS=n0`), `python -m pytest -q tests/test_service_truba.py` |
+   | `cluster/truba/` | `bash -n` on edited scripts, `bash cluster/truba/run.sh <dataset\|train\|all> LABELS=field ... --dry-run` (`LABELS=n0` must fail with a clear message), `python -m pytest -q tests/test_service_truba.py` |
    | `scripts/` (other) | the test that imports the script (`git grep -l <script name> tests/`), and one real run on a small input |
    | `paper/` | build in a scratch copy (`python merge_bib.py && latexmk -pdf main.tex`): no undefined references or citations, page count reported |
    | `docs/` only | links and section references resolve (`git grep` the cited sections); no test run needed |

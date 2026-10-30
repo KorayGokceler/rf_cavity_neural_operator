@@ -37,8 +37,7 @@
      datasetlerindeki geometrinin aynısı. Eğri mesh başarısız olursa üretici gibi geometri yeniden çekilir.
    - **Alan dataseti öğesi:** saklanan eğri mesh; tahmin, saklanan FE çözümüyle aynı gösterim mesh'inde olur
      (model–FE karşılaştırması çalışır).
-   - **Tahmin edilemeyenler:** mesh dosyaları (.msh/.vtu…), `freeform` ailesi (CAD katısı yok), N0-etiketli H5
-     öğeleri. Geometri yanıtında `can_predict: false` ve `predict_blocker` (kısa İngilizce neden);
+   - **Tahmin edilemeyenler:** mesh dosyaları (.msh/.vtu…), `freeform` ailesi (CAD katısı yok). Geometri yanıtında `can_predict: false` ve `predict_blocker` (kısa İngilizce neden);
      `POST /api/predictions` aynı nedenle 422 döner.
    - **Bütçe:** eğri mesh `RFCAV_MAX_PREDICT_TETS` (30000, etiketlerin eleman bütçesi) tet'i aşarsa 422.
 2. `field_labels.model_normalisation` → `highorder.field_operators(order=2)` → `field_item` / `field_collate`
@@ -154,7 +153,7 @@ Değerler `tabular-nums` ile hizalanır; odak halkaları, üzerine gelme durumla
 - **Sol "Geometri" paneli (daraltılabilir):** kaynak (örnek kavite: aile + kimlik + mesh boyu · dosya yükle: CAD/mesh, birim,
   hücre sayısı, mesh boyu), **son açılanlar**, kontroller (kapalı, tek parça, b1, tet / düğüm, hacim, OOD), "Tahmin et",
   **Kapat**, geometri bilgisi. Daralınca 34 px'lik bir sekme kalır.
-  - **Tahmin edilemeyen geometri** (`can_predict: false`: mesh dosyası, `freeform`, N0 dataset öğesi, bütçeyi aşan eğri mesh,
+  - **Tahmin edilemeyen geometri** (`can_predict: false`: mesh dosyası, `freeform`, bütçeyi aşan eğri mesh,
     başarısız kontrol): "Tahmin et" pasif; `predict_blocker` hem düğmenin ipucunda hem de düğmenin üstünde görünür bir
     uyarı kutusunda ("Tahmin edilemez: …"). Tuval ve denetçi "nedeni Geometri panelinde" der. Yükleme sekmesi, mesh
     dosyalarının yalnız görüntülendiğini ve tahmin bütçesini (`limits.max_predict_tets` eğri tet) yazar.
@@ -319,10 +318,9 @@ yalnız kendi girdileri değişince yeniden kuruluyor (`useMemo`).
 Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çözümüne ve modelin hatasına kadar her şey görülebilir.
 
 - **Dataset sayfası:** sunucuya `RFCAV_DATA` ile verilen datasetler listelenir (`src/service/datasets.py`).
-  - **H5 parçaları** klasör başına bir dataset (alan etiketi: tür `field`; N0 etiketi: tür `h5`, yalnız görüntülenir). TRUBA düzeninde `h5/<aile>/` her aile için ayrı bir dataset olur.
-  - Tür `h5` seçilince seçicide "(yalnız görüntüleme)", yanında bir rozet ve bir not çıkar: öğeler FE çözümüyle açılır, eğri mesh saklanmadığı için tahmin edilemez.
-  - **Genel bakış:** aile başına geometri sayısı (tıklayınca filtreler), en düşük mod frekansı f₀ histogramı, DOF (alan: model p2 DOF; N0 etiketi: mesh kenarı) histogramı.
-  - **Tablo:** id, aile, düğüm, kenar, b1, f₀…f₅ (alan datasetlerinde §3c'deki sütunlar). Sıralanabilir, sayfalı, aileye göre filtrelenir. "Aç" geometriyi çalışma alanına gönderir.
+  - **H5 parçaları** klasör başına bir dataset (alan etiketi, tür `field`). TRUBA düzeninde `h5/<aile>/` her aile için ayrı bir dataset olur. Alan etiketli olmayan H5 dosyaları / klasörleri sessizce atlanır (eski N0 etiketli H5 görüntüleyicisi kaldırıldı).
+  - **Genel bakış:** aile başına geometri sayısı (tıklayınca filtreler), en düşük mod frekansı f₀ histogramı, model p2 DOF histogramı.
+  - **Tablo:** id, aile, §3c'deki alan-etiketi sütunları, b1, f₀…f₅. Sıralanabilir, sayfalı, aileye göre filtrelenir. "Aç" geometriyi çalışma alanına gönderir.
 - **Geometri açılınca:**
   - mesh ve kontroller;
   - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. alan datasetlerinde değerler saklanan p3 etiketleridir;
@@ -358,7 +356,7 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 ## 3c. Arayüzden dataset üretimi (Google Drive'a)
 
 **"Üretim" sayfası:**
-- **Ayarlar:** aileler (eğitim / OOD), aile başına geometri, mesh boyu, saklanan mod sayısı, örnekleme (Sobol), deformasyon, seed, parça boyu, işçi × thread, TAG ve alan-etiketi ayarları (aşağıda). Yalnız alan etiketi üretilir (`labels: field`; N0 seçeneği kaldırıldı, üreticinin `--labels n0`'ı elle kullanılabilir).
+- **Ayarlar:** aileler (eğitim / OOD), aile başına geometri, mesh boyu, saklanan mod sayısı, örnekleme (Sobol), deformasyon, seed, parça boyu, işçi × thread, TAG ve alan-etiketi ayarları (aşağıda). Yalnız alan etiketi üretilir (`labels: field`; N0 etiket türü üreticiden de kaldırıldı, `--labels` gizli ve etkisiz).
 - **İşler:** her aile ayrı bir iş olarak kuyruğa girer, tek bir worker sırayla çalıştırır (`src/service/jobs.py`). İlerleme çubuğu, durum ve log gösterilir; iş iptal edilebilir.
 - **Kayıt:** `RFCAV_GEN_ROOT` klasörüne, TRUBA ile aynı düzende ve aynı kimlik bloklarıyla (`cluster/truba/families.tsv`) yazılır. Bu yüzden arayüzde, Colab'da ve TRUBA'da üretilen datasetler birbiriyle karışabilir:
   ```
@@ -423,7 +421,7 @@ ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde ç
 **"Eğitim" sayfası** (`src/service/training.py`, `RFCAV_RUNS_ROOT` / `--runs_root`; Colab: `<Drive>/rf_cavity_3d/training_logs`):
 - **Veri:** Dataset sayfasındaki **alan-etiketi** datasetlerinden (tür `field`) bir ya da birkaçı seçilir; H5
   dosyaları liste olarak `train.py --config configs/field_3d.yaml --override dataset.data_path=[…]`'e verilir
-  (FieldDataset eğri mesh'leri ve operatörleri geometri başına yeniden kurar). N0 datasetleri 422 ile reddedilir.
+  (FieldDataset eğri mesh'leri ve operatörleri geometri başına yeniden kurar). Eğitim yalnız alan datasetlerini görür (N0 etiketli H5 artık listelenmez).
   - Bölme 80/10/10 eğitim/doğrulama/test (geometri bazında, seed 42; en az ~10 geometri).
 - **Model boyu:** `tiny` (0.03 M, boru hattı denemesi) · `small` 0.85 M · `base` 2.8 M · `large` 6.5 M · `xl` 21.7 M. `cluster/truba/config.sh` ile aynı ön ayarlar (testle eşitliği denetlenir).
 - **Ayarlar:** epoch, batch (2), öğrenme hızı, tahmin edilen mod sayısı, erken durdurma sabrı (40), yükleyici işçi sayısı (`num_workers`, 2; operatörleri işçiler kurar). Varsayılanlar `GET /api/train/config` → `defaults`.
@@ -456,7 +454,7 @@ ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde ç
 
 - **Bölümler:**
   - İşlem: veri + eğitim, yalnız veri, yalnız eğitim, durum, kurulum.
-  - Etiket türü: yalnız yüksek mertebe alan (field3d); komut her zaman `LABELS=field` yazar (config.sh'in kendi varsayılanı hâlâ n0).
+  - Etiket türü: yalnız yüksek mertebe alan (field3d); komut her zaman `LABELS=field` yazar (`config.sh` varsayılanı da `field`; başka değer hata verir).
   - Aileler: eğitim ve OOD grupları.
   - Veri ayarları: geometri sayısı, mesh boyu, mod, p3/p2, fillet tabanı, thread, eleman bütçesi;
     uyarlamalı inceltme, toleranslar, model mesh ve DOF bütçesi, kenar yuvarlatma, OCC onarımı (docs/30).

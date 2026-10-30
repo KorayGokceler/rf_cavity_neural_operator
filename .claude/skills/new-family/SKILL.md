@@ -38,7 +38,8 @@ plan below, before writing code. The `label-pipeline` subagent can do the work.
 3. **Ids.** Add the row to `cluster/truba/families.tsv`. The UI's Generate page and TRUBA page read the
    families from the API and from this file; check that both list the new family.
 4. **Tests** in `tests/test_data_gen_3d.py` and `tests/test_field_labels.py`:
-   - 3 ids build one valid, certified mesh (connected manifold, expected b1);
+   - 3 ids build one valid, certified mesh (connected manifold, expected b1; `test_families_valid` is mesh-only,
+     so it does not label the family);
    - the same id reproduces the same `geom_params`;
    - one field-label sample at a coarse size passes `_check_reload`;
    - for STEP export, the volume matches the H5 to 1e-6.

@@ -1,9 +1,10 @@
-"""Label-quality benchmark: current N0 labels and candidate high-order (NGSolve) labels against a
+"""Label-quality benchmark: the former N0 labels and candidate high-order (NGSolve) labels against a
 finer high-order reference, per geometry family — frequency AND fields.
 
 For each sample (generator family + id, same geometry and smooth deformation as the dataset):
 
-    N0 @ ms     the current label: Whitney N0 on the gmsh tet mesh at --mesh_size (dataset_generator_3d)
+    N0 @ ms     the former generator label (removed from dataset_generator_3d): Whitney N0 on the gmsh tet
+                mesh at --mesh_size, solved by src.qoi.analytic.fe_modes on mesh_sample's mesh
     N0 @ ms2    "more mesh" alternatives (--n0_mesh_sizes)
     p{p}c{c}    high-order candidates on the curved netgen mesh of the same CAD solid (--cand)
     p{p}c{c}→N0 that candidate interpolated to the N0 DOFs of the label mesh (u_e = ∫_e E·t): what
@@ -184,7 +185,8 @@ def n0_label(fam, sid, ms, args, cad_path=None, dmap=None):
     """(geom, Y [Ne,K+2], f_hz, t, g) of the N0 solve at mesh size ms; dmap: apply this deformation
     (instead of drawing one) so every mesh discretises the same solid."""
     argv = ["--families", fam, "--mesh_size", str(ms), "--seed", str(args.seed),
-            "--deform_prob", "1" if (args.deform and dmap is None) else "0"]
+            "--deform_prob", "1" if (args.deform and dmap is None) else "0",
+            "--min_fillet", "0", "--no_round_edges", "--no_heal"]                  # the sharp solid of the former N0 labels
     gen.ARGS = gen.parse_args(argv)
     t0 = time.perf_counter()
     g = gen.mesh_sample(sid, cad_path=cad_path)

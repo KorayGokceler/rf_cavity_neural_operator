@@ -1,5 +1,6 @@
 """Shared fixtures and path setup for the test suite."""
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,3 +39,16 @@ def pytest_collection_modifyitems(config, items):
     skip = pytest.mark.skip(reason="gmsh (or its system libraries) not available")
     for item in gmsh_items:
         item.add_marker(skip)
+
+
+@pytest.fixture
+def run_generator():
+    """Run src/data_gen/dataset_generator_3d.py as a subprocess (the real CLI).  Its worker pool forks, and a fork
+    of a process that already ran NGSolve threads hangs in the child — the test process usually has (the
+    production CLI never does), so the CLI tests must not call gen.main() in-process."""
+    def run(*argv):
+        r = subprocess.run([sys.executable, str(REPO_ROOT / "src" / "data_gen" / "dataset_generator_3d.py"),
+                            *map(str, argv)], cwd=REPO_ROOT, capture_output=True, text=True, timeout=900)
+        assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+        return r
+    return run

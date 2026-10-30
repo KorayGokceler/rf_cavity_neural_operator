@@ -113,7 +113,7 @@ def test_a_rounded_geometry_that_fails_is_labelled_sharp_not_redrawn():
     from src.data_gen import cavity_shapes as cs
     from src.data_gen import dataset_generator_3d as gen
     old, old_fillet = gen.ARGS, cs.MIN_FILLET
-    gen.ARGS = gen.parse_args(["--labels", "field", "--families", "elliptical", "--seed", "0", "--sampling", "sobol",
+    gen.ARGS = gen.parse_args(["--families", "elliptical", "--seed", "0", "--sampling", "sobol",
                                "--mesh_size", "0.3"])
     seen = []
 

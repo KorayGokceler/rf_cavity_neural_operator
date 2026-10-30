@@ -11,7 +11,6 @@ source "$TRUBA_DIR/config.sh"
 model_overrides "$MODEL" > /dev/null
 [ "${DRY_RUN:-0}" = 1 ] || mkdir -p "$LOG_DIR" "$RUN_DIR"
 D=(); [ -n "${DEP:-}" ] && D=(--dependency="$DEP")       # run.sh all: wait for the data jobs
-[ "$LABELS" = field ] || { echo "LABELS=$LABELS: the model trains on field labels only (LABELS=field)" >&2; exit 2; }
 TRAIN_FAMILIES=$(family_list "${TRAIN_FAMILIES:-train}")   # train.sbatch reads these families' H5 shard dirs
 export TRAIN_FAMILIES
 DATA_DESC="field H5 of: $TRAIN_FAMILIES"

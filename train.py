@@ -1,5 +1,5 @@
 """Train the 3D cavity eigenmode model (E field, EigenspaceOperatorField: learned field in HCurl(p) on
-curved meshes; field-label H5 files of dataset_generator_3d --labels field, docs/28–29).
+curved meshes; field-label H5 files of dataset_generator_3d, docs/28–29).
 
     python train.py --config configs/field_3d.yaml --override "dataset.data_path=data/field/*.h5"
     python train.py ... --resume training_logs/<exp>/last.ckpt          # continue a run

@@ -2,7 +2,7 @@
 
 > Bu belge her çalışma oturumunun sonunda güncellenir. Bir sonraki ajan (hangi model ya da araç olursa
 > olsun) sohbet geçmişinden değil buradan başlar. Önce `AGENTS.md`'yi okuyun.
-> Son güncelleme: 2026-10-30, dal `claude/field-model-ui`.
+> Son güncelleme: 2026-10-30, dal `claude/remove-n0-labels`.
 
 ## 1. Durum
 
@@ -11,13 +11,17 @@
 | Etiket çözücüsü | Adaptif p3, eğri mesh (docs/30). Analitik pillbox kontrolü geçiyor: 157k DOF'ta f 6e-7, Q0 3e-5, R/Q 1e-5, Epk 2e-4, Bpk 4e-4. |
 | Alan modeli (`field3d`) | Tek model. Kod hazır; tek örnek ezberleme testinde frekans hatası 1e-6 – 9e-6 (docs/28). **Ölçekli eğitim yapılmadı; eğitilmiş bir field3d checkpoint'i yok.** Eski N0 kenar modeli (`eigenspace3d`, PKL hattı) `claude/field-model-ui`'de kaldırıldı. |
 | Model uzayı tabanı | p2, ≤ 10k tetlik model mesh'inde ölçülen frekans tabanı %0,04–0,9 (docs/30). Model bunun altına inemez. |
-| Web arayüzü | "Model" kaynağı (Tahmin) field3d modelini çalıştırıyor: eğri mesh → HCurl p2 operatörleri → Ritz → p2 alanlarından kavite değerleri (`qoi_source: p2_model`), docs/26 §1b. Checkpoint yoksa eğitilmemiş demo modeli. Gösterim hâlâ Whitney N0 izdüşümü üzerinden (açık iş 15). Üretim, Eğitim ve TRUBA sayfaları yalnız alan etiketi. Çalışma alanı alanı tarayıcıda hesaplıyor. |
+| Web arayüzü | "Model" kaynağı (Tahmin) field3d modelini çalıştırıyor: eğri mesh → HCurl p2 operatörleri → Ritz → p2 alanlarından kavite değerleri (`qoi_source: p2_model`), docs/26 §1b. Checkpoint yoksa eğitilmemiş demo modeli. Gösterim hâlâ Whitney N0 izdüşümü üzerinden (açık iş 15). Üretim, Eğitim ve TRUBA sayfaları yalnız alan etiketi; Dataset sayfası yalnız alan etiketli H5 listeler (N0-H5 görüntüleyicisi kaldırıldı). Çalışma alanı alanı tarayıcıda hesaplıyor. |
 | TRUBA | Alan etiketi koşusu henüz yapılmadı (`TEST=1` referans koşuları açık iş). |
 | Geometri aileleri | Literatürle karşılaştırıldı ve düzeltmeler yapıldı (docs/33 §12): ridged_box / box ekseni, borusuz standart E_acc uzunluğu, eksen E_z'nin saklanması (her β için), eliptik yarım hücre çözücüsü (tolerans, çok başlangıç, re-entrant duvar), çapalar, aralıklar. Veri kümesi etiketi `_v2`. Yeni aileler ayrı iş. |
 | README | Alan modeline göre güncellendi (`claude/field-model-ui`). |
 | CI | `requirements-web.txt` de kuruluyor (web servisi testleri artık atlanmıyor); `pytest`, pillbox analitik kontrolü (`validate_field_labels.py --max_ndof 300000`) ve web derlemesi (`npm ci && npm run build`, Node 22) çalışıyor (`.github/workflows/ci.yml`). |
 
-Son commitler (`claude/field-model-ui`, birleşmeyi bekliyor; taban `0d5805c` = `origin/main`):
+Son commitler (`claude/remove-n0-labels`, `claude/field-model-ui` üzerine; birleşmeyi bekliyor):
+- `13fdb6c` üretici: eski `--labels n0` etiket türü kaldırıldı (`--labels` gizli, etkisiz; yalnız `field`), `src/qoi/analytic.fe_modes` N0 operatörlerine taşındı;
+- (sıradaki commit) web servisi ve arayüz: N0-H5 görüntüleyicisi (`H5Dataset`) ve `require_e_field` silindi, `discover` alan etiketli olmayan H5'i atlıyor; arayüzde `viewOnly` / `edgesHist` yolları gitti (`kind` yalnız `field` değerini taşıyor); TRUBA `LABELS` varsayılanı `field`, başka değer `config.sh`'de hata veriyor; belgeler ve ajan dosyaları buna göre güncellendi. Açık iş 16 bitti. Üretici CLI testleri üreticiyi alt süreçte çalıştırır: NGSolve iş parçacıkları başladıktan sonra `fork` kilitlenir.
+
+Önceki dal (`claude/field-model-ui`; taban `0d5805c` = `origin/main`):
 - `138a1bd` eski N0 modeli (`eigenspace3d`) ve yalnız ona hizmet eden kod kaldırıldı;
 - `95fcefe` web servisi: Tahmin field3d modelini çalıştırıyor, eski model tesisatı kaldırıldı;
 - `4eb42c0` web arayüzü field3d arka ucuna uyarlandı, eski model seçenekleri kaldırıldı;
@@ -457,7 +461,9 @@ Tepe RSS (süreç, `ru_maxrss`, üç tahmin art arda) 2,8 GB.
   arayüzünün Tahmin'i, `scripts/predict_geometry.py` ve `cluster/truba/predict.sh` field3d çalıştırıyor.
 - **N0 operatörleri şimdilik kalıyor (2026-10-30).** Gösterim, kavite değerlerinin N0 yolu ve N0-H5
   görüntüleyicisi bunlara dayanıyor (`dataset_converter_3d.py`'nin N0 kısımları, `src/qoi/operators.py`,
-  `src/viz/nedelec.py`). Yüksek mertebe gösterim yapılınca silinecekler (açık iş 15).
+  `src/viz/nedelec.py`). Yüksek mertebe gösterim yapılınca silinecekler (açık iş 15). N0-H5 görüntüleyicisi
+  ve üreticinin N0 etiket türü 2026-10-30'da (`claude/remove-n0-labels`) kaldırıldı (açık iş 16): gösterim
+  katmanı artık yalnız `FieldH5Dataset` ve Tahmin tarafından kullanılıyor.
 
 ## 5. Stratejik değerlendirme (tartışmaya açık)
 
@@ -496,13 +502,14 @@ Bir işe başlayan ajan sahip ve dal sütunlarını doldurur; bitince durumu gü
 | 14 | Uyarlamalı etiketlerde sahte yakınsama: yeniden mesh'leme istenen inceltmeyi uygulamayınca (aynı mesh) ardışık seviye farkı ~1e-15 çıkıyor ve döngü `converged` diyor. Görüldüğü yer: kalibrasyon pillbox'ı (`--mode calibration`, 96 → 91 tet, 2.864 DOF, kendi hata tahmini 1,6e-3, TE111 hatası +1,8e-4). Öneri: `converged` için tet / DOF sayısının gerçekten büyümesini ya da `est_rel_f < tol_f` şartını da istemek. Üreteç davranışı değişeceği için sahibin onayı gerekir. | — | — | açık (bulundu 2026-10-25, `scripts/cst_calibration_set.py`) |
 
 | 15 | **Yüksek mertebe gösterim, N0 köprüsü olmadan (büyük yeniden düzenleme, bir SONRAKİ PR olarak planlandı).** Arayüz p2 / p3 alanını doğrudan çizsin; bugün Whitney N0 izdüşümünden çiziyor (`datasets.whitney_dofs`, `Set(dual=True)`) ve resim sayılardan düşük kaliteli. İzdüşüm hatası küçük mesh'lerde frekansta ~%2, QoI'de daha büyük (§3.11). Bitince N0 operatör / özellik kodu silinir: `dataset_converter_3d.py`'nin N0 kısımları, `src/qoi/operators.py`, `src/viz/nedelec.py`. | — | — | açık (sıradaki PR) |
-| 16 | Üreticinin `--labels n0` varsayılanı (`dataset_generator_3d.py`; `cluster/truba/config.sh`'de `LABELS=n0`) ve `src/service/datasets.py`'deki N0-H5 görüntüleyicisi 15'e kadar kalıyor. Varsayılanı `field` yapmak üretici davranışı değişikliği. | sahip | — | sahibin kararı bekleniyor |
+| 16 | Üreticinin `--labels n0` etiket türü, `cluster/truba/config.sh`'deki `LABELS=n0` ve `src/service/datasets.py`'deki N0-H5 görüntüleyicisi (`H5Dataset`). Sahibin onayıyla (seçenek A) kaldırıldı; N0 operatörleri 15'e kadar kalıyor. | Claude Code oturumu | `claude/remove-n0-labels` | bitti (2026-10-30) |
 | 17 | CAD yüklemelerinde ışın ekseni seçeneği: bugün z ekseni, orijinden geçen (x = y = 0). `--axis_dir/--axis_point` field3d CLI'ında da yok (docs/25 §7). | — | — | açık |
-| 18 | `predict_blocker` serbest İngilizce metin; arayüz onu olduğu gibi gösteriyor. Öneri: yanına makinece okunur bir kod alanı (ör. `mesh_file`, `no_cad`, `n0_item`, `over_budget`) ve çeviri arayüzde. | — | — | açık |
-| 19 | `GET /api/geometries/{id}/features` çok kaba mesh'lerde 500 dönüyor (`claude/field-model-ui` oturumunda görüldü; bu PR'dan önce de vardı). Olası neden: `dataset_converter_3d.node_features`'ta `w / torsion_max`; iç düğüm yoksa torsiyon 0 → 0/0 → NaN özellikler. Yeniden üretme denemesi: kutu, id 1, mesh boyu 0,5 (12 tet) 200 döndü; tetikleyen geometri belgelenmeli. | — | — | açık |
+| 18 | `predict_blocker` serbest İngilizce metin; arayüz onu olduğu gibi gösteriyor. Öneri: yanına makinece okunur bir kod alanı (ör. `mesh_file`, `no_cad`, `over_budget`) ve çeviri arayüzde. | — | — | açık |
+| 19 | `GET /api/geometries/{id}/features` çok kaba mesh'lerde 500 dönüyor (`claude/field-model-ui` oturumunda görüldü; bu PR'dan önce de vardı). Olası neden: `dataset_converter_3d.node_features`'ta `w / torsion_max`; iç düğüm yoksa torsiyon 0 → 0/0 → NaN özellikler. Yeniden üretme denemesi: kutu, id 1, mesh boyu 0,5 (12 tet) 200 döndü; tetikleyen geometri belgelenmeli. Yeniden üretildi (2026-10-30): model mesh'i 60 tet olan kalibrasyon alan datasetinde (`tests/test_service_datasets.py`) torsiyon özelliği NaN; JSON `ValueError` (500). Test bu yüzden `/features` ve torsiyonu örneklenmiş bir geometride sınıyor. | — | — | açık |
 | 20 | Deforme (`--deform_prob`) H5 örnekleri ve deformasyonlu aile örnekleri gösterimde deformasyonsuz köşe noktalarıyla çiziliyor (`SetDeformation` `mesh.vertices`'i oynatmıyor); alanlar, Ritz ve QoI doğru, yalnız resim / `G.check` etkilenir. Uyarı yok. Düzeltme ~10–15 satır (köşelere δ(x) uygulamak). | — | — | açık |
+| 21 | Üretici N0 etiketi kaldırılırken (`13fdb6c`) test kapsamı daraldı: `test_families_valid` yalnız mesh sertifikası (aile başına etiket kontrolü yok); `test_seeding_reproducible` yalnız düğümleri ve parametreleri karşılaştırıyor; gerçekçi (`realistic`) ve kulplu aileler hiçbir testte etiketlenmiyor. Öneri: aile başına en kaba ayarlarla (`--no_adapt --label_order 2 --model_order 1`, `--model_max_elements` küçük) tek örnek etiketleyen, `_check_reload`'u geçen yavaş-işaretli (`@pytest.mark.slow`) bir test; kulplu ailelerde b1 ve kernel projeksiyonu kontrolü de. Üretici davranışına dokunmaz. | — | — | açık |
 
-1 ve 2 birbirine dokunmuyor; paralel yürüyebilir. 15, 16 ve 19 aynı N0 koduna dokunuyor; birlikte ele alınmalı. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
+1 ve 2 birbirine dokunmuyor; paralel yürüyebilir. 15 ve 19 aynı N0 koduna dokunuyor; birlikte ele alınmalı. 3, 2 ile aynı veri hattına dokunuyor; sıraya konmalı.
 10'un etiket kısmı 4'ten (TRUBA referans koşuları) önce yapılırsa referans koşuları yeni tanımlarla ölçülür.
 
 ## 7. Ölçümleri yeniden üretme

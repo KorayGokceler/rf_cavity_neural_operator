@@ -1,5 +1,6 @@
 """Whitney N0 geometry and operators of a linear tetrahedral mesh (E field): the display / QoI / viewer
-layer of the web service and the N0 label path of the generator (dataset_generator_3d --labels n0).
+layer of the web service (the generator's former N0 label path is removed; src.qoi.analytic.fe_modes is the
+N0 reference solve).
 
 Geometry dict (extract_geometry_3d; the former PKL contract of docs/19, now in memory only):
 
@@ -422,13 +423,3 @@ def qoi_operators_of(geom, M=None, **kw):
     L = op.acceleration_length(st, prm)
     ops["L_acc"] = ops["L_axis"] if L is None else L / ops["scale"]     # normalised, like L_axis
     return ops
-
-
-# ─────────────────────────── data checks ───────────────────────
-
-def require_e_field(metadata):
-    """Raise for data of the removed H formulation (PKL / H5 metadata 'field' = 'H')."""
-    field = str((metadata or {}).get("field", None) or "E").upper()
-    if field != "E":
-        raise ValueError(f"data of the removed {field} formulation (only E-field data is supported; "
-                         "regenerate with the current generator)")

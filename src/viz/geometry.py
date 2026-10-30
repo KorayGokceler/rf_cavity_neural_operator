@@ -22,11 +22,15 @@ _LIGHT = np.array([0.4, -0.5, 0.75]) / np.linalg.norm([0.4, -0.5, 0.75])
 
 
 def load_h5(path, n=12, ids=None):
-    """Geometries of a dataset_generator_3d H5 as dicts {id, shape_type, nodes [mm],
-    tets, faces (outward boundary triangles), freqs [GHz], params}; ids=None →
-    round-robin over the families so each appears."""
+    """Geometries of a dataset_generator_3d (field-label) H5 as dicts {id, shape_type, nodes [mm],
+    tets, faces (outward boundary triangles), freqs [GHz], params}: the linear mesh under the stored curved
+    model mesh; ids=None → round-robin over the families so each appears."""
+    import torch  # noqa: F401 — before NGSolve (ngsolve loaded first breaks torch later, tests/conftest.py)
+
+    from src.data_gen.field_labels import read_field_group
+    from src.service.geometry import linear_mesh
     with h5py.File(path, 'r') as f:
-        keys = sorted(k for k in f.keys() if 'tets' in f[k])
+        keys = sorted(k for k in f.keys() if k.startswith('sample_') and 'vol' in f[k])
         if ids is not None:
             keys = [k for k in keys if int(k.split('_')[-1]) in set(ids)]
         else:
@@ -38,8 +42,8 @@ def load_h5(path, n=12, ids=None):
         out = []
         for k in keys:
             g = f[k]
-            X = g['nodes'][:] * 1e3
-            T = g['tets'][:]
+            X, T = linear_mesh(read_field_group(g)[0])
+            X = X * 1e3
             out.append({'id': int(k.split('_')[-1]), 'shape_type': str(g.attrs['shape_type']), 'nodes': X,
                         'tets': T, 'faces': boundary_faces(X, T), 'freqs': g['freqs'][:],
                         'params': json.loads(g.attrs.get('geom_params', '{}'))})
