@@ -3,11 +3,11 @@ import { decodeModes, type FieldBundle } from './fieldlab';
 
 export interface ModelInfo {
   n_modes: number; n_params: number; device: string; untrained: boolean; checkpoint: string | null;
-  load_error?: string | null; run?: string | null;
+  load_error?: string | null; run?: string | null; model_type?: string;
 }
 export interface Info {
   version: string; model: ModelInfo; families: { train: string[]; ood: string[] };
-  limits: { max_upload_mb: number; max_tets: number; cad: string[]; mesh: string[] };
+  limits: { max_upload_mb: number; max_tets: number; max_predict_tets?: number; cad: string[]; mesh: string[] };
   conventions: Record<string, string | number>;
 }
 export interface Check {
@@ -18,11 +18,15 @@ export interface Surface { points: Float32Array; triangles: Uint32Array }
 export interface Solution {
   id: string; source: 'model' | 'fe' | 'diff'; n_edges: number; modes: ModeRow[];
   axis_length_mm: number; f_next?: number | null; labels?: Record<string, number>[] | null;
+  qoi_source?: QoiSource;
 }
+// where the figures of merit come from: the predicted p2 fields, the stored p3 labels, the FE display fields
+export type QoiSource = 'p2_model' | 'p3_labels' | 'fe';
 export interface Geometry {
   id: string; source: Record<string, unknown>; check: Check; family?: string;
   params?: Record<string, number>; surface: Surface;
   truth?: Solution | null;
+  can_predict: boolean; predict_blocker: string | null;    // the field3d model needs a curved mesh of a CAD solid
 }
 export interface QoiCmp { fe: number | null; model: number | null; rel_err: number | null }
 export interface CmpRow {
@@ -51,9 +55,9 @@ export interface FieldGenParams {
   max_ndof: number | null; round_edges: boolean; heal: boolean; sample_timeout: number;
 }
 export interface GenParams extends FieldGenParams {
-  families: string[]; labels: 'n0' | 'field'; n_total: number; mesh_size: number; n_modes: number;
+  families: string[]; labels: 'field'; n_total: number; mesh_size: number; n_modes: number;
   sampling: 'sobol' | 'random'; deform_prob: number; deform_max: number; seed: number; shard_size: number;
-  workers: number | null; convert: boolean; lean: boolean; tag: string | null;
+  workers: number | null; tag: string | null;
 }
 // workers × NGSolve threads for field labels on the server's machine (src/service/jobs.field_plan)
 export interface FieldPlan {
@@ -69,7 +73,7 @@ export interface Job {
 }
 // TRUBA page (src/service/truba.py): the form, the one-line command built from it
 export interface TrubaForm {
-  action: 'all' | 'dataset' | 'train' | 'status' | 'setup'; labels: 'field' | 'n0'; families: string[];
+  action: 'all' | 'dataset' | 'train' | 'status' | 'setup'; labels: 'field'; families: string[];
   n_per_family: number | ''; mesh_size: number; n_modes: number; label_order: number; model_order: number;
   min_fillet: number | ''; threads: number; max_elements: number; maxh_factor: number; adapt: boolean;
   tol_f: number; tol_q: number; model_max_elements: number; max_ndof: number; round_edges: boolean; heal: boolean;
@@ -82,7 +86,7 @@ export interface TrubaForm {
 }
 export interface TrubaConfig {
   repo: string; branch: string; families: { train: string[]; ood: string[] }; models: string[];
-  actions: string[]; form: TrubaForm;
+  actions: string[]; labels: string[]; form: TrubaForm;
 }
 export interface TrubaResult {
   command: string; run_args: string; tag: string; families: string[]; group: string; notes: string[];
@@ -92,10 +96,11 @@ export interface Preset { embed_dim: number; n_heads: number; n_layers: number; 
 export interface TrainConfig {
   enabled: boolean; runs_root: string | null; gpu: string | null; cpu_count: number;
   presets: Record<string, Preset>; busy: boolean; active: string | null; model: ModelInfo;
+  model_type: string; config: string; dataset_kinds: string[]; defaults: Partial<Omit<TrainParams, 'name' | 'datasets'>>;
 }
 export interface TrainParams {
   name: string; datasets: string[]; preset: string; epochs: number; batch_size: number; lr: number;
-  n_modes: number; patience: number; qoi_weight: number; cache_operators: boolean | null;
+  n_modes: number; patience: number; num_workers: number;
 }
 export type RunStatus = 'preparing' | 'running' | 'finished' | 'stopped' | 'failed' | 'checkpoint' | 'empty';
 export interface RunSummary {
@@ -108,9 +113,10 @@ export interface RunDetail extends RunSummary {
   history: Record<string, number>[]; test: Record<string, number> | null;
   best: { path: string; score: number | null; monitor: string } | null;
   params: (Omit<TrainParams, 'name' | 'datasets'> & { sources: string[] }) | null;
-  stage: string | null; log: string[]; data_cached: boolean | null;
+  stage: string | null; log: string[];
 }
-export interface DatasetRef { id: string; name: string; kind: 'h5' | 'pkl' | 'field' }
+// kind 'field': field-label H5 (predictable, trainable); 'h5': N0-label H5 (opened for viewing only)
+export interface DatasetRef { id: string; name: string; kind: 'h5' | 'field' }
 // field-label datasets: label quality per geometry (src/service/datasets.FieldH5Dataset)
 export interface FieldRowInfo {
   n_tets_label: number | null; n_dof_label: number | null; n_tets_start: number | null;
@@ -133,7 +139,9 @@ export interface ModeRow {
 }
 export interface Prediction {
   id: string; geometry_id: string; source: 'model'; n_edges: number; modes: ModeRow[];
-  axis_length_mm: number; time_s: Record<string, number>; warnings: string[]; model: ModelInfo;
+  axis_length_mm: number; warnings: string[]; model: ModelInfo;
+  time_s: Record<string, number>;            // mesh, operators, model, qoi, display, total [s]
+  qoi_source: QoiSource; n_dof: number; n_tets: number;     // p2 DOFs and curved tets of the model's mesh
   comparison?: { rows: CmpRow[]; diff_id: string; truth_id: string };
 }
 function f32(b64: string): Float32Array {

@@ -7,7 +7,7 @@ import { api, type FeatureView, type Features, type Geometry, type Info, type Pr
 import { shareMesh, type FieldBundle, type Slice } from '../fieldlab';
 import { cssGradient, divergingStops, sequentialStops, type Theme } from '../colors';
 import { t, type Key, type Lang } from '../i18n';
-import { int, sci } from '../format';
+import { fmtTimings, int, sci } from '../format';
 import { usePersisted } from '../store';
 import { useOverlay } from '../overlay';
 import { composePng, modesCsv, safeName, saveBlob, type PanePng } from '../exportFiles';
@@ -101,6 +101,7 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
   const [fView, setFView] = useState<FeatureView | null>(null);
   const [fSurf, setFSurf] = useState<Float32Array | null>(null);
   const [busy, setBusy] = useState(false);
+  const [predicting, setPredicting] = useState<number | null>(null);   // start time of a running prediction
 
   const [field, setField] = useState<'E' | 'H'>('E');
   const [view3d, setView3d] = useState<View3D>('cut');
@@ -170,17 +171,20 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
     setMode(0); setSource('model');
   };
 
-  const predict = () => geom && run(async () => {
-    const p = await api.predict(geom.id, truth?.id ?? null);
-    if (geomId.current !== geom.id) return;               // closed (or replaced) meanwhile
-    setPred(p);
-    setSource('model');
-    if (!truth) {
-      const acc = p.modes.find((m) => m.accelerating);
-      setMode(acc ? acc.mode : 0);
-    }
-    const sec = Object.values(p.time_s).reduce((a, b) => a + b, 0);
-    toast('ok', `${t(lang, 'toastPredOk')} · ${sec.toFixed(1)} s`);
+  // the field3d model on the curved mesh: seconds to ~30 s on a CPU; the panel shows a spinner and the elapsed time
+  const predict = () => geom && geom.can_predict && run(async () => {
+    setPredicting(performance.now());
+    try {
+      const p = await api.predict(geom.id, truth?.id ?? null);
+      if (geomId.current !== geom.id) return;               // closed (or replaced) meanwhile
+      setPred(p);
+      setSource('model');
+      if (!truth) {
+        const acc = p.modes.find((m) => m.accelerating);
+        setMode(acc ? acc.mode : 0);
+      }
+      toast('ok', `${t(lang, 'toastPredOk')} · ${fmtTimings(lang, p.time_s)}`);
+    } finally { setPredicting(null); }
   }, t(lang, 'toastPredFail'));
 
   const sampleRecent = (family: string, id: number, meshSize: number): Recent => ({
@@ -521,7 +525,7 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
   // the side panels do not depend on the phase / cut position: rebuilt only when their own inputs change
   /* eslint-disable react-hooks/exhaustive-deps */
   const geomPanel = useMemo(() => (
-    <GeometryPanel lang={lang} info={info} geometry={geom} busy={busy} form={form} setForm={setForm}
+    <GeometryPanel lang={lang} info={info} geometry={geom} busy={busy} predicting={predicting} form={form} setForm={setForm}
                    onUpload={upload} onSample={buildSample} onPredict={predict} onClose={closeGeometry}
                    after={geom ? <GeometryInfo lang={lang} geometry={geom} features={features} /> : null}>
       {recent.length > 0 && (
@@ -541,21 +545,27 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
         </Collapsible>
       )}
     </GeometryPanel>
-  ), [lang, info, geom, busy, form, features, recent, truth, pred]);
+  ), [lang, info, geom, busy, predicting, form, features, recent, truth, pred]);
 
   const sourceName = (s: Source) => t(lang, s === 'fe' ? 'fe' : s === 'model' ? 'model' : 'diff');
+  // what the numbers are: Ritz frequencies + figures of merit from the predicted p2 fields, or the stored p3 labels
+  const qoiSrc = source === 'fe' ? truth?.qoi_source : pred?.qoi_source;
+  const qoiNote = qoiSrc === 'p2_model' ? t(lang, 'qoiP2Model') : qoiSrc === 'p3_labels' ? t(lang, 'qoiP3Labels') : null;
   const inspector = useMemo(() => (<>
     {shown ? (
       <Collapsible title={cmp ? t(lang, 'cmpTitle') : t(lang, 'modes')} className="panel-section"
                    actions={<IconButton icon="table" label={t(lang, 'exportCsv')} className="flat" onClick={exportCsv} testid="csv-btn" />}>
         <ModeTable lang={lang} modes={shown.modes} cmp={cmp} selected={mode} onSelect={setMode} />
+        {qoiNote && <div className="note qoi-source" data-testid="qoi-source">{qoiNote}</div>}
       </Collapsible>
-    ) : <div className="empty-note">{geom ? t(lang, 'noPrediction') : t(lang, 'empty')}</div>}
+    ) : <div className="empty-note">{!geom ? t(lang, 'empty') : predicting !== null ? t(lang, 'predicting')
+                                      : t(lang, geom.can_predict ? 'noPrediction' : 'predictBlockedSee')}</div>}
     {shown && row && (
       <Collapsible title={`${t(lang, 'selected')}: ${row.mode} · ${sourceName(source)}`} className="panel-section">
         <ModeDetails lang={lang} row={row}
                      cmp={cmp && source !== 'fe' ? cmp[mode] : null}
                      timings={source === 'fe' ? null : pred?.time_s}
+                     size={source !== 'fe' && pred?.n_dof ? `${int(pred.n_dof)} DOF (p2) · ${int(pred.n_tets)} ${t(lang, 'curvedTets')}` : null}
                      exportId={source === 'fe' ? truth?.id : pred?.id}
                      label={source === 'fe' ? truth?.labels?.[mode] ?? null : null} />
       </Collapsible>
@@ -563,7 +573,7 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
     {source === 'diff' && display === 'field' && <div className="note pad">{t(lang, 'diffNote')}</div>}
     {display === 'feature' && <div className="note pad">{t(lang, `fkn_${fKind}` as Key)}</div>}
     <div className="note disclaimer pad">{t(lang, 'disclaimer')}</div>
-  </>), [lang, shown, cmp, mode, row, source, pred, truth, display, fKind, geom]);
+  </>), [lang, shown, cmp, mode, row, source, pred, truth, display, fKind, geom, qoiNote, predicting]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   const plot = A.onField && bundle ? (
@@ -618,7 +628,12 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
                 neutralPlane={V.neutral} cells={V.cells} segments={V.segments}
                 pickMode={probeOnNow} onPick={onPick} marker={marker} topInset={compact ? 0 : TOOLBAR_INSET} />
       {id === 'A' && !geom && <div className="viewer-empty"><Icon name="cube" size={34} /><span>{t(lang, 'empty')}</span><span className="sub">{t(lang, 'dropHint')}</span></div>}
-      {geom && !sh && display === 'field' && <div className="viewer-empty"><span>{t(lang, 'noPrediction')}</span></div>}
+      {geom && !sh && display === 'field' && (
+        <div className="viewer-empty">
+          {predicting !== null ? <><span className="spinner lg" aria-hidden="true" /><span>{t(lang, 'predicting')}</span></>
+            : <span>{t(lang, geom.can_predict ? 'noPrediction' : 'predictBlockedSee')}</span>}
+        </div>
+      )}
       {sh && display === 'field' && sid && !b && <div className="viewer-empty"><span>{t(lang, 'loadingFields')}</span></div>}
       {(sh || display === 'feature') && geom && (
         <ColorBar gradient={gradient} range={V.phys} unit={V.unit} neutral={V.neutral} scaleTag={scaleTag(V)} badges={badges}
@@ -658,13 +673,14 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
         <span>{describe(geom)}</span>
         <span className="num">{int(geom.check.n_tets)} {t(lang, 'statusTets')}</span>
         <span className="num">{int(geom.check.n_nodes)} {t(lang, 'statusNodes')}</span>
-        {features && <span className="num">{int(features.n_edges)} DOF (N0)</span>}
+        {pred?.n_dof ? <span className="num" title="field3d: HCurl p2">{int(pred.n_dof)} DOF (p2) · {int(pred.n_tets)} {t(lang, 'curvedTets')}</span> : null}
         {shown && row && <span className="num">{t(lang, 'statusMode')} {row.mode} · {row.f_GHz.toFixed(4)} GHz</span>}
-        {pred && <span className="num">{Object.entries(pred.time_s).map(([k, v]) => `${k} ${v.toFixed(2)} s`).join(' · ')}</span>}
+        {predicting !== null && <span className="busy-text"><span className="spinner" aria-hidden="true" />{t(lang, 'predicting')}</span>}
+        {pred && predicting === null && <span className="num">{t(lang, 'timings')} {fmtTimings(lang, pred.time_s)}</span>}
       </>) : <span>{t(lang, 'statusNone')}</span>}
       <span className="grow" />
       {shown && <span>{t(lang, 'statusSource')}: {sourceName(source)}</span>}
-      {info && <span className="num">{info.model.run ? `${info.model.run} · ` : ''}{(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}{info.model.untrained ? ` · ${t(lang, 'untrainedChip')}` : ''}</span>}
+      {info && <span className="num">{info.model.model_type ? `${info.model.model_type} · ` : ''}{info.model.run ? `${info.model.run} · ` : ''}{(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}{info.model.untrained ? ` · ${t(lang, 'untrainedChip')}` : ''}</span>}
     </footer>
   );
 

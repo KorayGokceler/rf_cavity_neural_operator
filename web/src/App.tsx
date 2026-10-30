@@ -129,7 +129,7 @@ function Shell({ lang, setLang }: { lang: Lang; setLang: (l: Lang) => void }) {
         {info && (
           <span className={`chip ${info.model.untrained ? 'warn' : ''}`} title={t(lang, 'modelChip')} data-testid="model-chip">
             <Icon name="cpu" size={13} />
-            <span>{info.model.run ? `${info.model.run} · ` : ''}{(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}</span>
+            <span>{info.model.model_type ? `${info.model.model_type} · ` : ''}{info.model.run ? `${info.model.run} · ` : ''}{(info.model.n_params / 1e6).toFixed(2)} M · {info.model.device}</span>
             {info.model.untrained && <strong>{t(lang, 'untrainedChip')}</strong>}
           </span>
         )}

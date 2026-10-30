@@ -1,5 +1,6 @@
 // TRUBA plug-in: the form below becomes ONE shell line for a TRUBA login node (cluster/truba/run.sh,
 // built and validated server-side by src/service/truba.py). Nothing is sent to the cluster from here.
+// Field labels only (LABELS=field: the field3d model's data); freeform has no CAD solid and is not offered.
 import { useEffect, useRef, useState } from 'react';
 import { api, type TrubaConfig, type TrubaForm, type TrubaResult } from '../api';
 import { int } from '../format';
@@ -38,10 +39,9 @@ export default function TrubaPage({ lang }: Props) {
   const set = <K extends keyof TrubaForm>(k: K, v: TrubaForm[K]) => setF({ ...f, [k]: v });
   const nfld = (k: keyof TrubaForm, allowEmpty = false) => (v: number | null) =>
     set(k, (v === null ? (allowEmpty ? '' : 0) : v) as never);
-  const field = f.labels === 'field';
   const data = f.action === 'all' || f.action === 'dataset';
   const train = f.action === 'all' || f.action === 'train';
-  const famUsable = (fam: string) => !(field && fam === 'freeform');
+  const famUsable = (fam: string) => fam !== 'freeform';
   const toggle = (fam: string) => set('families', f.families.includes(fam) ? f.families.filter((x) => x !== fam) : [...f.families, fam]);
 
   const copy = async () => {
@@ -84,7 +84,7 @@ export default function TrubaPage({ lang }: Props) {
         )}
         {res?.notes.map((n) => <div key={n} className="banner warning"><span className="icon">!</span>{t(lang, `note_${n}` as Key)}</div>)}
         {res && f.action !== 'status' && f.action !== 'setup' && (
-          <div className="note">{t(lang, 'afterwards')}: <code>cd ~/{f.repo_dir} && bash cluster/truba/run.sh status{field ? ' LABELS=field' : ''}{f.test ? ' TEST=1' : ''}</code></div>
+          <div className="note">{t(lang, 'afterwards')}: <code>cd ~/{f.repo_dir} && bash cluster/truba/run.sh status LABELS=field{f.test ? ' TEST=1' : ''}</code></div>
         )}
       </div>
 
@@ -94,18 +94,7 @@ export default function TrubaPage({ lang }: Props) {
           <div className="seg" role="group" aria-label={t(lang, 'action')}>
             {ACTIONS.map((a) => <button key={a} className={f.action === a ? 'on' : ''} onClick={() => set('action', a)}>{t(lang, `act_${a}` as Key)}</button>)}
           </div>
-          {f.action !== 'setup' && (
-            <label>{t(lang, 'labelsKind')}
-              <select value={f.labels} onChange={(e) => {
-                const labels = e.target.value as TrubaForm['labels'];
-                setF({ ...f, labels, exp: f.exp === 'field_base' && labels === 'n0' ? 'base' : f.exp === 'base' && labels === 'field' ? 'field_base' : f.exp,
-                       families: labels === 'field' ? f.families.filter((x) => x !== 'freeform') : f.families });
-              }}>
-                <option value="field">{t(lang, 'lab_field')}</option>
-                <option value="n0">{t(lang, 'lab_n0')}</option>
-              </select>
-            </label>
-          )}
+          {f.action !== 'setup' && <div className="note" data-testid="truba-labels">{t(lang, 'labelsKind')}: <strong>{t(lang, 'lab_field')}</strong></div>}
           <label className="check"><input type="checkbox" checked={f.dry_run} onChange={(e) => set('dry_run', e.target.checked)} /><span>{t(lang, 'dryRun')}</span></label>
           {f.action !== 'setup' && <label className="check"><input type="checkbox" checked={f.test} onChange={(e) => set('test', e.target.checked)} /><span>{t(lang, 'testRun')}</span></label>}
 
@@ -128,18 +117,18 @@ export default function TrubaPage({ lang }: Props) {
               {data && <NumField lang={lang} label={t(lang, 'perFamilyN')} value={f.n_per_family} min={1} allowEmpty onChange={nfld('n_per_family', true)} />}
               <NumField lang={lang} label={t(lang, 'meshSize')} value={f.mesh_size} min={0.03} max={0.5} step={0.01} onChange={nfld('mesh_size')} />
               <NumField lang={lang} label={t(lang, 'nModes')} value={f.n_modes} min={1} max={40} onChange={nfld('n_modes')} />
-              {field && <>
+              <>
                 <NumField lang={lang} label={t(lang, 'labelOrder')} value={f.label_order} min={2} max={4} onChange={nfld('label_order')} />
                 <NumField lang={lang} label={t(lang, 'modelOrder')} value={f.model_order} min={1} max={3} onChange={nfld('model_order')} />
                 <NumField lang={lang} label={t(lang, 'minFillet')} value={f.min_fillet} min={0} max={0.3} step={0.01} allowEmpty onChange={nfld('min_fillet', true)} />
-              </>}
+              </>
               <label>TAG<input type="text" placeholder={res?.tag ?? ''} value={f.tag} onChange={(e) => set('tag', e.target.value)} /></label>
             </div>
-            {data && field && <label className="check"><input type="checkbox" checked={f.adapt} onChange={(e) => set('adapt', e.target.checked)} /><span>{t(lang, 'adaptOn')}</span></label>}
+            {data && <label className="check"><input type="checkbox" checked={f.adapt} onChange={(e) => set('adapt', e.target.checked)} /><span>{t(lang, 'adaptOn')}</span></label>}
             {data && (
               <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
                 <div className="grid2">
-                  {data && field && <>
+                  {data && <>
                     <NumField lang={lang} label={t(lang, 'threads')} value={f.threads} min={1} max={128} onChange={nfld('threads')} />
                     <NumField lang={lang} label={t(lang, 'maxElements')} value={f.max_elements} min={1000} step={1000} onChange={nfld('max_elements')} />
                     <NumField lang={lang} label={t(lang, 'maxhFactor')} value={f.maxh_factor} min={1} max={10} step={0.5} onChange={nfld('maxh_factor')} />
@@ -155,8 +144,8 @@ export default function TrubaPage({ lang }: Props) {
                     <NumField lang={lang} label={t(lang, 'seed')} value={f.seed} min={0} onChange={nfld('seed')} />
                   </>}
                 </div>
-                {data && field && <label className="check"><input type="checkbox" checked={f.round_edges} onChange={(e) => set('round_edges', e.target.checked)} /><span>{t(lang, 'roundEdges')}</span></label>}
-                {data && field && <label className="check"><input type="checkbox" checked={f.heal} onChange={(e) => set('heal', e.target.checked)} /><span>{t(lang, 'healOn')}</span></label>}
+                {data && <label className="check"><input type="checkbox" checked={f.round_edges} onChange={(e) => set('round_edges', e.target.checked)} /><span>{t(lang, 'roundEdges')}</span></label>}
+                {data && <label className="check"><input type="checkbox" checked={f.heal} onChange={(e) => set('heal', e.target.checked)} /><span>{t(lang, 'healOn')}</span></label>}
               </Collapsible>
             )}
             {data && (
@@ -180,7 +169,7 @@ export default function TrubaPage({ lang }: Props) {
               <label>{t(lang, 'expName')}<input type="text" value={f.exp} onChange={(e) => set('exp', e.target.value)} /></label>
               <label>{t(lang, 'modelSize')}<select value={f.model} onChange={(e) => set('model', e.target.value)}>{cfg.models.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
               <NumField lang={lang} label={t(lang, 'epochs')} value={f.epochs} min={1} onChange={nfld('epochs')} />
-              <NumField lang={lang} label={t(lang, 'batchOpt')} value={f.batch} min={1} placeholder={field ? '2' : '4'} allowEmpty onChange={nfld('batch', true)} />
+              <NumField lang={lang} label={t(lang, 'batchOpt')} value={f.batch} min={1} placeholder="2" allowEmpty onChange={nfld('batch', true)} />
               <NumField lang={lang} label={t(lang, 'lr')} value={f.lr} min={1e-7} step={1e-5} onChange={nfld('lr')} />
             </div>
             <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
@@ -189,9 +178,9 @@ export default function TrubaPage({ lang }: Props) {
               <label>{t(lang, 'gpuPartition')}<input type="text" value={f.gpu_partition} onChange={(e) => set('gpu_partition', e.target.value)} /></label>
                 <NumField lang={lang} label={t(lang, 'gpuCpus')} value={f.gpu_cpus} min={1} onChange={nfld('gpu_cpus')} />
                 <label>{t(lang, 'gpuTime')}<input type="text" value={f.gpu_time} onChange={(e) => set('gpu_time', e.target.value)} /></label>
-              <NumField lang={lang} label={t(lang, 'loaderWorkers')} value={f.num_workers} min={0} placeholder={field ? '14' : '6'} allowEmpty onChange={nfld('num_workers', true)} />
+              <NumField lang={lang} label={t(lang, 'loaderWorkers')} value={f.num_workers} min={0} placeholder="14" allowEmpty onChange={nfld('num_workers', true)} />
               </div>
-              {field && <label>{t(lang, 'cacheDir')}<input type="text" value={f.cache_dir} onChange={(e) => set('cache_dir', e.target.value)} /></label>}
+              <label>{t(lang, 'cacheDir')}<input type="text" value={f.cache_dir} onChange={(e) => set('cache_dir', e.target.value)} /></label>
               <label>{t(lang, 'trainExtra')}<input type="text" placeholder="training.patience=30 model.num_field_modes=8" value={extra} onChange={(e) => setExtra(e.target.value)} /></label>
             </Collapsible>
           </div>

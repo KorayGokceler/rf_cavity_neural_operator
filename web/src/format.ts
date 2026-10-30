@@ -1,4 +1,4 @@
-import type { Lang } from './i18n';
+import type { Key, Lang } from './i18n';
 import { t } from './i18n';
 
 export function sci(v: number | null | undefined, digits = 3): string {
@@ -39,3 +39,15 @@ export const QOI_DEFS: QoiDef[] = [
 
 /** Integer with thin-space grouping (locale-neutral: '1 317', never '1.317' next to frequencies). */
 export const int = (n: number) => (Number.isFinite(n) ? Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009') : '—');
+
+const TIMING_ORDER = ['mesh', 'operators', 'model', 'qoi', 'display'] as const;
+
+/** Prediction timings (time_s: mesh, operators, model, qoi, display, total) as one line:
+ *  "1.23 s (mesh 0.20 · operators 0.08 · …)"; the total is the server's own, never the sum of the parts. */
+export function fmtTimings(lang: Lang, ts: Record<string, number> | null | undefined): string {
+  if (!ts) return '';
+  const parts = [...TIMING_ORDER.filter((k) => k in ts), ...Object.keys(ts).filter((k) => k !== 'total' && !(TIMING_ORDER as readonly string[]).includes(k))]
+    .map((k) => `${(TIMING_ORDER as readonly string[]).includes(k) ? t(lang, `tm_${k}` as Key) : k} ${ts[k].toFixed(2)}`);
+  const total = ts.total ?? Object.values(ts).reduce((a, b) => a + b, 0);
+  return `${total.toFixed(2)} s${parts.length ? ` (${parts.join(' · ')})` : ''}`;
+}

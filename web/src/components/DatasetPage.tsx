@@ -1,5 +1,6 @@
-// Dataset browser: registered H5 / PKL datasets → family overview, frequency / size histograms,
+// Dataset browser: registered H5 datasets → family overview, frequency / size histograms,
 // a sortable, filterable geometry table; "open" sends a geometry (with its FE modes) to the workspace.
+// Kind 'field' (field labels) can be predicted; kind 'h5' (N0 labels) opens for viewing only.
 import { useEffect, useMemo, useState } from 'react';
 import { api, type DatasetRef, type DatasetRow, type DatasetStats } from '../api';
 import { t, type Key, type Lang } from '../i18n';
@@ -41,7 +42,9 @@ export default function DatasetPage({ lang, onOpen }: Props) {
   const f0 = useMemo(() => !stats ? [] : family ? stats.families[family]?.f0 ?? [] : Object.values(stats.families).flatMap((v) => v.f0), [stats, family]);
   const ne = useMemo(() => !stats ? [] : family ? stats.families[family]?.n_edges ?? [] : Object.values(stats.families).flatMap((v) => v.n_edges), [stats, family]);
   const nModes = Math.min(stats?.n_modes ?? 0, 6);
-  const field = list?.find((d) => d.id === did)?.kind === 'field';   // adaptive field labels (docs/30)
+  const kind = list?.find((d) => d.id === did)?.kind;
+  const field = kind === 'field';                                     // adaptive field labels (docs/30)
+  const viewOnly = kind === 'h5';                                     // no curved mesh stored: no prediction
   const sci = (v: number | null | undefined) => (v === null || v === undefined ? '—' : v.toExponential(1));
 
   const th = (k: SortKey, label: string, num = false) => (
@@ -60,9 +63,10 @@ export default function DatasetPage({ lang, onOpen }: Props) {
             <div className="filters">
         <label>{t(lang, 'dataset')}
           <select value={did} onChange={(e) => setDid(e.target.value)}>
-            {list?.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.kind}</option>)}
+            {list?.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.kind}{d.kind === 'h5' ? ` (${t(lang, 'viewOnly')})` : ''}</option>)}
           </select>
         </label>
+        {viewOnly && <span className="badge warn" title={t(lang, 'viewOnlyNote')} data-testid="view-only">{t(lang, 'viewOnly')}</span>}
         <label>{t(lang, 'family')}
           <select value={family} onChange={(e) => { setFamily(e.target.value); setOffset(0); }}>
             <option value="">{t(lang, 'all')}</option>
@@ -72,6 +76,7 @@ export default function DatasetPage({ lang, onOpen }: Props) {
         {stats && <span className="muted">{int(stats.total)} {t(lang, 'geometries')} · {stats.n_modes} {t(lang, 'modesStored')}</span>}
       </div>
 
+      {viewOnly && <div className="note" data-testid="view-only-note">{t(lang, 'viewOnlyNote')}</div>}
       <div className="overview">
         <BarList data={fams} title={t(lang, 'perFamily')} picked={family}
                  onPick={(l) => { setFamily(family === l ? '' : l); setOffset(0); }} />
@@ -92,7 +97,7 @@ export default function DatasetPage({ lang, onOpen }: Props) {
                 <th>{t(lang, 'adaptStop')}</th>
                 <th className="num" title={t(lang, 'estErrTip')}>{t(lang, 'estErr')}</th>
                 <th className="num" title={t(lang, 'edgesTip')}>{t(lang, 'edgesRS')}</th>
-              </> : <>{th('n_nodes', t(lang, 'nodes'), true)}{th('n_edges', 'N0', true)}</>}
+              </> : <>{th('n_nodes', t(lang, 'nodes'), true)}{th('n_edges', t(lang, 'edges'), true)}</>}
               {th('betti1', 'b1', true)}{th('f0', 'f₀ [GHz]', true)}
               {Array.from({ length: Math.max(0, nModes - 1) }, (_, i) => <th key={i} className="num">f{i + 1}</th>)}
               <th />

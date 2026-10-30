@@ -137,8 +137,20 @@ Değerler `tabular-nums` ile hizalanır; odak halkaları, üzerine gelme durumla
 - **Sol "Geometri" paneli (daraltılabilir):** kaynak (örnek kavite: aile + kimlik + mesh boyu · dosya yükle: CAD/mesh, birim,
   hücre sayısı, mesh boyu), **son açılanlar**, kontroller (kapalı, tek parça, b1, tet / düğüm, hacim, OOD), "Tahmin et",
   **Kapat**, geometri bilgisi. Daralınca 34 px'lik bir sekme kalır.
+  - **Tahmin edilemeyen geometri** (`can_predict: false`: mesh dosyası, `freeform`, N0 dataset öğesi, bütçeyi aşan eğri mesh,
+    başarısız kontrol): "Tahmin et" pasif; `predict_blocker` hem düğmenin ipucunda hem de düğmenin üstünde görünür bir
+    uyarı kutusunda ("Tahmin edilemez: …"). Tuval ve denetçi "nedeni Geometri panelinde" der. Yükleme sekmesi, mesh
+    dosyalarının yalnız görüntülendiğini ve tahmin bütçesini (`limits.max_predict_tets` eğri tet) yazar.
+  - **Tahmin sürerken** (CPU'da birkaç saniyeden ~30 s'ye): düğmede dönen halka + "Tahmin ediliyor… N s" (kendi sayacı; panel
+    saniyede bir yeniden kurulmaz), altında adımlar notu (eğri mesh, p2 operatörleri, model, kavite değerleri); Oluştur / Yükle /
+    son açılanlar ve Tahmin et pasif; tuvalde ve durum çubuğunda da "Tahmin ediliyor…". Bitince bildirim toplam süreyi ve
+    adımları yazar: `Tahmin tamam · 4.11 s (mesh 0.12 · operatörler 1.99 · model 0.91 · değerler 0.31 · gösterim 0.70)`
+    (toplam sunucunun `time_s.total`'ı; önceden parçalar toplamla birlikte toplanıyordu, süre iki katı görünüyordu).
 - **Sağ denetçi (daraltılabilir):** mod tablosu (★ hızlandırıcı, ≈ dejenere çift, η rozeti; karşılaştırmada f FE / f model / Δf /
-  rel-L2), seçili modun kavite değerleri, FE / model / Δ% tablosu, süreler, JSON indir. Mod tablosu başlığında CSV düğmesi.
+  rel-L2), seçili modun kavite değerleri, FE / model / Δ% tablosu, süreler (mesh, operatörler, model, değerler, gösterim, toplam)
+  + modelin mesh'i (p2 DOF, eğri tet), JSON indir. Mod tablosu başlığında CSV düğmesi. Tablonun altında değerlerin kaynağı:
+  model için "frekanslar modelin Ritz değerleri (bu mesh'in p2 özdeğerlerinin üst sınırları); kavite değerleri tahmin edilen
+  yüksek mertebe p2 alanlarından" (`qoi_source: p2_model`), alan datasetinin FE'si için "saklanan p3 etiketleri" (`p3_labels`).
 - **Yüzen araç çubuğu (tuvalin sol üstü, gruplu, simge düğmeleri ve ipuçları):**
 
   | grup | denetim |
@@ -158,7 +170,8 @@ Değerler `tabular-nums` ile hizalanır; odak halkaları, üzerine gelme durumla
 - **Renk çubuğu (tuvalin altı):** başlık = nicelik · mod · frekans · kaynak, ölçek türü (doğrusal / log10 · n dekad), rozetler
   (kilitli / elle), nokta okuyucu satırı, renk rampası ve uç değerleri.
 - **Eksen grafiği:** alt dokta, daraltılabilir; genişliğe uyar. Işın ekseni boyunca E_z(z); tek seri, artı imleç ve ipucu.
-- **Durum çubuğu:** geometri, tet, düğüm, N0 DOF, mod ve frekans, süreler, kaynak, model.
+- **Durum çubuğu:** geometri, tet, düğüm, p2 DOF + eğri tet (tahminden sonra), mod ve frekans, süreler (toplam + adımlar), kaynak,
+  model (`field3d` · parametre · cihaz). Üst çubuktaki model çipi de model türünü yazar.
 - **Renk her zaman alan büyüklüğüdür** (bileşen seçeneği yok; yön okların işi). Kesitte ~300, hacimde ~700 ok, boy ∝ |alan|.
   **Kesit:** yarı saydam kavite + renkli düzlem. **3B hacim:** alan büyüklüğü bütün hacimde, zayıf alan saydam, yalnız arka
   duvarlar çizilir. **Renkler:** büyüklük için tek tonlu mavi rampa, işaretli büyüklükler için mavi ↔ gri ↔ kırmızı; rampalar
@@ -249,7 +262,24 @@ panelde de değer gösterir; PNG iki paneli birlikte verir. Girdi özelliği gö
 
 Dataset, Üretim, Eğitim ve TRUBA aynı panel / form bileşenlerini kullanır: bölümlü formlar, **"Gelişmiş" grupları kapalı
 başlar**, sayı alanlarında satır içi doğrulama (aralık / tamsayı ihlali alanın altında, başlatma düğmesi geçersizken pasif).
-**Üretim sayfasında etiket türü varsayılanı artık alan etiketleridir** (yalnız arayüz varsayılanı; üretici davranışı aynı).
+**Üretim ve TRUBA sayfaları yalnız alan etiketi üretir** (etiket türü seçimi kaldırıldı, salt okunur bir satır yazıyor; PKL
+dönüşümü / lean seçenekleri yok). **Eğitim sayfası** field3d'yi (`configs/field_3d.yaml`) yalnız alan-etiketi datasetleriyle
+eğitir: listede yalnız `dataset_kinds` türündeki datasetler var; QoI kayıp ağırlığı ve "operatörleri RAM'de tut" kaldırıldı,
+yükleyici işçi sayısı (`num_workers`) eklendi; varsayılanlar `GET /api/train/config` → `defaults`'tan (batch 2, sabır 40, işçi 2).
+
+**Ölçüm (field3d arayüz uyarlaması, Playwright, yazılım GL, 1440×900; aynı yöntem iki derlemede, dönüşümlü 2 + 2 çalıştırma;
+örnek / tahmin: tıklama → düğme hazır / mod tablosu, 3 kimliğin medyanı; mod ve E↔H: tuş → iki kare → 1 px GL okuması):**
+
+| işlem | önce | sonra |
+|---|---|---|
+| kutu örneği (204 tet) | 1.69 / 1.36 s | 1.44 / 1.35 s |
+| kutu tahmini → mod tablosu | 0.44 / 0.43 s | 0.28 / 0.44 s |
+| eliptik örnek (4.9k tet) | 3.51 / 3.85 s | 3.78 / 3.53 s |
+| eliptik tahmin → mod tablosu | 6.39 / 5.38 s | 5.44 / 5.37 s |
+| mod değiştir (kesit) | 53 / 54 ms | 48 / 52 ms |
+| E ↔ H | 48 / 44 ms | 50 / 49 ms |
+
+Tahmin süresi sunucudadır (eliptik: operatörler ~1.3–2 s, model ~0.7–0.9 s); etkileşimlerde ağ isteği 0.
 
 **Arayüz ölçümü (yeniden tasarım, yazılım GL, 48 852 tetlik eliptik örnek, aynı yöntem: tıklama / girdi → iki çizim karesi → 1 pikselik GL
 okuması; 5 çalıştırmanın medyanı, ağ isteği 0):**
@@ -273,12 +303,13 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 
 - **Dataset sayfası:** sunucuya `RFCAV_DATA` ile verilen datasetler listelenir (`src/service/datasets.py`).
   - **H5 parçaları** klasör başına bir dataset (alan etiketi: tür `field`; N0 etiketi: tür `h5`, yalnız görüntülenir). TRUBA düzeninde `h5/<aile>/` her aile için ayrı bir dataset olur.
-  - **Genel bakış:** aile başına geometri sayısı (tıklayınca filtreler), en düşük mod frekansı f₀ histogramı, N0 DOF sayısı histogramı.
-  - **Tablo:** id, aile, düğüm, N0, b1, f₀…f₅. Sıralanabilir, sayfalı, aileye göre filtrelenir. "Aç" geometriyi çalışma alanına gönderir.
+  - Tür `h5` seçilince seçicide "(yalnız görüntüleme)", yanında bir rozet ve bir not çıkar: öğeler FE çözümüyle açılır, eğri mesh saklanmadığı için tahmin edilemez.
+  - **Genel bakış:** aile başına geometri sayısı (tıklayınca filtreler), en düşük mod frekansı f₀ histogramı, DOF (alan: model p2 DOF; N0 etiketi: mesh kenarı) histogramı.
+  - **Tablo:** id, aile, düğüm, kenar, b1, f₀…f₅ (alan datasetlerinde §3c'deki sütunlar). Sıralanabilir, sayfalı, aileye göre filtrelenir. "Aç" geometriyi çalışma alanına gönderir.
 - **Geometri açılınca:**
   - mesh ve kontroller;
   - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. alan datasetlerinde değerler saklanan p3 etiketleridir;
-  - geometri bilgisi: dataset, dosya, id, N0 DOF, ölçek, torsiyon maksimumu, (K+1). mod frekansı, üretici parametreleri.
+  - geometri bilgisi: dataset, dosya, id, kenar (gösterim mesh'i), ölçek, torsiyon maksimumu, (K+1). mod frekansı, üretici parametreleri.
 - **"Tahmin et ve FE ile karşılaştır":**
   - **Kaynak** seçimi: FE / Model / **Fark**. Fark = hizalanmış model − FE: işaret ve dejenere çiftler hizalanır, renk ölçeği FE alanına göre.
   - Mod mod f_FE, f_model, Δf, alan rel-L2 ve η.
@@ -329,7 +360,7 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 - **Dataset sayfası:** iş bitince otomatik yenilenir. Üretilenler `generated/<TAG>/…` adıyla görünür.
 - **Sınırlar:** aile başına ≤ `RFCAV_GEN_MAX` (20000) geometri. Üretim, `RFCAV_GEN_ROOT` verilmezse kapalıdır.
 
-**Alan etiketleri (Etiket türü = yüksek mertebe alan; docs/29–30):** TRUBA'daki `LABELS=field` ile aynı üretici
+**Alan etiketleri (tek etiket türü: yüksek mertebe alan; docs/29–30):** TRUBA'daki `LABELS=field` ile aynı üretici
 ve aynı ayarlar:
 - uyarlamalı inceltme (aç / kapat), frekans ve Q0 / R/Q / tepe toleransı, etiket DOF bütçesi, model mesh
   bütçesi;
