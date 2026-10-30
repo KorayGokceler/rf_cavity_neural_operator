@@ -9,18 +9,18 @@
 
 ## 0. Bizi doğrudan ilgilendiren bulgular (önce bunlar)
 
-1. **`/arf` üzerine conda / pip kurulumu yasak** (Python kılavuzu 2025-12, depolama 2026-04). `setup_env.sh` bugün
-   `$HOME/miniforge3` altına Miniforge + `rfcav` ortamı + `pip install` yapıyor; bu TRUBA kuralına aykırı (yüz
-   binlerce küçük dosya, 500K inode kotası). Doğru yol: **Apptainer konteyneri** (tek `.sif` dosyası, §5). Açık iş:
-   docs/31 madde 22.
+1. **`/arf` üzerine conda / pip kurulumu yasak** (Python kılavuzu 2025-12, depolama 2026-04; yüz binlerce küçük dosya,
+   500K inode kotası). Çözüm uygulandı (2026-10-30): yığın **Apptainer imajında** (`cluster/truba/rfcav.def`, tek `.sif`);
+   `setup_env.sh` imajı bir `debug` düğümünde kurar, bütün işler `config.sh` `container_prefix` ile imajın içinde koşar.
+   **TRUBA'da henüz kurulup denenmedi** (§5, docs/31 madde 22).
 2. **Eşzamanlı çekirdek sınırı: standart kullanıcı 160, yüksek lisans 40, lisans 4** (SSS 16). Bizim varsayılanımız
    `CPUS=56` × `MAX_PARALLEL=10` = 560 çekirdek ister; aşan işler `AssocGrpCpuLimit` ile kuyrukta bekler. 160 sınırında
    en fazla **2 shard işi** (112 çekirdek) aynı anda çalışır. Gerçek sınırı `ACCOUNT`'un sahibi bilir.
 3. **Scratch dosyaları en çok 30 gün yaşar, otomatik silinir; yedekleme yok** (depolama 2026-04). `DATA_ROOT`
    scratch'te; H5 etiketleri ve checkpoint'ler iş bittikçe başka yere kopyalanmalı.
-4. **`GPU_PARTITION=palamut-cuda` varsayılanı çoğu hesap için erişilemez**: `palamut-cuda` ve `kolyoz-cuda` yalnız
-   araştırma merkezlerinin altyapı projelerine ve TÜBİTAK ULAKBİM sözleşmeli projelerine açık. Herkese açık GPU
-   kuyrukları `barbun-cuda` (P100) ve `akya-cuda` (V100).
+4. **`palamut-cuda` ve `kolyoz-cuda` kısıtlı** (araştırma merkezleri ve sözleşmeli projeler); sahibin hesabında erişim yok.
+   Varsayılan GPU kuyruğu bu yüzden **`akya-cuda`** (4 × V100 16 GB, GPU başına en az 10 çekirdek) oldu, `GPU_CPUS=10`;
+   `barbun-cuda` (2 × P100) için `GPU_CPUS=20` gerekir. 16 GB GPU belleği `BATCH=2` p2 için ölçülmedi (§7).
 5. **Başvuruda belirtilen uygulamadan başka iş çalıştırılmaz** ve **TRUBA uygulama geliştirme için kullanılamaz**
    (kullanım politikası): derlenmiş / hazır uygulama taşınır. Yeni uygulama için `trubadestek@tubitak.gov.tr`'e
    yazılır.
@@ -132,6 +132,20 @@
 - Konteyner kullanımı: `apptainer exec --nv <imaj>.sif python train.py`; MPI için `mpirun … apptainer exec …`.
 - Kod tarafında dosya sayısını azaltmak için tek `.sif` en iyisidir: 500K inode kotasını conda ortamıyla (yüz binlerce
   dosya) tüketmeyiz.
+- **Bizim imajımız (`cluster/truba/rfcav.def`):** taban `python:3.11-slim-bookworm`; apt: `libglu1-mesa libxrender1 libxcursor1
+  libxft2 libxinerama1 libgomp1` (repo `Dockerfile`'ı ile aynı gmsh gereksinimleri); pip: CUDA 12.4 `torch`
+  (`TORCH_INDEX`, `--build-arg`), sonra `requirements.txt`. Repo kodu imaja girmez: `--bind <repo>,<DATA_ROOT>[,CACHE_DIR]`
+  ile bağlanır, `--pwd <repo>`; GPU işlerinde `--nv`. Çok GPU eğitimde `srun apptainer exec --nv …` (her görev bir
+  konteyner; SLURM ortam değişkenleri geçtiği için Lightning DDP görevleri tanır). `module purge` ile ana makine
+  modülleri karışmaz; imaj `PYTHONNOUSERSITE=1` ve `PYTHONDONTWRITEBYTECODE=1` kurar (ev dizinine `__pycache__` yazılmaz).
+- **Kurulum:** `bash cluster/truba/setup_env.sh` → `srun -p debug … apptainer build --fakeroot` (docs konteyner oluşturmayı
+  login düğümünde yasaklıyor; `--fakeroot` docs örneklerinde geçiyor), önbellek `/arf/scratch/$USER/apptainer_cache`, geçici
+  alan düğümün `/tmp` NVMe'si; sonra aynı düğümde 2 geometrilik kontrol. İnternet erişimi derleme düğümünde gerekir (docker
+  hub, PyPI, pytorch.org). Olmazsa aynı `.def` herhangi bir Linux makinede `apptainer build --fakeroot` ile kurulup
+  `$CONTAINER`'a `rsync` ile kopyalanır. İmaj `$HOME/containers/` altında durur (scratch 30 gün siler).
+- **Doğrulama durumu:** betik sözdizimi (`bash -n`), `--dry-run` ve komut satırları sahte `apptainer` ile denendi; imaj
+  derlemesi, `--fakeroot` izni, derleme düğümünün internet erişimi ve GPU'da `--nv` **TRUBA'da denenmedi** (sandbox'ta
+  Apptainer ve CUDA yok).
 - Uyarı: eğitim bölümündeki PyTorch kurulum sayfası (2025-07) Anaconda kurmayı öğretir ve eskidir; uymayın.
 
 ## 6. Erişim
@@ -148,28 +162,28 @@
 
 | ayar | bizde | TRUBA kuralı | durum |
 |---|---|---|---|
-| ortam kurulumu | Miniforge + conda + pip, `$HOME` (`/arf/home`) | `/arf` altında conda / pip yasak (§5) | **kural ihlali**; konteynere taşınmalı |
+| ortam kurulumu | Apptainer imajı `$CONTAINER` (`rfcav.def`), `debug` düğümünde kurulur | `/arf` altında conda / pip yasak (§5) | uyumlu; TRUBA'da denenmedi |
 | `PARTITION`, `CPUS` | `orfoz`, 56 | orfoz en az 56, 56'nın katları | uyumlu |
 | `MAX_PARALLEL` | 10 shard işi × 56 = 560 çekirdek | eşzamanlı 160 (standart), 40 (YL), 4 (lisans) | **aşar**; ≤ 2 (160 / 56) ya da hesap sınırı |
 | `TIME` | 12 saat | üst sınır 3 gün, `--time` zorunlu | uyumlu |
-| `GPU_PARTITION` | `palamut-cuda` | kısıtlı kuyruk | **hesap erişimi doğrulanmadı**; yoksa `akya-cuda` (V100) |
-| `GPU_CPUS` | 16 / GPU | palamut 16, kolyoz 16, akya 10, **barbun 20** | `barbun-cuda` için 20 şart |
+| `GPU_PARTITION` | `akya-cuda` | palamut / kolyoz kısıtlı; akya ve barbun-cuda herkese açık | uyumlu |
+| `GPU_CPUS`, `NUM_WORKERS` | 10 / GPU, `NUM_WORKERS = GPU_CPUS - 2` = 8 | akya 10, barbun-cuda 20, palamut / kolyoz 16; `src/service/truba.py` bilinen kuyrukta kuralın altını reddeder | uyumlu |
 | `GPU_TIME` | 3 gün | 3 gün üst sınır | uyumlu (sınırda) |
-| FP64 | Ritz ve Kp CG float64 | P100, V100, A100, H100 gerçek FP64 verir | tüm herkese açık GPU'lar uygun |
+| FP64 | Ritz ve Kp CG float64 | V100 (akya) ve P100 gerçek FP64 verir | uygun; **16 GB bellekte `BATCH=2` p2 (~200k DOF / geometri) ölçülmedi**, gerekirse `BATCH=1` |
 | `--mem` | verilmiyor | orfoz 2000 MB × 56 = 112 GB varsayılan, düğüm 256 GB | 7 işçi × ≤ 12 GB (docs/29) sığar; `CPUS` düşerse `--mem` ekle |
 | `DATA_ROOT` | `/arf/scratch/$USER/rfcav3d` | scratch 30 gün | **yedekle**; checkpoint ve H5'i `/arf/home`'a (kota 2 TB) ya da yerele kopyala |
 | `ACCOUNT` | boş | `-A` TRUBA hesabı (örneklerde zorunlu görünüyor) | sahibi verir |
 | log yolu | `$OUT_DIR/logs` (scratch) | `--output/--error` scratch'te olmalı | uyumlu |
-| `setup_env.sh` doğrulama koşusu | login düğümünde 2 geometri | login'de ağır iş yok; "birkaç saniye" kabul edilebilir ama sınırda | `debug` `srun` içine taşınmalı |
+| kurulum kontrolü | `debug` düğümünde `srun` (2 geometri) | login düğümünde ağır iş yok | uyumlu |
 | `CACHE_DIR` | geometri başına ~0,5 GB | inode 500K | az dosya, büyük dosya: sorun değil |
 | kullanım izni | – | başvuruda belirtilen uygulama dışında iş yok | sahibi, başvuruda bu uygulamayı belirtmiş mi? |
 
 ## 8. Açık sorular (sahibe)
 
 1. Hesabın tipi (lisansüstü / akademik) ve gerçek eşzamanlı çekirdek ile çekirdek-saat kotası ne? `ACCOUNT`?
-2. `palamut-cuda` / `kolyoz-cuda` erişimi var mı (sözleşmeli proje)? Yoksa eğitim `akya-cuda` (4 × V100) ya da
-   `barbun-cuda` üzerinde; `GPU_PARTITION` ve `GPU_CPUS` varsayılanları ve `src/service/truba.py` +
-   `tests/test_service_truba.py` birlikte değişir.
-3. TRUBA başvurusunda hangi uygulama beyan edildi? NGSolve + PyTorch tabanlı bu iş akışı kapsanıyor mu?
-4. `setup_env.sh`'i Apptainer'a çevirelim mi (konteyner `debug` düğümünde kurulur, tek `.sif`)? docs/31 madde 22.
-5. `lssrv` ve `sinfo` çıktısını yapıştırırsanız §2 tablosunu güncel değerle doğrularız.
+   `MAX_PARALLEL=10` × 56 çekirdek 160 sınırını aşar; sınır belli olunca varsayılan değişir.
+2. TRUBA başvurusunda hangi uygulama beyan edildi? NGSolve + PyTorch tabanlı bu iş akışı kapsanıyor mu?
+3. İlk imaj kurulumunu (`bash cluster/truba/run.sh setup`) denedikten sonra çıktıyı getirin: `--fakeroot` izni, derleme
+   düğümünde internet, süre, `.sif` boyutu. Sorun çıkarsa §5'teki yerel derleme yolu var.
+4. `lssrv` ve `sinfo` çıktısını yapıştırırsanız §2 tablosunu güncel değerle doğrularız.
+5. `akya-cuda`'da ilk eğitim denemesi: V100 16 GB'da `BATCH=2` sığıyor mu?

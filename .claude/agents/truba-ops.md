@@ -19,7 +19,8 @@ analyses of logs the owner pastes or copies in.
   - `submit_family.sh` → `gen_shard.sbatch`, one job per missing shard;
   - `submit_train.sh` → `train.sbatch`;
   - `status.sh` / `status.py`;
-  - `setup_env.sh`, which builds the conda env `rfcav` once.
+  - `setup_env.sh` + `rfcav.def`, which build the Apptainer image `$CONTAINER` (default `~/containers/rfcav.sif`) once
+    on a `debug` node; every job runs Python through `container_prefix` (config.sh).
 - **Storage:** `$DATA_ROOT/$TAG/h5/<family>/<family>_sNNNNN.h5`, `runs/<EXP>/`, and
   `step/<family>/`. This is the same layout the web UI writes to Drive (`src/service/jobs.py`), so datasets
   mix.
@@ -35,16 +36,17 @@ Read `docs/36_TRUBA_REFERENCE.md` before planning a run. It is written from the 
 the page copies are in `docs/research/truba/pages/` (`grep -rn` them for a number before quoting it). Findings that
 change what you propose:
 
-- **No conda / pip installs under `/arf`** (Python guide, storage page). `setup_env.sh` currently does exactly that
-  (Miniforge in `$HOME`); the compliant route is an Apptainer `.sif` built on a `debug` node (docs/36 §5, docs/31
-  item 22). Do not "fix" runs by installing more packages into `$HOME`.
+- **No conda / pip installs under `/arf`** (Python guide, storage page). The stack therefore lives in an Apptainer
+  image (`rfcav.def`, built by `setup_env.sh` on a `debug` node, docs/36 §5). Do not "fix" runs by installing packages
+  into `$HOME`; add them to `requirements.txt` and rebuild (`FORCE=1`). The image build is untested on TRUBA until
+  the owner reports a first build (docs/31 item 22).
 - **Concurrent-core cap per user: 160 standard, 40 MSc, 4 BSc.** Shard jobs of 56 cores → at most 2 at once at 160.
   Keep `MAX_PARALLEL × CPUS` within the cap or jobs sit in `AssocGrpCpuLimit`.
 - **Scratch files live at most 30 days** and nothing is backed up: copy H5 and checkpoints out (`/arf/home` has a 2 TB
   and 500K-inode quota per filesystem, so keep file counts low).
-- **GPU queues:** `barbun-cuda` (2×P100, 20 cores/GPU) and `akya-cuda` (4×V100, 10 cores/GPU) are open to all;
-  `palamut-cuda` (A100, 16/GPU) and `kolyoz-cuda` (H100/H200, 16/GPU, `-C H100|H200`) only for research-centre and
-  contracted projects. Ask which the owner's account may use before setting `GPU_PARTITION`; `GPU_CPUS` must match.
+- **GPU queues:** the owner's account has no `palamut-cuda` / `kolyoz-cuda` access (research-centre and contracted projects
+  only). Default is `akya-cuda` (4×V100 16 GB, 10 cores/GPU, `GPU_CPUS=10`); `barbun-cuda` (2×P100) needs `GPU_CPUS=20`.
+  16 GB with `BATCH=2` is unmeasured; try `BATCH=1` if it runs out of memory.
 - `--time` is mandatory (no time = killed after 1–2 min), max 3 days, `debug` 4 h; `--output/--error/--workdir` must
   be on scratch; no heavy work on `arf-ui*` / `cuda-ui` (compile and containers go through `srun -p debug --pty`).
 - Support is only `trubadestek@tubitak.gov.tr`; the ticket template and the `sacct` command are in docs/36 §1.

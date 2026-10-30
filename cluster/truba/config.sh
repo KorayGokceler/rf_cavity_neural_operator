@@ -8,9 +8,12 @@ if [ -z "${REPO_DIR:-}" ] && [ -n "${TRUBA_DIR:-}" ] && [ -f "$TRUBA_DIR/../../t
 fi
 REPO_DIR=${REPO_DIR:-$HOME/rf_cavity_neural_operator}
 DATA_ROOT=${DATA_ROOT:-/arf/scratch/$USER/rfcav3d}           # large files: scratch, not $HOME
-# command that activates the Python environment on a compute node (setup_env.sh creates it)
-CONDA_HOME=${CONDA_HOME:-$HOME/miniforge3}                 # setup_env.sh installs Miniforge here
-ENV_ACTIVATE=${ENV_ACTIVATE:-"source $CONDA_HOME/bin/activate rfcav"}
+# Apptainer image with the whole Python stack (rfcav.def; TRUBA forbids conda / pip under /arf, docs/36 §5).
+# setup_env.sh builds it once on a debug compute node. One file in $HOME: it must not live on scratch (30-day purge).
+CONTAINER=${CONTAINER:-$HOME/containers/rfcav.sif}
+APPTAINER=${APPTAINER:-apptainer}
+TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu124}   # CUDA build of torch baked into the image
+EXTRA_BIND=${EXTRA_BIND:-}             # more comma-separated host paths to mount in the container
 
 # ── SLURM (check the current limits: `sinfo`, TRUBA docs "Kuyruk Bilgisi") ─────
 PARTITION=${PARTITION:-orfoz}          # orfoz: 112 cores/node, jobs in multiples of 56 cores
@@ -61,9 +64,12 @@ TEST_N=${TEST_N:-112}
 # ── training (GPU; check `sinfo` for the GPU queues and their cores-per-GPU rule) ──
 # The Ritz layer and the Kp CG run in float64: pick GPUs with real FP64 (A100 / V100 / H100),
 # not consumer cards.
-GPU_PARTITION=${GPU_PARTITION:-palamut-cuda}
-GPUS=${GPUS:-1}                        # >1: one DDP rank per GPU (srun), training.strategy=ddp
-GPU_CPUS=${GPU_CPUS:-16}               # cores per GPU (DataLoader workers assemble the operators)
+# TRUBA GPU queues open to every user: akya-cuda (4x V100 16 GB, 10 cores per GPU) and barbun-cuda (2x P100,
+# 20 cores per GPU); palamut-cuda (A100) / kolyoz-cuda (H100/H200) need a research-centre or contract project, 16 cores
+# per GPU (docs/36 §2). GPU_CPUS must satisfy the chosen queue's rule.
+GPU_PARTITION=${GPU_PARTITION:-akya-cuda}
+GPUS=${GPUS:-1}                        # >1: one DDP rank per GPU (srun), training.strategy=ddp (akya: up to 4)
+GPU_CPUS=${GPU_CPUS:-10}               # cores per GPU (DataLoader workers assemble the operators)
 CONFIG=${CONFIG:-}                     # training config (empty: configs/field_3d.yaml)
 TRAIN_FAMILIES=${TRAIN_FAMILIES:-}     # families whose H5 shards train the model (empty: group "train")
 CACHE_DIR=${CACHE_DIR:-}               # on-disk operator cache (~0.5 GB per geometry at p2; empty: none)
@@ -73,7 +79,7 @@ MODEL=${MODEL:-base}                   # small 0.9M | base 2.8M | large 6.5M | x
 EPOCHS=${EPOCHS:-150}
 LR=${LR:-3.0e-4}
 BATCH=${BATCH:-2}                      # p2 on ~20k curved tets: ~200k DOF per geometry
-NUM_WORKERS=${NUM_WORKERS:-14}         # the loader workers assemble the p2 operators (~10 s per geometry)
+NUM_WORKERS=${NUM_WORKERS:-$(( GPU_CPUS > 2 ? GPU_CPUS - 2 : 0 ))}   # loader workers (assemble the p2 operators, ~10 s per geometry): cores - 2
 TRAIN_EXTRA=${TRAIN_EXTRA:-}           # more key=value overrides for train.py --override
 
 # model size presets: embed_dim n_heads eigenspace.n_layers n_basis
@@ -122,6 +128,17 @@ family_list() {
   esac
   out=$(for f in $out; do [ "$f" = freeform ] || echo "$f"; done)
   echo $out
+}
+
+# container_prefix [--nv]: fills the global array CX with the command prefix that runs a program inside the
+# image: `"${CX[@]}" python …`, also usable as `srun "${CX[@]}" python …`. The repo, the data root and CACHE_DIR are
+# bound explicitly (the scratch file system is not mounted by default); --nv brings in the host GPU driver.
+container_prefix() {
+  local nv=() bind=$REPO_DIR,$DATA_ROOT
+  if [ "${1:-}" = --nv ]; then nv=(--nv); fi
+  if [ -n "$CACHE_DIR" ]; then bind+=,$CACHE_DIR; fi
+  if [ -n "$EXTRA_BIND" ]; then bind+=,$EXTRA_BIND; fi
+  CX=("$APPTAINER" exec ${nv[@]+"${nv[@]}"} --bind "$bind" --pwd "$REPO_DIR" "$CONTAINER")
 }
 
 sbatch_common() {   # common sbatch flags (partition / account)

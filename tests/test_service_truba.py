@@ -48,6 +48,19 @@ def test_values_are_written_only_when_they_differ_from_config_sh():
     assert TR.build_command(dict(FORM, dry_run=True))["run_args"].endswith(" --dry-run")
 
 
+def test_gpu_queue_defaults_match_config_sh_and_follow_the_cores_per_gpu_rule():
+    """Defaults are the queue every TRUBA user may use (akya-cuda, 10 cores per GPU), as in config.sh; the page
+    refuses a core count below the chosen queue's rule instead of writing a job SLURM would reject."""
+    sh = subprocess.run(["bash", "-c", "source cluster/truba/config.sh; echo $GPU_PARTITION $GPU_CPUS"], cwd=ROOT,
+                        capture_output=True, text=True, env=dict(os.environ, USER="t"))
+    assert sh.stdout.split() == [TR.DEFAULTS["GPU_PARTITION"], str(TR.DEFAULTS["GPU_CPUS"])]
+    assert TR.DEFAULTS["GPU_PARTITION"] == "akya-cuda"
+    assert "GPU_PARTITION" not in TR.build_command(dict(FORM, action="train"))["run_args"]
+    a = TR.build_command(dict(FORM, action="train", gpu_partition="barbun-cuda", gpu_cpus=20))["run_args"]
+    assert "GPU_PARTITION=barbun-cuda" in a and "GPU_CPUS=20" in a
+    TR.build_command(dict(FORM, action="train", gpu_partition="some-new-cuda", gpu_cpus=4))    # unknown queue: no rule
+
+
 def test_adaptive_label_settings_and_shard_time_note():
     r = TR.build_command(FORM)
     assert "shard_time" not in r["notes"]                          # ~8.5 h per 1024-geometry shard < 12 h
@@ -74,6 +87,7 @@ def test_adaptive_label_settings_and_shard_time_note():
     {"repo": "https://x/y; id"}, {"train_extra": ["x=$(id)"]}, {"cache_dir": "/a/`id`"}, {"cache_dir": "/a/${USER}"},
     {"model_order": 3}, {"threads": 64, "cpus": 56}, {"families": ["nope"]}, {"families": ["freeform"]},
     {"action": "rm"}, {"cpus": "many"}, {"n_modes": 2.5}, {"labels": "n0"},
+    {"gpu_partition": "barbun-cuda", "gpu_cpus": 10}, {"gpu_cpus": 4},      # TRUBA cores-per-GPU rule
 ])
 def test_invalid_values_are_rejected(bad):
     with pytest.raises(TR.CommandError):

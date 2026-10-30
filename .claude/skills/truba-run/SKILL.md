@@ -15,7 +15,7 @@ especially `GPU_PARTITION` access and the cores-per-GPU rule, before choosing re
 Agree with the owner on the following:
 
 - **Action:** `dataset`, `train` or `all` (data, then training with a dependency). Use `setup` once per
-  account.
+  account: it builds the Apptainer image (`rfcav.def`) on a debug node, ~15-25 min.
 - **LABELS:** `field` (the only label type: curved mesh, p3 labels → p2 model mesh, H5 only); `config.sh` rejects anything else.
 - **FAMILIES:** `train`, `ood`, `all`, or a comma list. Also choose N_PER_FAMILY.
   - The default is `cluster/truba/families.tsv`.
