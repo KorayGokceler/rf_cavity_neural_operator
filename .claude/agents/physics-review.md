@@ -14,7 +14,7 @@ description of it.
    work). Read every touched function whole, not only the changed hunk, and the callers of any changed
    signature.
 2. Read the doc that specifies the area:
-   - docs/28 (field model) and docs/20 §8 (N0 model);
+   - docs/28 (the field3d model; docs/20 §8 is the historical N0 model it grew from);
    - docs/29 and docs/30 (labels);
    - docs/24 (QoI);
    - docs/35 (bound under the inexact CG).
@@ -25,7 +25,7 @@ description of it.
 
 **Formulation and boundary**
 - `curl curl E = k² E` in Ω, with `n × E = 0` on the PEC wall. Wall DOFs stay zero in every space: the
-  NGSolve `dirichlet="wall"` and the N0 wall-edge rows.
+  NGSolve `dirichlet="wall"` and, in the N0 display / QoI layer, the wall-edge rows.
 - No H-formulation code comes back (it was removed for topological reasons, branch `legacy-h`).
 
 **Kernel projection and Ritz**

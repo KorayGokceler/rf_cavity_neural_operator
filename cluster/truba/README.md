@@ -1,15 +1,13 @@
 # TRUBA'da 3D dataset üretimi: her geometri ailesi ayrı
 
-Her aile (elliptical, reentrant, …, dtl ve OOD test aileleri) **ayrı ayrı üretilir, dönüştürülür ve
-saklanır**. Aileler birbirini beklemez. Bir aileyi büyütmek ya da yeni aile eklemek, var olanlara
+Her aile (elliptical, reentrant, …, dtl ve OOD test aileleri) **ayrı ayrı üretilir ve saklanır**. Aileler birbirini beklemez. Bir aileyi büyütmek ya da yeni aile eklemek, var olanlara
 dokunmaz.
 
 ```
-$DATA_ROOT/$TAG/                         (varsayılan /arf/scratch/$USER/rfcav3d/E_ms0.10_k10_v2)
-├── h5/<aile>/<aile>_s00000.h5 …         ham FEM çıktısı (asıl kayıt): parça = 1024 geometri
-├── pkl/<aile>.pkl                       ailenin eğitim PKL'i (N0 + QoI etiketleri, lean)
-├── pkl/mix_<ad>.pkl                     isteğe bağlı karışık eğitim PKL'i (merge.sh)
-└── logs/                                gen_<aile>_<parça>_<job>.out, conv_<aile>_<job>.out
+$DATA_ROOT/$TAG/                         (LABELS=field: /arf/scratch/$USER/rfcav3d/F_p3p2_ms0.10_k10_mf0.05_v2)
+├── h5/<aile>/<aile>_s00000.h5 …         FEM etiketleri (asıl kayıt, eğitim doğrudan bunları okur): parça = 1024 geometri
+├── runs/<EXP>/                          eğitim koşuları (last.ckpt, best-*.ckpt)
+└── logs/                                gen_<aile>_<parça>_<job>.out, train_<EXP>_<job>.out
 ```
 
 ## Dosyalar
@@ -19,16 +17,15 @@ $DATA_ROOT/$TAG/                         (varsayılan /arf/scratch/$USER/rfcav3d
 | `config.sh` | **tek ayar dosyası**: yollar, kuyruk, çekirdek, süre, fizik (MESH_SIZE, N_STORE, …), TAG |
 | `families.tsv` | aile → blok numarası, istenen geometri sayısı, parça boyu, grup (train / ood) |
 | `setup_env.sh` | bir kere: Miniforge + `rfcav` ortamı (conda-forge gmsh), kısa kontrol üretimi |
-| `submit_family.sh <aile>` | ailenin **eksik** parçalarını bir SLURM iş dizisi olarak gönderir, ardından dönüştürmeyi gönderir |
+| `submit_family.sh <aile>` | ailenin **eksik** parçalarını bir SLURM iş dizisi olarak gönderir |
 | `submit_all.sh [train\|ood\|all]` | gruptaki her aile için `submit_family.sh` |
 | `status.sh` | aile başına ilerleme tablosu + `squeue` |
-| `merge.sh <ad> aile:n …` | ailelerin ilk n parçasından karışık PKL |
-| `submit_train.sh [--then-eval]` | GPU eğitimi (`EXP`, `MODEL=small\|base\|large\|xl`, …); aynı EXP → `last.ckpt`'tan devam |
-| `submit_eval.sh` | test (ID) + OOD değerlendirmesi: frekans/alan, Q0/R/Q…, kesit grafikleri, ParaView |
-| `predict.sh …` | yeni bir kavitede saf model tahmini (STEP / mesh / üretilmiş geometri) |
-| `gen_shard.sbatch`, `convert_family.sbatch`, `merge.sbatch`, `train.sbatch`, `eval.sbatch` | işlerin kendisi (elle çağırmaya gerek yok) |
+| `submit_train.sh` | GPU eğitimi, `LABELS=field` (`EXP`, `MODEL=small\|base\|large\|xl`, …); aynı EXP → `last.ckpt`'tan devam |
+| `predict.sh …` | yeni bir kavitede saf field3d model tahmini (STEP / üretilmiş geometri / alan-etiketi H5; docs/25 §7) |
+| `gen_shard.sbatch`, `train.sbatch` | işlerin kendisi (elle çağırmaya gerek yok) |
 
-Uçtan uca akış (veri → eğitim → değerlendirme → tahmin): **docs/25_PIPELINE.md**.
+Model `field3d`'dir (docs/28–29); eski N0 modeli (`eigenspace3d`, PKL dönüştürme, `merge.sh`,
+`eval.sbatch`) kaldırıldı.
 
 ## Tek satır: `run.sh` (arayüzün TRUBA sekmesi bu komutları üretir)
 
@@ -41,8 +38,8 @@ bash cluster/truba/run.sh status LABELS=field
 - İşlemler:
   - `setup`: conda ortamı; CUDA torch ve NGSolve dahil.
   - `dataset`: ailelerin eksik parçaları.
-  - `train`: GPU eğitimi.
-  - `all`: veri, ardından eğitim; eğitim `--dependency=afterany` ile veri işlerini bekler.
+  - `train`: GPU eğitimi (yalnız `LABELS=field`).
+  - `all`: veri, ardından eğitim; eğitim `--dependency=afterany` ile veri işlerini bekler (yalnız `LABELS=field`).
   - `status`: aile başına ilerleme tablosu.
 - `KEY=VALUE`: `config.sh`'deki her değişken (PARTITION, CPUS, TIME, ACCOUNT, MESH_SIZE, MODEL, EPOCHS, …), ayrıca:
   - `FAMILIES`: `train` | `ood` | `all` | virgüllü liste;
@@ -55,7 +52,8 @@ bash cluster/truba/run.sh status LABELS=field
   - Eğitim, train grubundaki ailelerin H5 parça klasörlerinden yapılır (OOD aileleri eğitime girmez).
   - Ayrı TAG kullanılır: `F_p3p2_ms0.10_k10_mf0.05_v2`.
   - İş başına `CPUS / THREADS` örnek aynı anda çalışır (`THREADS=8` → 7 örnek, örnek başına ~5 GB).
-- `LABELS=n0` (varsayılan): aşağıdaki akışın aynısıdır: üretim → aile PKL'i → `merge.sh` → eğitim.
+- `LABELS=n0` (`config.sh` varsayılanı): yalnız N0 etiketli H5 üretir (`dataset`); bu etiketlerle eğitilen
+  model kalmadı, `train` / `all` hata verir.
 
 ## Adımlar
 
@@ -67,22 +65,21 @@ bash cluster/truba/setup_env.sh               # ~10 dk; sonunda "Environment OK"
 nano cluster/truba/config.sh                  # PARTITION / ACCOUNT / TIME / DATA_ROOT'u kontrol et
 
 # 1) deneme: aile başına 112 geometri, ayrı klasörde (<TAG>_test)
-TEST=1 cluster/truba/submit_all.sh all
-TEST=1 cluster/truba/status.sh                # bitince: tüm aileler 112/112, pkl dolu
+TEST=1 LABELS=field cluster/truba/submit_all.sh all
+TEST=1 LABELS=field cluster/truba/status.sh   # bitince: tüm aileler 112/112
 #    loglara bak: logs/gen_*.out içinde "mean t_mesh … t_solve …" → gerçek süre
 
 # 2) asıl üretim: her aile ayrı iş dizisi
-cluster/truba/submit_all.sh train             # 9 aile × 10 parça × 1024
-cluster/truba/submit_all.sh ood               # 5 OOD test ailesi × 1024
-cluster/truba/status.sh
+LABELS=field cluster/truba/submit_all.sh train   # train grubundaki aileler × 1024'lük parçalar
+LABELS=field cluster/truba/submit_all.sh ood     # OOD test aileleri
+LABELS=field cluster/truba/status.sh
 
 # 3) yarım kalan / başarısız parçalar: aynı komutu tekrar çalıştır. Yalnız eksikler gider; yarım
 #    parça .partial dosyasından kaldığı yerden devam eder (--resume).
-cluster/truba/submit_family.sh spoke
+LABELS=field cluster/truba/submit_family.sh spoke
 
-# 4) eğitim için karışık PKL (aile PKL'leri yerinde kalır)
-cluster/truba/merge.sh mix9x2 elliptical:2 reentrant:2 pillbox_pipes:2 ridged_box:2 \
-    composite:2 freeform:2 hwr:2 spoke:2 dtl:2
+# 4) eğitim: train grubundaki ailelerin H5 parça klasörleri
+LABELS=field EXP=field_base MODEL=base cluster/truba/submit_train.sh
 ```
 
 Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 cluster/truba/submit_family.sh dtl`.
@@ -91,7 +88,7 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
 ## Bir aileyi büyütmek, yeni aile eklemek
 
 - **Büyütmek:** `families.tsv`'de `n_total`'ı artır (ör. 10240 → 20480) ve `submit_family.sh <aile>`'yi
-  çalıştır. Var olan parçalar atlanır, yalnız yeniler üretilir, sonra PKL yeniden yazılır.
+  çalıştır. Var olan parçalar atlanır, yalnız yeniler üretilir.
 - **Yeni aile:** `families.tsv`'ye yeni bir satır ekle. Blok numarası **yeni** olmalı (≤ 31).
   Aile, `src/data_gen/cavity_shapes.py` ile `dataset_generator_3d.BUILDERS`'ta tanımlı olmalı.
 - **Asla** bir ailenin `block` ya da `shard_size` değerini sonradan değiştirme: geometri kimlikleri
@@ -101,13 +98,13 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
 ## Kimlikler ve tekrarlanabilirlik
 
 - Geometri kimliği `id = block · 2^19 + i`. Her ailenin kimlik aralığı ayrı, dolayısıyla farklı
-  ailelerin parçaları tek PKL'de birleşebilir (converter tekrarlanan kimliği reddeder).
+  ailelerin parçaları aynı eğitimde birlikte kullanılabilir.
 - Kimlik aynı zamanda rastgele sayı akışı (`default_rng([SEED, id])`) ve Sobol indisi, yani aynı
   kimlik her zaman aynı geometriyi verir. Bir parçayı silip yeniden üretirsen birebir aynısı gelir.
 - Parça boyu 1024 (2'nin kuvveti): Sobol blokları dengeli.
-- Kimlikler < 2^24 kalır: PKL'deki float32 `Theta` sütununda tam saklanır.
+- Kimlikler < 2^24 kalır (float32'de tam).
 
-## Maliyet (ölçüm: mesh 0.10, 10 mod, 1 çekirdek, aile başına 4 geometri)
+## Maliyet (LABELS=n0 ölçümü: mesh 0.10, 10 mod, 1 çekirdek, aile başına 4 geometri; field etiketleri: docs/29–30)
 
 | aile | s / geometri | H5 MB / geometri |
 |---|---|---|
@@ -127,14 +124,7 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
   mümkün: MESH_SIZE 0.07 ile kenar sayısı ~3×, süre ~4–5× olur. İşler çok kısa kalırsa
   `families.tsv`'de yeni bir aile için daha büyük `shard_size` (2048 / 4096) seçebilirsin. Ölçüm 4
   çekirdekli bir makinede yapıldı; TRUBA'da gerçek süreyi deneme koşusunun loglarından oku.
-- **Disk:** H5 ~1 MB/geometri → ~100 GB. Lean PKL ~1.4 MB/geometri → ~130 GB. Tam PKL (operatörlü)
-  ~9× H5 olurdu, bu yüzden `PKL_LEAN=1` varsayılan. Scratch kotanı kontrol et. Gerekirse PKL'leri
-  yalnız lazım olan aileler için üret; H5'ler asıl kayıt.
-- **Eğitim RAM'i:** dataset PKL'in tamamını belleğe alıyor. Hepsi birden (~130 GB) tek süreçte
-  fazla, bu yüzden ilk eğitimler için `merge.sh` ile alt küme kullan (ör. aile başına 2 parça ≈
-  18k geometri ≈ 25 GB). Lean PKL ile eğitimde `dataset.cache_operators: false` kullan; operatörler
-  her örnekte yeniden kurulur, DataLoader `num_workers` ile paralelleşir. Tüm veriyle eğitim için
-  sıradaki iş parça bazlı tembel yükleme (docs/23_ROADMAP.md §3).
+- **Disk:** H5 ~1 MB/geometri → ~100 GB (N0). Field etiketli H5 için docs/29 §3'e bak. Scratch kotanı kontrol et.
 
 ## Kuyruk notları
 
@@ -143,9 +133,3 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
 - Hesabın bir proje kodu gerektiriyorsa `ACCOUNT=...` ayarla.
 - `MAX_PARALLEL=10`: bir ailenin en fazla 10 parçası aynı anda koşar. Aileler bağımsız iş
   dizileridir.
-- Dönüştürme işi tek süreçlidir. 10240 geometri, QoI etiketleriyle birlikte ~30–60 dk sürer.
-  Çekirdek isteği RAM içindir; daha küçük bir kuyruk varsa `CONVERT_PARTITION` ve `CONVERT_CPUS`
-  ile ayarla.
-- Dönüştürme, üretim işleri bittikten sonra (başarısız olsalar bile, `afterany`) başlar ve bitmiş
-  parçaları dönüştürür. Eksik parça kaldıysa logda `WARNING` görürsün; `submit_family.sh`'yi tekrar
-  çalıştırmak hem eksikleri hem dönüştürmeyi yeniler.

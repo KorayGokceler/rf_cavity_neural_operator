@@ -1,10 +1,20 @@
-"""Model side of the prediction service: checkpoint loading, pure-model prediction of one mesh
-(frequencies, Ritz fields, figures of merit, label-free residual), and display fields in
-physical units — shared by scripts/predict_geometry.py and src/service/api.py.
+"""Model side of the prediction service: checkpoint loading, pure-model prediction of one cavity with the
+field3d model (EigenspaceOperatorField: HCurl(p2) Ritz modes on the curved mesh), figures of merit from
+the predicted high-order fields, label-free residual, and display fields in physical units — shared by
+scripts/predict_geometry.py and src/service/api.py.
+
+Prediction (ModelService.predict; the label-free path of scripts/eval_fidelity.py):
+    curved mesh (geometry.load_mesh_src) → field_labels.model_normalisation → highorder.field_operators(p2)
+    → field_item / field_collate → model → Ritz frequencies out['freq'] (GHz with freq_stats = (0, 1)) and
+    HCurl(p2) DOFs (the same vectors in physical and normalised coordinates)
+    → figures of merit: highorder.mode_qoi on the p2 fields (the label QoI code; qoi_source 'p2_model')
+    → η_k = ‖K u − λ M u‖_{D⁻¹} / λ with the field operators' K, M
+    → display: Whitney N0 interpolant on the linear mesh (datasets.whitney_dofs, as the dataset viewer).
 
 Display convention (all fields at stored energy U = 1 J, standing wave):
     E(t) = E · cos φ,   H(t) = H · sin φ      (the sign of the curl relation is folded into H)
 """
+import collections
 import math
 import os
 import threading
@@ -14,28 +24,44 @@ import numpy as np
 import torch
 
 from src.training.checkpoint import resolve_checkpoint
-from src.data.dataset_3d import item_from_geometry, maxwell3d_collate
-from src.data.dataset_converter_3d import extract_geometry_3d, qoi_operators_of
+from src.data.dataset_converter_3d import extract_geometry_3d, h5_edges_to_canonical, qoi_operators_of
 from src.training.lightning_module import CavityLightning
 
 EPS0, MU0 = 8.8541878128e-12, 4e-7 * math.pi
 QOI_SHOW = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
 VOLTAGE_QOI = ('R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
+PEAK_QOI = ('Epk_Eacc', 'Bpk_Eacc_mT_per_MVm')
 RQ_FLOOR_OHM = 1e-6        # below: no accelerating field on the axis → voltage figures undefined (shown '—')
 
 
+def checkpoint_model_type(path):
+    """hyper_parameters['model_type'] of a .ckpt (None when absent) without building the model."""
+    try:
+        ck = torch.load(path, map_location='cpu', weights_only=False, mmap=True)
+    except RuntimeError:                                  # not a zip checkpoint: no mmap
+        ck = torch.load(path, map_location='cpu', weights_only=False)
+    hp = (ck.get('hyper_parameters') or {}) if isinstance(ck, dict) else {}
+    return hp.get('model_type')
+
+
 def load_model(checkpoint, device='cpu'):
-    """(lm, feature_indices) of a .ckpt or training dir (the best checkpoint there)."""
-    lm = CavityLightning.load_from_checkpoint(resolve_checkpoint(checkpoint), map_location=device).eval()
+    """(lm, feature_indices) of a field3d .ckpt or training dir (the best checkpoint there); other model
+    types (the removed N0 model 'eigenspace3d', 2D models) are rejected with a clear error."""
+    path = resolve_checkpoint(checkpoint)
+    mt = checkpoint_model_type(path)
+    if mt != 'field3d':
+        raise ValueError(f"{os.path.basename(str(path))}: model_type {mt!r}, the service runs only 'field3d' "
+                         "checkpoints (EigenspaceOperatorField; the N0 model eigenspace3d was removed)")
+    lm = CavityLightning.load_from_checkpoint(path, map_location=device).eval()
     lm.freq_stats = {'mean': 0.0, 'std': 1.0}            # out['freq'] is then f in GHz
     return lm, dict(lm.hparams.get('data_cfg') or {}).get('feature_indices')
 
 
 def untrained_model(n_modes=6, seed=0):
-    """A small randomly initialised model — for UI / API development without a checkpoint only."""
+    """A small randomly initialised field3d model — for UI / API development without a checkpoint only."""
     torch.manual_seed(seed)
     lm = CavityLightning(val_dim=9, hidden_dim=32, n_heads=2, n_basis=16, num_field_modes=n_modes, rff_dim=16,
-                         eigenspace_kwargs={'n_layers': 2}).eval()
+                         eigenspace_kwargs={'n_layers': 2, 'grad_checkpoint': False}).eval()
     lm.freq_stats = {'mean': 0.0, 'std': 1.0}
     return lm
 
@@ -61,13 +87,13 @@ def residual(K, M, U, lam, free=None):
 
 
 @torch.no_grad()
-def forward(lm, geom, feature_indices=None, device='cpu', warmup=True):
-    """(U [Ne,K] Ritz fields, f [K] GHz, λ [K] normalised eigenvalues, model seconds)."""
-    item = item_from_geometry(geom, feature_indices=feature_indices)
-    batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in maxwell3d_collate([item]).items()}
+def forward(lm, ops, feature_indices=None, shape_type='', device='cpu'):
+    """Field model on one geometry's field_operators: (U [n_dof, K] HCurl DOFs, f [K] GHz, λ [K] normalised
+    Ritz values, model seconds)."""
+    from src.data.field_dataset import field_collate, field_item
+    batch = field_collate([field_item(ops, feature_indices=feature_indices, shape_type=shape_type)])
+    batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
     lm.to(device)
-    if warmup:                                           # first call: allocator / sparse setup / CG warm-up
-        lm.model(batch)
     if str(device).startswith('cuda'):
         torch.cuda.synchronize()
     t0 = time.perf_counter()
@@ -75,9 +101,44 @@ def forward(lm, geom, feature_indices=None, device='cpu', warmup=True):
     if str(device).startswith('cuda'):
         torch.cuda.synchronize()
     t = time.perf_counter() - t0
-    ne = len(geom['edges'])
-    return (out['field'][0, :ne].double().cpu().numpy(), out['freq'][0].double().cpu().numpy(),
+    n = int(ops['n_dof'])
+    return (out['field'][0, :n].double().cpu().numpy(), out['freq'][0].double().cpu().numpy(),
             out['eigenvalues'][0].double().cpu().numpy(), t)
+
+
+def field_qoi(mesh, U, f_ghz, order, family='', params=None):
+    """Figures of merit of HCurl(order) DOF vectors U [n, K] on the curved mesh at f_ghz, from the high-order
+    fields (highorder.mode_qoi with the labels' beam axis and accelerating length: field_labels._beam_axis):
+    QOI_SHOW rows per mode (None when undefined).  A geometry left with sharp re-entrant edges
+    (params n_sharp_edges > 0) gets no surface peaks, as its labels."""
+    from ngsolve import GridFunction, HCurl
+
+    from src.data_gen import field_labels as fl
+    from src.data_gen import highorder as ho
+    fes = HCurl(mesh, order=int(order), dirichlet='wall')
+    gfs = []
+    for k in range(U.shape[1]):
+        g = GridFunction(fes)
+        g.vec.FV().NumPy()[:] = U[:, k]
+        gfs.append(g)
+    q = ho.mode_qoi(mesh, gfs, np.asarray(f_ghz, float) * 1e9, *fl._beam_axis(family, mesh, params))
+    sharp = float((params or {}).get('n_sharp_edges', 0) or 0) > 0
+    return [{n: (None if sharp and n in PEAK_QOI else _num(q[n][k])) for n in QOI_SHOW} for k in range(U.shape[1])]
+
+
+def override_qoi(sol, labels):
+    """Replace the figures of merit of a solution's mode rows by better ones (stored p3 labels, or the
+    predicted p2 fields' mode_qoi) — the N0 display fields' own values are only an approximation — and
+    pick the accelerating mode again (largest R/Q among the non-degenerate modes)."""
+    for row, lab in zip(sol['modes'], labels, strict=False):
+        row.update({n: lab[n] for n in QOI_SHOW if n in lab})        # finite or None
+        if not (row.get('R_over_Q_ohm') or 0.0) > RQ_FLOOR_OHM:      # no field on the axis
+            row.update({n: None for n in VOLTAGE_QOI})
+    rq = [-1.0 if m['degenerate'] or m['R_over_Q_ohm'] is None else m['R_over_Q_ohm'] for m in sol['modes']]
+    acc = int(np.argmax(rq)) if max(rq, default=-1.0) > 0 else -1
+    for k, m in enumerate(sol['modes']):
+        m['accelerating'] = k == acc
+    return sol
 
 
 def qoi(geom, M, U, f_ghz, n_axis=401, axis=None, Rs=None, sigma=5.8e7, beta=1.0, L_acc=None,
@@ -180,11 +241,18 @@ def align(Up, Ut, M, f_true, rel=1e-3):
 
 
 def compare(pred, true, rel=1e-3):
-    """(rows, difference solution) for a model solution vs the FE one on the same mesh."""
+    """(rows, difference solution) for a model solution vs the FE one on the same mesh.
+    Figures of merit: the FE side keeps its own (the stored p3 labels of a field dataset); the model side
+    uses the prediction's own p2 figures of merit (pred['modes'], ModelService.predict) — the aligned vector
+    of an isolated mode is the predicted one up to its sign, which leaves them unchanged — and None inside a
+    degenerate cluster of the FE spectrum (the aligned vectors there are projections, not predicted modes).
+    The N0 display interpolant (build_solution below) only gives the difference fields."""
     geom, M = true['_geom'], true['_M']
     Ua, rl = align(pred['_U'], true['_U'], M, true['_f'], rel)
     K = Ua.shape[1]
     pa = build_solution(geom, M, Ua, pred['_f'][:K], 'model', ops=true['_ops'])
+    cluster = degenerate_mask(np.asarray(true['_f'][:K], float), rel)       # the clusters of align
+    mq = [{n: (None if cluster[k] else pred['modes'][k][n]) for n in QOI_SHOW} for k in range(K)]
     rows = []
     for k in range(K):
         tr, pr = true['modes'][k], pa['modes'][k]
@@ -192,11 +260,12 @@ def compare(pred, true, rel=1e-3):
                'rel_l2': float(rl[k]), 'degenerate': tr['degenerate'], 'accelerating': tr['accelerating'],
                'eta': pred['modes'][k]['eta'], 'qoi': {}}
         for n in QOI_SHOW:
-            a, b = tr[n], pr[n]
+            a, b = tr[n], mq[k][n]
             row['qoi'][n] = {'fe': a, 'model': b,
                              'rel_err': (None if a in (None, 0) or b is None else b / a - 1)}
         rows.append(row)
-    diff = dict(pa, source='diff', modes=[dict(m, f_GHz=true['modes'][m['mode']]['f_GHz']) for m in pa['modes']],
+    diff = dict(pa, source='diff', modes=[dict(m, f_GHz=true['modes'][m['mode']]['f_GHz'], **mq[m['mode']])
+                                          for m in pa['modes']],
                 _E=pa['_E'] - true['_E'][:, :, :K], _H=pa['_H'] - true['_H'][:, :, :K],
                 _axis=pa['_axis'] - true['_axis'][:K], _f=true['_f'][:K])
     return rows, diff
@@ -205,9 +274,11 @@ def compare(pred, true, rel=1e-3):
 # ─────────────────────────── the service ───────────────────────────────
 
 class ModelService:
-    """One loaded model + per-mesh prediction. Thread-safe (one forward at a time)."""
+    """One loaded field3d model + per-geometry prediction. Thread-safe (one prediction at a time; the NGSolve
+    parts under src.service.datasets._NG_LOCK).  The curved mesh and its field operators (~4 s at 10k tets)
+    are kept for the last `cache_size` geometries (RFCAV_FIELD_CACHE, default 2)."""
 
-    def __init__(self, checkpoint=None, device=None, optional=False):
+    def __init__(self, checkpoint=None, device=None, optional=False, cache_size=None):
         """optional: a checkpoint that does not load falls back to the untrained model (load_error says why)
         instead of failing — for launchers that pick a checkpoint automatically."""
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
@@ -227,6 +298,8 @@ class ModelService:
         self.n_modes = int(self.lm.hparams.get('num_field_modes', 6))
         self.n_params = int(sum(p.numel() for p in self.lm.parameters()))
         self._lock = threading.Lock()
+        self.cache_size = int(cache_size if cache_size is not None else os.environ.get('RFCAV_FIELD_CACHE') or 2)
+        self._ops = collections.OrderedDict()                # key → (mesh, ops)
 
     def load(self, checkpoint):
         """Switch to another checkpoint (e.g. a run just trained from the UI); on failure the current
@@ -244,35 +317,72 @@ class ModelService:
     def info(self):
         return {'n_modes': self.n_modes, 'n_params': self.n_params, 'device': self.device,
                 'untrained': self.untrained, 'checkpoint': self.checkpoint and self.checkpoint.split('/')[-1],
-                'load_error': self.load_error,
+                'load_error': self.load_error, 'model_type': 'field3d',
                 'run': self.checkpoint and os.path.basename(os.path.dirname(os.path.abspath(self.checkpoint)))}
 
     def geometry(self, nodes, tets, family='', params=None):
-        """(converter geometry dict with features + operators, CSR mass) of a mesh [m]; params: the
-        family's geom_params (beam axis and accelerating length, src.qoi.operators)."""
+        """(converter geometry dict with features + operators, CSR mass) of a linear mesh [m] — the display
+        geometry (N0 fields, cut planes, input-feature views); params: the family's geom_params (beam axis and
+        accelerating length, src.qoi.operators)."""
         geom, M = extract_geometry_3d(nodes, tets)
         geom.update(shape_type=family or '', params=params)
         return geom, (M.tocsr() if hasattr(M, 'tocsr') else M)
 
-    def predict(self, nodes, tets, family='', qoi_kw=None, warmup=False, geom=None, M=None):
-        """Model solution of one mesh (build_solution dict + 'time_s'); geom / M reuse a prepared
-        geometry (dataset item)."""
-        from src.data.dataset_3d import to_csr
+    def _operators(self, mesh_src, key, order, t):
+        """(curved mesh, field_operators) of a mesh_src, cached per key (caller holds the locks)."""
+        from src.data_gen import field_labels as fl
+        from src.data_gen import highorder as ho
+        from src.service.geometry import load_mesh_src
+        if key is not None and key in self._ops:
+            self._ops.move_to_end(key)
+            t.update(mesh=0.0, operators=0.0)
+            return self._ops[key]
         t0 = time.perf_counter()
-        if geom is None:
-            geom, M = self.geometry(nodes, tets, family)
-        t_ops = time.perf_counter() - t0
-        with self._lock:
-            U, f, lam, t_model = forward(self.lm, geom, self.feature_indices, self.device, warmup)
+        mesh = load_mesh_src(mesh_src)
+        t['mesh'] = time.perf_counter() - t0
         t0 = time.perf_counter()
+        center, scale = fl.model_normalisation(mesh)
+        ops = ho.field_operators(mesh, order=int(order), scale=scale, center=center)
+        t['operators'] = time.perf_counter() - t0
+        if key is not None and self.cache_size > 0:
+            self._ops[key] = (mesh, ops)
+            while len(self._ops) > self.cache_size:
+                self._ops.popitem(last=False)
+        return mesh, ops
+
+    def predict(self, mesh_src, geom, M, family='', params=None, key=None):
+        """Model solution of one geometry (build_solution dict + 'time_s', 'qoi_source', 'n_dof', 'n_tets'):
+        mesh_src its curved mesh (geometry.curved_from_cad / the field H5), geom / M its display geometry
+        (the linear mesh of that curved mesh: ModelService.geometry or the dataset item's), params the
+        family's geom_params, key a cache key (the geometry id)."""
+        from src.data.sparse import to_csr
+        from src.service.datasets import _NG_LOCK, whitney_dofs
+        t = {}
+        order = int(mesh_src.get('model_order') or 2)
+        with _NG_LOCK, self._lock:
+            mesh, ops = self._operators(mesh_src, key, order, t)
+            U, f, lam, t['model'] = forward(self.lm, ops, self.feature_indices, family or '', self.device)
+            t0 = time.perf_counter()
+            labels = field_qoi(mesh, U, f, order, family, params)
+            t['qoi'] = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            nodes, _, edges_ng, V = whitney_dofs(mesh, U, order)
+            n_tets = int(mesh.ne)
+        n = int(ops['n_dof'])
+        Kf, Mf = to_csr(ops['K'], (n, n)), to_csr(ops['M'], (n, n))
+        Un = U / np.sqrt(np.maximum(np.einsum('ik,ik->k', U, Mf @ U), 1e-300))
+        eta = residual(Kf, Mf, Un, lam, ~np.asarray(ops['bnd'], bool))
+        X = np.asarray(geom['X'], float) * float(geom['scale']) + np.asarray(geom['center']).reshape(1, 3)
+        if nodes.shape != X.shape or not np.allclose(nodes, X, rtol=0, atol=1e-5 * float(geom['scale'])):
+            raise ValueError("the display geometry is not the linear mesh of the curved mesh the model ran on")
         ne = len(geom['edges'])
-        Mmat = to_csr(M, (ne, ne))
-        free = ~np.asarray(geom['bnd_edge'], bool)
-        Kmat = to_csr(geom['K'], (ne, ne)) if 'K' in geom else None
-        eta = (residual(Kmat, Mmat, U / np.sqrt(np.einsum('ek,ek->k', U, Mmat @ U)), lam, free)
-               if Kmat is not None else None)
-        sol = build_solution(geom, Mmat, U, f, 'model', eta=eta, qoi_kw=qoi_kw)
-        sol['time_s'] = {'operators': t_ops, 'model': t_model, 'qoi': time.perf_counter() - t0}
+        rows, sign = h5_edges_to_canonical(edges_ng, geom['n_nodes'], geom['edges'])
+        Ud = np.zeros((ne, V.shape[1]))
+        Ud[rows] = sign[:, None] * V
+        sol = build_solution(geom, to_csr(M, (ne, ne)), Ud, f, 'model', eta=eta)
+        override_qoi(sol, labels)
+        t['display'] = time.perf_counter() - t0
+        sol.update(qoi_source='p2_model', n_dof=n, n_tets=n_tets, time_s=t)
         return sol
 
     # ── display data (any solution: model, FE, difference) ───────────

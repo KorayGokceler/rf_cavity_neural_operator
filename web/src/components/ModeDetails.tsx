@@ -1,16 +1,17 @@
 import { api, type CmpRow, type ModeRow } from '../api';
-import { QOI_DEFS, etaLabel, fmtF, sci } from '../format';
+import { QOI_DEFS, etaLabel, fmtF, fmtTimings, sci } from '../format';
 import { t, type Lang } from '../i18n';
 import Icon from './Icon';
 
 interface Props {
   lang: Lang; row: ModeRow; cmp?: CmpRow | null; timings?: Record<string, number> | null;
   exportId?: string | null; label?: Record<string, number> | null;
+  size?: string | null;                 // the model's mesh: "2 490 DOF (p2) · 204 curved tets"
 }
 
 const pct = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)} %`);
 
-export default function ModeDetails({ lang, row, cmp, timings, exportId, label }: Props) {
+export default function ModeDetails({ lang, row, cmp, timings, exportId, label, size }: Props) {
   const e = row.eta !== null && row.eta !== undefined ? etaLabel(lang, row.eta) : null;
   return (
     <div className="mode-details">
@@ -60,7 +61,7 @@ export default function ModeDetails({ lang, row, cmp, timings, exportId, label }
         </dl>
       )}
       {row.degenerate && <div className="note warning-text">≈ {t(lang, 'degenerate')}: per-mode values depend on the pair's rotation.</div>}
-      {timings && <div className="note">{t(lang, 'timings')}: {Object.entries(timings).map(([k, v]) => `${k} ${v.toFixed(2)} s`).join(' · ')}</div>}
+      {timings && <div className="note" data-testid="timings">{t(lang, 'timings')}: {fmtTimings(lang, timings)}{size ? ` · ${size}` : ''}</div>}
       {exportId && <a className="btn" href={api.exportUrl(exportId)} download data-testid="export-json"><Icon name="download" size={14} />{t(lang, 'export')}</a>}
     </div>
   );

@@ -53,22 +53,53 @@ def test_info(client):
     assert "elliptical" in j["families"]["train"] and "box" in j["families"]["ood"]
 
 
-def test_upload_predict_fields_export(client, pillbox_msh):
+def _upload(client, pillbox_msh):
     with open(pillbox_msh / "pillbox.msh", "rb") as fh:
         r = client.post("/api/geometries", files={"file": ("cavity.msh", fh)}, data={"unit": "mm"})
     assert r.status_code == 200, r.text
-    g = r.json()
+    return r.json()
+
+
+def test_upload(client, pillbox_msh):
+    g = _upload(client, pillbox_msh)
     assert g["check"]["ok"] and g["check"]["betti1"] == 0
     pts = f32(g["surface"]["points_b64"]).reshape(-1, 3)
     assert pts.shape[0] == g["surface"]["n_points"] and abs(pts[:, 0].max() - 100) < 1e-3    # mm
+
+
+def _upload_step(client, pillbox_msh, mesh_size=0.3):
+    with open(pillbox_msh / "pillbox.step", "rb") as fh:
+        r = client.post("/api/geometries", files={"file": ("cavity.step", fh)},
+                        data={"unit": "mm", "mesh_size": str(mesh_size)})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_mesh_upload_cannot_be_predicted(client, pillbox_msh):
+    """A mesh file has no CAD surface: shown and checked, but the field model (curved mesh) refuses it."""
+    g = _upload(client, pillbox_msh)
+    assert g["check"]["ok"] and g["can_predict"] is False and "CAD" in g["predict_blocker"]
+    r = client.post("/api/predictions", json={"geometry_id": g["id"]})
+    assert r.status_code == 422 and r.json()["detail"] == g["predict_blocker"]
+
+
+def test_predict_fields_export(client, pillbox_msh):
+    """STEP upload → curved netgen mesh → untrained field3d prediction: Ritz frequencies, p2 figures of
+    merit, η, and the display endpoints on the linear mesh of the same curved mesh."""
+    g = _upload_step(client, pillbox_msh)
+    assert g["can_predict"] and g["predict_blocker"] is None and g["check"]["ok"]
     r = client.post("/api/predictions", json={"geometry_id": g["id"]})
     assert r.status_code == 200, r.text
     p = r.json()
     assert len(p["modes"]) == 6 and any("untrained" in w for w in p["warnings"])
-    assert all(np.isfinite(m["f_GHz"]) and m["eta"] >= 0 for m in p["modes"])
+    assert p["qoi_source"] == "p2_model" and p["n_dof"] > 0 and p["n_tets"] == g["check"]["n_tets"]
+    assert all(np.isfinite(m["f_GHz"]) and m["f_GHz"] > 0 and m["eta"] >= 0 for m in p["modes"])
+    assert all(m["Q0"] is None or m["Q0"] > 0 for m in p["modes"]) and any(m["Q0"] for m in p["modes"])
+    assert {"mesh", "operators", "model", "qoi", "display", "total"} <= set(p["time_s"])
+    assert p["model"]["model_type"] == "field3d"
     m = client.get(f"/api/predictions/{p['id']}/modes/0").json()
     E = f32(m["surface"]["E_b64"]).reshape(-1, 3)
-    assert E.shape == (g["surface"]["n_points"], 3) and m["surface"]["E_max"] > 0
+    assert E.shape == (g["surface"]["n_points"], 3) and m["surface"]["E_max"] > 0 and np.isfinite(E).all()
     assert len(m["axis"]["z_mm"]) == len(m["axis"]["Ez"])
     q = client.get(f"/api/predictions/{p['id']}/plane", params={"mode": 0, "axis": "y", "res": 41}).json()
     P = f32(q["points_b64"]).reshape(-1, 3)
@@ -80,7 +111,7 @@ def test_upload_predict_fields_export(client, pillbox_msh):
     inside = np.frombuffer(base64.b64decode(v["inside_b64"]), np.uint8).reshape(nz, ny, nx).astype(bool)
     assert 10000 < v["n_points"] == nx * ny * nz < 40000 and 0 < v["n_inside"] == inside.sum() < v["n_points"]
     assert np.all(E[~inside] == 0) and np.abs(E[inside]).max() > 0
-    assert v["origin_mm"][0] == pytest.approx(-100, abs=1) and v["spacing_mm"] > 0     # pillbox R = 100 mm
+    assert v["origin_mm"][0] == pytest.approx(-100, abs=5) and v["spacing_mm"] > 0     # pillbox R = 100 mm
     ctr = inside[nz // 2, ny // 2, nx // 2] and not inside[0, 0, 0]       # the bbox corner is outside the cylinder
     assert ctr
     assert client.get(f"/api/predictions/{p['id']}/volume", params={"n": 10}).status_code == 422
@@ -90,7 +121,7 @@ def test_upload_predict_fields_export(client, pillbox_msh):
     E0 = E16[0] * fb["E_max"][0]
     nodes = f32(fb["nodes_b64"]).reshape(nv, 3)
     vid = np.frombuffer(base64.b64decode(fb["vid_b64"]), np.uint32)
-    assert K == 6 and nodes.shape == (nv, 3) and np.abs(nodes[:, 0]).max() == pytest.approx(100, abs=1)
+    assert K == 6 and nodes.shape == (nv, 3) and np.abs(nodes[:, 0]).max() == pytest.approx(100, abs=5)
     assert np.frombuffer(base64.b64decode(fb["tets_b64"]), np.uint32).size == 4 * fb["n_tets"]
     Es = f32(m["surface"]["E_b64"]).reshape(-1, 3)                          # mode 0 on the surface (above)
     assert np.allclose(E0[vid], Es, rtol=2e-3, atol=2e-3 * fb["E_max"][0])      # = the per-mode surface data
@@ -100,13 +131,79 @@ def test_upload_predict_fields_export(client, pillbox_msh):
     assert r.headers.get("content-encoding") == "gzip"
     r = client.get(f"/api/predictions/{p['id']}/export")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
-    assert len(r.json()["modes"]) == 6
+    assert len(r.json()["modes"]) == 6 and r.json()["qoi_source"] == "p2_model"
+    p2 = client.post("/api/predictions", json={"geometry_id": g["id"]}).json()      # cached curved mesh + operators
+    assert p2["time_s"]["operators"] == 0.0 and [m["f_GHz"] for m in p2["modes"]] == [m["f_GHz"] for m in p["modes"]]
+
+
+def test_prediction_budget_and_no_cad_family(monkeypatch, pillbox_msh):
+    """Above the curved-tet budget the geometry is shown but not predicted (422 with the reason); the discrete
+    freeform family has no CAD solid."""
+    monkeypatch.setattr(A.Limits, "max_predict_tets", 10)
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    assert c.get("/api/info").json()["limits"]["max_predict_tets"] == 10
+    g = _upload_step(c, pillbox_msh)
+    assert g["check"]["ok"] and not g["can_predict"] and "budget" in g["predict_blocker"]
+    r = c.post("/api/predictions", json={"geometry_id": g["id"]})
+    assert r.status_code == 422 and "budget" in r.json()["detail"]
+    f = c.post("/api/geometries/sample", json={"family": "freeform", "id": 1, "mesh_size": 0.3}).json()
+    assert f["check"]["ok"] and not f["can_predict"] and "CAD" in f["predict_blocker"]
+    assert c.post("/api/predictions", json={"geometry_id": f["id"]}).status_code == 422
+
+
+def test_ritz_frequencies_are_upper_bounds_on_a_box():
+    """Untrained field3d on a generator box: the Ritz values lie above the discrete HCurl(p2) eigenvalues of the
+    same curved mesh (the kernel projection removes the gradients: no spurious θ ≈ 0), which approximate the
+    analytic box spectrum."""
+    from src.data_gen import dataset_generator_3d as gen
+    from src.data_gen import highorder as ho
+    geo = G.run_isolated(G.mesh_family, "box", 3, 0.1, timeout=120)
+    assert geo["mesh_src"] is not None and geo["blocker"] is None
+    svc = ModelService(None, "cpu")
+    geom, M = svc.geometry(geo["nodes"], geo["tets"], "box", geo["params"])
+    sol = svc.predict(geo["mesh_src"], geom, M, "box", geo["params"])
+    f = np.array([m["f_GHz"] for m in sol["modes"]])
+    lab = ho.solve_modes(G.load_mesh_src(geo["mesh_src"]), len(f), order=2)
+    f_h = lab["f_hz"][:len(f)] / 1e9
+    assert np.all(f >= f_h * (1 - 1e-6)), (f, f_h)
+    p = geo["params"]
+    f_exact = np.sqrt(gen.box_spectrum(p["a"], p["b"], p["d"])[:len(f)]) * 299792458.0 / (2 * np.pi) / 1e9
+    assert np.allclose(f_h, f_exact, rtol=0.01), (f_h, f_exact)          # 154 curved tets: 0.1–0.5 %
+
+
+def test_load_model_rejects_other_model_types(tmp_path):
+    import pytorch_lightning as pl
+    import torch
+    from src.training.lightning_module import CavityLightning
+    m = CavityLightning(val_dim=9, hidden_dim=16, n_heads=2, n_basis=8, num_field_modes=3, rff_dim=8,
+                        eigenspace_kwargs={"n_layers": 1}, data_cfg={"field": "E", "feature_indices": None})
+    trainer = pl.Trainer(logger=False, enable_checkpointing=False, enable_progress_bar=False, enable_model_summary=False)
+    trainer.strategy.connect(m)
+    good = tmp_path / "field.ckpt"
+    trainer.save_checkpoint(str(good))
+    s = ModelService(str(good), "cpu")
+    assert not s.untrained and s.n_modes == 3 and s.info()["model_type"] == "field3d"
+    ck = torch.load(str(good), map_location="cpu", weights_only=False)
+    ck["hyper_parameters"]["model_type"] = "eigenspace3d"                   # the removed N0 model
+    bad = tmp_path / "n0.ckpt"
+    torch.save(ck, str(bad))
+    with pytest.raises(ValueError, match="field3d"):
+        ModelService(str(bad), "cpu")
+    s = ModelService(str(bad), "cpu", optional=True)
+    assert s.untrained and "eigenspace3d" in s.load_error
+    del ck["hyper_parameters"]["model_type"]                                 # older than field3d: N0 / 2D
+    old = tmp_path / "old.ckpt"
+    torch.save(ck, str(old))
+    with pytest.raises(ValueError, match="model_type"):                     # also outside the service
+        CavityLightning.load_from_checkpoint(str(old), map_location="cpu", strict=False)
+    assert CavityLightning.load_from_checkpoint(str(good), map_location="cpu").model_type == "field3d"
 
 
 def test_example_geometry_and_validation(client):
     r = client.post("/api/geometries/sample", json={"family": "pillbox_pipes", "id": 7, "mesh_size": 0.3})
     assert r.status_code == 200, r.text
-    assert r.json()["source"]["family"] == "pillbox_pipes" and r.json()["check"]["ok"]
+    assert r.json()["source"]["family"] == "pillbox_pipes" and r.json()["check"]["ok"] and r.json()["can_predict"]
+    assert r.json()["params"]["R"] > 0
     assert client.post("/api/geometries/sample", json={"family": "nope"}).status_code == 422
     assert client.post("/api/geometries/sample", json={"family": "box", "mesh_size": 0.01}).status_code == 422
     r = client.post("/api/geometries", files={"file": ("x.exe", b"MZ")}, data={"unit": "mm"})
@@ -166,6 +263,105 @@ def test_access_token(monkeypatch):
     assert "httponly" in r.headers["set-cookie"].lower()
     assert c.get("/api/info").status_code == 200                              # cookie kept by the client
     assert TestClient(c.app).get("/api/info", headers={"X-RFCAV-Token": "s3cret"}).status_code == 200
+
+
+@pytest.fixture(scope="module")
+def unit_files(tmp_path_factory):
+    """The same 0.1 × 0.2 × 0.3 m box as a STEP declared in mm (coordinates 100 …), a STEP declared in metres
+    (coordinates 0.1 …), a BREP with coordinates 100 … (no unit), and a pillbox with beam pipes (sharp 90°
+    re-entrant junctions) as STEP [mm]."""
+    gmsh = pytest.importorskip("gmsh")
+    d = tmp_path_factory.mktemp("units")
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    for name, size in (("box_mm.step", 100.0), ("box_m_raw.step", 0.1), ("box_100.brep", 100.0)):
+        gmsh.clear()
+        gmsh.model.occ.addBox(0, 0, 0, size, 2 * size, 3 * size)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(d / name))
+    txt = (d / "box_m_raw.step").read_text()
+    assert "SI_UNIT(.MILLI.,.METRE.)" in txt                    # gmsh writes STEP declared in mm
+    (d / "box_m.step").write_text(txt.replace("SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT($,.METRE.)"))
+    gmsh.clear()
+    c = gmsh.model.occ.addCylinder(0, 0, -40, 0, 0, 80, 100)
+    p = gmsh.model.occ.addCylinder(0, 0, -100, 0, 0, 200, 30)
+    gmsh.model.occ.fuse([(3, c)], [(3, p)])
+    gmsh.model.occ.synchronize()
+    gmsh.write(str(d / "pillbox_pipes.step"))
+    gmsh.clear()
+    return d
+
+
+def test_step_units_come_from_the_file(unit_files):
+    """OCC converts STEP to its target unit whatever the file declares: STEP is read in its declared unit
+    (the same box from mm and from metres), the user unit applies to BREP only."""
+    for f in ("box_mm.step", "box_m.step"):
+        for unit in G.UNITS:
+            V, n_sharp = G.cad_to_brep(str(unit_files / f), unit, str(unit_files / "out.brep"))
+            assert V == pytest.approx(6e-3, rel=1e-6), (f, unit, V)
+            assert n_sharp == 0                                    # a box has only convex edges
+            assert G.unit_used(f, unit) == "file"
+    assert G.cad_to_brep(str(unit_files / "box_100.brep"), "mm", str(unit_files / "out.brep"))[0] == pytest.approx(6e-3)
+    assert G.cad_to_brep(str(unit_files / "box_100.brep"), "m", str(unit_files / "out.brep"))[0] == pytest.approx(6e6)
+    assert G.unit_used("x.brep", "cm") == "cm"
+    V, n_sharp = G.cad_to_brep(str(unit_files / "pillbox_pipes.step"), "m", str(unit_files / "out.brep"))
+    assert n_sharp == 2 and V == pytest.approx(np.pi * (0.1 ** 2 * 0.08 + 0.03 ** 2 * 0.12), rel=1e-4)
+
+
+def test_upload_step_units_and_sharp_edges(client, unit_files):
+    """Upload: STEP boxes declared in mm and in m give the same bbox for any unit field (unit_used 'file');
+    an uploaded pillbox with sharp pipe junctions has no surface peaks, and every upload warns about the
+    assumed beam axis."""
+    boxes = []
+    for f in ("box_mm.step", "box_m.step"):
+        for unit in ("mm", "m"):
+            with open(unit_files / f, "rb") as fh:
+                r = client.post("/api/geometries", files={"file": (f, fh)}, data={"unit": unit, "mesh_size": "0.3"})
+            assert r.status_code == 200, r.text
+            g = r.json()
+            assert g["source"]["unit_used"] == "file" and g["source"]["n_sharp_edges"] == 0
+            boxes.append(np.array(g["check"]["bbox_mm"]))
+    for b in boxes:
+        np.testing.assert_allclose(b, [[0, 0, 0], [100, 200, 300]], atol=1e-6)
+    with open(unit_files / "box_100.brep", "rb") as fh:
+        g = client.post("/api/geometries", files={"file": ("b.brep", fh)}, data={"unit": "mm", "mesh_size": "0.3"}).json()
+    assert g["source"]["unit_used"] == "mm" and g["check"]["bbox_mm"][1] == pytest.approx([100, 200, 300])
+    with open(unit_files / "pillbox_pipes.step", "rb") as fh:
+        g = client.post("/api/geometries", files={"file": ("pp.step", fh)}, data={"unit": "m", "mesh_size": "0.3"}).json()
+    assert g["source"]["n_sharp_edges"] == 2 and g["can_predict"], g.get("predict_blocker")
+    p = client.post("/api/predictions", json={"geometry_id": g["id"]})
+    assert p.status_code == 200, p.text
+    p = p.json()
+    assert any("beam axis assumed" in w for w in p["warnings"]) and any("sharp edges" in w for w in p["warnings"])
+    assert all(m["Epk_Eacc"] is None and m["Bpk_Eacc_mT_per_MVm"] is None for m in p["modes"])
+    assert any(m["Q0"] for m in p["modes"])                    # the other figures of merit stay
+
+
+def test_prediction_errors_are_422(pillbox_msh, monkeypatch):
+    """An exception inside the prediction (display-mesh mismatch, CG, netgen) is a 422 with a short message."""
+    svc = ModelService(None, "cpu")
+    c = TestClient(A.create_app(svc, datasets={}))
+    g = _upload_step(c, pillbox_msh)
+
+    def boom(*a, **k):
+        raise ValueError("the display geometry is not the linear mesh")
+    monkeypatch.setattr(svc, "predict", boom)
+    r = c.post("/api/predictions", json={"geometry_id": g["id"]})
+    assert r.status_code == 422 and "ValueError" in r.json()["detail"] and "display geometry" in r.json()["detail"]
+
+
+def test_random_sample_ids_are_beyond_every_dataset_block():
+    """Random example ids never hit a dataset id: blocks of cluster/truba/families.tsv (ids block·2^19 + i)."""
+    from src.service import jobs as J
+    blocks = J.family_blocks()
+    assert blocks and max(blocks.values()) <= 31
+    lo, hi = A.RANDOM_SAMPLE_IDS
+    for b in blocks.values():
+        b_lo, b_hi = b * J.ID_BLOCK, (b + 1) * J.ID_BLOCK
+        assert b_hi <= lo or b_lo >= hi, b
+    assert 32 * J.ID_BLOCK <= lo < hi                                       # beyond any block a new family may get
+    assert A.SampleReq(family="box", id=hi - 1).id == hi - 1                 # a shown random id can be re-entered
 
 
 def test_serve_web_helpers():

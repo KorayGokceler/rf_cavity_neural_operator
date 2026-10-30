@@ -2,12 +2,11 @@
 the TRUBA layout (cluster/truba) so the results mix with cluster datasets:
 
     <gen_root>/<TAG>/h5/<family>/<family>_s00000.h5 …   (shards of `shard_size` geometries)
-    <gen_root>/<TAG>/pkl/<family>.pkl                    (converted, lean by default; N0 labels only)
     <gen_root>/<TAG>/step/<family>/<family>_<id>.step   (CAD of every undeformed geometry [mm], e.g. for CST)
 
-Two label kinds, as on TRUBA: 'n0' (Whitney N0 on the gmsh mesh, one process per core) and 'field'
-(adaptive NGSolve HCurl p3 labels on a curved mesh, docs/29–30: H5 only, `threads` NGSolve threads per
-worker; field_plan sizes workers × threads from the machine's cores and memory).
+Field labels only (the data of the field3d model): adaptive NGSolve HCurl p3 labels on a curved mesh,
+docs/29–30, H5 only, `threads` NGSolve threads per worker; field_plan sizes workers × threads from the
+machine's cores and memory.  (The generator's own --labels n0 is not offered here: no model trains on it.)
 
 Geometry ids = block · 2^19 + i with the family's fixed block from cluster/truba/families.tsv, so the
 same (family, i) is the same geometry everywhere. Shards are written to a local scratch directory
@@ -45,11 +44,6 @@ def family_blocks(tsv=None):
 
 TAG_VERSION = "v2"      # generator output version (cluster/truba/config.sh DATA_VERSION): bump when a seed's
                         # geometry or labels change, so old and new shards never share a dataset folder
-
-
-def tag_of(mesh_size, n_modes):
-    """Dataset tag of the TRUBA layout (cluster/truba/config.sh): E_ms<mesh>_k<modes>_<version>."""
-    return f"E_ms{mesh_size:g}_k{int(n_modes)}_{TAG_VERSION}"
 
 
 def field_tag_of(mesh_size, n_modes, label_order=3, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
@@ -123,13 +117,11 @@ def field_plan(cpus, mem_gb, max_ndof, threads=None, workers=None, mem_frac=0.85
 
 
 def generator_args(p):
-    """dataset_generator_3d.py options of one job (params p, without the shard's ids / file)."""
+    """dataset_generator_3d.py options of one field-label job (params p, without the shard's ids / file)."""
     a = ['--families', p['family'], '--seed', str(p['seed']), '--n_eigen_modes', str(p['n_modes']),
          '--mesh_size', str(p['mesh_size']), '--sampling', p['sampling'],
          '--deform_prob', str(p['deform_prob']), '--deform_max', str(p['deform_max']),
          '--n_workers', str(p['workers'])]
-    if p.get('labels', 'n0') != 'field':
-        return a + ['--sample_timeout', '900']
     a += ['--labels', 'field', '--sample_timeout', str(int(p.get('sample_timeout') or 3600)),
           '--threads', str(p['threads']), '--label_order', str(p['label_order']),
           '--model_order', str(p['model_order']), '--min_fillet', str(p['min_fillet']),
@@ -228,9 +220,8 @@ class JobManager:
             job._proc.terminate()
         return job
 
-    def paths(self, p):
-        base = os.path.join(self.gen_root, p['tag'])
-        return os.path.join(base, 'h5', p['family']), os.path.join(base, 'pkl', f"{p['family']}.pkl")
+    def h5_dir(self, p):
+        return os.path.join(self.gen_root, p['tag'], 'h5', p['family'])
 
     # ── worker ───────────────────────────────────────────────────────
     def _loop(self):
@@ -261,7 +252,7 @@ class JobManager:
 
     def _run(self, job):
         p = job.params
-        h5_dir, pkl = self.paths(p)
+        h5_dir = self.h5_dir(p)
         os.makedirs(h5_dir, exist_ok=True)
         tmp = os.path.join(self.scratch, job.id)
         os.makedirs(tmp, exist_ok=True)
@@ -305,17 +296,6 @@ class JobManager:
                 shutil.move(local, dest + '.part')
                 os.replace(dest + '.part', dest)
                 job.outputs.append(dest)
-            if p.get('convert', True) and p.get('labels', 'n0') != 'field':   # field: H5 only (docs/29)
-                job.stage = 'converting to PKL'
-                shards = sorted(f for f in os.listdir(h5_dir) if f.endswith('.h5'))
-                local_pkl = os.path.join(tmp, os.path.basename(pkl))
-                cmd = [self.python, 'convert_3d.py', '--h5_filepath', *[os.path.join(h5_dir, f) for f in shards],
-                       '--output_path', local_pkl] + (['--no_operators'] if p.get('lean', True) else [])
-                self._exec(job, cmd)
-                os.makedirs(os.path.dirname(pkl), exist_ok=True)
-                shutil.move(local_pkl, pkl + '.part')
-                os.replace(pkl + '.part', pkl)
-                job.outputs.append(pkl)
             job.stage = 'done'
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

@@ -1,5 +1,7 @@
 # 29 — Field labels: CST-grade labels, a cheaper model space, one-line TRUBA runs
 
+> **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+
 > Status: implemented on `claude/field-model` (smoke-tested: generator → H5 → dataset → `train.py
 > --fast_dev_run`, TRUBA `--dry-run`). Not yet run at scale.
 > Model: docs/28. Label benchmark that motivated this: docs/27.

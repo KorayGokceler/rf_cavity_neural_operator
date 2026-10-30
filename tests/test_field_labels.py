@@ -122,11 +122,26 @@ def test_field_dataset_rebuilds_the_labelled_mesh(field_h5, tmp_path):
         ds_bad[i]
 
 
+def test_fast_dev_run_train_py(field_h5, tmp_path, monkeypatch):
+    """train.py end to end on field-label H5 with its default config (configs/field_3d.yaml)."""
+    import sys
+
+    import train
+    monkeypatch.setattr(sys, "argv", [
+        "train.py", "--fast_dev_run", "--override",
+        f"dataset.data_path={field_h5}", "dataset.train_ratio=0.5", "dataset.val_ratio=0.25",
+        "model.embed_dim=16", "model.n_heads=2", "model.n_basis=8", f"model.num_field_modes={K}", "model.rff_dim=8",
+        "model.eigenspace.n_layers=1", "model.eigenspace.grad_checkpoint=false", "training.batch_size=1",
+        "training.num_workers=0", f"training.log_dir={tmp_path}"])
+    train.main()
+
+
 def test_field_datasets_in_the_ui_browser(field_h5):
     """The web UI lists field-label H5 as kind 'field' with the label quality, and opens a geometry on its
     model mesh: label fields on Whitney N0 for display (unit energy, frequencies from their own Rayleigh
     quotient), the stored p3 figures of merit."""
-    from src.data.dataset_3d import rebuild_operators, to_csr
+    from src.data.dataset_converter_3d import geometry_operators
+    from src.data.sparse import to_csr
     from src.service.datasets import FieldH5Dataset, discover
     ds = discover(str(field_h5))
     d = next(iter(ds.values()))
@@ -140,7 +155,7 @@ def test_field_datasets_in_the_ui_browser(field_h5):
     g, U = rec["geom"], rec["U"]
     ne = len(g["edges"])
     assert U.shape == (ne, K) and np.isfinite(U).all()
-    ops = rebuild_operators(g["X"], g["tets"])
+    ops = geometry_operators(np.asarray(g["X"], np.float64), np.asarray(g["tets"], np.int64))[0]
     Kn, Mn = to_csr(ops["K"], (ne, ne)), to_csr(ops["M"], (ne, ne))
     lam = np.einsum("ik,ik->k", U, Kn @ U) / np.einsum("ik,ik->k", U, Mn @ U)
     f_n0 = np.sqrt(lam) * 299792458.0 / (2 * np.pi * g["scale"]) / 1e9

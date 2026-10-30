@@ -16,13 +16,24 @@ def _touch(p, text='x', t=None):
         os.utime(p, (t, t))
 
 
-def test_find_checkpoint_returns_the_newest_training_run(tmp_path):
+def _ckpt(p, model_type='field3d', t=None):
+    import torch
+    p.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({'hyper_parameters': {'model_type': model_type}}, str(p))
+    if t is not None:
+        os.utime(p, (t, t))
+
+
+def test_find_checkpoint_returns_the_newest_field3d_run(tmp_path):
     logs = tmp_path / 'training_logs'
     now = time.time()
-    _touch(logs / 'old' / 'checkpoints' / 'last.ckpt', t=now - 100)
-    _touch(logs / 'new' / 'version_0' / 'checkpoints' / 'epoch=3-val_rel_l2=0.1.ckpt', t=now)
+    _ckpt(logs / 'old' / 'checkpoints' / 'last.ckpt', t=now - 100)
+    _ckpt(logs / 'new' / 'version_0' / 'checkpoints' / 'epoch=3-val_rel_l2=0.1.ckpt', t=now)
     assert serve_web.find_checkpoint([str(logs)]) == str(logs / 'new')
-    _touch(logs / 'loose.ckpt', t=now + 100)                    # a file directly in the root: the file itself
+    _ckpt(logs / 'loose.ckpt', t=now + 100)                    # a file directly in the root: the file itself
+    assert serve_web.find_checkpoint([str(logs)]) == str(logs / 'loose.ckpt')
+    _ckpt(logs / 'n0' / 'last.ckpt', 'eigenspace3d', t=now + 200)       # the removed N0 model: skipped
+    _touch(logs / 'broken' / 'last.ckpt', 'not a checkpoint', t=now + 300)   # unreadable: skipped
     assert serve_web.find_checkpoint([str(logs)]) == str(logs / 'loose.ckpt')
     assert serve_web.find_checkpoint([str(tmp_path / 'missing')]) is None
 

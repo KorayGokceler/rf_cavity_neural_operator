@@ -10,15 +10,15 @@ description: Run the checks that prove the current change works - tests chosen f
 
    | changed | run |
    |---|---|
-   | `src/models/`, `src/training/` | `python -m pytest -q tests/test_field_model.py tests/test_eigenspace_3d.py tests/test_span_losses.py` |
+   | `src/models/`, `src/training/` | `python -m pytest -q tests/test_field_model.py tests/test_hcurl_projection.py tests/test_span_losses.py` |
    | `src/models/hcurl.py` (projection, Ritz, CG) | the above, plus `python scripts/paper/check_ritz_bound.py --data <LF H5> --threads 4`: the guarantee θ̃(1+η̄) ≥ λ_h holds in every row and there are no spurious modes with the projection |
    | `src/data_gen/` | `python -m pytest -q tests/test_field_labels.py tests/test_field_adaptive.py tests/test_data_gen_3d.py`, and `python scripts/validate_field_labels.py --max_ndof 300000 --threads 4`, which must print PASS with errors no worse than docs/31 §1 |
    | `src/data/` | `python -m pytest -q tests/test_field_model.py tests/test_dataset_converter_3d.py` |
-   | `src/qoi/` | `python -m pytest -q tests/test_qoi.py tests/test_qoi_data.py tests/test_qoi_torch.py` |
+   | `src/qoi/` | `python -m pytest -q tests/test_qoi.py` |
    | `src/service/` | `python -m pytest -q tests/test_service_api.py tests/test_service_datasets.py tests/test_service_training.py tests/test_service_truba.py` |
    | `web/` | `cd web && npm run build`, `python -m pytest -q tests/test_service_api.py`, then a Playwright check against `python scripts/serve_web.py --data <root> --checkpoint_optional --no_token --port <p>`. Desktop and 390 px, light and dark, no console errors, no horizontal scroll at 390 px, timings before/after for touched interactions. Stop the server afterwards. |
    | `scripts/serve_web.py`, `scripts/colab_webui.py`, `Colab_*.ipynb` | `python -m pytest -q tests/test_serve_web.py tests/test_service_api.py`; for the notebook, check that the JSON parses and that the cell's flags exist in the script's `--help` |
-   | `cluster/truba/` | `bash -n` on edited scripts, `bash cluster/truba/run.sh <dataset\|train\|all> LABELS=field ... --dry-run` (and `LABELS=n0`), `python -m pytest -q tests/test_service_truba.py` |
+   | `cluster/truba/` | `bash -n` on edited scripts, `bash cluster/truba/run.sh <dataset\|train\|all> LABELS=field ... --dry-run` (and `LABELS=n0 dataset`; `train` / `all` must refuse `LABELS=n0`), `python -m pytest -q tests/test_service_truba.py` |
    | `scripts/` (other) | the test that imports the script (`git grep -l <script name> tests/`), and one real run on a small input |
    | `paper/` | build in a scratch copy (`python merge_bib.py && latexmk -pdf main.tex`): no undefined references or citations, page count reported |
    | `docs/` only | links and section references resolve (`git grep` the cited sections); no test run needed |

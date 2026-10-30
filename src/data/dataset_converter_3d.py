@@ -1,48 +1,34 @@
-"""3D H5 (dataset_generator_3d) → training PKL for the 3D Maxwell model (N0, E field).
+"""Whitney N0 geometry and operators of a linear tetrahedral mesh (E field): the display / QoI / viewer
+layer of the web service and the N0 label path of the generator (dataset_generator_3d --labels n0).
 
-Output contract (docs/19_3D_DATA_PIPELINE.md; H5 dataset 'e_edges', metadata['field'] = 'E'):
+Geometry dict (extract_geometry_3d; the former PKL contract of docs/19, now in memory only):
 
-    {'geometry_pool': {g_id: {
-        'X'          float32 [Nv,3]   vertices, centred at the volume centroid, divided by 'scale'
-        'Input_funcs' float32 [Nv,F]  vertex features, FEATURE_NAMES_3D
-        'edges'      int64 [Ne,2]     vertex pairs, low → high index, rows sorted lexicographically
-                                      (= np.unique of the sorted tet edges); this row order is the
-                                      DOF order of Y, M, K, G everywhere
-        'tets'       int64 [Nt,4]
-        'M','K'      CSR (indptr, indices, data) [Ne×Ne]  N0 mass ∫w_i·w_j / curl-curl ∫curl w_i·curl w_j
-                                      on the NORMALISED mesh (Whitney w_ab = λ_a∇λ_b − λ_b∇λ_a, a < b)
-        'G'          CSR [Ne×Nv]      E potential matrix (e_potential_matrix): column j < n_pot is
-                                      potential j — interior vertices (increasing index), then one
-                                      column per boundary component except the first
-                                      (= G_full @ indicator); columns ≥ n_pot all zero; wall rows 0
-        'Kp'         CSR [Nv×Nv]      Gᵀ M G (SPD on the first n_pot rows/cols, zero elsewhere)
-        'bnd_edge'   bool [Ne]        PEC wall edge (edge of a boundary face); 'n_pot',
-                                      'n_bnd_components', 'betti1' (= 1 + b2 − χ, informative)
-        'scale','center','shape_type','params','n_nodes','n_edges', 'torsion_max'}},
-     'samples': [{'geom_id', 'Y' float32 [Ne] (unit M-norm on the normalised mesh, sign arbitrary;
-                  wall rows exactly 0), 'Theta' float32 [3] = [mode_idx, freq_GHz, sample_id],
-                  'qoi' {name: float} for src.qoi.QOI_LABELS (cavity figures of merit Q0, G, R/Q, R_sh,
-                  T, Epk/Eacc, Bpk/Eacc of the FE field at the FE frequency, copper, β = 1, 'linac';
-                  docs/24_CAVITY_QOI.md §0.4; absent with compute_qoi=False / convert_3d.py --no_qoi)}],
-     'metadata': {..., 'field'[, 'qoi': {'labels', 'sigma', 'beta', 'convention', 'axis', 'L_acc',
-                  'n_failed'}]}}
+    'X'           float32 [Nv,3]  vertices, centred at the volume centroid, divided by 'scale'
+    'Input_funcs' float32 [Nv,F]  vertex features, FEATURE_NAMES_3D
+    'edges'       int64 [Ne,2]    vertex pairs, low → high index, rows sorted lexicographically
+                                  (= np.unique of the sorted tet edges); this row order is the
+                                  DOF order of M, K, G everywhere
+    'tets'        int64 [Nt,4]
+    'M','K'       CSR (indptr, indices, data) [Ne×Ne]  N0 mass ∫w_i·w_j / curl-curl ∫curl w_i·curl w_j
+                                  on the NORMALISED mesh (Whitney w_ab = λ_a∇λ_b − λ_b∇λ_a, a < b)
+    'G'           CSR [Ne×Nv]     E potential matrix (e_potential_matrix): column j < n_pot is
+                                  potential j — interior vertices (increasing index), then one
+                                  column per boundary component except the first
+                                  (= G_full @ indicator); columns ≥ n_pot all zero; wall rows 0
+    'Kp'          CSR [Nv×Nv]     Gᵀ M G (SPD on the first n_pot rows/cols, zero elsewhere)
+    'bnd_edge'    bool [Ne]       PEC wall edge (edge of a boundary face); 'n_pot',
+                                  'n_bnd_components', 'betti1' (= 1 + b2 − χ, informative)
+    'scale','center','n_nodes','n_edges','torsion_max','volume' (+ 'shape_type', 'params' set by callers)
 
 Scaling: X = (x − center)/scale ⇒ λ_norm = λ_phys·scale², f = c·√λ_norm / (2π·scale).
 """
 import importlib
 import json
-import os
-import pickle
-import warnings
-from collections import defaultdict
 
-import h5py
 import numpy as np
 import scipy.sparse as sp
 from scipy.spatial import cKDTree
-from tqdm import tqdm
 
-C0 = 299792458.0
 
 FEATURE_NAMES_3D = [
     "x", "y", "z",                     # normalised coordinates
@@ -418,13 +404,6 @@ def geom_params_of(attrs):
     return json.loads(attrs.get("geom_params", "{}"))
 
 
-def qoi_metadata(n_failed=0):
-    """metadata['qoi'] of a PKL with QoI labels (§0.4)."""
-    return {"labels": list(qoi_api().QOI_LABELS), **QOI_LABEL_SETTINGS,
-            "axis": "src.qoi.operators.beam_axis (x=y=0 along z; hwr, ridged_box, box per family)",
-            "L_acc": "src.qoi.operators.acceleration_length (axis chord without params)", "n_failed": int(n_failed)}
-
-
 def qoi_operators_of(geom, M=None, **kw):
     """src.qoi.build_qoi_operators for one geometry_pool entry (X, tets, edges, scale, center);
     M: scipy mass matrix (assembled by build_qoi_operators when None).  The beam axis and the
@@ -445,51 +424,7 @@ def qoi_operators_of(geom, M=None, **kw):
     return ops
 
 
-def qoi_labels(ops, Y, f_ghz):
-    """[{name: float} per column of Y [Ne, K]] with the label settings (FE field, FE frequency)."""
-    q = qoi_api()
-    Y = np.asarray(Y, dtype=np.float64).reshape(len(Y), -1)
-    res = q.qoi_from_dofs(ops, Y, np.asarray(f_ghz, dtype=np.float64).reshape(-1) * 1e9, **QOI_LABEL_SETTINGS)
-    cols = {n: np.asarray(res[n], dtype=np.float64).reshape(-1) for n in q.QOI_LABELS}
-    return [{n: float(cols[n][k]) for n in q.QOI_LABELS} for k in range(Y.shape[1])]
-
-
-def _nan_labels():
-    return {n: float("nan") for n in qoi_api().QOI_LABELS}
-
-
-def attach_qoi_labels(data, verbose=True):
-    """Add samples[i]['qoi'] + metadata['qoi'] to a loaded PKL dict in place (back-fill for PKLs
-    converted without QoI; lean PKLs: M is rebuilt from (X, tets)).  Returns data."""
-    require_e_field(data.get("metadata"))
-    by_geom = defaultdict(list)
-    for j, s in enumerate(data["samples"]):
-        by_geom[s["geom_id"]].append(j)
-    n_failed = 0
-    for gid, js in tqdm(by_geom.items(), desc="QoI labels", disable=not verbose):
-        g = data["geometry_pool"][gid]
-        ne = len(g["edges"])
-        try:
-            if "M" in g:
-                M = from_csr_tuple(g["M"], (ne, ne)) if not sp.issparse(g["M"]) else g["M"].tocsr()
-            else:
-                ops_, M = geometry_operators(np.asarray(g["X"], np.float64), g["tets"])
-                if not np.array_equal(ops_["edges"], np.asarray(g["edges"])):
-                    raise ValueError("rebuilt edges differ from the stored ones")
-            ops = qoi_operators_of(g, M=M)
-            Y = np.stack([np.asarray(data["samples"][j]["Y"], np.float64) for j in js], axis=1)
-            lab = qoi_labels(ops, Y, [float(data["samples"][j]["Theta"][1]) for j in js])
-        except Exception as e:                              # noqa: BLE001 — one bad mesh must not stop the run
-            n_failed += 1
-            warnings.warn(f"geometry {gid}: QoI labels failed ({type(e).__name__}: {e}); stored as NaN")
-            lab = [_nan_labels() for _ in js]
-        for j, d in zip(js, lab, strict=True):
-            data["samples"][j]["qoi"] = d
-    data.setdefault("metadata", {})["qoi"] = qoi_metadata(n_failed)
-    return data
-
-
-# ─────────────────────────── conversion ────────────────────────
+# ─────────────────────────── data checks ───────────────────────
 
 def require_e_field(metadata):
     """Raise for data of the removed H formulation (PKL / H5 metadata 'field' = 'H')."""
@@ -497,133 +432,3 @@ def require_e_field(metadata):
     if field != "E":
         raise ValueError(f"data of the removed {field} formulation (only E-field data is supported; "
                          "regenerate with the current generator)")
-
-
-class RFCavity3DConverter:
-    def __init__(self, h5_filepath):
-        """h5_filepath: one H5 path or a list of shard paths (sample ids must be disjoint)."""
-        self.h5_filepaths = [h5_filepath] if isinstance(h5_filepath, (str, os.PathLike)) else list(h5_filepath)
-        self.h5_filepath = self.h5_filepaths[0] if len(self.h5_filepaths) == 1 else self.h5_filepaths
-        self.geometry_pool = {}
-        self.samples = []
-        self.freq_by_mode = defaultdict(list)
-
-    def convert_dataset(self, output_filepath, mode_indices=None, max_samples=None,
-                        freq_mean=None, freq_std=None, check_rayleigh=True, store_operators=True,
-                        compute_qoi=True):
-        """store_operators=False drops M/K/G/Kp from the PKL (they dominate its size, ~85 %);
-        rebuild them with geometry_operators(X, tets). Everything else is unchanged.
-        compute_qoi: per-sample cavity QoI labels samples[i]['qoi'] + metadata['qoi'] (FE field,
-        FE frequency, copper, β = 1, linac; src.qoi operators built once per geometry; a geometry
-        whose QoI fail gets NaN labels and a warning, counted in metadata['qoi']['n_failed'])."""
-        if compute_qoi:
-            qoi_api()                                       # fail early if src.qoi is missing
-        n_qoi_failed = 0
-        files = [h5py.File(p, "r") for p in self.h5_filepaths]
-        try:
-            file_meta = json.loads(files[0].attrs.get("metadata", "{}"))
-            require_e_field(file_meta)
-            keys = sorted(((f, k) for f in files for k in f.keys()
-                           if isinstance(f[k], h5py.Group) and "e_edges" in f[k]),
-                          key=lambda fk: int(fk[1].split("_")[-1]))
-            if not keys:
-                raise ValueError(f"No E-field sample groups (sample_XXXX/e_edges) in {self.h5_filepaths}")
-            sids = [int(k.split("_")[-1]) for _, k in keys]
-            if len(set(sids)) != len(sids):
-                raise ValueError("duplicate sample ids across H5 shards (use disjoint --start_id ranges)")
-            if max_samples:
-                keys = keys[:max_samples]
-            n_modes = None
-            max_rel = 0.0
-            for f, key in tqdm(keys, desc="Converting 3D"):
-                grp = f[key]
-                sid = int(key.split("_")[-1])
-                freqs = np.asarray(grp["freqs"][:], dtype=np.float64)
-                H = np.asarray(grp["e_edges"][:], dtype=np.float64)
-                order = np.argsort(freqs, kind="stable")
-                freqs, H = freqs[order], H[:, order]
-                n_modes = len(freqs) if n_modes is None else min(n_modes, len(freqs))
-                geom, M = extract_geometry_3d(grp["nodes"][:], grp["tets"][:])
-                geom["shape_type"] = str(grp.attrs.get("shape_type", "unknown"))
-                geom["params"] = geom_params_of(grp.attrs)
-                # freq of mode K+1 [GHz]: f_next ≈ f_K means the K-mode cut splits a degenerate cluster
-                geom["freq_next"] = float(grp.attrs.get("freq_next", np.nan))
-                rows, sign = h5_edges_to_canonical(grp["edges"][:], geom["n_nodes"], geom["edges"])
-                Y = np.zeros_like(H)
-                Y[rows] = sign[:, None] * H
-                Y /= np.sqrt(np.einsum("ij,ij->j", Y, M @ Y))[None]
-                # essential BC: E DOFs exactly 0 on the wall; ⟂_M the E-kernel gradients
-                if np.any(Y[geom["bnd_edge"]] != 0):
-                    raise RuntimeError(f"{key}: non-zero E DOF on a PEC wall edge")
-                MY = M @ Y
-                Gc = from_csr_tuple(geom["G"], (geom["n_edges"], geom["n_nodes"]))
-                div = np.abs(Gc.T @ MY).max() / np.abs(MY).max()
-                if div > 1e-6:
-                    raise RuntimeError(f"{key}: E mode not M-orthogonal to the kernel ({div:.1e})")
-                if check_rayleigh:  # λ_norm = λ_phys·scale² ⇒ f from the stored normalised operators
-                    Kc = from_csr_tuple(geom["K"], M.shape)
-                    lam = np.einsum("ij,ij->j", Y, Kc @ Y)
-                    f_rq = C0 * np.sqrt(lam) / (2 * np.pi * geom["scale"]) / 1e9
-                    rel = np.abs(f_rq / freqs - 1).max()
-                    max_rel = max(max_rel, rel)
-                    if rel > 1e-6:
-                        raise RuntimeError(f"{key}: Rayleigh frequency mismatch {rel:.2e}")
-                modes = range(len(freqs)) if mode_indices is None else mode_indices
-                kept = [(i, m_idx) for i, m_idx in enumerate(modes) if m_idx < len(freqs)]
-                labels = None
-                if compute_qoi and kept:
-                    cols = [m_idx for _, m_idx in kept]
-                    Ys = Y[:, cols].astype(np.float32)          # the stored DOFs
-                    try:
-                        labels = qoi_labels(qoi_operators_of(geom, M=M), Ys, freqs[cols])
-                    except Exception as e:                  # noqa: BLE001 — one bad mesh must not stop the run
-                        n_qoi_failed += 1
-                        warnings.warn(f"{key}: QoI labels failed ({type(e).__name__}: {e}); stored as NaN")
-                        labels = [_nan_labels() for _ in kept]
-                if not store_operators:
-                    for k_ in ("M", "K", "G", "Kp"):
-                        geom.pop(k_)
-                self.geometry_pool[sid] = geom
-                for n_, (i, m_idx) in enumerate(kept):
-                    s_ = {
-                        "geom_id": sid, "Y": Y[:, m_idx].astype(np.float32),
-                        "Theta": np.array([float(i), freqs[m_idx], float(sid)], dtype=np.float32),
-                    }
-                    if labels is not None:
-                        s_["qoi"] = labels[n_]
-                    self.samples.append(s_)
-                    self.freq_by_mode[i].append(float(freqs[m_idx]))
-        finally:
-            for f in files:
-                f.close()
-        allf = np.concatenate([np.asarray(v) for v in self.freq_by_mode.values()])
-        metadata = {
-            "freq_stats": {
-                "mean": float(freq_mean) if freq_mean is not None else float(allf.mean()),
-                "std": float(freq_std) if freq_std is not None else float(allf.std() + 1e-10),
-                "mode_stats": {str(m): {"mean": float(np.mean(v)), "std": float(np.std(v) + 1e-10)}
-                               for m, v in self.freq_by_mode.items()},
-            },
-            "n_modes": int(len(self.freq_by_mode)),
-            "mode_indices": list(range(n_modes)) if mode_indices is None else list(mode_indices),
-            "field": "E", "element": "N0",
-            "feature_names": list(FEATURE_NAMES_3D),
-            "n_samples": len(self.samples), "n_geometries": len(self.geometry_pool),
-            "edge_convention": "edges = np.unique(sorted tet edges), low->high; DOF = line integral low->high",
-            "scaling": "lambda_norm = lambda_phys * scale^2; f_GHz = c*sqrt(lambda_norm)/(2*pi*scale)/1e9",
-            "rayleigh_max_rel_err": float(max_rel),
-            "operators_stored": bool(store_operators),
-            "source_h5": self.h5_filepath, "generator_metadata": file_meta,
-        }
-        if compute_qoi:
-            metadata["qoi"] = qoi_metadata(n_qoi_failed)
-        with open(output_filepath, "wb") as fo:
-            pickle.dump({"geometry_pool": self.geometry_pool, "samples": self.samples, "metadata": metadata}, fo,
-                        protocol=pickle.HIGHEST_PROTOCOL)
-        nv = [g["n_nodes"] for g in self.geometry_pool.values()]
-        ne = [g["n_edges"] for g in self.geometry_pool.values()]
-        print(f"Saved {output_filepath}: {len(self.geometry_pool)} geometries, {len(self.samples)} samples, "
-              f"Nv {min(nv)}-{max(nv)}, Ne {min(ne)}-{max(ne)}, f {allf.min():.3f}-{allf.max():.3f} GHz, "
-              f"Rayleigh max rel err {max_rel:.1e}"
-              + (f", QoI labels ({n_qoi_failed} geometries failed)" if compute_qoi else ""))
-        return output_filepath

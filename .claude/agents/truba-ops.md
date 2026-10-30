@@ -13,15 +13,14 @@ analyses of logs the owner pastes or copies in.
 - **Entry point:** `cluster/truba/run.sh <setup|dataset|train|all|status> [KEY=VALUE …] [--dry-run]`.
   - KEY is any `config.sh` variable: PARTITION, CPUS, TIME, ACCOUNT, MESH_SIZE, N_STORE, MIN_FILLET,
     LABEL_ORDER, MODEL_ORDER, THREADS, TAG, GPU_PARTITION, GPUS, MODEL, EPOCHS, BATCH, LR, …
-  - It also takes FAMILIES (train | ood | all | list), N_PER_FAMILY, TRAIN_FAMILIES and MIX (n0).
+  - It also takes FAMILIES (train | ood | all | list), N_PER_FAMILY and TRAIN_FAMILIES.
+  - `train` / `all` need LABELS=field (the only labels a model trains on); LABELS=n0 only generates H5.
 - **Building blocks:**
   - `submit_family.sh` → `gen_shard.sbatch`, one job per missing shard;
-  - `convert_family.sbatch` and `merge.sbatch` (n0 only);
   - `submit_train.sh` → `train.sbatch`;
-  - `submit_eval.sh` → `eval.sbatch`;
   - `status.sh` / `status.py`;
   - `setup_env.sh`, which builds the conda env `rfcav` once.
-- **Storage:** `$DATA_ROOT/$TAG/h5/<family>/<family>_sNNNNN.h5`, `pkl/<family>.pkl` (n0), and
+- **Storage:** `$DATA_ROOT/$TAG/h5/<family>/<family>_sNNNNN.h5`, `runs/<EXP>/`, and
   `step/<family>/`. This is the same layout the web UI writes to Drive (`src/service/jobs.py`), so datasets
   mix.
 - **Ids:** blocks in `families.tsv` are fixed forever (≤ 31; train 1–9, ood 20–24). shard_size never changes

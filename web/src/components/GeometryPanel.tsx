@@ -1,5 +1,5 @@
 // Geometry panel of the workspace: example cavity or file upload, the checks, the predict button.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Geometry, Info } from '../api';
 import { t, type Lang } from '../i18n';
 import { int, sci } from '../format';
@@ -14,6 +14,7 @@ interface Props {
   info: Info | null;
   geometry: Geometry | null;
   busy: boolean;
+  predicting: number | null;            // start time (performance.now) of a running prediction
   form: GeomForm;
   setForm: (f: GeomForm) => void;
   onUpload: (file: File) => void;
@@ -24,7 +25,14 @@ interface Props {
   after?: React.ReactNode;              // below the checks (geometry info)
 }
 
-export default function GeometryPanel({ lang, info, geometry, busy, form, setForm, onUpload, onSample, onPredict,
+/** Seconds since `since`, ticking on its own (the panel around it does not re-render every second). */
+function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => { const h = setInterval(() => setNow(performance.now()), 250); return () => clearInterval(h); }, [since]);
+  return <span className="num">{Math.max(0, (now - since) / 1000).toFixed(0)} s</span>;
+}
+
+export default function GeometryPanel({ lang, info, geometry, busy, predicting, form, setForm, onUpload, onSample, onPredict,
                                         onClose, children, after }: Props) {
   const [tab, setTab] = useState<'sample' | 'upload'>('sample');
   const [file, setFile] = useState<File | null>(null);
@@ -34,6 +42,10 @@ export default function GeometryPanel({ lang, info, geometry, busy, form, setFor
   const cellsOk = numOk(form.nCells, { min: 1, max: 30, integer: true });
   const idOk = numOk(form.sid, { min: 0, integer: true, allowEmpty: true });
   const set = (p: Partial<GeomForm>) => setForm({ ...form, ...p });
+  // STEP / IGES declare their length unit (the server reads it from the file): the unit select is moot
+  const unitFromFile = !!file && /\.(step|stp|iges|igs)$/i.test(file.name);
+  const blocker = geometry && !geometry.can_predict
+    ? geometry.predict_blocker ?? (chk && !chk.ok ? chk.problems.join('; ') : '—') : null;
 
   return (
     <div className="geom-panel">
@@ -73,17 +85,20 @@ export default function GeometryPanel({ lang, info, geometry, busy, form, setFor
           <div className="row2">
             <label className="field">
               <span className="field-label">{t(lang, 'unit')}</span>
-              <select value={form.unit} onChange={(e) => set({ unit: e.target.value })}>
+              <select value={form.unit} onChange={(e) => set({ unit: e.target.value })} disabled={unitFromFile}
+                      title={unitFromFile ? t(lang, 'unitFromFile') : undefined} data-testid="unit">
                 <option value="mm">mm</option><option value="cm">cm</option><option value="m">m</option>
               </select>
             </label>
             <NumField lang={lang} label={t(lang, 'nCells')} value={form.nCells} min={1} max={30} integer
                       onChange={(v) => set({ nCells: v ?? 0 })} />
           </div>
+          {unitFromFile && <div className="note" data-testid="unit-from-file">{t(lang, 'unitFromFile')}</div>}
           <NumField lang={lang} label={t(lang, 'meshSize')} value={form.meshSize} min={0.05} max={0.5} step={0.01}
                     onChange={(v) => set({ meshSize: v ?? 0 })} />
           <button type="submit" className="btn" disabled={busy || !file || !meshOk || !cellsOk}>{t(lang, 'load')}</button>
           {info && <div className="note">≤ {info.limits.max_upload_mb} MB · {info.limits.cad.join(' ')} · {info.limits.mesh.join(' ')}</div>}
+          <div className="note">{t(lang, 'meshViewOnly')}{info?.limits.max_predict_tets ? ` ${t(lang, 'predictBudget')}: ≤ ${int(info.limits.max_predict_tets)} ${t(lang, 'curvedTets')}.` : ''}</div>
         </form>
       )}
 
@@ -107,9 +122,19 @@ export default function GeometryPanel({ lang, info, geometry, busy, form, setFor
             {geometry?.source && 'ood' in geometry.source && geometry.source.ood === true &&
               <li className="warning"><Icon name="warn" size={14} />OOD</li>}
           </ul>
-          <button type="button" className="btn primary" disabled={busy || !chk.ok} onClick={onPredict} data-testid="predict">
-            {busy ? t(lang, 'working') : geometry?.truth ? t(lang, 'compare') : t(lang, 'predict')}
+          {blocker && (
+            <div className="predict-blocked" role="note" data-testid="predict-blocker">
+              <Icon name="warn" size={14} />
+              <span><strong>{t(lang, 'predictBlocked')}:</strong> {blocker}</span>
+            </div>
+          )}
+          <button type="button" className="btn primary" disabled={busy || !chk.ok || !!blocker} onClick={onPredict}
+                  data-testid="predict" aria-busy={predicting !== null} title={blocker ? `${t(lang, 'predictBlocked')}: ${blocker}` : undefined}>
+            {predicting !== null
+              ? <><span className="spinner" aria-hidden="true" />{t(lang, 'predicting')} <Elapsed since={predicting} /></>
+              : busy ? t(lang, 'working') : geometry?.truth ? t(lang, 'compare') : t(lang, 'predict')}
           </button>
+          {predicting !== null && <div className="note" data-testid="predicting-note">{t(lang, 'predictingNote')}</div>}
         </section>
       )}
       {after}

@@ -106,7 +106,7 @@ def test_block_diag_csr_matches_scipy_block_diag():
     """The direct CSR concatenation gives scipy's block_diag entry for entry: canonical (sorted, duplicates
     summed, explicit zeros kept), padded rows and columns empty, any input format."""
     import scipy.sparse as sp
-    from src.data.dataset_3d import _block_diag
+    from src.data.sparse import block_diag
     rng = np.random.default_rng(0)
 
     def messy(n, m):                                   # unsorted, duplicated COO with an explicit zero
@@ -118,7 +118,7 @@ def test_block_diag_csr_matches_scipy_block_diag():
     mats = [messy(7, 5), sp.csr_matrix(messy(4, 6)), messy(6, 3).tocsc(), sp.csr_matrix((0, 2))]
     for blocks in (mats[:1], mats):
         rows, cols = max(A.shape[0] for A in blocks) + 2, max(A.shape[1] for A in blocks) + 1
-        T = _block_diag(blocks, rows, cols)
+        T = block_diag(blocks, rows, cols)
         padded = []
         for A in blocks:
             A = sp.csr_matrix(A, dtype=np.float64)
@@ -129,10 +129,10 @@ def test_block_diag_csr_matches_scipy_block_diag():
         assert np.array_equal(T.crow_indices().numpy(), S.indptr)
         assert np.array_equal(T.col_indices().numpy(), S.indices)
         assert np.array_equal(T.values().numpy(), S.data)
-        D = _block_diag(blocks, rows, cols, layout="coo").to_dense().numpy()
+        D = block_diag(blocks, rows, cols, layout="coo").to_dense().numpy()
         assert np.array_equal(D, S.toarray())
     with pytest.raises(ValueError):
-        _block_diag(mats[:1], 3, 3)
+        block_diag(mats[:1], 3, 3)
 
 
 def test_grad_checkpoint_gives_the_same_outputs_and_gradients(sample):

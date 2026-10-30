@@ -1,16 +1,12 @@
-"""Tests for src/viz/vtk_export.py (A3 of the 3D viz contract).
-
-Independent of src/viz/nedelec.py (A1, written in parallel): `export_prediction` is exercised
-with a stub `cell_H_fn` that returns a known constant field per mode, never importing nedelec.
-"""
+"""Tests for src/viz/vtk_export.py (write_modes_vtu, cell_to_point)."""
 import json
 
 import meshio
 import numpy as np
 import pytest
 
-from src.data.dataset_converter_3d import edges_from_tets, tet_geometry
-from src.viz.vtk_export import cell_to_point, export_prediction, write_modes_vtu
+from src.data.dataset_converter_3d import tet_geometry
+from src.viz.vtk_export import cell_to_point, write_modes_vtu
 
 # ─────────────────────────── toy meshes ─────────────────────────
 
@@ -23,20 +19,6 @@ _NODES = np.array([
     [1.0, 1.0, 1.0],   # 4 (only in B)
 ])
 _TETS = np.array([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=np.int64)
-
-
-def _stub_cell_H_fn(base):
-    """Returns a `cell_H_fn(X, tets, edges, u)` stub: constant vector `base*(k+1)` per mode k,
-    on every cell, independent of `u` — keeps the test independent of A1/nedelec.py."""
-    def fn(X, tets, edges, u):
-        u = np.asarray(u)
-        K = 1 if u.ndim == 1 else u.shape[1]
-        n_tets = np.asarray(tets).shape[0]
-        H = np.zeros((n_tets, 3, K))
-        for k in range(K):
-            H[:, :, k] = np.asarray(base) * (k + 1)
-        return H
-    return fn
 
 
 # ─────────────────────────── write_modes_vtu ────────────────────
@@ -158,119 +140,3 @@ def test_cell_to_point_vertex_with_no_incident_cell_is_zero():
     out = cell_to_point(tets, n_nodes=6, cell_vals=cell_vals)  # vertices 4, 5 unused
     assert np.allclose(out[4], 0.0)
     assert np.allclose(out[5], 0.0)
-
-
-# ─────────────────────────── export_prediction ──────────────────
-
-def _make_pred(seed=0, split_second_mode=True):
-    rng = np.random.default_rng(seed)
-    edges = edges_from_tets(_TETS)
-    ne, K = len(edges), 2
-    true = rng.standard_normal((ne, K))
-    pred = true + 0.01 * rng.standard_normal((ne, K))
-    err = pred - true
-    rel_l2 = np.array([0.05, np.nan if split_second_mode else 0.2])
-    return {
-        "geom_id": 3, "shape_type": "toy",
-        "X": _NODES, "tets": _TETS, "edges": edges,
-        "scale": 2.0, "center": np.array([1.0, 2.0, 3.0]),
-        "true": true, "pred": pred, "err": err,
-        "f_true": np.array([1.0, 2.0]), "f_pred": np.array([1.001, 1.999]),
-        "rel_l2": rel_l2, "split": np.array([False, split_second_mode]),
-    }
-
-
-def test_export_prediction_writes_expected_names_and_shapes(tmp_path):
-    path = tmp_path / "geom_3.vtu"
-    pred = dict(_make_pred(), field="H")                     # explicit letter: H_* array names
-    base = np.array([1.0, 0.0, 0.0])
-    stub = _stub_cell_H_fn(base)
-
-    out = export_prediction(str(path), pred, cell_H_fn=stub)
-    assert out == str(path)
-    assert path.exists()
-
-    m = meshio.read(str(path))
-    K = pred["true"].shape[1]
-    for k in range(K):
-        for prefix in ("H_true", "H_pred", "H_err"):
-            name = f"{prefix}_{k}"
-            assert name in m.cell_data, name
-            assert m.cell_data[name][0].shape == (2, 3)
-            pt_name = f"{name}_pt"
-            assert pt_name in m.point_data, pt_name
-            assert m.point_data[pt_name].shape == (5, 3)
-        for prefix in ("absH_true", "absH_pred", "absH_err"):
-            name = f"{prefix}_{k}"
-            assert name in m.cell_data, name
-            assert m.cell_data[name][0].shape == (2,)
-
-    # stub H is independent of u (constant per mode, ignores the passed-in DOFs) => true/pred/err
-    # cell data are all identical to that constant.
-    for k in range(K):
-        expected = base * (k + 1)
-        for prefix in ("H_true", "H_pred", "H_err"):
-            assert np.allclose(m.cell_data[f"{prefix}_{k}"][0], expected, atol=1e-5)
-        assert np.allclose(m.cell_data[f"absH_true_{k}"][0], np.linalg.norm(expected), atol=1e-5)
-
-
-def test_export_prediction_coordinates_in_mm(tmp_path):
-    path = tmp_path / "geom_coords.vtu"
-    pred = _make_pred()
-    stub = _stub_cell_H_fn(np.array([1.0, 1.0, 1.0]))
-    export_prediction(str(path), pred, cell_H_fn=stub)
-
-    m = meshio.read(str(path))
-    expected_mm = (pred["X"] * pred["scale"] + pred["center"]) * 1e3
-    assert np.allclose(m.points, expected_mm, atol=1e-2)
-
-
-def test_export_prediction_sidecar_has_mode_info_and_handles_nan(tmp_path):
-    path = tmp_path / "geom_nan.vtu"
-    pred = _make_pred(split_second_mode=True)
-    stub = _stub_cell_H_fn(np.array([0.0, 0.0, 1.0]))
-    export_prediction(str(path), pred, cell_H_fn=stub)
-
-    with open(path.with_suffix(".json")) as fh:
-        data = json.load(fh)
-    assert data["geom_id"] == 3
-    assert data["shape_type"] == "toy"
-    assert data["f_true_GHz"] == pytest.approx([1.0, 2.0])
-    assert data["rel_l2"][0] == pytest.approx(0.05)
-    assert np.isnan(data["rel_l2"][1])
-
-
-def test_export_prediction_default_cell_H_fn_lazily_imports_nedelec(tmp_path, monkeypatch):
-    """cell_H_fn=None must not blow up import of this module even if nedelec.py is missing;
-    the lazy import only happens when actually called with the default."""
-    import builtins
-    import src.viz.vtk_export as vtk_export  # noqa: F401  (import must succeed regardless)
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "src.viz.nedelec":
-            raise ImportError("src.viz.nedelec not available in this test")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    path = tmp_path / "geom_default.vtu"
-    pred = _make_pred()
-    with pytest.raises(ImportError):
-        export_prediction(str(path), pred, cell_H_fn=None)
-
-
-def test_export_prediction_names_follow_the_field(tmp_path):
-    """E-formulation predictions (pred['field'] = 'E'): E_true_k, absE_*, E_*_pt; no H_* arrays."""
-    path = tmp_path / "geom_E.vtu"
-    pred = dict(_make_pred(), field="E")
-    export_prediction(str(path), pred, cell_H_fn=_stub_cell_H_fn(np.array([0.0, 1.0, 0.0])))
-    m = meshio.read(str(path))
-    for k in range(pred["true"].shape[1]):
-        for prefix in ("E_true", "E_pred", "E_err"):
-            assert f"{prefix}_{k}" in m.cell_data and f"{prefix}_{k}_pt" in m.point_data
-        assert f"absE_true_{k}" in m.cell_data
-    assert not any(n.startswith(("H_", "absH_")) for n in list(m.cell_data) + list(m.point_data))
-    with open(path.with_suffix(".json")) as fh:
-        assert json.load(fh)["field"] == "E"

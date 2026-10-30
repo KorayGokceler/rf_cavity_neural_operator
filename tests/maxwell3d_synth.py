@@ -1,21 +1,15 @@
-"""Tiny synthetic 3D Maxwell (N0, E field) data in the convert_3d.py PKL format: PEC boxes on skfem
-tensor tet meshes (interior vertices optionally jittered), modes from a dense generalized eigensolve
-with the curl kernel dropped.  Used by tests/test_eigenspace_3d.py, tests/test_viz_*.py.
+"""Tiny synthetic 3D Maxwell (N0, E field) geometries: PEC boxes on skfem tensor tet meshes (interior
+vertices optionally jittered) as converter-style geometry dicts (src/data/dataset_converter_3d.py), modes
+from a dense generalized eigensolve with the curl kernel dropped.  Used by tests/test_qoi.py,
+tests/test_viz_nedelec.py and tests/test_predict_geometry.py (box_geometry).
 
 PEC wall edges (edges of boundary faces) are essential zeros, G = gradients of the interior-vertex
 potentials plus one column per boundary component except the first (zero columns up to Nv),
 Kp = GᵀMG (SPD on its first n_pot rows/cols), Y rows of wall edges exactly 0.
-
-    python -m tests.maxwell3d_synth out.pkl [n_geoms] [n_cells] [n_modes]
 """
-import pickle
-import sys
-
 import numpy as np
 import scipy.linalg as sla
 import scipy.sparse as sp
-
-C0 = 299_792_458.0
 
 
 def n0_operators(mesh):
@@ -80,14 +74,6 @@ def e_operators(mesh):
     return K, M, G, (G.T @ M @ G).tocsr(), edges, bnd, n_pot, len(comps)
 
 
-def edge_dofs(X, edges, field):
-    """Canonical N0 interpolant ∫_e v·t by 3-point Gauss–Legendre per edge."""
-    xa, xb = X[edges[:, 0]], X[edges[:, 1]]
-    s, w = np.polynomial.legendre.leggauss(3)
-    s, w = 0.5 * (s + 1), 0.5 * w
-    return sum(wi * (field(xa + si * (xb - xa)) * (xb - xa)).sum(-1) for si, wi in zip(s, w, strict=True))
-
-
 def box_geometry(dims=(1.0, 0.8, 0.6), n=5, jitter=0.0, scale=0.1, n_modes=6, seed=0):
     """(geometry dict, eigenvalues [n_modes], E-field DOFs [Ne, n_modes], wall rows 0) of a PEC box
     whose normalised extent is `dims` (centred at 0); physical size = dims·scale."""
@@ -130,34 +116,3 @@ def box_geometry(dims=(1.0, 0.8, 0.6), n=5, jitter=0.0, scale=0.1, n_modes=6, se
     geom.update(bnd_edge=bnd, n_pot=int(n_pot), n_bnd_components=int(n_comp),
                 betti1=int(1 + (n_comp - 1) - chi), field='E')
     return geom, lam, vec
-
-
-def make_dataset(n_geoms=6, n=5, n_modes=6, seed=0):
-    rng = np.random.default_rng(seed)
-    pool, samples = {}, []
-    for g in range(n_geoms):
-        dims = np.sort(rng.uniform(0.5, 1.0, 3))[::-1] / 1.0
-        geom, lam, vec = box_geometry(dims, n, jitter=0.15 * (g % 2), scale=float(rng.uniform(0.05, 0.2)),
-                                      n_modes=n_modes, seed=g)
-        pool[g] = geom
-        f = C0 * np.sqrt(lam) / (2 * np.pi * geom['scale']) / 1e9
-        sgn = rng.choice([-1.0, 1.0], len(lam))
-        for k in range(len(lam)):
-            samples.append({'geom_id': g, 'Y': (sgn[k] * vec[:, k]).astype(np.float32),
-                            'Theta': np.array([k, f[k], len(samples)], dtype=np.float64)})
-    freqs = np.array([s['Theta'][1] for s in samples])
-    meta = {'freq_stats': {'mean': float(freqs.mean()), 'std': float(freqs.std() + 1e-9)},
-            'n_modes': n_modes, 'field': 'E', 'element': 'N0',
-            'feature_names': ['x', 'y', 'z', 'dist_to_boundary', 'dir_bnd_x', 'dir_bnd_y', 'dir_bnd_z',
-                              'node_volume', 'torsion']}
-    return {'geometry_pool': pool, 'samples': samples, 'metadata': meta}
-
-
-if __name__ == '__main__':
-    out = sys.argv[1]
-    args = [int(a) for a in sys.argv[2:5]]
-    data = make_dataset(*(args[:1] or [6]), **dict(zip(("n", "n_modes"), args[1:], strict=False)))
-    with open(out, 'wb') as f:
-        pickle.dump(data, f)
-    ne = [len(g['edges']) for g in data['geometry_pool'].values()]
-    print(f"wrote {out}: {len(ne)} geometries, edges {min(ne)}–{max(ne)}")

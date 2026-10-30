@@ -11,8 +11,8 @@
 # LABEL_ORDER, MODEL_ORDER, THREADS, TAG, GPU_PARTITION, GPUS, MODEL, EPOCHS, BATCH, LR, …) plus
 #   FAMILIES        train | ood | all | comma list (default train)
 #   N_PER_FAMILY    geometries per family (default: families.tsv)
-#   TRAIN_FAMILIES  field: families the model trains on (default: the dataset's FAMILIES)
-#   MIX             n0: name of the merged training PKL (default train → pkl/mix_train.pkl)
+#   TRAIN_FAMILIES  families the model trains on (default: the dataset's train-group FAMILIES)
+# Training (train / all) needs LABELS=field (model field3d); LABELS=n0 only generates N0-label H5.
 # --dry-run: print every sbatch command (with its dependencies), submit nothing.
 # Re-running is safe: finished shards are skipped, a training run with the same EXP resumes.
 set -euo pipefail
@@ -39,7 +39,6 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 source "$TRUBA_DIR/config.sh"
 FAMILIES=${FAMILIES:-train}
-MIX=${MIX:-train}
 
 ensure_env() {   # the conda env of setup_env.sh (created on first use; GPU torch for training)
   if [ -x "$CONDA_HOME/bin/conda" ] && "$CONDA_HOME/bin/conda" env list 2>/dev/null | grep -q '^rfcav '; then
@@ -50,7 +49,7 @@ ensure_env() {   # the conda env of setup_env.sh (created on first use; GPU torc
   TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu124} bash "$TRUBA_DIR/setup_env.sh"
 }
 
-submit_dataset() {   # every family's missing shards (+ per-family conversion for n0)
+submit_dataset() {   # every family's missing shards
   local fams
   fams=$(family_list "$FAMILIES")
   [ -n "$fams" ] || { echo "no families in '$FAMILIES'" >&2; exit 2; }
@@ -65,6 +64,11 @@ train_families() {   # the train-group families among FAMILIES (OOD families nev
   done
   [ -n "$out" ] || { echo "no train-group family in FAMILIES='$FAMILIES'" >&2; exit 2; }
   echo $out
+}
+
+need_field() {   # the model trains on field labels only (the N0 model eigenspace3d was removed)
+  [ "$LABELS" = field ] || { echo "LABELS=$LABELS cannot train: the model trains on field labels (LABELS=field);" \
+    "LABELS=n0 generates N0-label H5 only (run.sh dataset)" >&2; exit 2; }
 }
 
 dependency() {   # afterany:<every job id written to JOBID_FILE so far> (empty: none)
@@ -84,22 +88,17 @@ case "$ACTION" in
     ensure_env
     submit_dataset ;;
   train)
+    need_field
     ensure_env
-    if [ "$LABELS" = field ]; then TRAIN_FAMILIES=${TRAIN_FAMILIES:-$(train_families)}; export TRAIN_FAMILIES; fi
+    TRAIN_FAMILIES=${TRAIN_FAMILIES:-$(train_families)}; export TRAIN_FAMILIES
     echo "== training: LABELS=$LABELS, EXP=$EXP, MODEL=$MODEL"
     "$TRUBA_DIR/submit_train.sh" ;;
   all)
+    need_field
     ensure_env
     JOBID_FILE=$(mktemp); export JOBID_FILE
     submit_dataset
-    if [ "$LABELS" = field ]; then
-      TRAIN_FAMILIES=${TRAIN_FAMILIES:-$(train_families)}; export TRAIN_FAMILIES
-    else                                # n0: one mixed PKL of the train families after their conversions
-      spec=$(for f in $(train_families); do echo "$f:all"; done)
-      DEP=$(dependency) "$TRUBA_DIR/merge.sh" "$MIX" $spec
-      export TRAIN_PKL=$PKL_DIR/mix_$MIX.pkl
-      tail -n 1 "$JOBID_FILE" > "$JOBID_FILE.last" && mv "$JOBID_FILE.last" "$JOBID_FILE"   # train waits for the merge
-    fi
+    TRAIN_FAMILIES=${TRAIN_FAMILIES:-$(train_families)}; export TRAIN_FAMILIES
     echo "== training after the data jobs: EXP=$EXP, MODEL=$MODEL"
     DEP=$(dependency) "$TRUBA_DIR/submit_train.sh"
     rm -f "$JOBID_FILE" ;;

@@ -1,16 +1,16 @@
-"""H(curl) / Whitney-N0 linear algebra for the 3D Maxwell eigenspace operator (E field).
+"""H(curl) linear algebra for the 3D Maxwell eigenspace operator (E field, HCurl(p) DOFs).
 
-Batching convention (maxwell3d_collate): every sparse matrix of a batch is ONE block-diagonal
-torch COO tensor on the PADDED index space, so sample b's edge e is row b·Ne + e and its vertex v
-is column b·Nv + v:
+Batching convention (src.data.field_dataset.field_collate): every sparse matrix of a batch is ONE
+block-diagonal torch sparse tensor on the PADDED index space, so sample b's DOF d is row b·Nd + d
+and its potential DOF v is column b·Np + v:
 
-    M, K : [B·Ne, B·Ne]   N0 mass / curl–curl
-    G    : [B·Ne, B·Nv]   discrete gradient of the H0(curl) kernel potentials, Gt = Gᵀ
-    Kp   : [B·Nv, B·Nv]   GᵀMG
+    M, K : [B·Nd, B·Nd]   HCurl(p) mass / curl–curl
+    G    : [B·Nd, B·Np]   discrete gradient of the H0(curl) kernel potentials, Gt = Gᵀ
+    Kp   : [B·Np, B·Np]   GᵀMG
 
-The wall-edge rows of V are 0; G's columns are the interior-vertex (+ boundary-component)
-potentials followed by zero columns, and Kp is SPD on its valid block (nonzero diagonal) and zero
-elsewhere. Padded edges / vertices are empty rows and columns, so a padded X [B, N, m] multiplies
+The wall-DOF rows of V are 0; G's columns are the potential DOFs (+ boundary-component potentials)
+followed by zero columns, and Kp is SPD on its valid block (nonzero diagonal) and zero elsewhere.
+Padded DOFs / potentials are empty rows and columns, so a padded X [B, N, m] multiplies
 as spmm(A, X) = (A @ X.reshape(B·N, m)).view(B, ·, m), one sparse product for the whole batch.
 
 The kernel of K is span(G). A basis V is replaced by its M-orthogonal projection onto discrete
@@ -63,7 +63,7 @@ def bgram(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
 
 
 def _pcg(Kp, dinv, rhs, tol, maxiter, check_every=10):
-    """Jacobi-preconditioned CG for Kp X = rhs, rhs [B, Nv, m]; every (sample, column) has its own
+    """Jacobi-preconditioned CG for Kp X = rhs, rhs [B, Np, m]; every (sample, column) has its own
     step sizes. Only the valid block (dinv > 0) is solved: rhs is restricted to it and X is 0
     outside it (padding and the zero columns of G). Returns (X, iterations).
 
@@ -133,13 +133,13 @@ def _transposes(batch, dt, M, K):
 
 
 def project_basis(V, batch, tol=1e-8, maxiter=2000):
-    """Kernel-projected Grams of a padded edge basis V [B, Ne, m] (float64).
+    """Kernel-projected Grams of a padded DOF basis V [B, Nd, m] (float64).
 
     Returns dict:
         A_V   [B, m, m]  VᵀKV = (PV)ᵀK(PV)      (curl–curl Gram)
         M_V   [B, m, m]  VᵀMV                     (unprojected mass Gram)
         M_div [B, m, m]  VᵀMV − BᵀKp⁻¹B = (PV)ᵀM(PV)
-        Z     [B, Nv, m] Kp⁻¹GᵀMV  (PV = V − G Z)
+        Z     [B, Np, m] Kp⁻¹GᵀMV  (PV = V − G Z)
     """
     V = V.double()          # float32 CG does not converge (M_div off by ~79%, docs/21 B3)
     dt = V.dtype
@@ -148,7 +148,7 @@ def project_basis(V, batch, tol=1e-8, maxiter=2000):
     diag = batch['Kp_diag'].to(dt)
     dinv = torch.where(diag > 0, 1.0 / diag.clamp(min=1e-300), torch.zeros_like(diag)).unsqueeze(-1)
     MV = spmm(M, V, Mt)
-    Bm = spmm(Gt, MV, G)                                     # GᵀMV [B, Nv, m]
+    Bm = spmm(Gt, MV, G)                                     # GᵀMV [B, Np, m]
     Z = KpSolve.apply(Bm, Kp, dinv, tol, maxiter)
     M_V = bgram(V, MV)
     M_div = M_V - bgram(Bm, Z)
@@ -158,7 +158,7 @@ def project_basis(V, batch, tol=1e-8, maxiter=2000):
 
 
 def projected(V, Z, batch):
-    """PV = V − G Z  [B, Ne, m]."""
+    """PV = V − G Z  [B, Nd, m]."""
     Gt = batch.get('Gt', None)
     return V - spmm(_sparse(batch, 'G', V.dtype), Z, None if Gt is None else _sparse(batch, 'Gt', V.dtype))
 
@@ -207,7 +207,7 @@ def hcurl_ritz(V, batch, K, mass_ridge=1e-8, drop_tol=1e-6, eig_broadening=1e-4,
                tol=1e-8, maxiter=2000):
     """Rayleigh–Ritz on the divergence-free projection of span(V) → K lowest.
 
-    V [B, Ne, m] float64.  Returns (θ [B, K], fields [B, Ne, K] = PV·c with
+    V [B, Nd, m] float64.  Returns (θ [B, K], fields [B, Nd, K] = PV·c with
     unit M-norm, proj dict of project_basis).
     """
     proj = project_basis(V, batch, tol, maxiter)
@@ -222,10 +222,10 @@ def hcurl_ritz(V, batch, K, mass_ridge=1e-8, drop_tol=1e-6, eig_broadening=1e-4,
 def hcurl_grams(V, T, proj, batch):
     """Mass / curl–curl Grams of [PV | T] for the span losses, float64.
 
-    V [B, Ne, m] raw basis, T [B, Ne, n] target edge DOFs (all stored modes),
+    V [B, Nd, m] raw basis, T [B, Nd, n] target DOFs (all stored modes),
     proj from project_basis (reuses its M_div, A_V, Z: no second Kp solve).
     The cross block is exact for any T:  (PV)ᵀMT = VᵀMT − Zᵀ(GᵀMT).
-    Returns G_M, G_A [B, m+n, m+n] and MT [B, Ne, n].
+    Returns G_M, G_A [B, m+n, m+n] and MT [B, Nd, n].
     """
     dt = torch.float64
     V, T = V.to(dt), T.to(dt)
@@ -243,8 +243,8 @@ def hcurl_grams(V, T, proj, batch):
 
 
 def mode_rel_l2(F, T, MT, clusters):
-    """Per-mode M-norm rel-L2 of predicted edge fields F [Ne, K] vs targets
-    T [Ne, K] (one sample, MT = M·T): sign-agnostic for isolated modes
+    """Per-mode M-norm rel-L2 of predicted DOF fields F [Nd, K] vs targets
+    T [Nd, K] (one sample, MT = M·T): sign-agnostic for isolated modes
     (min_s ‖f − s t̂‖_M), subspace error ‖t − Π_F t‖_M/‖t‖_M inside each
     near-degenerate cluster (list of index lists).  F must be M-orthonormal,
     which the projected Ritz output is by construction.  float64 [K]."""

@@ -1,5 +1,5 @@
-"""Training from the web UI (src/service/training.py + /api/train/*): merge two datasets' H5 shards,
-train a tiny model, follow progress.json, resume with more epochs, switch the served model."""
+"""Training from the web UI (src/service/training.py + /api/train/*): two field-label datasets, train a tiny
+field3d model (configs/field_3d.yaml), follow progress.json, resume with more epochs, switch the served model."""
 import os
 import re
 import sys
@@ -15,10 +15,10 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient                                   # noqa: E402
 
-from src.data_gen import dataset_generator_3d as gen                         # noqa: E402
 from src.service import api as A                                            # noqa: E402
 from src.service import training as T                                       # noqa: E402
 from src.service.model import ModelService                                  # noqa: E402
+from tests.test_service_datasets import write_field_h5                     # noqa: E402
 
 
 def test_presets_match_the_cluster_config():
@@ -32,11 +32,9 @@ def test_presets_match_the_cluster_config():
 @pytest.fixture(scope="module")
 def tree(tmp_path_factory):
     d = tmp_path_factory.mktemp("trainui")
-    for fam, start in (("pillbox_pipes", 3 * 2 ** 19), ("reentrant", 1 * 2 ** 19)):
-        (d / "data" / "T" / "h5" / fam).mkdir(parents=True)
-        gen.main(["--n_total", "6", "--n_workers", "2", "--mesh_size", "0.3", "--n_eigen_modes", "6",
-                  "--families", fam, "--start_id", str(start),
-                  "--h5_filename", str(d / "data" / "T" / "h5" / fam / f"{fam}_s00000.h5")])
+    for name, ids in (("a", range(0, 6)), ("b", range(6, 12))):      # 12 geometries: 9 / 1 / 2 split
+        (d / "data" / "F" / name).mkdir(parents=True)
+        write_field_h5(d / "data" / "F" / name / f"{name}_s00000.h5", ids)
     return d
 
 
@@ -57,10 +55,13 @@ def test_train_resume_and_load(tree, monkeypatch):
     svc = ModelService(None, "cpu")
     c = TestClient(A.create_app(svc))
     cfg = c.get("/api/train/config").json()
-    assert cfg["enabled"] and "tiny" in cfg["presets"] and not cfg["busy"]
-    ids = [d["id"] for d in c.get("/api/datasets").json()]
-    assert len(ids) == 2
-    body = {"name": "ui1", "datasets": ids, "preset": "tiny", "epochs": 1, "batch_size": 2, "n_modes": 4}
+    assert cfg["enabled"] and "tiny" in cfg["presets"] and not cfg["busy"] and cfg["model_type"] == "field3d"
+    assert cfg["defaults"]["batch_size"] == 2 and "qoi_weight" not in cfg["defaults"]
+    ds = c.get("/api/datasets").json()
+    ids = [d["id"] for d in ds]
+    assert len(ids) == 2 and {d["kind"] for d in ds} == {"field"}
+    body = {"name": "ui1", "datasets": ids, "preset": "tiny", "epochs": 1, "batch_size": 2, "n_modes": 4,
+            "num_workers": 0}
     r = c.post("/api/train/start", json=body)
     assert r.status_code == 200, r.text
     assert c.post("/api/train/start", json=dict(body, name="ui2")).status_code == 409      # one at a time
@@ -75,7 +76,6 @@ def test_train_resume_and_load(tree, monkeypatch):
     assert r.status_code == 200, r.text
     r = _wait(c, "ui1")
     assert r["status"] == "finished" and [h["epoch"] for h in r["history"]] == [0, 1]
-    assert r["data_cached"]                                                                # merged PKL reused
 
     assert svc.untrained
     info = c.post("/api/model/load", json={"run": "ui1"}).json()

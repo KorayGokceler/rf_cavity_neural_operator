@@ -9,12 +9,15 @@ build_command(req) turns the page's form into ONE shell line to paste on a TRUBA
 Every value is validated (numbers by range, names by pattern) and shell-quoted, and only the
 variables that differ from cluster/truba/config.sh's defaults are written, so the line stays short
 and the cluster-side defaults stay the single source of truth.  Nothing here touches the cluster.
+
+Field labels only (the field3d model's data): LABELS=field is always written — config.sh's own default is
+still n0, which generates N0-label H5 that no model trains on (run.sh dataset LABELS=n0 by hand).
 """
 import re
 import shlex
 import subprocess
 
-from src.service.jobs import field_tag_of, tag_of
+from src.service.jobs import field_tag_of
 
 ACTIONS = ("all", "dataset", "train", "status", "setup")
 TRAIN_FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "composite", "freeform",
@@ -25,7 +28,7 @@ DEFAULT_REPO = "https://github.com/KorayGokceler/rf_cavity_neural_operator.git"
 
 # config.sh defaults (a value equal to its default is not written into the command)
 DEFAULTS = {
-    "LABELS": "n0", "PARTITION": "orfoz", "CPUS": 56, "TIME": "0-12:00:00", "ACCOUNT": "", "MAX_PARALLEL": 10,
+    "PARTITION": "orfoz", "CPUS": 56, "TIME": "0-12:00:00", "ACCOUNT": "", "MAX_PARALLEL": 10,
     "MESH_SIZE": 0.10, "N_STORE": 10, "SAMPLING": "sobol", "DEFORM_PROB": 0.5, "DEFORM_MAX": 0.5, "SEED": 0,
     "LABEL_ORDER": 3, "MODEL_ORDER": 2, "MIN_FILLET": "", "THREADS": 8, "FIELD_MAX_ELEMENTS": 30000,
     "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 10000, "MAX_NDOF": 900000,
@@ -50,11 +53,9 @@ _DIR = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$")
 _PATH = re.compile(r"^(/|\$HOME/|\$USER/)?([A-Za-z0-9_.\-]+|\$USER|\$HOME)(/([A-Za-z0-9_.\-]+|\$USER))*/?$")
 _OVERRIDE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*=[A-Za-z0-9_.,:/\-\[\]\"']*$")
 
-# rough cost model (docs/29 §4; cluster/truba/README.md for N0): core-seconds per geometry, MB on disk
+# rough cost model (docs/29 §4): core-seconds per geometry, MB on disk
 FIELD_CORE_S = 560.0            # p3 label + p2 projection, ~18k curved tets (140 s on 4 threads)
 SHARD_SIZE = 1024               # families.tsv shard_size (every family); TEST: one shard of TEST_N = 112
-N0_CORE_S = {"elliptical": 2.2, "reentrant": 1.0, "pillbox_pipes": 1.2, "ridged_box": 1.0, "composite": 0.9,
-             "freeform": 2.3, "hwr": 1.8, "spoke": 2.6, "dtl": 3.9}
 
 
 def _hours(t):
@@ -102,20 +103,19 @@ def _pat(v, pat, name, allow_empty=True):
     return v
 
 
-def _families(sel, labels):
+def _families(sel):
     sel = [str(f) for f in (sel or [])]
     bad = [f for f in sel if f not in TRAIN_FAMILIES + OOD_FAMILIES]
     if bad:
         raise CommandError(f"unknown families {bad}")
-    if labels == "field":
-        sel = [f for f in sel if f != "freeform"]          # field labels need a CAD solid
+    sel = [f for f in sel if f != "freeform"]              # field labels need a CAD solid
     if not sel:
         raise CommandError("choose at least one family")
     order = TRAIN_FAMILIES + OOD_FAMILIES
     sel = sorted(set(sel), key=order.index)
-    if set(sel) == set(TRAIN_FAMILIES) - ({"freeform"} if labels == "field" else set()):
+    if set(sel) == set(TRAIN_FAMILIES) - {"freeform"}:
         return "train", sel
-    if set(sel) == set(order) - ({"freeform"} if labels == "field" else set()):
+    if set(sel) == set(order) - {"freeform"}:
         return "all", sel
     if set(sel) == set(OOD_FAMILIES):
         return "ood", sel
@@ -134,10 +134,9 @@ def build_command(req):
     action = r.get("action", "all")
     if action not in ACTIONS:
         raise CommandError(f"action must be one of {ACTIONS}")
-    labels = r.get("labels", "field")
-    if labels not in ("field", "n0"):
-        raise CommandError("labels: field or n0")
-    v = {"LABELS": labels}
+    if r.get("labels", "field") != "field":
+        raise CommandError("labels: field only (the field3d model's data; N0 labels train no model)")
+    v = {"LABELS": "field"}
     v["PARTITION"] = _pat(r.get("partition", "orfoz"), _NAME, "partition", False)
     v["CPUS"] = _num(r.get("cpus", 56), 1, 1024, "cpus", True)
     v["TIME"] = _pat(r.get("time", "0-12:00:00"), _SLURM_TIME, "time", False)
@@ -151,35 +150,34 @@ def build_command(req):
     v["SEED"] = _num(r.get("seed", 0), 0, 2**31 - 1, "seed", True)
     v["TAG"] = _pat(r.get("tag", ""), _NAME, "tag")
     v["TEST"] = 1 if r.get("test") else 0
-    if labels == "field":
-        v["LABEL_ORDER"] = _num(r.get("label_order", 3), 2, 4, "label_order", True)
-        v["MODEL_ORDER"] = _num(r.get("model_order", 2), 1, 3, "model_order", True)
-        if v["MODEL_ORDER"] >= v["LABEL_ORDER"]:
-            raise CommandError("model_order must be below label_order (the model space is nested in the label space)")
-        mf = r.get("min_fillet", 0.05)
-        v["MIN_FILLET"] = "" if mf in (None, "") else _fmt(_num(mf, 0.0, 0.3, "min_fillet"))
-        if v["MIN_FILLET"] == "0.05":
-            v["MIN_FILLET"] = ""                            # the generator's field default
-        v["THREADS"] = _num(r.get("threads", 8), 1, 128, "threads", True)
-        if v["THREADS"] > v["CPUS"]:
-            raise CommandError("threads per sample cannot exceed the cores per job")
-        v["FIELD_MAX_ELEMENTS"] = _num(r.get("max_elements", 30000), 1000, 500000, "max_elements", True)
-        v["MAXH_FACTOR"] = _num(r.get("maxh_factor", 3.0), 1.0, 10.0, "maxh_factor")
-        v["ADAPT"] = 1 if r.get("adapt", True) else 0
-        v["TOL_F"] = _num(r.get("tol_f", 1e-6), 1e-9, 1e-2, "tol_f")
-        v["TOL_Q"] = _num(r.get("tol_q", 1e-3), 1e-6, 0.2, "tol_q")
-        v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 10000), 100, 500000, "model_max_elements", True)
-        v["MAX_NDOF"] = _num(r.get("max_ndof", 900000), 10000, 20_000_000, "max_ndof", True)
-        v["ROUND_EDGES"] = 1 if r.get("round_edges", True) else 0
-        v["HEAL"] = 1 if r.get("heal", True) else 0
-    group, fams = _families(r.get("families") or list(TRAIN_FAMILIES), labels)
+    v["LABEL_ORDER"] = _num(r.get("label_order", 3), 2, 4, "label_order", True)
+    v["MODEL_ORDER"] = _num(r.get("model_order", 2), 1, 3, "model_order", True)
+    if v["MODEL_ORDER"] >= v["LABEL_ORDER"]:
+        raise CommandError("model_order must be below label_order (the model space is nested in the label space)")
+    mf = r.get("min_fillet", 0.05)
+    v["MIN_FILLET"] = "" if mf in (None, "") else _fmt(_num(mf, 0.0, 0.3, "min_fillet"))
+    if v["MIN_FILLET"] == "0.05":
+        v["MIN_FILLET"] = ""                            # the generator's field default
+    v["THREADS"] = _num(r.get("threads", 8), 1, 128, "threads", True)
+    if v["THREADS"] > v["CPUS"]:
+        raise CommandError("threads per sample cannot exceed the cores per job")
+    v["FIELD_MAX_ELEMENTS"] = _num(r.get("max_elements", 30000), 1000, 500000, "max_elements", True)
+    v["MAXH_FACTOR"] = _num(r.get("maxh_factor", 3.0), 1.0, 10.0, "maxh_factor")
+    v["ADAPT"] = 1 if r.get("adapt", True) else 0
+    v["TOL_F"] = _num(r.get("tol_f", 1e-6), 1e-9, 1e-2, "tol_f")
+    v["TOL_Q"] = _num(r.get("tol_q", 1e-3), 1e-6, 0.2, "tol_q")
+    v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 10000), 100, 500000, "model_max_elements", True)
+    v["MAX_NDOF"] = _num(r.get("max_ndof", 900000), 10000, 20_000_000, "max_ndof", True)
+    v["ROUND_EDGES"] = 1 if r.get("round_edges", True) else 0
+    v["HEAL"] = 1 if r.get("heal", True) else 0
+    group, fams = _families(r.get("families") or list(TRAIN_FAMILIES))
     n_per = r.get("n_per_family")
     n_per = None if n_per in (None, "") else _num(n_per, 1, 524288, "n_per_family", True)
     v["GPU_PARTITION"] = _pat(r.get("gpu_partition", "palamut-cuda"), _NAME, "gpu_partition", False)
     v["GPUS"] = _num(r.get("gpus", 1), 1, 16, "gpus", True)
     v["GPU_CPUS"] = _num(r.get("gpu_cpus", 16), 1, 256, "gpu_cpus", True)
     v["GPU_TIME"] = _pat(r.get("gpu_time", "3-00:00:00"), _SLURM_TIME, "gpu_time", False)
-    v["EXP"] = _pat(r.get("exp", "field_base" if labels == "field" else "base"), _NAME, "exp", False)
+    v["EXP"] = _pat(r.get("exp", "field_base"), _NAME, "exp", False)
     v["MODEL"] = r.get("model", "base")
     if v["MODEL"] not in MODELS:
         raise CommandError(f"model must be one of {MODELS}")
@@ -189,22 +187,20 @@ def build_command(req):
     v["LR"] = _num(r.get("lr", 3e-4), 1e-7, 1.0, "lr")
     nw = r.get("num_workers")
     v["NUM_WORKERS"] = "" if nw in (None, "") else _num(nw, 0, 256, "num_workers", True)
-    v["CACHE_DIR"] = _pat(r.get("cache_dir", ""), _PATH, "cache_dir") if labels == "field" else ""
+    v["CACHE_DIR"] = _pat(r.get("cache_dir", ""), _PATH, "cache_dir")
     extra = [str(x).strip() for x in (r.get("train_extra") or []) if str(x).strip()]
     for x in extra:
         if not _OVERRIDE.match(x):
             raise CommandError(f"training override {x!r}: key=value with a plain value")
     v["TRAIN_EXTRA"] = " ".join(extra)
     tf = r.get("train_families")
-    if labels == "field" and tf:
-        _, tsel = _families(tf, labels)
+    if tf:
+        _, tsel = _families(tf)
         v["TRAIN_FAMILIES"] = " ".join(tsel)
 
-    where = ("LABELS", "MESH_SIZE", "N_STORE", "TAG", "TEST") + (FIELD_TAG_KEYS if labels == "field" else ())
-    keys = {"setup": (), "status": where,
-            "dataset": DATASET_KEYS + (FIELD_KEYS if labels == "field" else ()),
-            "train": where + TRAIN_KEYS,
-            "all": DATASET_KEYS + (FIELD_KEYS if labels == "field" else ()) + TRAIN_KEYS}[action]
+    where = ("LABELS", "MESH_SIZE", "N_STORE", "TAG", "TEST") + FIELD_TAG_KEYS
+    keys = {"setup": (), "status": where, "dataset": DATASET_KEYS + FIELD_KEYS, "train": where + TRAIN_KEYS,
+            "all": DATASET_KEYS + FIELD_KEYS + TRAIN_KEYS}[action]
     args = []
     if action in ("dataset", "train", "all") and group != "train":
         args.append(f"FAMILIES={group}")
@@ -213,7 +209,7 @@ def build_command(req):
     for k in keys:
         val = v.get(k, "")
         d = DEFAULTS.get(k, "")
-        if val in ("", None) or (k != "LABELS" and _fmt(val) == _fmt(d)) or (k == "LABELS" and val == "n0"):
+        if val in ("", None) or (k != "LABELS" and _fmt(val) == _fmt(d)):    # LABELS=field: always written
             continue
         sval = _fmt(val)
         # paths may name $USER / $HOME (validated by _PATH): double quotes let the login shell expand them
@@ -230,37 +226,28 @@ def build_command(req):
                f"git checkout -q {shlex.quote(branch)} && git pull -q --ff-only origin {shlex.quote(branch)} && {run}")
 
     # TAG as config.sh will derive it
-    if v["TAG"]:
-        tag = v["TAG"]
-    elif labels == "field":
-        tag = field_tag_of(v["MESH_SIZE"], v["N_STORE"], v["LABEL_ORDER"], v["MODEL_ORDER"],
-                           float(v["MIN_FILLET"] or 0.05), adapt=bool(v["ADAPT"]), round_edges=bool(v["ROUND_EDGES"]))
-    else:
-        tag = tag_of(v["MESH_SIZE"], v["N_STORE"]).replace("_ms0.1_", "_ms0.10_")   # config.sh's literal 0.10
+    tag = v["TAG"] or field_tag_of(v["MESH_SIZE"], v["N_STORE"], v["LABEL_ORDER"], v["MODEL_ORDER"],
+                                   float(v["MIN_FILLET"] or 0.05), adapt=bool(v["ADAPT"]),
+                                   round_edges=bool(v["ROUND_EDGES"]))
     if v["TEST"]:
         tag += "_test"
 
     n_geo = (112 if v["TEST"] else (n_per or 10240)) * len(fams)
-    if labels == "field":
-        core_h = n_geo * FIELD_CORE_S * (v["N_STORE"] / 10) ** 0.3 * (v["LABEL_ORDER"] / 3) ** 3 / 3600
-        if v["ADAPT"]:
-            core_h *= 3.0                    # ~3 refinement levels of a growing mesh (docs/30 §6)
-        size = min(v["MODEL_MAX_ELEMENTS"], 20000) / 20000 if v["ADAPT"] else 1.0
-        mb = n_geo * (1.0 + 0.8 * v["N_STORE"] * size
-                      * (1 if v["MODEL_ORDER"] == 2 else 0.27 if v["MODEL_ORDER"] == 1 else 2.2))
-    else:
-        core_h = sum((112 if v["TEST"] else (n_per or 10240)) * N0_CORE_S.get(f, 1.5) for f in fams) \
-            * (0.1 / v["MESH_SIZE"]) ** 2.5 / 3600
-        mb = n_geo * 1.8
-    workers = max(1, v["CPUS"] // v["THREADS"]) if labels == "field" else v["CPUS"]
+    core_h = n_geo * FIELD_CORE_S * (v["N_STORE"] / 10) ** 0.3 * (v["LABEL_ORDER"] / 3) ** 3 / 3600
+    if v["ADAPT"]:
+        core_h *= 3.0                        # ~3 refinement levels of a growing mesh (docs/30 §6)
+    size = min(v["MODEL_MAX_ELEMENTS"], 20000) / 20000 if v["ADAPT"] else 1.0
+    mb = n_geo * (1.0 + 0.8 * v["N_STORE"] * size
+                  * (1 if v["MODEL_ORDER"] == 2 else 0.27 if v["MODEL_ORDER"] == 1 else 2.2))
+    workers = max(1, v["CPUS"] // v["THREADS"])
     notes = []
-    if labels == "field" and v["MODEL_ORDER"] == 1:
+    if v["MODEL_ORDER"] == 1:
         notes.append("model_order1")
-    if labels == "field" and "ridged_box" in fams:
+    if "ridged_box" in fams:
         notes.append("ridged_box_cost")
-    if action in ("all", "train") and labels == "field" and not v["CACHE_DIR"]:
+    if action in ("all", "train") and not v["CACHE_DIR"]:
         notes.append("no_cache")
-    if action in ("dataset", "all") and labels == "field":
+    if action in ("dataset", "all"):
         shard_h = core_h / n_geo * (112 if v["TEST"] else SHARD_SIZE) / (workers * v["THREADS"])
         if shard_h > 0.8 * _hours(v["TIME"]):
             notes.append("shard_time")     # a killed shard resumes on the next run, but training may start first
@@ -275,6 +262,7 @@ def defaults(root):
     repo, branch = repo_info(root)
     return {"repo": repo, "branch": branch, "repo_dir": "rf_cavity_neural_operator", "actions": list(ACTIONS),
             "families": {"train": list(TRAIN_FAMILIES), "ood": list(OOD_FAMILIES)}, "models": list(MODELS),
+            "labels": ["field"],
             "form": {"action": "all", "labels": "field", "families": [f for f in TRAIN_FAMILIES if f != "freeform"],
                      "n_per_family": 1024, "mesh_size": 0.10, "n_modes": 10, "label_order": 3, "model_order": 2,
                      "min_fillet": 0.05, "threads": 8, "max_elements": 30000, "maxh_factor": 3.0,

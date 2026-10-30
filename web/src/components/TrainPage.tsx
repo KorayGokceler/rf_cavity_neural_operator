@@ -1,5 +1,6 @@
 // Model training from the UI: one train.py run at a time on the server's GPU, checkpoints in
 // RFCAV_RUNS_ROOT/<name>/ (Colab: Drive training_logs), live curves from progress.json.
+// The field3d model (configs/field_3d.yaml) on field-label datasets; defaults from GET /api/train/config.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type DatasetRef, type ModelInfo, type RunDetail, type RunStatus, type RunSummary, type TrainConfig,
   type TrainParams } from '../api';
@@ -40,13 +41,17 @@ export default function TrainPage({ lang, model, onModel }: Props) {
   const [showLog, setShowLog] = useState(false);
   const [more, setMore] = useState<number | null>(null);
   const [p, setP] = useState<TrainParams>({
-    name: `small_${stamp()}`, datasets: [], preset: 'small', epochs: 100, batch_size: 4, lr: 2e-4, n_modes: 6,
-    patience: 50, qoi_weight: 0, cache_operators: null,
+    name: `small_${stamp()}`, datasets: [], preset: 'small', epochs: 100, batch_size: 2, lr: 2e-4, n_modes: 6,
+    patience: 40, num_workers: 2,
   });
   const set = <K extends keyof TrainParams>(k: K, v: TrainParams[K]) => setP({ ...p, [k]: v });
 
   useEffect(() => {
-    api.trainConfig().then(setCfg).catch((e) => setErr(e.message));
+    api.trainConfig().then((c) => {
+      setCfg(c);
+      const d = c.defaults ?? {};                          // the server's TrainReq defaults (configs/field_3d.yaml)
+      setP((q) => ({ ...q, ...d, name: d.preset && d.preset !== q.preset ? q.name.replace(/^[a-z]+_/, `${d.preset}_`) : q.name }));
+    }).catch((e) => setErr(e.message));
     api.datasets().then(setDatasets).catch(() => undefined);
   }, []);
   const anyLive = runs.some((r) => live(r.status));
@@ -100,7 +105,9 @@ export default function TrainPage({ lang, model, onModel }: Props) {
 
   const formOk = numOk(p.epochs, { min: 1, integer: true }) && numOk(p.batch_size, { min: 1, integer: true })
     && numOk(p.lr, { min: 1e-7 }) && numOk(p.n_modes, { min: 1, max: 30, integer: true })
-    && numOk(p.patience, { min: 1, integer: true }) && numOk(p.qoi_weight, { min: 0 });
+    && numOk(p.patience, { min: 1, integer: true }) && numOk(p.num_workers, { min: 0, max: 64, integer: true });
+  const kinds = cfg?.dataset_kinds ?? ['field'];
+  const trainable = datasets.filter((d) => kinds.includes(d.kind));   // field-label H5 only
 
   const curves = useMemo(() => {
     const h = run?.history ?? [];
@@ -128,23 +135,21 @@ export default function TrainPage({ lang, model, onModel }: Props) {
         <div className="train-side">
           <div className="card">
             <div className="card-title">{t(lang, 'newRun')}<span className="muted">{cfg?.gpu ?? 'CPU'}</span></div>
+            {cfg && <div className="note" data-testid="train-model">{t(lang, 'trainModel')}: <strong>{cfg.model_type}</strong> · <code>{cfg.config}</code></div>}
             <label className="field"><span className="field-label">{t(lang, 'runName')}</span>
               <input type="text" value={p.name} aria-invalid={!p.name} onChange={(e) => set('name', e.target.value)} />
               {!p.name && <span className="field-error" role="alert">{t(lang, 'vRequired')}</span>}</label>
             <div>
               <div className="label">{t(lang, 'trainData')}</div>
               <div className="ds-list">
-                {datasets.map((d) => {
-                  const off = d.kind === 'field';        // field3d training is not on this page yet (configs/field_3d.yaml)
-                  return (
-                    <label key={d.id} className="check" title={off ? t(lang, 'fieldTrainOff') : undefined}>
-                      <input type="checkbox" disabled={off} checked={!off && p.datasets.includes(d.id)}
-                             onChange={() => set('datasets', p.datasets.includes(d.id) ? p.datasets.filter((x) => x !== d.id) : [...p.datasets, d.id])} />
-                      <span className={off ? 'muted' : ''}>{d.name}</span><span className="muted">{d.kind}</span>
-                    </label>
-                  );
-                })}
-                {!datasets.length && <span className="muted">{t(lang, 'noDatasets')}</span>}
+                {trainable.map((d) => (
+                  <label key={d.id} className="check">
+                    <input type="checkbox" checked={p.datasets.includes(d.id)}
+                           onChange={() => set('datasets', p.datasets.includes(d.id) ? p.datasets.filter((x) => x !== d.id) : [...p.datasets, d.id])} />
+                    <span>{d.name}</span><span className="muted">{d.kind}</span>
+                  </label>
+                ))}
+                {!trainable.length && <span className="muted">{t(lang, 'trainNoField')}</span>}
               </div>
               <div className="note">{t(lang, 'trainDataNote')}</div>
             </div>
@@ -168,13 +173,7 @@ export default function TrainPage({ lang, model, onModel }: Props) {
                 <NumField lang={lang} label={t(lang, 'lr')} value={p.lr} min={1e-7} step={1e-5} onChange={(v) => set('lr', v as number)} />
                 <NumField lang={lang} label={t(lang, 'ritzModes')} value={p.n_modes} min={1} max={30} integer onChange={(v) => set('n_modes', v as number)} />
                 <NumField lang={lang} label={t(lang, 'patience')} value={p.patience} min={1} integer onChange={(v) => set('patience', v as number)} />
-                <NumField lang={lang} label={t(lang, 'qoiWeight')} value={p.qoi_weight} min={0} step={0.05} onChange={(v) => set('qoi_weight', v as number)} />
-                <label>{t(lang, 'cacheOps')}
-                  <select value={p.cache_operators === null ? 'auto' : p.cache_operators ? 'on' : 'off'}
-                          onChange={(e) => set('cache_operators', e.target.value === 'auto' ? null : e.target.value === 'on')}>
-                    <option value="auto">{t(lang, 'auto')}</option><option value="on">{t(lang, 'on')}</option><option value="off">{t(lang, 'off')}</option>
-                  </select>
-                </label>
+                <NumField lang={lang} label={t(lang, 'numWorkers')} value={p.num_workers} min={0} max={64} integer testid="train-workers" onChange={(v) => set('num_workers', v as number)} />
               </div>
             </Collapsible>
             <button className="btn primary" disabled={!cfg || busy || !p.datasets.length || !p.name || !formOk} data-testid="train-start" onClick={start}>{t(lang, 'startTrain')}</button>

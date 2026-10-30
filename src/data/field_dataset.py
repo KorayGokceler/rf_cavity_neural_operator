@@ -26,11 +26,23 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
-from src.data.dataset_3d import _block_diag, _mask, default_qoi_names
+from src.data.sparse import block_diag, length_mask
 
 
 C0 = 299792458.0
 LF, HF = 0, 1          # label fidelity (docs/34): item["Fidelity"]
+# docs/24 §0.3 src.qoi.QOI_LABELS — fallback only when src.qoi cannot be imported (the dataset must load
+# without it).
+_QOI_LABELS_FALLBACK = ('Q0', 'G_ohm', 'R_over_Q_ohm', 'R_sh_ohm', 'T_transit', 'Epk_Eacc',
+                        'Bpk_Eacc_mT_per_MVm')
+
+
+def default_qoi_names():
+    try:
+        from src.qoi import QOI_LABELS
+        return tuple(QOI_LABELS)
+    except ImportError:
+        return _QOI_LABELS_FALLBACK
 
 
 def label_fidelity(attrs):
@@ -107,21 +119,21 @@ def field_collate(batch):
     if Nv != Nt * nq:
         raise ValueError("field_collate: tokens must be the Nt·nq quadrature points")
     out = {k: pad(k) for k in ("X", "Input_funcs", "Area", "QX", "QP")}
-    out["Mask"], out["ElemMask"], out["DofMask"] = _mask(nv, Nv), _mask(nt, Nt), _mask(nd, Nd)
+    out["Mask"], out["ElemMask"], out["DofMask"] = length_mask(nv, Nv), length_mask(nt, Nt), length_mask(nd, Nd)
     out["BndDof"] = pad("BndDof").bool()
     out["Scale"] = torch.stack([it["Scale"] for it in batch])
     out["shape_type"] = [it["shape_type"] for it in batch]
-    out["M"] = _block_diag([it["M"] for it in batch], Nd, Nd)
-    out["K"] = _block_diag([it["K"] for it in batch], Nd, Nd)
-    out["G"] = _block_diag([it["G"] for it in batch], Nd, Np)
-    out["Gt"] = _block_diag([it["G"].T for it in batch], Np, Nd)
-    out["Kp"] = _block_diag([it["Kp"] for it in batch], Np, Np)
+    out["M"] = block_diag([it["M"] for it in batch], Nd, Nd)
+    out["K"] = block_diag([it["K"] for it in batch], Nd, Nd)
+    out["G"] = block_diag([it["G"] for it in batch], Nd, Np)
+    out["Gt"] = block_diag([it["G"].T for it in batch], Np, Nd)
+    out["Kp"] = block_diag([it["Kp"] for it in batch], Np, Np)
     out["Kp_diag"] = pad_sequence([torch.from_numpy(it["Kp"].diagonal().astype(np.float64)) for it in batch],
                                   batch_first=True)
     # C maps the element-major L2 coefficients (t, c, l); padded elements have QP = 0 → coefficient 0
-    out["C"] = _block_diag([it["C"] for it in batch], Nd, Nl)
+    out["C"] = block_diag([it["C"] for it in batch], Nd, Nl)
     if all("Ct" in it for it in batch):
-        out["Ct"] = _block_diag([it["Ct"] for it in batch], Nl, Nd)       # backward of V = C·coef
+        out["Ct"] = block_diag([it["Ct"] for it in batch], Nl, Nd)       # backward of V = C·coef
     out["SymmetricMK"] = True       # K, M are exactly symmetric (assembled from one triangle): hcurl.spmm's backward
     if all("Y_field" in it for it in batch):
         out["Y_field"] = pad("Y_field")
@@ -199,7 +211,7 @@ class FieldDataset(Dataset):
                     g = f[key]
                     if str(g.attrs.get("labels", "")) != "field":
                         raise ValueError(f"{path}/{key}: not a field-label sample (dataset_generator_3d "
-                                         "--labels field); N0 data goes through convert_3d.py + Maxwell3DDataset")
+                                         "--labels field); N0-label data trains no model")
                     index.append((path, key))
                     freqs.append(np.asarray(g["freqs"], np.float64))
                     nxt.append(float(g.attrs.get("freq_next", np.nan)))

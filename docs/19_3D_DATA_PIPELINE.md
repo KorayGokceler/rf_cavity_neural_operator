@@ -1,5 +1,7 @@
 # 19 — 3D Veri Hattı: Maxwell Kavite Modları (E alanı, Nédélec N0)
 
+> **Historical:** describes the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py` pipeline); removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+
 > **Formülasyon E'dir** ve yalnız E vardır: kulplu kaviteler (spoke, yarım dalga koaksiyel, DTL gövde +
 > sap) ve yüzen iç iletkenler desteklenir. Güncel tarif, ölçümler ve aileler: **§6 E formülasyonu**.
 > §1–§5 projenin ilk sürümündeki H formülasyonunu anlatır. H kodu kaldırıldı (`legacy-h` dalı);

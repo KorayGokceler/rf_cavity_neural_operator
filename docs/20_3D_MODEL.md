@@ -1,5 +1,7 @@
 # 20 — 3B Maxwell Modeli: EigenspaceOperator3D (E alanı, Whitney N0)
 
+> **Historical:** describes the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py` pipeline); removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+
 > Formülasyon **E**'dir (kulplu kaviteler dahil her kapalı PEC kavite; §8). §1–§7 algoritmayı ilk
 > sürümdeki H formülasyonu üzerinden anlatır: gövde, kenar başlığı, projeksiyon, Ritz ve kayıplar E'de
 > aynıdır; E'de değişen her şey (duvar maskesi, SPD Kp, potansiyel matrisi) §8'dedir. H kodu kaldırıldı.

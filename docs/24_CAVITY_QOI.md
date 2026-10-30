@@ -1,5 +1,7 @@
 # 24 · Cavity figures of merit (QoI): Q0, G, R/Q, R_sh, E_pk/E_acc, B_pk/E_acc
 
+> **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
+
 > Status: **implemented**. The fields are E primary (the H formulation was removed; its formulas and
 > measurements below are kept as the historical cross-check). §0 is the binding interface shared by
 > `src/qoi/operators.py` (numpy, reference), `src/data/*` (labels, batching), `src/qoi/torch_qoi.py`
