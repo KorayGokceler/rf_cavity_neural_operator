@@ -24,6 +24,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-web.txt
 
       - name: System libraries for gmsh
         run: |
@@ -36,7 +37,7 @@ jobs:
           python -m pip install --upgrade pip
           # CPU wheel (~200 MB) instead of the default CUDA build from PyPI (~2.5 GB).
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -r requirements-web.txt
 
       - name: Lint (syntax errors / undefined names / unused imports)
         run: ruff check .
@@ -56,5 +57,20 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Unit tests
+      - name: Tests (unit, numerical and web-service integration)
         run: python -m pytest -q
+
+      - name: Analytic check of the label solver (pillbox, must print PASS)
+        run: python scripts/validate_field_labels.py --max_ndof 300000
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web UI build (tsc + vite)
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
