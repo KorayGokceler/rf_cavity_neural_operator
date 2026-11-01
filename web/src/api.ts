@@ -46,7 +46,8 @@ export interface FeatureView {
 export interface JobsConfig {
   enabled: boolean; gen_root: string | null; cpu_count: number; mem_gb: number; max_total: number;
   families: { train: string[]; ood: string[] }; blocks: Record<string, number | null>; tag_example: string;
-  field: { defaults: FieldGenParams; plan: FieldPlan; core_s: number; adapt_factor: number; no_cad: string[] };
+  field: { defaults: FieldGenParams; plan: FieldPlan; core_s: number; adapt_factor: number; p2_core_s?: number;
+           no_cad: string[] };
 }
 // field labels (docs/29–30): the generator's --labels field options
 export interface FieldGenParams {
@@ -222,7 +223,8 @@ export const api = {
              segments: j.segments.map((s: any) => ({ role: s.role, points: f32(s.points_b64) })) };
   },
   jobsConfig: () => call<JobsConfig>('/api/jobs/config'),
-  jobsPlan: (p: { max_ndof?: number | null; threads?: number | null; workers?: number | null }) => {
+  jobsPlan: (p: { max_ndof?: number | null; threads?: number | null; workers?: number | null; label_order?: number;
+                  model_order?: number; model_max_elements?: number }) => {
     const q = new URLSearchParams();
     Object.entries(p).forEach(([k, v]) => v !== undefined && v !== null && q.set(k, String(v)));
     return call<FieldPlan>(`/api/jobs/plan?${q}`);

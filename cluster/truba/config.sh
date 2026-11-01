@@ -38,23 +38,25 @@ if [ "$LABELS" != field ]; then
   echo "LABELS=$LABELS: field labels are the only label type (the N0 labels were removed); use LABELS=field" >&2
   return 2 2>/dev/null || exit 2
 fi
-LABEL_ORDER=${LABEL_ORDER:-3}          # field: label order (frequencies, QoI)
+LABEL_ORDER=${LABEL_ORDER:-2}          # field: label order. = MODEL_ORDER (default): p2 labels on the model mesh (docs/37);
+                                       #   3: high-fidelity adaptive p3 labels (test / CST sets, docs/30)
 MODEL_ORDER=${MODEL_ORDER:-2}          # field: model space order (2: ~0.2 % field / 1e-4 freq floor; 1: ~6× cheaper)
 MIN_FILLET=${MIN_FILLET:-}             # fillet floor / cavity size (empty: the generator default, 0.05)
 THREADS=${THREADS:-8}                  # field: NGSolve threads per sample; workers per job = CPUS / THREADS (≤ ~12 GB each at MAX_NDOF)
 FIELD_MAX_ELEMENTS=${FIELD_MAX_ELEMENTS:-30000}   # field: larger curved meshes are re-drawn
 MAXH_FACTOR=${MAXH_FACTOR:-3.0}        # field: netgen maxh = MAXH_FACTOR × the mesh size h of MESH_SIZE
-ADAPT=${ADAPT:-1}                      # field: adaptive refinement of the labels (docs/30); 0 = one solve
+ADAPT=${ADAPT:-1}                      # field, LABEL_ORDER 3 only: adaptive refinement (docs/30); 0 = one solve
 TOL_F=${TOL_F:-1e-6}                   # field: adaptive stop, frequency change between refinements
 TOL_Q=${TOL_Q:-1e-3}                   # field: adaptive stop, change of Q0 / G / R/Q / peaks
 MODEL_MAX_ELEMENTS=${MODEL_MAX_ELEMENTS:-10000}   # field: model mesh = finest level with ≤ this many tets
-MAX_NDOF=${MAX_NDOF:-900000}           # field: label-space DOF budget per sample (~12 GB at p3)
+MAX_NDOF=${MAX_NDOF:-900000}           # field, LABEL_ORDER 3: label-space DOF budget per sample (~12 GB at p3)
 ROUND_EDGES=${ROUND_EDGES:-1}          # field: fillet re-entrant (singular) edges (docs/30 §3); 0 = keep them sharp
 DATA_VERSION=${DATA_VERSION:-v2}       # generator output version (src/service/jobs.py TAG_VERSION): part of TAG
 HEAL=${HEAL:-1}                        # field: OCC healing of ridged_box / dtl before meshing (docs/29 §2.3)
 SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-3600}   # s; a stuck mesh/solve is skipped
-# _1s: one-solve labels (ADAPT=0), _sharp: unrounded geometries — never share a tag with the defaults
-TAG=${TAG:-F_p${LABEL_ORDER}p${MODEL_ORDER}_ms${MESH_SIZE}_k${N_STORE}_mf${MIN_FILLET:-0.05}_${DATA_VERSION}$([ "$ADAPT" = 1 ] || echo _1s)$([ "$ROUND_EDGES" = 1 ] || echo _sharp)}
+# _1s: one-solve high-fidelity labels (ADAPT=0, LABEL_ORDER > MODEL_ORDER), _sharp: unrounded geometries — never
+# share a tag with the defaults (p2 labels, LABEL_ORDER = MODEL_ORDER, have no adaptive variant: no _1s)
+TAG=${TAG:-F_p${LABEL_ORDER}p${MODEL_ORDER}_ms${MESH_SIZE}_k${N_STORE}_mf${MIN_FILLET:-0.05}_${DATA_VERSION}$([ "$ADAPT" = 1 ] || [ "$LABEL_ORDER" = "$MODEL_ORDER" ] || echo _1s)$([ "$ROUND_EDGES" = 1 ] || echo _sharp)}
 SBATCH_CMD=${SBATCH_CMD:-sbatch}       # run.sh --dry-run swaps in dry_sbatch.sh (prints, submits nothing)
 # TEST=1: a small trial run (TEST_N geometries per family, one shard) under <TAG>_test
 TEST=${TEST:-0}

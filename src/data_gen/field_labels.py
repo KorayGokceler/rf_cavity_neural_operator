@@ -1,6 +1,14 @@
-"""High-order field labels for the learned-field model (docs/29): CST-grade labels, cheap training.
+"""Field labels for the learned-field model (docs/29, docs/37).
 
-One curved mesh per geometry, two polynomial orders on it:
+Default (label_order == model_order == 2, docs/37): the training labels ARE the model space's own solution.
+The model mesh is sized for the model (model_sized_mesh: the curved mesh with the most tets ≤ model_max_elements,
+found by scaling netgen's maxh), HCurl p2 is solved on it once, and the p2 error estimate (adaptive.indicator)
+is stored per sample (est_rel_f; label_ok = est_rel_f ≤ est_max).  The model's Ritz values cannot go below
+the p2 eigenvalues of its mesh anyway, so these labels are the best the model can reach, at a fraction of
+the cost of the p3 labels below.  The prediction path builds its mesh with the same model_sized_mesh.
+
+High-fidelity labels (label_order 3, e.g. test / CST sets): one curved mesh per geometry, two polynomial
+orders on it:
 
     labels   HCurl(label_order = 3): eigenpairs (frequency, fields) and the cavity QoI computed
              directly from the high-order fields (highorder.mode_qoi)        — CST-grade accuracy
@@ -44,7 +52,7 @@ C0 = 299792458.0
 #   curvaturesafety 1.5 → 9k tets but min det-J ratio 0.01: frequencies fine (1e-5), Q0 −50 %, surface
 #   peaks off 100×; curvaturesafety 2 → 16k tets, ratio 0.07: Q0 / R/Q / peaks of the isolated modes
 #   within 1e-6–5e-5 of the locally repaired mesh (ratio 0.35, 18k tets).  grading > 0.5 folds elements.
-DEFAULTS = {"label_order": 3, "model_order": 2, "curve": 3, "maxh_factor": 3.0, "curvaturesafety": 2.0,
+DEFAULTS = {"label_order": 2, "model_order": 2, "curve": 3, "maxh_factor": 3.0, "curvaturesafety": 2.0,
             "grading": 0.5, "fix_passes": 3, "fix_below": 0.1, "min_jacobian_ratio": 0.05, "retries": 1,
             "max_elements": 30000, "max_ndof": 900_000,
             # adaptive refinement (src/data_gen/adaptive.py, docs/30): start coarser (curvaturesafety 1.5,
@@ -52,7 +60,11 @@ DEFAULTS = {"label_order": 3, "model_order": 2, "curve": 3, "maxh_factor": 3.0, 
             "adaptive": True, "adapt_cs": 1.5, "tol_f": 1e-6, "tol_q": 1e-3, "adapt_max_iter": 8, "theta": 0.5,
             # model mesh (docs/30 §4): the finest adaptive level with ≤ model_max_elements tets; the labels
             # of the final (finest) level are L2-projected onto its HCurl(model_order) space
-            "model_max_elements": 10000}
+            "model_max_elements": 10000,
+            # p2 labels (docs/37): model_sized_mesh searches maxh for the most tets ≤ model_max_elements (netgen's count
+            # jumps with maxh, so it lands at 0.55–1 × the cap); est_max flags a sample whose p2 frequency
+            # error estimate is larger (label_ok attr; measured est / true error 0.8–3)
+            "model_mesh_tries": 12, "model_fill": 0.85, "est_max": 1e-3}
 
 PEAK_QOI = ("Epk_Eacc", "Bpk_Eacc_mT_per_MVm")
 
@@ -86,6 +98,53 @@ def start_mesh(cad_path, h, deform, s, css):
         except RuntimeError as e:                     # folded elements
             err = e
     raise err
+
+
+def model_sized_mesh(cad_path, h, deform=None, s=None, log=None):
+    """The model mesh of the p2 labels and of the prediction path (docs/37): the curved mesh of the solid with
+    the most tets ≤ s['model_max_elements'], found by scaling netgen's maxh = f·h (f from s['maxh_factor']
+    down or up).  netgen's tet count jumps with maxh (layers of a cylinder appear in steps: 6.1k → 10.1k between
+    two maxh 3 % apart), so the search brackets f and bisects until the mesh fills ≥ s['model_fill'] of the
+    cap or s['model_mesh_tries'] meshes were built; the largest mesh under the cap wins.  A mesh repaired by
+    bisection is rebuilt as a single level (AGENTS.md invariant).
+    Returns (mesh, shape, info dict(maxh_factor, n_meshes, fill)); raises RuntimeError when no mesh under the
+    cap was found (the generator re-draws the geometry)."""
+    s = {**DEFAULTS, **(s or {})}
+    cap = int(s["model_max_elements"])
+    f = float(s["maxh_factor"])
+    lo = hi = None                                    # lo: f with > cap tets; hi: f with ≤ cap tets
+    best, n, err = None, 0, None
+    for n in range(1, int(s["model_mesh_tries"]) + 1):
+        try:
+            mesh, shape = curved_mesh(cad_path, h, deform, {**s, "maxh_factor": f, "max_elements": 4 * cap})
+            ne = int(mesh.ne)
+        except ho.TooManyElements as e:               # far above the cap: coarsen a lot
+            mesh, ne, err = None, 8 * cap, e
+        except RuntimeError as e:                     # netgen failed or folded elements: a slightly finer mesh
+            err = e
+            if log is not None:
+                log(f"model_sized_mesh: maxh_factor {f:.3g} failed ({e}); trying finer")
+            f *= 0.93
+            continue
+        if ne <= cap:
+            hi = f if hi is None else min(hi, f)
+            if best is None or ne > best[0].ne:
+                best = (mesh, shape, f)
+            if ne >= s["model_fill"] * cap:
+                break
+        else:
+            lo = f if lo is None else max(lo, f)
+        if lo is not None and hi is not None:
+            if lo / hi > 0.99:                        # nothing left between the two sizes
+                break
+            f = (lo * hi) ** 0.5
+        else:
+            f *= (ne / (0.93 * cap)) ** (1 / 3)       # tets ∝ maxh⁻³
+    if best is None:
+        raise RuntimeError(f"model_sized_mesh: no curved mesh with ≤ {cap} tets after {n} meshes (last error: {err})")
+    mesh, shape, f = best
+    mesh = ho.single_level(mesh, shape, s["curve"], deform)
+    return mesh, shape, {"maxh_factor": float(f), "n_meshes": int(n), "fill": float(mesh.ne / cap)}
 
 
 def project_to_model(mesh, label, model_order, unit_norm=False):
@@ -240,15 +299,34 @@ def _beam_axis(shape_type, mesh, params=None):
 def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, sharp_edges=0, params=None):
     """All field labels of one geometry (the generator's CAD solid at label mesh size h; params: its
     geom_params, for the beam axis and the accelerating length).
-    adaptive (default): adaptive refinement until the frequencies change < tol_f and the figures of merit
-    < tol_q (docs/30).  sharp_edges > 0 (re-entrant edges the generator could not round): the surface
+    label_order == model_order (default, docs/37): one HCurl(model_order) solve on model_sized_mesh (≤ model_max_elements
+    tets), with its error estimate (est_rel_f, label_ok).  Otherwise (high-fidelity labels):
+    adaptive: adaptive refinement until the frequencies change < tol_f and the figures of merit
+    < tol_q (docs/30); else one solve on the curvature-sized mesh.  sharp_edges > 0 (re-entrant edges the generator could not round): the surface
     peaks are singular there, so they are left out of the convergence check and stored as NaN."""
     from src.qoi.figures import QOI_LABELS
     s = {**DEFAULTS, **(settings or {})}
     K = n_modes
     t0 = time.perf_counter()
     adapt_attrs = {}
-    if s["adaptive"]:
+    p2 = s["label_order"] == s["model_order"]
+    adaptive = s["adaptive"] and not p2
+    maxh = s["maxh_factor"] * h
+    if p2:                                               # labels = the model space's own solution (docs/37)
+        from src.data_gen import adaptive as ad
+        mesh, shape, minfo = model_sized_mesh(cad_path, h, deform, s)
+        maxh = minfo["maxh_factor"] * h
+        t1 = time.perf_counter()
+        lab = ho.solve_modes(mesh, n_modes + 1, order=s["label_order"], max_ndof=s["max_ndof"])
+        axis = _beam_axis(shape_type, mesh, params)
+        q = ho.mode_qoi(mesh, lab["gfs"][:K], lab["f_hz"][:K], *axis)
+        ev, ew = ad.indicator(mesh, lab["gfs"][:K], lab["lam"][:K], s["label_order"])
+        est = float(0.5 * ev.sum() / K)
+        adapt_attrs = {"est_rel_f": est, "est_rel_wall": float(np.sqrt(ew.sum() / K)),
+                       "label_ok": int(est <= s["est_max"]), "est_max": float(s["est_max"]),
+                       "model_fill": minfo["fill"], "model_meshes": minfo["n_meshes"],
+                       "maxh_factor_used": minfo["maxh_factor"]}
+    elif adaptive:
         from src.data_gen import adaptive as ad
         mesh, shape, cs = start_mesh(cad_path, h, deform, s, (s["adapt_cs"], s["curvaturesafety"]))
         t1 = time.perf_counter()
@@ -271,10 +349,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
                        "adapt_cs": float(cs), "est_rel_f": last["est_rel_f"], "est_rel_wall": last["est_rel_wall"],
                        "adapt_df": last.get("df", np.nan), "adapt_dq": last.get("dq", np.nan)}
     else:
-        if s["label_order"] == s["model_order"]:          # low-fidelity labels: the adaptive path's start mesh
-            mesh, shape, _ = start_mesh(cad_path, h, deform, s, (s["adapt_cs"], s["curvaturesafety"]))
-        else:
-            mesh, shape = curved_mesh(cad_path, h, deform, s)
+        mesh, shape = curved_mesh(cad_path, h, deform, s)
         t1 = time.perf_counter()
         lab = ho.solve_modes(mesh, n_modes + 1, order=s["label_order"], max_ndof=s["max_ndof"])
         axis = _beam_axis(shape_type, mesh, params)
@@ -285,7 +360,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
             if n in q:
                 q[n] = np.full_like(np.asarray(q[n], float), np.nan)
     n_tets_label, model_mesh = int(mesh.ne), mesh
-    if s["adaptive"] and snap["ne"] != mesh.ne:          # model mesh = a coarser level: L2 transfer
+    if adaptive and snap["ne"] != mesh.ne:          # model mesh = a coarser level: L2 transfer
         model_mesh = _mesh_from_bytes(snap["vol"], shape, s["curve"], deform)
         U, err, rq, fes2 = transfer_to_model(lab["gfs"][:K], model_mesh, s["model_order"], s["label_order"])
     elif mesh.levels > 1:                                # a bisection hierarchy numbers its DOFs unlike its reload
@@ -312,7 +387,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
                       "n_tets_label": n_tets_label,
                       "n_dof_label": int(lab["fes"].ndof), "n_dof_model": int(fes2.ndof),
                       "jacobian_ratio": float(ho.jacobian_ratio(model_mesh)),
-                      "maxh": float(s["maxh_factor"] * h), "t_curved_mesh": t1 - t0, "t_labels": t2 - t1,
+                      "maxh": float(maxh), "t_curved_mesh": t1 - t0, "t_labels": t2 - t1,
                       "sharp_edges": int(sharp_edges), **adapt_attrs,
                       "axis_dir": axis[0], "axis_point": axis[1],
                       "axis_dt": float(q["axis_dt"]), "L_acc": float(np.nan if axis[2] is None else axis[2])}}

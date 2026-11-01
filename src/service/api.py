@@ -597,7 +597,7 @@ def create_app(service=None, datasets=None):
         tag: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$')
         # field labels (docs/29–30)
         threads: int | None = Field(default=None, ge=1, le=256)     # NGSolve threads per worker (None: plan)
-        label_order: int = Field(default=3, ge=2, le=5)
+        label_order: int = Field(default=2, ge=2, le=5)       # = model_order: p2 labels (docs/37); 3: high fidelity
         model_order: int = Field(default=2, ge=1, le=4)
         min_fillet: float = Field(default=0.05, ge=0.0, le=0.3)
         maxh_factor: float = Field(default=3.0, ge=1.0, le=10.0)
@@ -635,17 +635,25 @@ def create_app(service=None, datasets=None):
                 'tag_example': J.field_tag_of(0.10, 10),
                 'field': {'defaults': {k: v.default for k, v in GenReq.model_fields.items()
                                        if k in FIELD_PARAMS} | {'max_ndof': nd},
-                          'plan': J.field_plan(host['cpus'], host['mem_gb'], nd),
+                          'plan': J.field_plan(host['cpus'], host['mem_gb'],
+                                               J.label_ndof(GenReq.model_fields['label_order'].default,
+                                                            GenReq.model_fields['model_order'].default, nd,
+                                                            GenReq.model_fields['model_max_elements'].default)),
                           'core_s': J.FIELD_CORE_S, 'adapt_factor': J.FIELD_ADAPT_FACTOR,
+                          'p2_core_s': J.FIELD_P2_CORE_S,
                           'no_cad': ['freeform']}}
 
     @app.get('/api/jobs/plan')
-    def jobs_plan(max_ndof: int | None = None, threads: int | None = None, workers: int | None = None):
-        """Field labels: workers × threads and the memory they need on this machine (J.field_plan)."""
-        for name, v, lo in (('max_ndof', max_ndof, 10000), ('threads', threads, 1), ('workers', workers, 1)):
+    def jobs_plan(max_ndof: int | None = None, threads: int | None = None, workers: int | None = None,
+                  label_order: int = 2, model_order: int = 2, model_max_elements: int = 10000):
+        """Field labels: workers × threads and the memory they need on this machine (J.field_plan); p2 labels
+        (label_order == model_order) need memory for the model space only."""
+        for name, v, lo in (('max_ndof', max_ndof, 10000), ('threads', threads, 1), ('workers', workers, 1),
+                            ('model_max_elements', model_max_elements, 100)):
             if v is not None and v < lo:
                 raise HTTPException(422, f"{name} ≥ {lo}")
-        return J.field_plan(host['cpus'], host['mem_gb'], max_ndof or _default_ndof(), threads, workers)
+        nd = J.label_ndof(label_order, model_order, max_ndof or _default_ndof(), model_max_elements)
+        return J.field_plan(host['cpus'], host['mem_gb'], nd, threads, workers)
 
     @app.post('/api/jobs/generate')
     def jobs_generate(req: GenReq):
@@ -659,10 +667,13 @@ def create_app(service=None, datasets=None):
             raise HTTPException(422, f"n_total ≤ {max_gen} per family (RFCAV_GEN_MAX)")
         if 'freeform' in req.families:
             raise HTTPException(422, 'freeform has no CAD solid: field labels need one (docs/29)')
-        if req.model_order >= req.label_order:
-            raise HTTPException(422, 'model_order must be below label_order (nested spaces)')
+        if req.model_order > req.label_order:
+            raise HTTPException(422, 'model_order must not exceed label_order (the model space is nested in the '
+                                     'label space; equal: p2 labels, docs/37)')
         nd = req.max_ndof or _default_ndof()
-        plan = J.field_plan(host['cpus'], host['mem_gb'], nd, req.threads, req.workers)
+        plan = J.field_plan(host['cpus'], host['mem_gb'],
+                            J.label_ndof(req.label_order, req.model_order, nd, req.model_max_elements),
+                            req.threads, req.workers)
         tag = req.tag or J.field_tag_of(req.mesh_size, req.n_modes, req.label_order, req.model_order,
                                         req.min_fillet, req.adapt, req.round_edges)
         out = []

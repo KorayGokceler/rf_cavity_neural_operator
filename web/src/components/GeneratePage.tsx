@@ -22,9 +22,15 @@ type Form = Omit<GenParams, 'families'>;
 
 /** TAG as the server derives it (src/service/jobs.field_tag_of = cluster/truba/config.sh). */
 function defaultTag(p: Form) {
+  const oneSolve = !p.adapt && p.label_order > p.model_order;     // p2 labels have no adaptive variant
   return `F_p${p.label_order}p${p.model_order}_ms${p.mesh_size}_k${p.n_modes}_mf${p.min_fillet}_v2`
-    .replace('_ms0.1_', '_ms0.10_') + (p.adapt ? '' : '_1s') + (p.round_edges ? '' : '_sharp');
+    .replace('_ms0.1_', '_ms0.10_') + (oneSolve ? '_1s' : '') + (p.round_edges ? '' : '_sharp');
 }
+
+/** Label kind (docs/37): p2 = one solve in the model space on the model mesh; hf = adaptive p3 (test / CST sets);
+ * hf1 = one p3 solve. */
+type LabelKind = 'p2' | 'hf' | 'hf1';
+const labelKind = (p: Form): LabelKind => (p.label_order <= p.model_order ? 'p2' : p.adapt ? 'hf' : 'hf1');
 
 export default function GeneratePage({ lang, onShowDatasets }: Props) {
   const toast = useToast();
@@ -37,7 +43,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
   const [p, setP] = useState<Form>({
     labels: 'field', n_total: 100, mesh_size: 0.1, n_modes: 10, sampling: 'sobol', deform_prob: 0.5, deform_max: 0.5,
     seed: 0, shard_size: 32, workers: null, tag: null,
-    threads: null, label_order: 3, model_order: 2, min_fillet: 0.05, maxh_factor: 3, field_max_elements: 30000,
+    threads: null, label_order: 2, model_order: 2, min_fillet: 0.05, maxh_factor: 3, field_max_elements: 30000,
     adapt: true, tol_f: 1e-6, tol_q: 1e-3, model_max_elements: 10000, max_ndof: null, round_edges: true, heal: true,
     sample_timeout: 7200,
   });
@@ -51,10 +57,12 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
   }, []);
   useEffect(() => {                                     // workers × threads for this machine (field labels)
     if (!cfg?.enabled) return;
-    const h = setTimeout(() => api.jobsPlan({ max_ndof: p.max_ndof, threads: p.threads, workers: p.workers })
+    const h = setTimeout(() => api.jobsPlan({ max_ndof: p.max_ndof, threads: p.threads, workers: p.workers,
+                                              label_order: p.label_order, model_order: p.model_order,
+                                              model_max_elements: p.model_max_elements })
       .then(setPlan).catch((e) => setErr(e.message)), 250);
     return () => clearTimeout(h);
-  }, [cfg, p.max_ndof, p.threads, p.workers]);
+  }, [cfg, p.max_ndof, p.threads, p.workers, p.label_order, p.model_order, p.model_max_elements]);
   const active = jobs.some((j) => j.status === 'queued' || j.status === 'running');
   // a job that was queued / running and is now done / failed: one toast (the first poll only records the states)
   const notify = (list: Job[]) => {
@@ -81,9 +89,12 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
   const noCad = cfg?.field?.no_cad ?? ['freeform'];
   const chosen = fams.filter((f) => !noCad.includes(f));
   const workers = plan?.workers ?? 1;
-  const est = useMemo(() => {                        // core-seconds per geometry (docs/29 §4) over all cores in use
-    const core = (cfg?.field.core_s ?? 560) * (p.adapt ? cfg?.field.adapt_factor ?? 3 : 1)
-      * (p.n_modes / 10) ** 0.3 * (p.label_order / 3) ** 3;
+  const kind = labelKind(p);
+  const est = useMemo(() => {   // core-seconds per geometry (src/service/jobs.field_core_s) over all cores in use
+    const core = labelKind(p) === 'p2'
+      ? (cfg?.field.p2_core_s ?? 120) * (p.n_modes / 10) ** 0.3
+      : (cfg?.field.core_s ?? 560) * (p.adapt ? cfg?.field.adapt_factor ?? 3 : 1)
+        * (p.n_modes / 10) ** 0.3 * (p.label_order / 3) ** 3;
     return chosen.length * p.n_total * core / Math.max(1, (plan?.workers ?? 1) * (plan?.threads ?? 1));
   }, [chosen, p, plan, cfg]);
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setP({ ...p, [k]: v });
@@ -114,7 +125,9 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
               step={SPEC[k].step} integer={SPEC[k].integer} allowEmpty={SPEC[k].allowEmpty} placeholder={placeholder}
               disabled={disabled} testid={`gen-${k}`} onChange={(v) => setP({ ...p, [k]: v as never })} />
   );
-  const formOk = [...COMMON, ...FIELD.filter((k) => p.adapt || (k !== 'tol_f' && k !== 'tol_q'))]
+  const setKind = (k: LabelKind) => setP({ ...p, label_order: k === 'p2' ? p.model_order : Math.max(3, p.model_order + 1),
+                                            adapt: k !== 'hf1' });
+  const formOk = [...COMMON, ...FIELD.filter((k) => kind === 'hf' || (k !== 'tol_f' && k !== 'tol_q'))]
     .every((k) => numOk(p[k] as number | null, SPEC[k]));
 
   const submit = async () => {
@@ -160,7 +173,14 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
             {nf('mesh_size', t(lang, 'meshSize'))}
             {nf('n_modes', t(lang, 'nModes'))}
           </div>
-          <label className="check"><input type="checkbox" checked={p.adapt} onChange={(e) => set('adapt', e.target.checked)} /><span>{t(lang, 'adaptOn')}</span></label>
+          <label>{t(lang, 'labelKind')}
+            <select value={kind} onChange={(e) => setKind(e.target.value as LabelKind)} data-testid="gen-label-kind">
+              <option value="p2">{t(lang, 'labelKindP2')}</option>
+              <option value="hf">{t(lang, 'labelKindHf')}</option>
+              <option value="hf1">{t(lang, 'labelKindHf1')}</option>
+            </select>
+          </label>
+          <div className="note">{t(lang, kind === 'p2' ? 'labelKindP2Note' : 'labelKindHfNote')}</div>
           <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
             <div className="grid2">
               <label>{t(lang, 'sampling')}<select value={p.sampling} onChange={(e) => set('sampling', e.target.value as 'sobol' | 'random')}><option value="sobol">sobol</option><option value="random">random</option></select></label>
@@ -173,9 +193,9 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
             </div>
             <div className="group-title">{t(lang, 'fieldCard')}</div>
               <div className="grid2">
-                {nf('tol_f', t(lang, 'tolF'), undefined, !p.adapt)}
-                {nf('tol_q', t(lang, 'tolQ'), undefined, !p.adapt)}
-                {nf('max_ndof', t(lang, 'maxNdof'), String(cfg?.field.defaults.max_ndof ?? ''))}
+                {nf('tol_f', t(lang, 'tolF'), undefined, kind !== 'hf')}
+                {nf('tol_q', t(lang, 'tolQ'), undefined, kind !== 'hf')}
+                {nf('max_ndof', t(lang, 'maxNdof'), String(cfg?.field.defaults.max_ndof ?? ''), kind === 'p2')}
                 {nf('model_max_elements', t(lang, 'modelMaxElements'))}
                 {nf('label_order', t(lang, 'labelOrder'))}
                 {nf('model_order', t(lang, 'modelOrder'))}

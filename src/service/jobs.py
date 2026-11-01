@@ -46,19 +46,24 @@ TAG_VERSION = "v2"      # generator output version (cluster/truba/config.sh DATA
                         # geometry or labels change, so old and new shards never share a dataset folder
 
 
-def field_tag_of(mesh_size, n_modes, label_order=3, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
+def field_tag_of(mesh_size, n_modes, label_order=2, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
     """Field-label tag of cluster/truba/config.sh: F_p<label>p<model>_ms<mesh>_k<modes>_mf<fillet>_<version>, + _1s for
-    one-solve labels and _sharp for unrounded geometries (neither may mix with the defaults under one tag)."""
+    one-solve high-fidelity labels and _sharp for unrounded geometries (neither may mix with the defaults under one
+    tag).  p2 labels (label_order == model_order, docs/37) have no adaptive variant, so never _1s."""
+    one_solve = not adapt and int(label_order) > int(model_order)
     tag = (f"F_p{int(label_order)}p{int(model_order)}_ms{mesh_size:g}_k{int(n_modes)}_mf{min_fillet:g}_{TAG_VERSION}"
-           + ("" if adapt else "_1s") + ("" if round_edges else "_sharp"))
+           + ("_1s" if one_solve else "") + ("" if round_edges else "_sharp"))
     return tag.replace("_ms0.1_", "_ms0.10_")            # as config.sh's literal MESH_SIZE=0.10
 
 
 # field labels: peak memory of one worker ≈ FIELD_MEM_BASE_GB + FIELD_MEM_GB_PER_NDOF · max_ndof (p3 labels,
 # 10 modes; ~12 GB at the 900k budget, docs/30 §6), and ~560 core-seconds per geometry for one solve at
-# ~18k tets (docs/29 §4), ×3 with adaptive refinement
+# ~18k tets (docs/29 §4), ×3 with adaptive refinement.  p2 labels (docs/37): the label space is the model space,
+# ~P2_NDOF_PER_TET DOFs per tet of the ≤ model_max_elements model mesh, FIELD_P2_CORE_S per geometry (maxh
+# search + one p2 solve + error estimate + QoI)
 FIELD_MEM_BASE_GB, FIELD_MEM_GB_PER_NDOF = 1.0, 12.0 / 900_000
 FIELD_CORE_S, FIELD_ADAPT_FACTOR = 560.0, 3.0
+FIELD_P2_CORE_S, P2_NDOF_PER_TET = 120.0, 11.0
 FIELD_THREADS = 4                    # default NGSolve threads per worker (more when memory limits the workers)
 
 
@@ -93,6 +98,21 @@ def machine():
 def field_mem_gb(max_ndof):
     """Peak memory [GB] of one field-label worker at the label DOF budget."""
     return FIELD_MEM_BASE_GB + FIELD_MEM_GB_PER_NDOF * float(max_ndof)
+
+
+def label_ndof(label_order, model_order, max_ndof, model_max_elements):
+    """The label space's DOF budget that sets a worker's memory: max_ndof for high-fidelity labels; for p2 labels
+    (label_order == model_order) the model space of a ≤ model_max_elements mesh."""
+    if int(label_order) == int(model_order):
+        return int(P2_NDOF_PER_TET * int(model_max_elements))
+    return int(max_ndof)
+
+
+def field_core_s(label_order, model_order, adapt, n_modes=10):
+    """Core-seconds per geometry of one field-label sample (the cost model of the UI and TRUBA estimates)."""
+    if int(label_order) == int(model_order):
+        return FIELD_P2_CORE_S * (n_modes / 10) ** 0.3
+    return FIELD_CORE_S * (FIELD_ADAPT_FACTOR if adapt else 1.0) * (n_modes / 10) ** 0.3 * (label_order / 3) ** 3
 
 
 def field_plan(cpus, mem_gb, max_ndof, threads=None, workers=None, mem_frac=0.85):
