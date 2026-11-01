@@ -33,8 +33,8 @@ DEFAULT_REPO = "https://github.com/KorayGokceler/rf_cavity_neural_operator.git"
 DEFAULTS = {
     "PARTITION": "orfoz", "CPUS": 56, "TIME": "0-12:00:00", "ACCOUNT": "", "MAX_PARALLEL": 10,
     "MESH_SIZE": 0.10, "N_STORE": 10, "SAMPLING": "sobol", "DEFORM_PROB": 0.5, "DEFORM_MAX": 0.5, "SEED": 0,
-    "LABEL_ORDER": 3, "MODEL_ORDER": 2, "MIN_FILLET": "", "THREADS": 8, "FIELD_MAX_ELEMENTS": 30000,
-    "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 10000, "MAX_NDOF": 900000,
+    "LABEL_ORDER": 2, "MODEL_ORDER": 2, "MIN_FILLET": "", "THREADS": 8, "FIELD_MAX_ELEMENTS": 30000,
+    "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 20000, "MAX_NDOF": 900000,
     "ROUND_EDGES": 1, "HEAL": 1,
     "TAG": "", "TEST": 0,
     "GPU_PARTITION": "akya-cuda", "GPUS": 1, "GPU_CPUS": 10, "GPU_TIME": "3-00:00:00",
@@ -170,7 +170,7 @@ def build_command(req):
     v["ADAPT"] = 1 if r.get("adapt", True) else 0
     v["TOL_F"] = _num(r.get("tol_f", 1e-6), 1e-9, 1e-2, "tol_f")
     v["TOL_Q"] = _num(r.get("tol_q", 1e-3), 1e-6, 0.2, "tol_q")
-    v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 10000), 100, 500000, "model_max_elements", True)
+    v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 20000), 100, 500000, "model_max_elements", True)
     v["MAX_NDOF"] = _num(r.get("max_ndof", 900000), 10000, 20_000_000, "max_ndof", True)
     v["ROUND_EDGES"] = 1 if r.get("round_edges", True) else 0
     v["HEAL"] = 1 if r.get("heal", True) else 0
@@ -272,7 +272,7 @@ def defaults(root):
             "form": {"action": "all", "labels": "field", "families": [f for f in TRAIN_FAMILIES if f != "freeform"],
                      "n_per_family": 1024, "mesh_size": 0.10, "n_modes": 10, "label_order": 2, "model_order": 2,
                      "min_fillet": 0.05, "threads": 8, "max_elements": 30000, "maxh_factor": 3.0,
-                     "adapt": True, "tol_f": 1e-6, "tol_q": 1e-3, "model_max_elements": 10000, "max_ndof": 900000,
+                     "adapt": True, "tol_f": 1e-6, "tol_q": 1e-3, "model_max_elements": 20000, "max_ndof": 900000,
                      "round_edges": True, "heal": True, "deform_prob": 0.5, "deform_max": 0.5, "sampling": "sobol", "seed": 0, "tag": "",
                      "partition": "orfoz", "cpus": 56, "time": "0-12:00:00", "account": "", "max_parallel": 10,
                      "test": False, "gpu_partition": "akya-cuda", "gpus": 1, "gpu_cpus": 10,

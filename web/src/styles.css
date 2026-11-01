@@ -577,3 +577,11 @@ pre.cmd { font-size: var(--fs-sm); line-height: 1.5; background: var(--surface-2
   .bar-row { grid-template-columns: 90px 1fr 48px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* dataset page: label quality strip and the p4 reference card */
+.quality { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: var(--fs-md); }
+.quality .group-title { margin: 0; }
+.ref-card { display: flex; flex-direction: column; gap: 10px; }
+.ref-card .card-title { margin-bottom: 0; }
+.ref-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ref-table { overflow-x: auto; }

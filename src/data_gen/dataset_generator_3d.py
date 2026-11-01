@@ -121,10 +121,16 @@ def parse_args(argv=None):
                    help="Adaptive stop, relative frequency change between refinements.")
     p.add_argument("--tol_q", type=float, default=1e-3,
                    help="Adaptive stop, relative change of Q0 / G / R/Q / surface peaks.")
-    p.add_argument("--model_max_elements", type=int, default=10000,
-                   help="Tet budget of the model mesh (training cost).  p2 labels: the curved mesh with the most tets "
-                        "below it (maxh search, field_labels.model_sized_mesh).  Adaptive p3 labels: the finest refinement "
-                        "level below it; the final-level labels are L2-projected onto it.")
+    p.add_argument("--model_max_elements", type=int, default=20000,
+                   help="Tet cap of every model mesh (training cost).  p2 labels: see --model_target_elements.  "
+                        "Adaptive p3 labels: the finest refinement level below it; the final-level labels are "
+                        "L2-projected onto it.")
+    p.add_argument("--model_target_elements", type=int, default=10000,
+                   help="p2 labels: the model mesh has --model_min_elements … --model_max_elements tets, as close to "
+                        "this as netgen allows (field_labels.model_sized_mesh: maxh search, then coarser curvature "
+                        "rules for small features).")
+    p.add_argument("--model_min_elements", type=int, default=5000,
+                   help="p2 labels: lower bound of the model mesh's tet count (no too-simple meshes).")
     p.add_argument("--est_max", type=float, default=1e-3,
                    help="p2 labels: samples whose frequency error estimate exceeds this get label_ok = 0 (kept; "
                         "filter them at training time).")
@@ -656,7 +662,9 @@ def field_settings(args):
             "maxh_factor": float(args.maxh_factor), "max_elements": int(args.field_max_elements),
             "max_ndof": int(args.max_ndof), "adaptive": not getattr(args, "no_adapt", False),
             "tol_f": float(getattr(args, "tol_f", 1e-6)), "tol_q": float(getattr(args, "tol_q", 1e-3)),
-            "model_max_elements": int(getattr(args, "model_max_elements", 10000)),
+            "model_max_elements": int(getattr(args, "model_max_elements", 20000)),
+            "model_target_elements": int(getattr(args, "model_target_elements", 10000)),
+            "model_min_elements": int(getattr(args, "model_min_elements", 5000)),
             "est_max": float(getattr(args, "est_max", 1e-3)),
             **({"curvaturesafety": float(args.curvaturesafety), "adapt_cs": float(args.curvaturesafety)}
                if getattr(args, "curvaturesafety", None) else {})}

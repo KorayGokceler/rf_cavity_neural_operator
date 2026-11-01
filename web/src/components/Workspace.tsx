@@ -550,7 +550,8 @@ export default function Workspace({ ref, lang, theme, info, hidden, modelKey, on
   const sourceName = (s: Source) => t(lang, s === 'fe' ? 'fe' : s === 'model' ? 'model' : 'diff');
   // what the numbers are: Ritz frequencies + figures of merit from the predicted p2 fields, or the stored p3 labels
   const qoiSrc = source === 'fe' ? truth?.qoi_source : pred?.qoi_source;
-  const qoiNote = qoiSrc === 'p2_model' ? t(lang, 'qoiP2Model') : qoiSrc === 'p3_labels' ? t(lang, 'qoiP3Labels') : null;
+  const qoiNote = qoiSrc === 'p2_model' ? t(lang, 'qoiP2Model') : qoiSrc === 'p3_labels' ? t(lang, 'qoiP3Labels')
+    : qoiSrc === 'p2_labels' ? t(lang, 'qoiP2Labels') : null;
   const inspector = useMemo(() => (<>
     {shown ? (
       <Collapsible title={cmp ? t(lang, 'cmpTitle') : t(lang, 'modes')} className="panel-section"

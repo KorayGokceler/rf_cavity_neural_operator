@@ -2,6 +2,8 @@
 
 > **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
 
+> **2026-11-01:** LF (p2, model mesh'inde tek çözüm) artık varsayılan eğitim etiketi; HF (p3) test / doğrulama / CST için kalıyor (docs/37).
+
 > Durum: kod ve ölçümler hazır (dal `claude/field-model`, açık iş 13). **§8: eşit maliyetli deney** — LF ile eğitilen
 > model, aynı ya da daha düşük etiket maliyetinde HF ile eğitilen kadar iyi (LF 40'ta biraz daha iyi); LF→HF boşluğu
 > 0,02 puan. LF etiketleri artık HF'nin model mesh'inde üretiliyor (§8.1). Tüm eğitimler CPU'da, küçük model, tek

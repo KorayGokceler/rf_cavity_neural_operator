@@ -1,5 +1,15 @@
 # 30 — Adaptive labels: CST-grade frequencies, fields and figures of merit, budgeted model mesh
 
+> **2026-11-01:** the default training labels are now **p2** (one HCurl p2 solve on the model mesh; docs/37). This document (the adaptive loop) describes the p3 high-fidelity labels, which remain available with `--label_order 3` (test, validation and CST sets); the model mesh cap is now 20000 tets (`model_max_elements`).
+
+> **Known issue: stall on coarse start meshes (found 2026-11-01, open: docs/31 §6 item 14).** The adaptive loop can report `converged` without refining.
+> - Pillbox, `mesh_size` 0.12: 128 -> 132 tets over 8 levels; the consecutive-level change was 1e-15, so the loop stopped as "converged", while the true frequency error against the analytic value was 3.5e-4 (`tol_f` 1e-6, own estimate 7.5e-4).
+> - Box: 145 tets, stopped at `max_iter`, true error 2.5e-4.
+> - Cause: `size_field` asks for elements only 20-40 % smaller (exponent 1/(2p) = 1/6, rho 0.25). netgen ignores such small `RestrictH` requests on coarse meshes, and `RestrictH` keeps the minimum, so identical requests give an identical mesh. There is no forced minimum growth per pass (HFSS has "maximum refinement per pass", default 30 %).
+> - `validate_field_labels.py` starts at 548 tets (maxh 1.2 cm, R 4 cm) and does not exercise the generator's coarse start (maxh = 3 * 0.12 * V^(1/3), about 2.45 cm for R 4.9 cm).
+> - With `mesh_size` 0.10 the box grew (160 -> 1673 tets in 8 levels, true error 2.1e-3 -> 5.5e-6, estimate / true 0.8-3.1 at every level) but slowly (+15-35 % tets per level; 8 levels used 8 % of the 600k budget).
+> - Proposed fix: forced growth per pass; `converged` only if the mesh really grew or `est_rel_f < tol`. Changing the generator needs the owner's go-ahead.
+
 > Status: implemented on `claude/field-model` (`src/data_gen/adaptive.py`, `field_labels.label_sample`,
 > generator `--labels field`). Measured on the analytic copper pillbox and three generator families in a
 > 15 GB sandbox. Large-scale references and the per-family cost distribution still have to come from a

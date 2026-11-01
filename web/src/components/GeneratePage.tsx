@@ -1,6 +1,6 @@
 // Dataset generation from the UI: one background job per family, written to RFCAV_GEN_ROOT (e.g. a
 // Google Drive folder) in the TRUBA layout <root>/<TAG>/h5/<family>/…
-// Field labels only (adaptive p3 labels projected onto p2, docs/29–30: the field3d model's data); workers ×
+// Field labels only (p2 labels on the model mesh by default, docs/37; p3 adaptive labels projected onto p2, docs/29–30); workers ×
 // NGSolve threads planned by the server from its cores and memory (/api/jobs/plan).
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type FieldPlan, type GenParams, type Job, type JobsConfig } from '../api';
@@ -44,7 +44,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
     labels: 'field', n_total: 100, mesh_size: 0.1, n_modes: 10, sampling: 'sobol', deform_prob: 0.5, deform_max: 0.5,
     seed: 0, shard_size: 32, workers: null, tag: null,
     threads: null, label_order: 2, model_order: 2, min_fillet: 0.05, maxh_factor: 3, field_max_elements: 30000,
-    adapt: true, tol_f: 1e-6, tol_q: 1e-3, model_max_elements: 10000, max_ndof: null, round_edges: true, heal: true,
+    adapt: true, tol_f: 1e-6, tol_q: 1e-3, model_max_elements: 20000, max_ndof: null, round_edges: true, heal: true,
     sample_timeout: 7200,
   });
   const [plan, setPlan] = useState<FieldPlan | null>(null);
@@ -181,6 +181,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
             </select>
           </label>
           <div className="note">{t(lang, kind === 'p2' ? 'labelKindP2Note' : 'labelKindHfNote')}</div>
+          {kind === 'p2' && <div className="note" data-testid="gen-mesh-range">{t(lang, 'modelMeshRange')}: <strong>{t(lang, 'modelMeshRangeVal')}</strong> · {t(lang, 'modelMaxElements')}: <strong>{int(Number(p.model_max_elements) || 0)}</strong></div>}
           <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
             <div className="grid2">
               <label>{t(lang, 'sampling')}<select value={p.sampling} onChange={(e) => set('sampling', e.target.value as 'sobol' | 'random')}><option value="sobol">sobol</option><option value="random">random</option></select></label>
@@ -231,7 +232,8 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
                 <li key={j.id}>
                   <div className="job-head">
                     <span className={`status ${cls}`}>{j.status === 'done' ? '✓' : j.status === 'failed' ? '✕' : j.status === 'cancelled' ? '–' : '◷'}</span>
-                    <strong>{j.params.family}</strong><span className="tag">field{j.params.adapt ? ' · adapt' : ''} · {j.params.workers}×{j.params.threads}</span>
+                    <strong>{j.params.kind === 'reference' ? t(lang, 'refKind') : j.params.family}</strong>
+                    <span className="tag">{j.params.kind === 'reference' ? `p${j.params.order} · ${j.params.threads} thr` : `field${j.params.adapt ? ' · adapt' : ''} · ${j.params.workers}×${j.params.threads}`}</span>
                     <span className="muted">{j.params.tag} · {int(j.progress.done)}/{int(j.progress.total)}{j.progress.failed ? ` · ${j.progress.failed} ✕` : ''} · {fmtDur(el, lang)}</span>
                     {(j.status === 'queued' || j.status === 'running') &&
                       <button type="button" className="btn ghost small" onClick={() => api.cancelJob(j.id).then(() => api.jobs().then(setJobs))}>{t(lang, 'cancel')}</button>}

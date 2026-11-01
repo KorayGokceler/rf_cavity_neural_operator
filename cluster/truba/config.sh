@@ -48,7 +48,7 @@ MAXH_FACTOR=${MAXH_FACTOR:-3.0}        # field: netgen maxh = MAXH_FACTOR × the
 ADAPT=${ADAPT:-1}                      # field, LABEL_ORDER 3 only: adaptive refinement (docs/30); 0 = one solve
 TOL_F=${TOL_F:-1e-6}                   # field: adaptive stop, frequency change between refinements
 TOL_Q=${TOL_Q:-1e-3}                   # field: adaptive stop, change of Q0 / G / R/Q / peaks
-MODEL_MAX_ELEMENTS=${MODEL_MAX_ELEMENTS:-10000}   # field: model mesh = finest level with ≤ this many tets
+MODEL_MAX_ELEMENTS=${MODEL_MAX_ELEMENTS:-20000}   # field: tet cap of the model mesh (p2 labels: 5k–20k, near 10k; p3: finest level below it)
 MAX_NDOF=${MAX_NDOF:-900000}           # field, LABEL_ORDER 3: label-space DOF budget per sample (~12 GB at p3)
 ROUND_EDGES=${ROUND_EDGES:-1}          # field: fillet re-entrant (singular) edges (docs/30 §3); 0 = keep them sharp
 DATA_VERSION=${DATA_VERSION:-v2}       # generator output version (src/service/jobs.py TAG_VERSION): part of TAG

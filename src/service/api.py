@@ -21,6 +21,8 @@ Endpoints (JSON; large arrays as base64 little-endian float32 / uint32 / float16
     POST /api/predictions {geometry_id, compare_to}  + model-vs-FE rows and a difference solution
     GET  /api/jobs/config · POST /api/jobs/generate · GET /api/jobs[/{id}] · POST /api/jobs/{id}/cancel
     GET  /api/jobs/plan?max_ndof&threads&workers   field labels: workers × threads for this machine
+    POST /api/jobs/reference {dataset, per_family, order, max_ndof, cross_check, threads}   p4 reference check of a
+         dataset (scripts/reference_check.py) · GET /api/jobs/{id}/reference (reference.json) · GET /api/jobs/reference_plan
     GET  /api/train/config · GET /api/train/runs[/{name}] · POST /api/train/start · /runs/{name}/resume
     POST /api/train/stop · POST /api/model/load {run}   training from the UI (RFCAV_RUNS_ROOT)
     GET  /api/truba/config · POST /api/truba/command {form}   one-line TRUBA command (src/service/truba.py)
@@ -37,6 +39,7 @@ import base64
 import collections
 import hashlib
 import hmac
+import json
 import logging
 import os
 import random
@@ -69,7 +72,7 @@ OOD_FAMILIES = ('box', 'coax_qw', 'pillbox_port', 'elliptical_long', 'junction')
 RANDOM_SAMPLE_IDS = (2 ** 24, 2 ** 25)
 UPLOAD_AXIS_WARNING = ('beam axis assumed: z through the origin; L_acc = axis chord incl. pipes; R/Q, R_sh, T and '
                        'peaks/Eacc depend on it')
-TRAIN_MODEL_TETS = 10_000       # field_labels.DEFAULTS['model_max_elements']: the training meshes
+TRAIN_MODEL_TETS = 20_000       # field_labels.DEFAULTS['model_max_elements']: the training meshes
 BIG_MESH_WARNING = ('the curved mesh has {} tets, more than the <= {} of the training meshes: the model was '
                     'not trained on meshes this fine, accuracy is not validated')
 SHARP_EDGE_WARNING = ('sharp edges ({} re-entrant): Epk/Eacc and Bpk/Eacc are not converged and are not reported')
@@ -83,11 +86,12 @@ def _env(name, default, cast=float):
 
 class Limits:
     max_upload_mb = _env('RFCAV_MAX_UPLOAD_MB', 25.0)
-    mesh_timeout_s = _env('RFCAV_MESH_TIMEOUT', 120.0)
+    mesh_timeout_s = _env('RFCAV_MESH_TIMEOUT', 600.0)
     mesh_mem_mb = _env('RFCAV_MESH_MEM_MB', 4096, int)
     max_tets = _env('RFCAV_MAX_TETS', 400_000, int)
-    # curved tets the field model predicts on (CPU: ~3 GB, ~15 s at 10k tets); the training model meshes have
-    # ≤ 10k tets (field_labels model_max_elements), so 15k keeps a margin without running far outside them
+    # curved tets the field model predicts on (CPU: ~3 GB, ~15 s at 10k tets); curved_from_cad builds the training
+    # meshes (5k–20k tets, target 10k, field_labels.model_sized_mesh), so this is only a guard above the 20k cap.
+    # mesh_timeout_s: model_sized_mesh tries up to ~30 netgen meshes (up to ~73 s per draw, ~285 s with a rejected draw)
     max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 30_000, int)
     min_mesh_size = 0.05
     max_items = _env('RFCAV_MAX_ITEMS', 64, int)
@@ -518,6 +522,11 @@ def create_app(service=None, datasets=None):
     def datasets_list():
         return [{'id': i, 'name': d.name, 'kind': d.kind} for i, d in ds_ids.items()]
 
+    @app.get('/api/datasets/{did}/quality')
+    def dataset_quality(did: str):
+        """Label kind (p2 / p3) and, for p2 labels, the estimate / label_ok / model-mesh summary."""
+        return _ds(did).quality()
+
     @app.get('/api/datasets/{did}/items')
     def dataset_items(did: str, family: str | None = None, offset: int = 0, limit: int = 50,
                       sort: str = 'id', desc: bool = False):
@@ -561,10 +570,12 @@ def create_app(service=None, datasets=None):
                                   {'family': r['family'], 'params': r['params']}, field=field)
         truth = None
         if r['U'].shape[1]:
-            sol = service.fe_solution(r, resp['id'])     # the stored p3 labels are the figures of merit shown
+            sol = service.fe_solution(r, resp['id'])     # the stored labels are the figures of merit shown
             sol['_geometry_id'] = resp['id']
+            src = ('p2_labels' if r.get('label_order', 3) <= int(r.get('order', 2)) else 'p3_labels') \
+                if r['qoi_labels'] else 'fe'
             truth = _summary(preds.put(sol), sol, {'f_next': r['f_next'], 'labels': r['qoi_labels'],
-                                                   'qoi_source': 'p3_labels' if r['qoi_labels'] else 'fe'})
+                                                   'qoi_source': src})
         resp.update(truth=truth)
         return resp
 
@@ -579,7 +590,9 @@ def create_app(service=None, datasets=None):
     FIELD_PARAMS = {'threads', 'label_order', 'model_order', 'min_fillet', 'maxh_factor', 'field_max_elements',
                     'adapt', 'tol_f', 'tol_q', 'model_max_elements', 'max_ndof', 'round_edges', 'heal',
                     'sample_timeout'}
-    jm = J.JobManager(gen_root, on_done=lambda job: rescan()) if gen_root else None
+    # one manager for generation (needs gen_root) and p4 reference checks (read-only: work without gen_root)
+    jm = J.JobManager(gen_root or os.path.join(tempfile.gettempdir(), 'rfcav_nogen'),
+                      on_done=lambda job: rescan() if job.params.get('kind') != 'reference' else None)
     max_gen = _env('RFCAV_GEN_MAX', 20000, int)
 
     class GenReq(BaseModel):
@@ -605,14 +618,17 @@ def create_app(service=None, datasets=None):
         adapt: bool = True
         tol_f: float = Field(default=1e-6, ge=1e-9, le=1e-2)
         tol_q: float = Field(default=1e-3, ge=1e-6, le=0.2)
-        model_max_elements: int = Field(default=10000, ge=100, le=500000)
+        model_max_elements: int = Field(default=20000, ge=100, le=500000)
         max_ndof: int | None = Field(default=None, ge=10000, le=20_000_000)  # None: the machine's default
         round_edges: bool = True
         heal: bool = True
         sample_timeout: int = Field(default=7200, ge=60, le=86400)
 
+    def _jm_any():
+        return jm
+
     def _jm():
-        if jm is None:
+        if not gen_root:
             raise HTTPException(503, 'dataset generation is off: start the server with RFCAV_GEN_ROOT=<folder> '
                                      '(e.g. a Google Drive folder)')
         return jm
@@ -628,7 +644,7 @@ def create_app(service=None, datasets=None):
     @app.get('/api/jobs/config')
     def jobs_config():
         nd = _default_ndof()
-        return {'enabled': jm is not None, 'gen_root': gen_root,
+        return {'enabled': bool(gen_root), 'gen_root': gen_root,
                 'cpu_count': host['cpus'], 'mem_gb': host['mem_gb'], 'max_total': max_gen,
                 'families': {'train': [f for f in TRAIN_FAMILIES], 'ood': [f for f in OOD_FAMILIES]},
                 'blocks': {f: blocks.get(f) for f in TRAIN_FAMILIES + OOD_FAMILIES},
@@ -645,7 +661,7 @@ def create_app(service=None, datasets=None):
 
     @app.get('/api/jobs/plan')
     def jobs_plan(max_ndof: int | None = None, threads: int | None = None, workers: int | None = None,
-                  label_order: int = 2, model_order: int = 2, model_max_elements: int = 10000):
+                  label_order: int = 2, model_order: int = 2, model_max_elements: int = 20000):
         """Field labels: workers × threads and the memory they need on this machine (J.field_plan); p2 labels
         (label_order == model_order) need memory for the model space only."""
         for name, v, lo in (('max_ndof', max_ndof, 10000), ('threads', threads, 1), ('workers', workers, 1),
@@ -684,20 +700,65 @@ def create_app(service=None, datasets=None):
             out.append(m.submit(p).public())
         return out
 
+    class RefReq(BaseModel):
+        dataset: str                                         # a dataset id of /api/datasets
+        per_family: int = Field(default=1, ge=1, le=20)
+        order: int = Field(default=4, ge=3, le=6)
+        max_ndof: int = Field(default=700_000, ge=10000, le=20_000_000)
+        cross_check: bool = False
+        threads: int | None = Field(default=None, ge=1, le=256)
+
+    def _ref_plan(max_ndof, threads):
+        need = J.field_mem_gb(max_ndof)
+        warn = ['memory'] if host['mem_gb'] and need > 0.85 * host['mem_gb'] else []
+        return {'threads': int(threads or host['cpus']), 'cpus': host['cpus'], 'mem_gb': host['mem_gb'],
+                'mem_need_gb': round(need, 1), 'warnings': warn}
+
+    @app.get('/api/jobs/reference_plan')
+    def jobs_reference_plan(max_ndof: int = 700_000, threads: int | None = None):
+        """Threads and the memory one p4 reference solve may need on this machine (warning 'memory')."""
+        return _ref_plan(max_ndof, threads)
+
+    @app.post('/api/jobs/reference')
+    def jobs_reference(req: RefReq):
+        """Background p4 reference check of a field-label dataset (scripts/reference_check.py, docs/37): the
+        stored labels of `per_family` samples per family against an order-`order` solve of the same curved mesh."""
+        m = _jm_any()
+        d = _ds(req.dataset)
+        plan = _ref_plan(req.max_ndof, req.threads)
+        p = {'kind': 'reference', 'dataset': d.name, 'files': list(d.files), 'family': 'p4 reference',
+             'tag': d.name, 'n_total': 0, 'per_family': req.per_family, 'order': req.order,
+             'max_ndof': req.max_ndof, 'cross_check': req.cross_check, 'threads': plan['threads'],
+             'workers': 1, 'warnings': plan['warnings']}
+        return m.submit(p).public()
+
+    @app.get('/api/jobs/{jid}/reference')
+    def jobs_reference_result(jid: str):
+        """reference.json of a reference job (partial while it runs; empty before the first sample)."""
+        m = _jm_any()
+        if jid not in m.jobs or m.jobs[jid].params.get('kind') != 'reference':
+            raise HTTPException(404, 'no such reference job')
+        path = m.ref_path(jid)
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {'files': [], 'settings': {}, 'samples': [], 'summary': {}}
+
     @app.get('/api/jobs')
     def jobs_list():
-        return [j.public() for j in reversed(_jm().jobs.values())] if jm else []
+        return [j.public() for j in reversed(jm.jobs.values())]
 
     @app.get('/api/jobs/{jid}')
     def jobs_get(jid: str):
-        m = _jm()
+        m = _jm_any()
         if jid not in m.jobs:
             raise HTTPException(404, 'no such job')
         return m.jobs[jid].public()
 
     @app.post('/api/jobs/{jid}/cancel')
     def jobs_cancel(jid: str):
-        m = _jm()
+        m = _jm_any()
         if jid not in m.jobs:
             raise HTTPException(404, 'no such job')
         return m.cancel(jid).public()

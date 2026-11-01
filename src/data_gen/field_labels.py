@@ -1,8 +1,8 @@
 """Field labels for the learned-field model (docs/29, docs/37).
 
 Default (label_order == model_order == 2, docs/37): the training labels ARE the model space's own solution.
-The model mesh is sized for the model (model_sized_mesh: the curved mesh with the most tets ≤ model_max_elements,
-found by scaling netgen's maxh), HCurl p2 is solved on it once, and the p2 error estimate (adaptive.indicator)
+The model mesh is sized for the model (model_sized_mesh: a curved mesh with 5k–20k tets, near 10k, found by scaling
+netgen's maxh and, for small features, relaxing its curvature rule), HCurl p2 is solved on it once, and the p2 error estimate (adaptive.indicator)
 is stored per sample (est_rel_f; label_ok = est_rel_f ≤ est_max).  The model's Ritz values cannot go below
 the p2 eigenvalues of its mesh anyway, so these labels are the best the model can reach, at a fraction of
 the cost of the p3 labels below.  The prediction path builds its mesh with the same model_sized_mesh.
@@ -58,13 +58,19 @@ DEFAULTS = {"label_order": 2, "model_order": 2, "curve": 3, "maxh_factor": 3.0, 
             # adaptive refinement (src/data_gen/adaptive.py, docs/30): start coarser (curvaturesafety 1.5,
             # falling back to `curvaturesafety` when that folds elements) and refine where the error is
             "adaptive": True, "adapt_cs": 1.5, "tol_f": 1e-6, "tol_q": 1e-3, "adapt_max_iter": 8, "theta": 0.5,
-            # model mesh (docs/30 §4): the finest adaptive level with ≤ model_max_elements tets; the labels
-            # of the final (finest) level are L2-projected onto its HCurl(model_order) space
-            "model_max_elements": 10000,
-            # p2 labels (docs/37): model_sized_mesh searches maxh for the most tets ≤ model_max_elements (netgen's count
-            # jumps with maxh, so it lands at 0.55–1 × the cap); est_max flags a sample whose p2 frequency
-            # error estimate is larger (label_ok attr; measured est / true error 0.8–3)
-            "model_mesh_tries": 12, "model_fill": 0.85, "est_max": 1e-3}
+            # model mesh: every model mesh has ≤ model_max_elements tets.  Adaptive p3 labels (docs/30 §4): the finest
+            # level within it; the labels of the final (finest) level are L2-projected onto its HCurl(model_order) space
+            "model_max_elements": 20000,
+            # p2 labels (docs/37): model_sized_mesh builds a mesh with model_min_elements–model_max_elements tets, as
+            # close to model_target_elements as netgen allows (maxh search, then the coarser curvature rules of
+            # model_cs); est_max flags a sample whose p2 frequency error estimate is larger (label_ok attr; measured
+            # estimate / true error 0.8–3)
+            "model_min_elements": 5000, "model_target_elements": 10000, "model_cs": (2.0, 1.5, 1.0),
+            "model_mesh_tries": 10, "est_max": 1e-3,
+            # qoi_ok attr: the min det-J ratio of the model mesh >= qoi_min_jacobian.  Measured on p2 meshes: Q0 off 10x at
+            # 0.05, peaks off 3x at 0.07, fine from 0.4 (netgen_mesh docstring).  Only a flag: frequencies / fields
+            # (label_ok) are fine there, the QoI is not NaN'd.
+            "qoi_min_jacobian": 0.3}
 
 PEAK_QOI = ("Epk_Eacc", "Bpk_Eacc_mT_per_MVm")
 
@@ -101,50 +107,71 @@ def start_mesh(cad_path, h, deform, s, css):
 
 
 def model_sized_mesh(cad_path, h, deform=None, s=None, log=None):
-    """The model mesh of the p2 labels and of the prediction path (docs/37): the curved mesh of the solid with
-    the most tets ≤ s['model_max_elements'], found by scaling netgen's maxh = f·h (f from s['maxh_factor']
-    down or up).  netgen's tet count jumps with maxh (layers of a cylinder appear in steps: 6.1k → 10.1k between
-    two maxh 3 % apart), so the search brackets f and bisects until the mesh fills ≥ s['model_fill'] of the
-    cap or s['model_mesh_tries'] meshes were built; the largest mesh under the cap wins.  A mesh repaired by
-    bisection is rebuilt as a single level (AGENTS.md invariant).
-    Returns (mesh, shape, info dict(maxh_factor, n_meshes, fill)); raises RuntimeError when no mesh under the
-    cap was found (the generator re-draws the geometry)."""
+    """The model mesh of the p2 labels and of the prediction path (docs/37): a curved mesh of the solid with
+    model_min_elements ≤ tets ≤ model_max_elements (5k–20k), as close to model_target_elements (10k) as netgen
+    allows.  Two knobs, in this order:
+      maxh = f·h   f bracketed and bisected towards the target (tets ∝ f⁻³, but netgen's count jumps: layers of
+                   a cylinder appear in steps, 6.1k → 10.1k between two maxh 3 % apart);
+      curvaturesafety (model_cs: 2 → 1.5 → 1)   when the count is bound by the curvature of small features
+                   (fillets, noses, gaps: a coarser maxh no longer lowers it — reentrant 23.7k, pillbox_pipes
+                   18.7k at curvaturesafety 2 whatever maxh).
+    Every candidate passes the curved-element quality check of netgen_mesh (its local repair included; no
+    curvaturesafety-doubling retries, which only add tets).  A mesh repaired by bisection is rebuilt as a single
+    level (AGENTS.md invariant).
+    Returns (mesh, shape, info dict(maxh_factor, curvaturesafety, n_meshes, n_tets)); raises RuntimeError when no
+    mesh inside the range was found (the generator re-draws the geometry)."""
     s = {**DEFAULTS, **(s or {})}
-    cap = int(s["model_max_elements"])
-    f = float(s["maxh_factor"])
-    lo = hi = None                                    # lo: f with > cap tets; hi: f with ≤ cap tets
-    best, n, err = None, 0, None
-    for n in range(1, int(s["model_mesh_tries"]) + 1):
-        try:
-            mesh, shape = curved_mesh(cad_path, h, deform, {**s, "maxh_factor": f, "max_elements": 4 * cap})
-            ne = int(mesh.ne)
-        except ho.TooManyElements as e:               # far above the cap: coarsen a lot
-            mesh, ne, err = None, 8 * cap, e
-        except RuntimeError as e:                     # netgen failed or folded elements: a slightly finer mesh
-            err = e
-            if log is not None:
-                log(f"model_sized_mesh: maxh_factor {f:.3g} failed ({e}); trying finer")
-            f *= 0.93
-            continue
-        if ne <= cap:
-            hi = f if hi is None else min(hi, f)
-            if best is None or ne > best[0].ne:
-                best = (mesh, shape, f)
-            if ne >= s["model_fill"] * cap:
+    n_lo, n_t, n_hi = int(s["model_min_elements"]), int(s["model_target_elements"]), int(s["model_max_elements"])
+    best, n_meshes, err = None, 0, None                # best: (|log(ne / target)|, mesh, shape, f, cs)
+
+    def consider(mesh, shape, f, cs):
+        nonlocal best
+        d = abs(np.log(mesh.ne / n_t))
+        if n_lo <= mesh.ne <= n_hi and (best is None or d < best[0]):
+            best = (d, mesh, shape, f, cs)
+
+    for cs in s["model_cs"]:
+        f, lo, hi, prev = float(s["maxh_factor"]), None, None, None   # lo: f giving > target tets, hi: ≤ target
+        for _ in range(int(s["model_mesh_tries"])):
+            n_meshes += 1
+            try:
+                mesh, shape = curved_mesh(cad_path, h, deform, {**s, "maxh_factor": f, "curvaturesafety": cs,
+                                                               "retries": 0, "max_elements": 4 * n_hi})
+                ne = int(mesh.ne)
+            except ho.TooManyElements as e:           # far above the range: coarsen a lot
+                mesh, ne, err = None, 8 * n_hi, e
+            except RuntimeError as e:                 # netgen failed or folded elements: a slightly finer mesh
+                err = e
+                if log is not None:
+                    log(f"model_sized_mesh: curvaturesafety {cs:g}, maxh_factor {f:.3g} failed ({e}); trying finer")
+                f *= 0.93
+                continue
+            if mesh is not None:
+                consider(mesh, shape, f, cs)
+            if best is not None and best[0] < np.log(1.2):     # within 20 % of the target: done
                 break
-        else:
-            lo = f if lo is None else max(lo, f)
-        if lo is not None and hi is not None:
-            if lo / hi > 0.99:                        # nothing left between the two sizes
-                break
-            f = (lo * hi) ** 0.5
-        else:
-            f *= (ne / (0.93 * cap)) ** (1 / 3)       # tets ∝ maxh⁻³
+            if ne > n_t:
+                if lo is not None and f > lo and prev is not None and ne > 0.98 * prev:
+                    break                             # coarser maxh no longer helps: curvature-bound (next cs if > max)
+                lo = f if lo is None else max(lo, f)
+            else:
+                hi = f if hi is None else min(hi, f)
+            prev = ne
+            if lo is not None and hi is not None:
+                if hi / lo < 1.01:                    # nothing left between the two sizes
+                    break
+                f = (lo * hi) ** 0.5
+            else:
+                f *= (ne / n_t) ** (1 / 3)            # tets ∝ maxh⁻³
+        if best is not None:
+            break                                     # a finer curvature rule is better than a coarser one
     if best is None:
-        raise RuntimeError(f"model_sized_mesh: no curved mesh with ≤ {cap} tets after {n} meshes (last error: {err})")
-    mesh, shape, f = best
+        raise RuntimeError(f"model_sized_mesh: no curved mesh with {n_lo}–{n_hi} tets after {n_meshes} meshes "
+                           f"(curvaturesafety {', '.join(f'{c:g}' for c in s['model_cs'])}; last error: {err})")
+    _, mesh, shape, f, cs = best
     mesh = ho.single_level(mesh, shape, s["curve"], deform)
-    return mesh, shape, {"maxh_factor": float(f), "n_meshes": int(n), "fill": float(mesh.ne / cap)}
+    return mesh, shape, {"maxh_factor": float(f), "curvaturesafety": float(cs), "n_meshes": int(n_meshes),
+                         "n_tets": int(mesh.ne)}
 
 
 def project_to_model(mesh, label, model_order, unit_norm=False):
@@ -299,8 +326,8 @@ def _beam_axis(shape_type, mesh, params=None):
 def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, sharp_edges=0, params=None):
     """All field labels of one geometry (the generator's CAD solid at label mesh size h; params: its
     geom_params, for the beam axis and the accelerating length).
-    label_order == model_order (default, docs/37): one HCurl(model_order) solve on model_sized_mesh (≤ model_max_elements
-    tets), with its error estimate (est_rel_f, label_ok).  Otherwise (high-fidelity labels):
+    label_order == model_order (default, docs/37): one HCurl(model_order) solve on model_sized_mesh (model_min_elements–
+    model_max_elements tets), with its error estimate (est_rel_f, label_ok).  Otherwise (high-fidelity labels):
     adaptive: adaptive refinement until the frequencies change < tol_f and the figures of merit
     < tol_q (docs/30); else one solve on the curvature-sized mesh.  sharp_edges > 0 (re-entrant edges the generator could not round): the surface
     peaks are singular there, so they are left out of the convergence check and stored as NaN."""
@@ -324,8 +351,8 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         est = float(0.5 * ev.sum() / K)
         adapt_attrs = {"est_rel_f": est, "est_rel_wall": float(np.sqrt(ew.sum() / K)),
                        "label_ok": int(est <= s["est_max"]), "est_max": float(s["est_max"]),
-                       "model_fill": minfo["fill"], "model_meshes": minfo["n_meshes"],
-                       "maxh_factor_used": minfo["maxh_factor"]}
+                       "model_meshes": minfo["n_meshes"], "maxh_factor_used": minfo["maxh_factor"],
+                       "curvaturesafety_used": minfo["curvaturesafety"]}
     elif adaptive:
         from src.data_gen import adaptive as ad
         mesh, shape, cs = start_mesh(cad_path, h, deform, s, (s["adapt_cs"], s["curvaturesafety"]))
@@ -377,6 +404,11 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
     vol_bytes = _mesh_bytes(model_mesh)
     reloaded = _check_reload(vol_bytes, shape, s["curve"], deform, s["model_order"], U.shape[0])
     wall_feat = wall_feature_array(reloaded, s["model_order"])         # the training loader reads it back
+    jac = float(ho.jacobian_ratio(model_mesh))
+    qoi_ok = int(jac >= s["qoi_min_jacobian"])
+    if not qoi_ok:
+        print(f"label_sample: min det-J ratio {jac:.3f} < {s['qoi_min_jacobian']:g}: qoi_ok = 0 "
+              "(Q0 / peak QoI may be off by a factor, frequencies and fields are fine)", flush=True)
     return {"vol": np.frombuffer(vol_bytes, np.uint8), "brep": np.frombuffer(brep_bytes, np.uint8),
             "deform": deform, "freqs": lab["f_hz"][:K] / 1e9, "freq_next": float(lab["f_hz"][K] / 1e9),
             "u_model": U.astype(np.float32), "rq_model": rq, "proj_err": err, "qfeat_wall": wall_feat,
@@ -386,7 +418,8 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
                       "curve": int(s["curve"]), "n_tets": int(model_mesh.ne), "n_vertices": int(model_mesh.nv),
                       "n_tets_label": n_tets_label,
                       "n_dof_label": int(lab["fes"].ndof), "n_dof_model": int(fes2.ndof),
-                      "jacobian_ratio": float(ho.jacobian_ratio(model_mesh)),
+                      "jacobian_ratio": jac, "qoi_ok": qoi_ok,
+                      "qoi_min_jacobian": float(s["qoi_min_jacobian"]),
                       "maxh": float(maxh), "t_curved_mesh": t1 - t0, "t_labels": t2 - t1,
                       "sharp_edges": int(sharp_edges), **adapt_attrs,
                       "axis_dir": axis[0], "axis_point": axis[1],

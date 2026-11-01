@@ -23,7 +23,7 @@ def test_default_field_pipeline_is_one_runnable_line():
     assert "LABELS=field" in r["run_args"] and "N_PER_FAMILY=1024" in r["run_args"]
     assert "FAMILIES=" not in r["run_args"]                       # all train families = run.sh's default
     assert "freeform" not in r["families"]                        # field labels need a CAD solid
-    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2"
+    assert r["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2"
     assert r["estimate"]["workers_per_job"] == 56 // 8
     shlex.split(cmd)                                              # well-formed shell words
     r = subprocess.run(["bash", "-n", "-c", cmd], capture_output=True, text=True)
@@ -34,7 +34,7 @@ def test_values_are_written_only_when_they_differ_from_config_sh():
     r = TR.build_command(dict(FORM, action="dataset", families=["elliptical", "hwr"], mesh_size=0.12,
                               test=True, n_per_family=""))
     assert r["run_args"] == "bash cluster/truba/run.sh dataset FAMILIES=elliptical,hwr LABELS=field MESH_SIZE=0.12 TEST=1"
-    assert r["tag"] == "F_p3p2_ms0.12_k10_mf0.05_v2_test"
+    assert r["tag"] == "F_p2p2_ms0.12_k10_mf0.05_v2_test"
     r = TR.build_command(dict(FORM, action="train", exp="f2", model="large", gpus=4, batch=1, min_fillet=0.08,
                               cache_dir="/arf/scratch/$USER/ops", train_extra=["training.patience=30"]))
     a = r["run_args"]
@@ -42,10 +42,26 @@ def test_values_are_written_only_when_they_differ_from_config_sh():
               'CACHE_DIR="/arf/scratch/$USER/ops"', "TRAIN_EXTRA=training.patience=30"):
         assert s in a, s
     assert "N_PER_FAMILY" not in a and "THREADS" not in a        # dataset-only settings stay out of `train`
-    assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.08_v2"
+    assert r["tag"] == "F_p2p2_ms0.10_k10_mf0.08_v2"
     assert TR.build_command(dict(FORM, action="all", families=TR.OOD_FAMILIES + ("elliptical",)))["group"] == \
         ",".join(("elliptical",) + TR.OOD_FAMILIES)
     assert TR.build_command(dict(FORM, dry_run=True))["run_args"].endswith(" --dry-run")
+
+
+def test_label_defaults_mirror_config_sh():
+    """p2 labels are the default (docs/37): LABEL_ORDER / MODEL_ORDER / MODEL_MAX_ELEMENTS equal config.sh's, so
+    the command line carries them only when the form differs; the form defaults and DEFAULTS agree."""
+    sh = subprocess.run(["bash", "-c", "source cluster/truba/config.sh; echo $LABEL_ORDER $MODEL_ORDER "
+                         "$MODEL_MAX_ELEMENTS $ADAPT"], cwd=ROOT, capture_output=True, text=True,
+                        env=dict(os.environ, USER="t"))
+    got = sh.stdout.split()
+    assert got == [str(TR.DEFAULTS[k]) for k in ("LABEL_ORDER", "MODEL_ORDER", "MODEL_MAX_ELEMENTS", "ADAPT")]
+    assert (FORM["label_order"], FORM["model_order"], FORM["model_max_elements"]) == (2, 2, 20000)
+    assert "model_order" not in TR.build_command(FORM)["run_args"].lower().replace("model_max", "")
+    assert "LABEL_ORDER=3" in TR.build_command(dict(FORM, label_order=3))["run_args"]
+    # the cost estimate of p2 labels uses the p2 core-seconds, not the p3 model
+    from src.service import jobs as J
+    assert J.field_core_s(2, 2, True) == J.FIELD_P2_CORE_S
 
 
 def test_gpu_queue_defaults_match_config_sh_and_follow_the_cores_per_gpu_rule():
@@ -63,23 +79,28 @@ def test_gpu_queue_defaults_match_config_sh_and_follow_the_cores_per_gpu_rule():
 
 def test_adaptive_label_settings_and_shard_time_note():
     r = TR.build_command(FORM)
-    assert "shard_time" not in r["notes"]                          # ~8.5 h per 1024-geometry shard < 12 h
+    assert "shard_time" not in r["notes"]                          # p2 labels: well below 12 h per 1024-geometry shard
+    assert "LABEL_ORDER" not in r["run_args"] and "MODEL_MAX_ELEMENTS" not in r["run_args"]    # config.sh defaults
     assert "ADAPT" not in r["run_args"] and "TOL_F" not in r["run_args"]
-    r = TR.build_command(dict(FORM, action="dataset", adapt=False, tol_f=1e-5, model_max_elements=6000,
-                              time="0-06:00:00"))
+    r = TR.build_command(dict(FORM, action="dataset", label_order=3, adapt=False, tol_f=1e-5,
+                              model_max_elements=6000, time="0-06:00:00"))
     for s in ("ADAPT=0", "TOL_F=1e-05", "MODEL_MAX_ELEMENTS=6000", "TIME=0-06:00:00"):
         assert s in r["run_args"], s
+    assert "LABEL_ORDER=3" in r["run_args"]                         # only when it differs from the default
     assert "shard_time" not in r["notes"]                          # one solve: a third of the time
-    assert "shard_time" in TR.build_command(dict(FORM, action="dataset", time="0-06:00:00"))["notes"]
+    assert "shard_time" in TR.build_command(dict(FORM, action="dataset", label_order=3, time="0-06:00:00"))["notes"]
+    assert "shard_time" not in TR.build_command(dict(FORM, action="dataset", time="0-06:00:00"))["notes"]   # p2: fits
     assert "shard_time" not in TR.build_command(dict(FORM, action="train", time="0-06:00:00"))["notes"]
     assert TR._hours("1-02:30:00") == 26.5 and TR._hours("12:00:00") == 12
-    r = TR.build_command(dict(FORM, action="dataset", adapt=False, round_edges=False, heal=False))
+    r = TR.build_command(dict(FORM, action="dataset", label_order=3, adapt=False, round_edges=False, heal=False))
     for a in ("ADAPT=0", "ROUND_EDGES=0", "HEAL=0"):
         assert a in r["run_args"], a
     assert r["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2_1s_sharp"      # never mixes with the default labels
+    # p2 labels have no adaptive variant: ADAPT=0 never adds _1s (config.sh)
+    assert TR.build_command(dict(FORM, action="dataset", adapt=False))["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2"
     for action in ("status", "train"):                                 # they must find the same TAG
-        a = TR.build_command(dict(FORM, action=action, adapt=False, round_edges=False))["run_args"]
-        assert "ADAPT=0" in a and "ROUND_EDGES=0" in a, action
+        a = TR.build_command(dict(FORM, action=action, label_order=3, adapt=False, round_edges=False))["run_args"]
+        assert "ADAPT=0" in a and "ROUND_EDGES=0" in a and "LABEL_ORDER=3" in a, action
 
 
 @pytest.mark.parametrize("bad", [

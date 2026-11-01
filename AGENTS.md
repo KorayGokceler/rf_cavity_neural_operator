@@ -15,7 +15,7 @@ vector fields ψ_j → fixed linear map to finite-element DOFs V → kernel proj
 (CG) → Rayleigh–Ritz `VᵀKV c = θ M_div c` → frequencies f = c₀√θ/(2π·scale) and fields PV·c.
 
 One model: `EigenspaceOperatorField` (model_type `field3d`): HCurl p2 on a curved mesh, tokens =
-quadrature points (14 per tet), labels = adaptive p3 FE fields projected onto p2. The web UI's Predict,
+quadrature points (14 per tet), labels = HCurl p2 FE fields solved on the model mesh (docs/37; adaptive p3 is the high-fidelity option). The web UI's Predict,
 `scripts/predict_geometry.py` and TRUBA `predict.sh` run it. The old Whitney-N0 edge model
 (`eigenspace3d`), its PKL pipeline and the N0 label type were removed: field labels are the generator's only
 label type (`--labels` is a hidden, deprecated no-op). The Whitney-N0 display / QoI layer was removed too
@@ -26,7 +26,7 @@ of merit come from the p2 fields (`highorder.mode_qoi`, contract and rescaling i
 
 | path | what |
 |---|---|
-| `src/data_gen/` | geometry families (`cavity_shapes.py`), generator (`dataset_generator_3d.py`), curved meshes + p3 solver (`highorder.py`), adaptive refinement (`adaptive.py`), field labels (`field_labels.py`) |
+| `src/data_gen/` | geometry families (`cavity_shapes.py`), generator (`dataset_generator_3d.py`), curved meshes + p3 solver (`highorder.py`), adaptive refinement (`adaptive.py`), field labels + model mesh rule (`field_labels.py`), p4 reference (`reference.py`) |
 | `src/data/` | `field_dataset.py` (field3d items, operators rebuilt per item), `sparse.py` (block-diagonal batch operators), `mesh_features.py` (mesh helpers, boundary topology, the model's vertex features) |
 | `src/models/` | `hcurl.py` (projection, Ritz, CG `KpSolve`), `eigenspace_operator_field.py`, `layers.py` |
 | `src/training/lightning_module.py` | losses (span / frequency / self-supervised / ortho), metrics |
@@ -61,8 +61,8 @@ bash cluster/truba/run.sh all LABELS=field ... --dry-run      # always dry-run T
 - Curved meshes repaired by bisection must go through `highorder.single_level` before storage, or the
   stored DOFs do not match the rebuilt space (`field_labels._check_reload` guards this).
 - Every form on a curved mesh uses one explicit integration rule (`highorder.volume_measure`).
-- Labels: frequencies and QoI come from the p3 label mesh; the training field target is the p2
-  projection on the model mesh (≤ `model_max_elements` tets).
+- Labels (docs/37): default p2, one HCurl p2 solve on the model mesh (5k–20k tets, `field_labels.model_sized_mesh`, also used by
+  prediction). High-fidelity option `--label_order 3`: frequencies and QoI from the adaptive p3 label mesh, field target = p2 projection.
 
 ## Working rules
 

@@ -21,7 +21,7 @@ export interface Solution {
   qoi_source?: QoiSource;
 }
 // where the figures of merit come from: the predicted p2 fields, the stored p3 labels, the FE fields
-export type QoiSource = 'p2_model' | 'p3_labels' | 'fe';
+export type QoiSource = 'p2_model' | 'p2_labels' | 'p3_labels' | 'fe';
 export interface Geometry {
   id: string; source: Record<string, unknown>; check: Check; family?: string;
   params?: Record<string, number>; surface: Surface;
@@ -67,7 +67,8 @@ export interface FieldPlan {
 }
 export interface Job {
   id: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-  params: GenParams & { family: string; tag: string; block: number };
+  params: GenParams & { family: string; tag: string; block: number; kind?: 'reference'; dataset?: string;
+                        per_family?: number; order?: number; cross_check?: boolean; warnings?: string[] };
   stage: string; progress: { done: number; total: number; ok: number; failed: number };
   created: number; started: number | null; finished: number | null; error: string | null;
   outputs: string[]; log: string[];
@@ -124,7 +125,29 @@ export interface FieldRowInfo {
   adapt_iters: number | null; adapt_stop: 'converged' | 'budget' | 'max_iter' | null;
   est_rel_f: number | null; est_rel_wall: number | null; adapt_df: number | null; adapt_dq: number | null;
   rounded_edges: number | null; sharp_edges: number; proj_err_max: number | null; t_labels_s: number | null;
+  // p2 labels (docs/37); null in older datasets
+  label_order: number | null; model_order: number | null; label_ok: boolean | null; est_max: number | null;
+  curvaturesafety_used: number | null; maxh_factor_used: number | null; model_meshes: number | null;
 }
+// label kind of a dataset (/api/datasets/{id}/quality): p2 = one solve on the model mesh, p3 = high fidelity
+export interface DatasetQuality {
+  kind: 'p2' | 'p3'; label_order: number | null; model_order: number | null; n: number;
+  n_bad?: number; bad_share?: number | null; est_median?: number | null; est_max?: number | null;
+  tets_min?: number | null; tets_max?: number | null;
+}
+// p4 reference check (scripts/reference_check.py → reference.json)
+export interface RefSample {
+  file: string; sample: number; family: string; n_tets: number; label_order: number; model_order: number;
+  est_rel_f: number | null; label_ok: boolean | null; ref_order: number; ref_ndof: number;
+  f_label_GHz: number[]; f_ref_GHz: number[]; rel_err: number[]; max_rel_err: number | null;
+  median_rel_err: number | null; est_over_true: number | null; t_ref_s: number | null;
+  ref_self_err: number | null; skipped: string | null;
+}
+export interface RefResult {
+  files: string[]; settings: Record<string, unknown>; samples: RefSample[];
+  summary: { n?: number; n_skipped?: number; max_rel_err_by_family?: Record<string, number> };
+}
+export interface RefPlan { threads: number; cpus: number; mem_gb: number; mem_need_gb: number; warnings: string[] }
 export interface DatasetRow {
   id: number; family: string; n_nodes: number; n_dof: number; n_tets: number; betti1: number;
   deformed: boolean | null; f_GHz: number[]; field: FieldRowInfo;
@@ -231,6 +254,11 @@ export const api = {
   },
   generate: (p: GenParams) => call<Job[]>('/api/jobs/generate', json(p)),
   jobs: () => call<Job[]>('/api/jobs'),
+  datasetQuality: (did: string) => call<DatasetQuality>(`/api/datasets/${did}/quality`),
+  referencePlan: (max_ndof: number) => call<RefPlan>(`/api/jobs/reference_plan?max_ndof=${max_ndof}`),
+  startReference: (p: { dataset: string; per_family: number; order: number; max_ndof: number; cross_check: boolean }) =>
+    call<Job>('/api/jobs/reference', json(p)),
+  referenceResult: (id: string) => call<RefResult>(`/api/jobs/${id}/reference`),
   cancelJob: (id: string) => call<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
   trainConfig: () => call<TrainConfig>('/api/train/config'),
   trainRuns: () => call<RunSummary[]>('/api/train/runs'),
