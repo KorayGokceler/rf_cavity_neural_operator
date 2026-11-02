@@ -121,6 +121,8 @@
 | `/arf/scratch/$USER` | hesaplama, büyük veri, paralel I/O | aynı kota | **en çok 30 gün**, otomatik temizlenir |
 | `/tmp` (düğüm), `/localscratch` (palamut) | düğüm içi NVMe geçici alan | – | iş bitince gider |
 
+- `/tmp` bütün sunucularda NVMe; **akya-cuda'da 1,4 TB** (TRUBA duyurusu, sahibin aktardığı 2026-11-02). Üretim I/O ağırlıklı değil (geometri başına dakikalar, birkaç MB): gerek yok. Eğitimde denenecek (ölçülmedi): H5'leri iş başında `/tmp`'ye kopyalamak (deneme ~12 GB, 100k ~0,6–1,2 TB) ya da `CACHE_DIR`'i `/tmp`'ye koymak (~330 MB/geometri → ~4k geometri sığar). docs/31 §3.3: veri hazırlamanın maliyeti asıl operatör kurulumu (CPU).
+
 - Kota bilgisi `arf-ui1`'e girince görülür. Eski sayfalar 1000 GB / 100 GB / 1 TB der; güncel olan 2 TB.
 - Kota ya da inode dolarsa yeni dosya oluşmaz, iş başlamaz, veri kaybolabilir. Küçük dosyaları `tar` ile birleştirin.
 - Ev dizini izinleri yalnız kullanıcıya açıktır (`chmod 700 $HOME`); paylaşım için ACL (`setfacl`, SSS 35).
