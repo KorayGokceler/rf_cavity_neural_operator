@@ -201,7 +201,7 @@ Knobs, from cheapest to most accurate:
 - `--dry-run` prints every sbatch command with its dependencies and submits nothing
   (`dry_sbatch.sh`).
 - Re-running is safe: finished shards are skipped, and the same `EXP` resumes from `last.ckpt`.
-- The TAG is `F_p3p2_ms0.10_k10_mf0.05_v2` (the former N0 tag `E_…` no longer exists).
+- The TAG is `F_p3p2_ms0.10_k10_mf0.05_v3` (the former N0 tag `E_…` no longer exists).
 
 The web UI's **TRUBA** tab (`src/service/truba.py`, `/api/truba/config`, `/api/truba/command`)
 turns a form into the line to paste on a login node:

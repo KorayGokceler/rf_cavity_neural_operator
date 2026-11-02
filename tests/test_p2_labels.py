@@ -20,6 +20,7 @@ from src.data_gen import field_labels as fl  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 C0 = 299792458.0
 R, L = 0.040, 0.050
+UNI = {**fl.DEFAULTS, "p2_refine": "uniform"}          # the uniform rule (the unit tests below fake its mesh builder)
 SMALL = {"model_min_elements": 800, "model_target_elements": 1500, "max_ndof": 200000, "tol_f_p2": 1.0}   # tol 1: no refinement
 
 
@@ -100,8 +101,8 @@ def _fake_refine_env(monkeypatch, ests_by_ne, ndof_per_tet=11):
 
 def test_refine_p2_to_tolerance_refines_until_the_estimate_is_within_tol(monkeypatch):
     built = _fake_refine_env(monkeypatch, None)
-    est_of = lambda m: (4e-3 * (10000 / m.ne) ** (4 / 3), m.ne)        # error ∝ h⁴ ∝ tets^(-4/3)  # noqa: E731
-    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3}
+    est_of = lambda m: (4e-3 * (10000 / m.ne) ** (4 / 3), None, m.ne)        # error ∝ h⁴ ∝ tets^(-4/3)  # noqa: E731
+    s = {**UNI, "tol_f_p2": 1e-3}
     start = SimpleNamespace(ne=10000, levels=1)
     r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, est_of)
     assert r["stop"] == "converged" and r["est"] <= 1e-3 and r["rounds"] == len(r["tets"]) == len(built) + 1
@@ -113,7 +114,7 @@ def test_refine_p2_to_tolerance_refines_until_the_estimate_is_within_tol(monkeyp
     assert r["css"] == pytest.approx([2.0, cs1]) and r["cs"] == pytest.approx(cs1) and r["f"] == pytest.approx(f1)
     # already within tol: one solve, no mesh built
     built.clear()
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (5e-4, None))
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (5e-4, None, None))
     assert r["rounds"] == 1 and r["stop"] == "converged" and not built
 
 
@@ -124,7 +125,7 @@ def test_refine_p2_to_tolerance_stalls_when_the_mesh_barely_grows(monkeypatch):
     monkeypatch.setattr(fl, "_single_level_mesh", single)
     monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=11 * m.ne))
     start = SimpleNamespace(ne=10000, levels=1)
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (4e-3, None))
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**UNI}, start, "shape", 10.0, lambda m: (4e-3, None, None))
     assert r["stop"] == "stalled" and r["rounds"] == 1 and r["mesh"] is start and r["est"] > 1e-3
 
 
@@ -139,13 +140,13 @@ def test_refine_p2_to_tolerance_retries_a_stalled_mesh_with_a_larger_step(monkey
     monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=11 * m.ne))
     start = SimpleNamespace(ne=10000, levels=1)
     ests = iter([1.15e-3, 4e-4])
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (next(ests), None))
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**UNI}, start, "shape", 10.0, lambda m: (next(ests), None, None))
     assert len(calls) == 3 and calls[0] < calls[1] < calls[2] and r["stop"] == "converged" and r["tets"] == [10000, 14000]
     assert r["css"] == pytest.approx([2.0, calls[2]])
     calls.clear()                                       # cs cap: est 4e-3 → r = 0.64, cs 3.1, 4.9, then 7.7 clamped to 6 (maxh keeps shrinking): three meshings
     monkeypatch.setattr(fl, "_single_level_mesh", lambda *a: (calls.append(a[5]), (SimpleNamespace(ne=10500), "s"))[1])
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "p2_max_cs": 6.0, "max_ndof": 10**9}, start, "shape",
-                                  10.0, lambda m: (4e-3, None))
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**UNI, "p2_max_cs": 6.0, "max_ndof": 10**9}, start, "shape",
+                                  10.0, lambda m: (4e-3, None, None))
     assert len(calls) == 3 and max(calls) == 6.0 and r["stop"] == "stalled"
 
 
@@ -161,11 +162,11 @@ def test_refine_p2_to_tolerance_retries_a_folded_mesh_at_a_finer_cs(monkeypatch)
     monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=11 * m.ne))
     start = SimpleNamespace(ne=10000, levels=1)
     ests = iter([4e-3, 5e-4])
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (next(ests), None))
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**UNI}, start, "shape", 10.0, lambda m: (next(ests), None, None))
     assert calls[1] == calls[0] + 1 and calls[2] == calls[0] + 2 and r["stop"] == "converged" and r["css"][-1] == calls[2]
     calls.clear()
     monkeypatch.setattr(fl, "_single_level_mesh", lambda *a: (_ for _ in ()).throw(RuntimeError("folded")))
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (4e-3, None))
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**UNI}, start, "shape", 10.0, lambda m: (4e-3, None, None))
     assert r["stop"] == "mesh_failed" and r["mesh"] is start
 
 
@@ -186,8 +187,8 @@ def test_model_sized_mesh_raises_cs_on_a_fold_and_never_lowers_it(monkeypatch):
 def test_refine_p2_to_tolerance_uses_the_observed_rate(monkeypatch):
     """est ∝ h^(4/3) (a singular problem): the rate p = 4 of round 1 undershoots, the observed rate (≈ 1.3) sizes round 2: ≤ 2 refinements."""
     _fake_refine_env(monkeypatch, None)
-    est_of = lambda m: (4e-3 * (10000 / m.ne) ** (4 / 9), None)        # h^(4/3) with h ∝ tets^(-1/3)  # noqa: E731
-    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 10**9}
+    est_of = lambda m: (4e-3 * (10000 / m.ne) ** (4 / 9), None, None)        # h^(4/3) with h ∝ tets^(-1/3)  # noqa: E731
+    s = {**UNI, "tol_f_p2": 1e-3, "max_ndof": 10**9}
     r = fl.refine_p2_to_tolerance("x", 0.1, None, s, SimpleNamespace(ne=10000, levels=1), "shape", 10.0, est_of)
     assert r["stop"] == "converged" and r["rounds"] <= 3 and r["est"] <= 1e-3, (r["tets"], r["ests"])
 
@@ -195,18 +196,18 @@ def test_refine_p2_to_tolerance_uses_the_observed_rate(monkeypatch):
 def test_refine_p2_to_tolerance_clamps_the_step_to_the_dof_budget(monkeypatch):
     """est 4e-3 wants r = 0.636 (3.9x tets = 430k DOF); max_ndof 300k allows ~2.7x tets: the clamped mesh is built, not a 'budget' stop."""
     built = _fake_refine_env(monkeypatch, None)
-    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 300000, "p2_max_refine": 1}
+    s = {**UNI, "tol_f_p2": 1e-3, "max_ndof": 300000, "p2_max_refine": 1}
     r = fl.refine_p2_to_tolerance("x", 0.1, None, s, SimpleNamespace(ne=10000, levels=1), "shape", 10.0,
-                                  lambda m: (4e-3, None))
+                                  lambda m: (4e-3, None, None))
     assert r["rounds"] == 2 and r["stop"] == "max_rounds" and 25000 < r["tets"][1] * 1.0 <= 300000 / 11
     assert built[0][0] == pytest.approx(10.0 * (10000 * 11 / 300000) ** (1 / 3) * 1.02)
 
 
 def test_refine_p2_to_tolerance_caps_cs_and_keeps_refining_maxh(monkeypatch):
     built = _fake_refine_env(monkeypatch, None)
-    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 10**9, "p2_max_refine": 1, "p2_max_cs": 3.0}
+    s = {**UNI, "tol_f_p2": 1e-3, "max_ndof": 10**9, "p2_max_refine": 1, "p2_max_cs": 3.0}
     r = fl.refine_p2_to_tolerance("x", 0.1, None, s, SimpleNamespace(ne=10000, levels=1), "shape", 10.0,
-                                  lambda m: (4e-3, None))
+                                  lambda m: (4e-3, None, None))
     assert built[0][1] == 3.0 and built[0][0] < 10.0 * 0.7 and r["css"][-1] == 3.0
 
 
@@ -219,12 +220,166 @@ def test_curved_mesh_over_the_cap_after_repair_is_a_budget_overflow(monkeypatch)
 def test_refine_p2_to_tolerance_budget_and_max_rounds(monkeypatch):
     _fake_refine_env(monkeypatch, None)
     start = SimpleNamespace(ne=10000, levels=1)
-    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 115000}           # 10k tets x 11 = 110k; even the largest fitting step (r > 0.95) is < 16 % more tets
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (4e-3, None))
+    s = {**UNI, "tol_f_p2": 1e-3, "max_ndof": 115000}           # 10k tets x 11 = 110k; even the largest fitting step (r > 0.95) is < 16 % more tets
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (4e-3, None, None))
     assert r["stop"] == "budget" and r["rounds"] == 1 and r["est"] == 4e-3 and r["mesh"] is start
-    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 10**9, "p2_max_refine": 2}   # estimate never improves
-    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (4e-3, None))
+    s = {**UNI, "tol_f_p2": 1e-3, "max_ndof": 10**9, "p2_max_refine": 2}   # estimate never improves
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (4e-3, None, None))
     assert r["stop"] == "max_rounds" and r["rounds"] == 3
+
+
+def _fake_adaptive_env(monkeypatch, realised=1.0, raises=None):
+    """Adaptive refinement without netgen: elements have size h = 0.01, the 'remesher' returns a mesh of
+    realised x (the count the size field asks for, Σ(h/hn)³) tets; raises(cs) → an error for that curvaturesafety."""
+    from src.data_gen import adaptive as ad
+    log = SimpleNamespace(made=[], calls=[], resets=0)
+
+    def geometry(m):
+        return np.zeros((m.ne, 3)), np.full(m.ne, 0.01)
+
+    def mesh_remesher(shape, maxh, curve=3, deform=None, curvaturesafety=2.0, grading=0.5, min_jacobian_ratio=0.05):
+        log.made.append(curvaturesafety)
+
+        def remesh(cen, hn):
+            if raises is not None and raises(curvaturesafety):
+                raise RuntimeError("remeshed curved mesh still has distorted elements")
+            r = realised(len(cen)) if callable(realised) else realised
+            ne = int(r * float(np.sum((0.01 / np.asarray(hn)) ** 3)))
+            log.calls.append((len(cen), ne))
+            return SimpleNamespace(ne=ne, levels=1)
+
+        def reset():
+            log.resets += 1
+        remesh.reset = reset
+        return remesh
+    monkeypatch.setattr(ad, "element_geometry", geometry)
+    monkeypatch.setattr(ad, "mesh_remesher", mesh_remesher)
+    monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=11 * m.ne))
+    monkeypatch.setattr(fl.ho, "element_jacobian_ratio", _fake_jacobian)
+    return log
+
+
+def _fake_jacobian(m, order=6):
+    """det-J ratios of a fake mesh: `bad` elements at 0.1, the rest 0.9."""
+    r = np.full(m.ne, 0.9)
+    r[: getattr(m, "bad", 0)] = 0.1
+    return r
+
+
+def _local_eta(ne):
+    """10 % of the elements carry 100x the indicator of the rest (a re-entrant edge)."""
+    eta = np.ones(ne)
+    eta[: ne // 10] = 100.0
+    return eta
+
+
+def _adaptive_est(m):
+    return 4e-3 * (10000 / m.ne) ** (4 / 3), _local_eta(m.ne), m.ne
+
+
+def test_p2_refine_defaults_to_adaptive_and_rejects_unknown_modes():
+    assert fl.DEFAULTS["p2_refine"] == "adaptive"
+    with pytest.raises(ValueError, match="p2_refine"):
+        fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "p2_refine": "global"}, SimpleNamespace(ne=10),
+                                  "shape", 10.0, lambda m: (1.0, None, None))
+
+
+def test_adaptive_refine_grows_locally_and_converges(monkeypatch):
+    log = _fake_adaptive_env(monkeypatch)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "max_ndof": 10**9}, SimpleNamespace(ne=10000, levels=1),
+                                  "shape", 10.0, _adaptive_est, cs=2.0)
+    assert r["refine"] == "adaptive" and r["stop"] == "converged" and r["est"] <= 1e-3
+    assert r["tets"][1] >= 1.3 * 10000 and r["growth"][0] == pytest.approx(r["tets"][1] / 10000)
+    # local: the 10 % high-error elements drive the count, far fewer tets than the uniform rule (r = 0.9·(1/4)^(1/4): 3.9x);
+    # a round adds at most 4x (the fake estimate does not follow the locality, so the efficiency correction asks for more)
+    assert r["tets"][1] < 2.0 * 10000 and max(r["growth"]) <= 4.0 + 1e-9 and r["css"] == [2.0] * r["rounds"] and r["cs"] == 2.0 and r["f"] == 10.0
+    assert log.made == [2.0]                               # one remesher, start cs; accumulating across rounds
+    assert r["payload"] == r["tets"][-1] and len(r["targets"]) == len(r["meshings"]) == r["rounds"] - 1
+
+
+def test_adaptive_refine_forces_growth_even_when_the_estimate_is_barely_above_tol(monkeypatch):
+    _fake_adaptive_env(monkeypatch)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "max_ndof": 10**9, "p2_max_refine": 1},
+                                  SimpleNamespace(ne=10000, levels=1), "shape", 10.0,
+                                  lambda m: (1.02e-3, _local_eta(m.ne), None), cs=2.0)
+    assert r["tets"][1] >= 1.3 * 10000 * 0.99 and r["stop"] == "max_rounds"
+
+
+def test_adaptive_refine_never_converges_falsely_when_the_mesh_does_not_grow(monkeypatch):
+    """netgen ignores the request (curvature-bound): 3 meshings, then 'stalled' on the last SOLVED mesh, label_ok follows est."""
+    _fake_adaptive_env(monkeypatch)
+    from src.data_gen import adaptive as ad
+    calls = []
+
+    def mesh_remesher(shape, maxh, **kw):
+        def remesh(cen, hn):
+            calls.append(1)
+            return SimpleNamespace(ne=10300, levels=1)
+        return remesh
+    monkeypatch.setattr(ad, "mesh_remesher", mesh_remesher)
+    start = SimpleNamespace(ne=10000, levels=1)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0,
+                                  lambda m: (4e-3, _local_eta(m.ne), None), cs=2.0)
+    assert r["stop"] == "stalled" and r["rounds"] == 1 and r["mesh"] is start and r["est"] > 1e-3 and len(calls) == 3
+
+
+def test_adaptive_refine_retries_with_a_stronger_target_when_netgen_undershoots(monkeypatch):
+    log = _fake_adaptive_env(monkeypatch, realised=0.5)    # netgen delivers half of what the field predicts
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "max_ndof": 10**9, "p2_max_refine": 1},
+                                  SimpleNamespace(ne=10000, levels=1), "shape", 10.0, _adaptive_est, cs=2.0)
+    assert len(log.calls) >= 2 and r["meshings"][0] == len(log.calls) and r["tets"][1] >= 1.15 * 10000
+    assert [c[1] for c in log.calls] == sorted(c[1] for c in log.calls)       # each meshing aims higher
+
+
+def test_adaptive_refine_clamps_to_the_dof_budget_and_rebuilds_the_remesher_on_overshoot(monkeypatch):
+    sizes = iter([3.0, 1.0, 1.0])                         # first meshing overshoots the budget (x3 the requested count)
+    log = _fake_adaptive_env(monkeypatch, realised=lambda n: next(sizes))
+    s = {**fl.DEFAULTS, "max_ndof": 300000, "p2_max_refine": 1}   # 27272 tets
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, SimpleNamespace(ne=10000, levels=1), "shape", 10.0,
+                                  lambda m: (4e-3, _local_eta(m.ne), None), cs=2.0)
+    assert log.resets == 1 and r["tets"][1] <= 300000 / 11 and r["tets"][1] >= 1.15 * 10000 and r["rounds"] == 2
+    # no room for 15 % more tets: budget, last solved mesh
+    start = SimpleNamespace(ne=10000, levels=1)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "max_ndof": 115000}, start, "shape", 10.0,
+                                  lambda m: (4e-3, _local_eta(m.ne), None), cs=2.0)
+    assert r["stop"] == "budget" and r["mesh"] is start and r["rounds"] == 1
+
+
+def test_adaptive_refine_repairs_a_jacobian_drop_below_qoi_min_jacobian(monkeypatch):
+    """Start mesh qoi_ok (0.9); the remeshed one has 5 elements at 0.1 < 0.3: they are halved once more, the kept mesh is >= 0.3."""
+    log = _fake_adaptive_env(monkeypatch)
+    from src.data_gen import adaptive as ad
+    calls = []
+
+    def mesh_remesher(shape, maxh, min_jacobian_ratio=0.05, **kw):
+        calls.append(min_jacobian_ratio)
+
+        def remesh(cen, hn):
+            if len(cen) > 100:                                  # the growth pass: 5 distorted elements
+                return SimpleNamespace(ne=15000, levels=1, bad=5)
+            calls.append(len(cen))                              # the repair pass at the 5 bad elements
+            return SimpleNamespace(ne=15100, levels=1, bad=0)
+        return remesh
+    monkeypatch.setattr(ad, "mesh_remesher", mesh_remesher)
+    start = SimpleNamespace(ne=10000, levels=1)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "p2_max_refine": 1}, start, "shape", 10.0,
+                                  lambda m: (4e-3, _local_eta(m.ne), None), cs=2.0)
+    assert calls == [0.1, 5] and r["tets"][1] == 15100                # remesher threshold = max(fix_below, min_jacobian_ratio)
+    after, before = fl.ho.jacobian_ratio(r["mesh"]), fl.ho.jacobian_ratio(start)
+    assert after >= min(before, fl.DEFAULTS["qoi_min_jacobian"])
+    del log
+
+
+def test_adaptive_refine_retries_a_folded_remesh_at_a_finer_cs_and_then_fails(monkeypatch):
+    log = _fake_adaptive_env(monkeypatch, raises=lambda cs: cs < 3.0)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "max_ndof": 10**9, "p2_max_refine": 1},
+                                  SimpleNamespace(ne=10000, levels=1), "shape", 10.0, _adaptive_est, cs=2.0)
+    assert log.made == [2.0, 3.0] and r["cs"] == 3.0 and r["css"] == [2.0, 3.0] and r["rounds"] == 2
+    log = _fake_adaptive_env(monkeypatch, raises=lambda cs: True)
+    start = SimpleNamespace(ne=10000, levels=1)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "p2_max_cs": 4.0}, start, "shape", 10.0,
+                                  _adaptive_est, cs=2.0)
+    assert r["stop"] == "mesh_failed" and r["mesh"] is start and log.made == [2.0, 3.0, 4.0] and r["cs"] == 2.0
 
 
 @pytest.fixture(scope="module")
@@ -246,14 +401,28 @@ def test_p2_label_sample_attrs_and_projection(p2_pillbox):
 
 
 def test_p2_label_sample_refines_until_the_estimate_is_within_tol(tmp_path):
-    """Pillbox, h = 0.02: start mesh ~1.8k tets has est 1.6e-4; tol 5e-5 forces refinement (numbers in the assert message)."""
+    """UNIFORM mode. Pillbox, h = 0.02: start mesh ~1.8k tets has est 1.6e-4; tol 5e-5 forces refinement (numbers in the assert message)."""
     brep = _brep(tmp_path / "p.brep")
-    res = fl.label_sample(brep, 0.02, "pillbox", 3, settings={**SMALL, "tol_f_p2": 5e-5})
+    res = fl.label_sample(brep, 0.02, "pillbox", 3, settings={**SMALL, "tol_f_p2": 5e-5, "p2_refine": "uniform"})
     a = res["attrs"]
     msg = (a["p2_tets"], a["p2_est"], a["p2_stop"])
     assert a["p2_rounds"] >= 2 and a["p2_stop"] == "converged" and a["label_ok"] == 1 and a["est_rel_f"] <= 5e-5, msg
     assert a["p2_est"][0] > 5e-5 and a["p2_tets"][-1] > a["p2_tets"][0] and a["n_tets"] == a["p2_tets"][-1], msg
     assert a["curvaturesafety_used"] > 2.0 and a["p2_cs"][0] == 2.0 and a["p2_cs"][-1] == a["curvaturesafety_used"] and a["maxh_factor_used"] < 3.0 and np.abs(res["proj_err"]).max() < 1e-6
+
+
+def test_p2_label_sample_adaptive_refines_locally_with_a_reloadable_single_level_mesh(tmp_path):
+    """Default mode on a real pillbox: the remeshed mesh grows >= 15 %, keeps cs and maxh, is stored (_check_reload ran) and attrs say so."""
+    brep = _brep(tmp_path / "p.brep")
+    res = fl.label_sample(brep, 0.02, "pillbox", 3, settings={**SMALL, "tol_f_p2": 5e-5})
+    a = res["attrs"]
+    msg = (a["p2_tets"], a["p2_est"], a["p2_stop"])
+    assert a["p2_refine"] == "adaptive" and a["p2_rounds"] >= 2 and a["p2_stop"] == "converged" and a["label_ok"] == 1, msg
+    assert a["p2_tets"][1] >= 1.15 * a["p2_tets"][0] and a["n_tets"] == a["p2_tets"][-1] and a["est_rel_f"] <= 5e-5, msg
+    assert set(a["p2_cs"]) == {2.0} and a["curvaturesafety_used"] == 2.0 and np.abs(res["proj_err"]).max() < 1e-6
+    assert a["jacobian_ratio"] > 0.05 and a["n_dof_model"] == a["n_dof_label"]
+    uni = fl.label_sample(brep, 0.02, "pillbox", 3, settings={**SMALL, "tol_f_p2": 5e-5, "p2_refine": "uniform"})["attrs"]
+    assert uni["p2_refine"] == "uniform" and uni["curvaturesafety_used"] > 2.0     # the old global rule stays selectable
 
 
 def test_p2_label_sample_budget_stop_keeps_the_last_mesh_and_flags_it(tmp_path):

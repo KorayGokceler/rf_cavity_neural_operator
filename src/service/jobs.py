@@ -44,7 +44,7 @@ def family_blocks(tsv=None):
     return out
 
 
-TAG_VERSION = "v2"      # generator output version (cluster/truba/config.sh DATA_VERSION): bump when a seed's
+TAG_VERSION = "v3"      # generator output version (cluster/truba/config.sh DATA_VERSION): bump when a seed's
                         # geometry or labels change, so old and new shards never share a dataset folder
 
 

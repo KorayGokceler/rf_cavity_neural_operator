@@ -61,7 +61,7 @@ bash cluster/truba/run.sh all LABELS=field ... --dry-run      # always dry-run T
 - Curved meshes repaired by bisection must go through `highorder.single_level` before storage, or the
   stored DOFs do not match the rebuilt space (`field_labels._check_reload` guards this).
 - Every form on a curved mesh uses one explicit integration rule (`highorder.volume_measure`).
-- Labels (docs/37): default p2, one HCurl p2 solve on the model mesh (start ~10k tets from `field_labels.model_sized_mesh`, refined until est ≤ `tol_f_p2`, no tet cap;
+- Labels (docs/37): default p2, one HCurl p2 solve on the model mesh (start ~10k tets from `field_labels.model_sized_mesh`, refined locally (`--p2_refine adaptive`, default; `uniform` selectable) until est ≤ `tol_f_p2`, no tet cap;
   prediction uses the start mesh). High-fidelity option `--label_order 3`: frequencies and QoI from the adaptive p3 label mesh, field target = p2 projection.
 
 ## Working rules

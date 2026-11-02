@@ -61,10 +61,77 @@ def test_remesh_mode_refines_where_the_error_is_and_respects_the_budget():
     h = res["hist"]
     assert len(h) >= 2 and errs[-1] < 0.3 * errs[0]
     assert all(r["ndof"] <= 60_000 * 1.3 for r in h)              # predicted size kept inside the budget
+    assert all(r["growth"] >= 1.15 for r in h[1:])                # forced growth: every pass adds >= 15 % tets
     cen, size = ad.element_geometry(res["mesh"])
     assert cen.shape == (res["mesh"].ne, 3) and np.all(size > 0)
     hn = ad.size_field(np.ones(4), np.array([1.0, 1.0, 1.0, 100.0]), 2)
     assert hn[3] < hn[0] and np.all(hn <= 1.0) and np.all(hn >= 0.3)  # refine the large-error element
+
+
+def test_size_field_for_count_and_for_reduction():
+    rng = np.random.default_rng(0)
+    h, eta = np.full(2000, 0.01), np.where(np.arange(2000) < 200, 100.0, 1.0) * rng.uniform(0.5, 1.5, 2000)
+    for n_target in (2600, 4000, 9000):
+        hn = ad.size_field_for_count(h, eta, 2, n_target)
+        assert np.all(hn <= h) and ad.predicted_count(h, hn) == pytest.approx(n_target, rel=0.02)
+        assert np.all(hn[:200] <= hn[200:].min() * 1.001) or hn[:200].mean() < hn[200:].mean()   # the high-error elements shrink most
+    assert np.array_equal(ad.size_field_for_count(h, eta, 2, 1500), h)           # nothing to add: unchanged
+    hn = ad.size_field_for_reduction(h, eta, 2, 0.3)
+    assert ad.predicted_error_ratio(h, hn, eta, 2) == pytest.approx(0.3, rel=0.02)
+    assert ad.predicted_count(h, hn) < ad.predicted_count(h, np.full_like(h, 0.01 * 0.3 ** 0.25))   # cheaper than uniform
+    assert np.array_equal(ad.size_field_for_reduction(h, eta, 2, 1.0), h)
+
+
+def test_grow_mesh_retries_stronger_and_rebuilds_on_overshoot():
+    from types import SimpleNamespace
+    h, eta = np.full(1000, 0.01), np.ones(1000)
+    cen = np.zeros((1000, 3))
+    mesh = SimpleNamespace(ne=1000)
+    seen = []
+
+    def remesh(c, hn):                                    # netgen delivers only a third of the predicted count
+        seen.append(ad.predicted_count(h, hn))
+        return SimpleNamespace(ne=int(seen[-1] / 3))
+    new, status, info = ad.grow_mesh(remesh, mesh, eta, 2, 1300, 50000, cen=cen, h=h)
+    assert status == "ok" and new.ne >= 1150 and info["meshings"] >= 2 and seen == sorted(seen)
+    new, status, info = ad.grow_mesh(lambda c, hn: SimpleNamespace(ne=1050), mesh, eta, 2, 1300, 50000, cen=cen, h=h)
+    assert new is None and status == "stalled" and info["meshings"] == 3
+    resets = []
+
+    def over(c, hn):
+        return SimpleNamespace(ne=int(ad.predicted_count(h, hn) * (3 if not resets else 1)))
+    over.reset = lambda: resets.append(1)
+    new, status, info = ad.grow_mesh(over, mesh, eta, 2, 1500, 2500, cen=cen, h=h)
+    assert resets == [1] and status == "ok" and 1150 <= new.ne <= 2500
+    assert ad.grow_mesh(over, mesh, eta, 2, 1500, 1100, cen=cen, h=h)[1] == "budget"
+
+
+def test_qoi_change_has_an_absolute_floor_for_a_numerically_zero_rq():
+    """blob: R/Q ~ 1e-60 ohm changed by a factor between two levels → relative change 1e59 and no convergence ever."""
+    s = {**ad.DEFAULTS}
+    prev = np.array([[1e9, 5e3, 300.0, 1e-60, 1e6, 0.01]])
+    inv = np.array([[1e9, 5e3, 300.0, 3e-58, 1e6, 0.01]])
+    df, dq = ad.qoi_change(prev, inv, s)
+    assert df == 0.0 and dq < 1e-12
+    inv2 = np.array([[1e9, 5e3, 300.0, 11.0, 1e6, 0.01]])                          # a real R/Q: 10 ohm → 11 ohm
+    assert ad.qoi_change(np.array([[1e9, 5e3, 300.0, 10.0, 1e6, 0.01]]), inv2, s)[1] == pytest.approx(0.1)
+
+
+def test_remesh_mode_is_stalled_not_converged_when_the_mesh_does_not_grow():
+    """Two identical meshes always agree: the old loop said 'converged' there (docs/31 item 14, 128 → 132 tets, error 3.5e-4)."""
+    calls = []
+
+    def remesh(cen, hn):
+        calls.append(1)
+        return _pillbox(0.02)                                     # netgen ignores the request
+    res = ad.adaptive_modes(_pillbox(0.02), 1, order=2, remesh=remesh,
+                            settings={"tol_f": 1.0, "tol_q": 1.0, "max_iter": 6, "max_ndof": 200_000})
+    assert res["stop"] == "stalled" and len(calls) == 3 and len(res["hist"]) == 1
+    sizes = iter([0.016])                                        # one real pass of growth: now the agreement counts
+    res = ad.adaptive_modes(_pillbox(0.02), 1, order=2, remesh=lambda cen, hn: _pillbox(next(sizes)),
+                            settings={"tol_f": 1.0, "tol_q": 1.0, "max_iter": 6, "max_ndof": 200_000})
+    h = res["hist"]
+    assert res["stop"] == "converged" and len(h) == 2 and h[1]["growth"] > 1.15
 
 
 def test_budget_stops_refinement():

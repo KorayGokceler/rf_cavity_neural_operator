@@ -107,7 +107,7 @@ class FieldH5Dataset:
                                           'label_ok': _attr(g, 'label_ok', lambda v: bool(int(v))),
                                           'est_max': _attr(g, 'est_max'),
                                           'tol_f_p2': _attr(g, 'tol_f_p2'), 'p2_rounds': _attr(g, 'p2_rounds', int),
-                                          'p2_stop': _attr(g, 'p2_stop', str), 'p2_tets': _list(g, 'p2_tets', int), 'p2_est': _list(g, 'p2_est'), 'p2_cs': _list(g, 'p2_cs'),
+                                          'p2_stop': _attr(g, 'p2_stop', str), 'p2_tets': _list(g, 'p2_tets', int), 'p2_est': _list(g, 'p2_est'), 'p2_cs': _list(g, 'p2_cs'), 'p2_refine': _attr(g, 'p2_refine', str),
                                           'round_fallback': _attr(g, 'round_fallback', lambda v: bool(int(float(v)))),
                                           'curvaturesafety_used': _attr(g, 'curvaturesafety_used'),
                                           'maxh_factor_used': _attr(g, 'maxh_factor_used'),

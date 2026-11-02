@@ -3,8 +3,8 @@
 Default (label_order == model_order == 2, docs/37): the training labels ARE the model space's own solution.
 The model mesh starts near 10k tets (model_sized_mesh: ≥ 5k, no cap, curvaturesafety 2, found by scaling netgen's
 maxh), HCurl p2 is solved on it, and the p2 error estimate (adaptive.indicator) is stored per sample (est_rel_f;
-label_ok = est_rel_f ≤ tol_f_p2).  While the estimate is above tol_f_p2 the mesh is refined uniformly
-(refine_p2_to_tolerance, at most p2_max_refine times, within max_ndof).  The model's Ritz values cannot go below
+label_ok = est_rel_f ≤ tol_f_p2).  While the estimate is above tol_f_p2 the mesh is refined, locally by default
+(refine_p2_to_tolerance, p2_refine 'adaptive'; 'uniform' = global maxh / cs; at most p2_max_refine times, within max_ndof).  The model's Ritz values cannot go below
 the p2 eigenvalues of its mesh anyway, so these labels are the best the model can reach, at a fraction of
 the cost of the p3 labels below.  The prediction path builds its mesh with the same model_sized_mesh.
 
@@ -64,10 +64,13 @@ DEFAULTS = {"label_order": 2, "model_order": 2, "curve": 3, "maxh_factor": 3.0, 
             "model_max_elements": 20000,
             # p2 labels (docs/37): model_sized_mesh builds the START mesh (model_min_elements or more tets, no upper cap,
             # as close to model_target_elements as netgen allows, curvaturesafety fixed); refine_p2_to_tolerance then
-            # refines it uniformly until the p2 frequency error estimate is <= tol_f_p2 (at most p2_max_refine
+            # refines it (p2_refine) until the p2 frequency error estimate is <= tol_f_p2 (at most p2_max_refine
             # refinements, never beyond max_ndof).  label_ok = estimate <= tol_f_p2.
             "model_min_elements": 5000, "model_target_elements": 10000,
             "model_mesh_tries": 10, "tol_f_p2": 1e-3, "p2_max_refine": 3, "p2_ndof_per_tet": 11.0, "p2_max_cs": 6.0,
+            # refinement of the start mesh: 'adaptive' (local: the size field follows the per-element indicator, scaled to
+            # a target tet count, every round forced to grow by >= p2_min_growth_force x) or 'uniform' (global maxh / cs)
+            "p2_refine": "adaptive", "p2_min_growth": 0.15, "p2_force_growth": 1.3,
             # qoi_ok attr: the min det-J ratio of the model mesh >= qoi_min_jacobian.  Measured on p2 meshes: Q0 off 10x at
             # 0.05, peaks off 3x at 0.07, fine from 0.4 (netgen_mesh docstring).  Only a flag: frequencies / fields
             # (label_ok) are fine there, the QoI is not NaN'd.
@@ -201,14 +204,29 @@ def model_sized_mesh(cad_path, h, deform=None, s=None, log=None):
 
 
 def refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, f, estimate_fn, log=None, cs=None):
-    """Uniform refinement of a p2 model mesh until the frequency error estimate is within s['tol_f_p2'] (docs/37).
+    """Refine a p2 model mesh until the frequency error estimate is within s['tol_f_p2'] (docs/37):
+    s['p2_refine'] == 'adaptive' (default) refines LOCALLY (_refine_adaptive), 'uniform' globally (_refine_uniform).
     Reusable: the label generator calls it with the p2 solve as estimate_fn; the prediction path may call it with
     an estimate from the model's predicted fields.
 
+    estimate_fn(mesh) → (est, eta, payload): est = the relative frequency error estimate on that mesh (0.5·Σ ev / K,
+    adaptive.indicator); eta = its per-element parts ev [ne] (the adaptive mode's refinement indicator; ev only, not
+    ev + ew: the wall term is the QoI indicator of the p3 loop, tol_f_p2 limits the frequency estimate; the uniform
+    mode ignores it, None is fine there); payload = anything the caller needs of that solve (returned for the final
+    mesh only).
+    Returns dict(mesh, shape, f, cs, est, payload, rounds (= solves), stop, tets, ests, css [per round], refine)."""
+    mode = str(s.get("p2_refine", "adaptive"))
+    if mode not in ("adaptive", "uniform"):
+        raise ValueError(f"p2_refine must be 'adaptive' or 'uniform', not {mode!r}")
+    fn = _refine_adaptive if mode == "adaptive" else _refine_uniform
+    return {**fn(cad_path, h, deform, s, mesh, shape, f, estimate_fn, log=log, cs=cs), "refine": mode}
+
+
+def _refine_uniform(cad_path, h, deform, s, mesh, shape, f, estimate_fn, log=None, cs=None):
+    """Uniform refinement (refine_p2_to_tolerance, p2_refine = 'uniform').
+
     mesh, shape, f, cs: the start mesh (model_sized_mesh) with its maxh factor (maxh = f·h) and curvaturesafety
     (default s['curvaturesafety']).
-    estimate_fn(mesh) → (est, payload): est = the relative frequency error estimate on that mesh (0.5·Σ ev / K,
-    adaptive.indicator); payload = anything the caller needs of that solve (returned for the final mesh only).
     Loop: est > tol and rounds left → r = (tol/est)^(1/p)·0.9 (10 % margin; p = 4, the p2 rate, in round 1, afterwards
     the rate observed between the last two solves with their realised h-ratio, clamped to [1, 4]), f ← f·r AND
     cs ← min(cs/r, p2_max_cs) (netgen sizes curved faces by radius/curvaturesafety), rebuild the curved mesh,
@@ -223,7 +241,7 @@ def refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, f, estimate_fn, 
     tol, k_dof = float(s["tol_f_p2"]), float(s["p2_ndof_per_tet"])
     cs = float(s["curvaturesafety"] if cs is None else cs)
     cs_max = float(s["p2_max_cs"])
-    est, payload = estimate_fn(mesh)
+    est, _, payload = estimate_fn(mesh)
     tets, ests, css = [int(mesh.ne)], [float(est)], [cs]
     stop = "converged"
     while est > tol:
@@ -278,7 +296,7 @@ def refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, f, estimate_fn, 
             stop = "budget"
             break
         mesh, shape, f, cs = m2, sh2, f_new, cs_new
-        est, payload = estimate_fn(mesh)
+        est, _, payload = estimate_fn(mesh)
         tets.append(int(mesh.ne))
         ests.append(float(est))
         css.append(float(cs))
@@ -287,6 +305,118 @@ def refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, f, estimate_fn, 
                 f"est {est:.2e} (tol {tol:.1e})")
     return {"mesh": mesh, "shape": shape, "f": float(f), "cs": float(cs), "est": float(est), "payload": payload,
             "rounds": len(tets), "stop": stop, "tets": tets, "ests": ests, "css": css}
+
+
+def _refine_adaptive(cad_path, h, deform, s, mesh, shape, f, estimate_fn, log=None, cs=None):
+    """Local refinement (refine_p2_to_tolerance, p2_refine = 'adaptive', docs/37 §3.2).  Round: est > tol and rounds
+    left → size field from the per-element indicator eta (adaptive.size_field: equidistribution, hn ≤ h) scaled to a
+    TARGET tet count N_next, remesh with adaptive.mesh_remesher (same maxh = f·h, cs, grading, curve, deform as the
+    start mesh; netgen RestrictH, accumulating), re-solve.
+      N_next: the count of the equidistributing size field (per-element error equalised, size_field's exponent) predicted to
+              bring est to 0.9⁴·tol (the 10 % margin of the uniform rule, est ∝ h⁴; adaptive.size_field_for_reduction), divided by the efficiency seen in the previous
+              round (log of the realised / predicted error reduction, clipped to [0.5, 1]: singular problems reduce the
+              error less than the model); a round adds at most 4x the tets; then FORCED GROWTH N_next ≥ p2_force_growth·N (1.3) and ≤ the tet budget
+              max_ndof / p2_ndof_per_tet.
+      meshing (adaptive.grow_mesh): netgen does not follow the field exactly, so the realised count decides: < 15 % more
+              tets than the last solved mesh → retry with a stronger target (3 meshings); over the budget → fresh
+              remesher, smaller target.  A mesh that folds the curved elements (RuntimeError) is retried at cs + 1 up to
+              p2_max_cs (new remesher), else 'mesh_failed'.
+    Stops as in the uniform mode: est ≤ tol ('converged'); p2_max_refine refinements ('max_rounds'); no room for 15 % more
+    tets / over max_ndof ('budget'); no growth after the retries ('stalled'); the mesh cannot be built ('mesh_failed').
+    Every stop but 'converged' keeps the last solved mesh.  Extra keys: growth [per refinement: tets / previous],
+    meshings [per refinement], targets [N_next per refinement]."""
+    from ngsolve import HCurl
+
+    from netgen.meshing import NgException
+
+    from src.data_gen import adaptive as ad
+    qmin = float(s["qoi_min_jacobian"])
+    tol = float(s["tol_f_p2"])
+    cs = float(s["curvaturesafety"] if cs is None else cs)
+    cs_max, order = float(s["p2_max_cs"]), int(s["model_order"])
+    g_min, min_growth = float(s["p2_force_growth"]), float(s["p2_min_growth"])
+    cap = _tet_cap(s)
+
+    def new_remesher(c):
+        return ad.mesh_remesher(shape, f * h, curve=s["curve"], deform=deform, curvaturesafety=c, grading=s["grading"],
+                                min_jacobian_ratio=max(float(s["fix_below"]), float(s["min_jacobian_ratio"])))  # the start mesh's repair level
+    remesh = new_remesher(cs)
+    est, eta, payload = estimate_fn(mesh)
+    tets, ests, css = [int(mesh.ne)], [float(est)], [cs]
+    growth, meshings, targets = [], [], []
+    stop, eff, pred_ratio, jac = "converged", 1.0, None, None
+    while est > tol:
+        if len(tets) > int(s["p2_max_refine"]):
+            stop = "max_rounds"
+            break
+        if len(ests) > 1 and pred_ratio is not None:       # efficiency of the last round: realised / predicted log reduction
+            real = np.log(max(ests[-1], 1e-300) / max(ests[-2], 1e-300))
+            eff = float(np.clip(real / np.log(pred_ratio), 0.5, 1.0)) if pred_ratio < 1.0 and real < 0 else 0.5
+        ne = int(mesh.ne)
+        if cap < (1.0 + min_growth) * ne:                  # no room for a real step
+            stop = "budget"
+            break
+        cen, hh = ad.element_geometry(mesh)
+        ratio = (0.9 ** 4 * tol / est) ** (1.0 / eff)
+        hn = ad.size_field_for_reduction(hh, eta, order, ratio)
+        n_next = min(max(ad.predicted_count(hh, hn), g_min * ne), 4.0 * ne, cap)
+        cs_try, new = cs, None
+        while True:
+            try:
+                new, status, info = ad.grow_mesh(remesh, mesh, eta, order, n_next, cap, cen=cen, h=hh,
+                                                 min_growth=min_growth, log=log)
+                break
+            except (RuntimeError, NgException) as e:       # folded elements / netgen failure: finer curved elements
+                if log is not None:
+                    log(f"refine_p2_to_tolerance: adaptive remesh at cs {cs_try:g} failed ({e})")
+                if cs_try >= cs_max:
+                    status, info = "mesh_failed", {"meshings": 0}
+                    break
+                cs_try = min(cs_try + 1.0, cs_max)
+                remesh = new_remesher(cs_try)
+        if new is None:
+            stop = status
+            break
+        r_new = ho.element_jacobian_ratio(new)
+        jac_new = float(r_new.min())
+        if jac is None:
+            jac = ho.jacobian_ratio(mesh)
+        for _ in range(2):          # a refinement must not push a mesh that is qoi_ok below qoi_min_jacobian
+            if not (jac >= qmin > jac_new):
+                break
+            bad = r_new < qmin
+            cb, hb = ad.element_geometry(new)
+            try:                    # as the remesher does for folds: half the size at the bad elements (accumulates)
+                cand = remesh(cb[bad], 0.5 * hb[bad])
+            except (RuntimeError, NgException):
+                break
+            if cand.ne > cap:
+                break
+            new, r_new = cand, ho.element_jacobian_ratio(cand)
+            jac_new = float(r_new.min())
+        if jac >= qmin > jac_new and log is not None:
+            log(f"refine_p2_to_tolerance: min det-J ratio {jac:.2f} -> {jac_new:.2f} (< qoi_min_jacobian {qmin:g}) "
+                "after local repair; kept (qoi_ok follows the stored mesh)")
+        if HCurl(new, order=order, dirichlet="wall").ndof > s["max_ndof"]:
+            stop = "budget"
+            break
+        # the size field actually requested: its predicted error ratio feeds the efficiency of the next round
+        pred_ratio = max(ad.predicted_error_ratio(hh, ad.size_field_for_count(hh, eta, order, min(info["targets"][-1], cap)),
+                                                  eta, order), 1e-6)
+        mesh, cs, jac = new, cs_try, jac_new
+        est, eta, payload = estimate_fn(mesh)
+        tets.append(int(mesh.ne))
+        ests.append(float(est))
+        css.append(float(cs))
+        growth.append(tets[-1] / tets[-2])
+        meshings.append(int(info["meshings"]))
+        targets.append(float(n_next))
+        if log is not None:
+            log(f"refine_p2_to_tolerance: round {len(tets)} (adaptive): {mesh.ne} tets (x{growth[-1]:.2f}, target "
+                f"{n_next:.0f}, {meshings[-1]} meshing(s)), est {est:.2e} (tol {tol:.1e})")
+    return {"mesh": mesh, "shape": shape, "f": float(f), "cs": float(cs), "est": float(est), "payload": payload,
+            "rounds": len(tets), "stop": stop, "tets": tets, "ests": ests, "css": css,
+            "growth": growth, "meshings": meshings, "targets": targets}
 
 
 def project_to_model(mesh, label, model_order, unit_norm=False):
@@ -442,7 +572,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
     """All field labels of one geometry (the generator's CAD solid at label mesh size h; params: its
     geom_params, for the beam axis and the accelerating length).
     label_order == model_order (default, docs/37): HCurl(model_order) solves on model_sized_mesh (start mesh,
-    ≥ model_min_elements tets), uniformly refined until the error estimate est_rel_f ≤ tol_f_p2
+    ≥ model_min_elements tets), refined (locally, p2_refine) until the error estimate est_rel_f ≤ tol_f_p2
     (refine_p2_to_tolerance; label_ok = 1 then).  Otherwise (high-fidelity labels):
     adaptive: adaptive refinement until the frequencies change < tol_f and the figures of merit
     < tol_q (docs/30); else one solve on the curvature-sized mesh.  sharp_edges > 0 (re-entrant edges the generator could not round): the surface
@@ -463,7 +593,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
         def solve_p2(m):                                 # one p2 solve + its error estimate (adaptive.indicator)
             lab_m = ho.solve_modes(m, n_modes + 1, order=s["label_order"], max_ndof=s["max_ndof"])
             ev_m, ew_m = ad.indicator(m, lab_m["gfs"][:K], lab_m["lam"][:K], s["label_order"])
-            return float(0.5 * ev_m.sum() / K), (lab_m, ew_m)
+            return float(0.5 * ev_m.sum() / K), ev_m, (lab_m, ew_m)
 
         ref = refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, minfo["maxh_factor"], solve_p2,
                                      log=lambda m_: print(m_, flush=True), cs=minfo["curvaturesafety"])
@@ -477,7 +607,7 @@ def label_sample(cad_path, h, shape_type, n_modes, deform=None, settings=None, s
                        "est_max": float(s["tol_f_p2"]),            # = tol_f_p2 (name of the pre-refinement rule)
                        "p2_rounds": int(ref["rounds"]), "p2_stop": ref["stop"],
                        "p2_tets": np.asarray(ref["tets"], np.int64), "p2_est": np.asarray(ref["ests"], float),
-                       "p2_cs": np.asarray(ref["css"], float),
+                       "p2_cs": np.asarray(ref["css"], float), "p2_refine": ref["refine"],
                        "model_meshes": minfo["n_meshes"], "maxh_factor_used": ref["f"],
                        "curvaturesafety_used": ref["cs"]}
     elif adaptive:

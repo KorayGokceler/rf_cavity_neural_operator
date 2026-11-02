@@ -4,7 +4,7 @@ Problem: curl curl E = k^2 E in the cavity, n x E = 0 on the PEC wall; f = c k /
 generator draws a geometry from a family (src/data_gen/cavity_shapes.py), meshes the CAD solid with gmsh
 (mesh_sample: certified connected manifold, any number of handles / isolated conductors) and labels it
 with src/data_gen/field_labels.py.  Default (docs/37): the model mesh (curved netgen mesh, start near 10k tets,
-refined uniformly until the p2 error estimate is ≤ --tol_f_p2) and HCurl p2 solves on it — the model space's own
+refined locally until the p2 error estimate is ≤ --tol_f_p2) and HCurl p2 solves on it — the model space's own
 modes, with their error estimate.  --label_order 3: high-fidelity labels (adaptive HCurl p3 modes L2-projected onto the model's p2
 space; test / CST sets, docs/30).  Both store the cavity figures of merit.  The H5 layout (one group ``sample_XXXX`` per
 geometry, file attr ``metadata``) is documented there and in docs/29_FIELD_LABELS.md; the common attrs
@@ -134,9 +134,14 @@ def parse_args(argv=None):
                    help="p2 labels: lower bound of the start mesh's tet count (no too-simple meshes).")
     p.add_argument("--tol_f_p2", type=float, default=1e-3,
                    help="p2 labels: error limit.  While the frequency error estimate is above it the mesh is refined "
-                        "uniformly (field_labels.refine_p2_to_tolerance); label_ok = estimate <= this.")
+                        "(field_labels.refine_p2_to_tolerance, --p2_refine); label_ok = estimate <= this.")
+    p.add_argument("--p2_refine", choices=("adaptive", "uniform"), default="adaptive",
+                   help="p2 labels: how the start mesh is refined while the estimate exceeds --tol_f_p2.  adaptive: locally, "
+                        "the size field follows the per-element error indicator and is scaled to a target tet count "
+                        "(every round grows the mesh by >= 15 %%); uniform: maxh and curvaturesafety shrink globally "
+                        "(the 2026-11-02 rule, docs/37 3).")
     p.add_argument("--p2_max_refine", type=int, default=3,
-                   help="p2 labels: at most this many uniform refinements (solves = 1 + refinements); stops earlier "
+                   help="p2 labels: at most this many refinements (solves = 1 + refinements); stops earlier "
                         "when the next p2 space would exceed --max_ndof.")
     p.add_argument("--no_round_edges", action="store_true",
                    help="Keep re-entrant edges sharp (by default they are filleted with radius "
@@ -671,6 +676,7 @@ def field_settings(args):
             "model_min_elements": int(getattr(args, "model_min_elements", 5000)),
             "tol_f_p2": float(getattr(args, "tol_f_p2", 1e-3)),
             "p2_max_refine": int(getattr(args, "p2_max_refine", 3)),
+            "p2_refine": str(getattr(args, "p2_refine", "adaptive")),
             **({"curvaturesafety": float(args.curvaturesafety), "adapt_cs": float(args.curvaturesafety)}
                if getattr(args, "curvaturesafety", None) else {})}
 

@@ -127,7 +127,7 @@ export interface FieldRowInfo {
   rounded_edges: number | null; sharp_edges: number; proj_err_max: number | null; t_labels_s: number | null;
   // p2 labels (docs/37); null in older datasets
   label_order: number | null; model_order: number | null; label_ok: boolean | null; est_max: number | null;
-  curvaturesafety_used: number | null; p2_stop: string | null; p2_rounds: number | null; p2_tets: number[] | null; p2_est: number[] | null; p2_cs: number[] | null;
+  curvaturesafety_used: number | null; p2_stop: string | null; p2_rounds: number | null; p2_tets: number[] | null; p2_est: number[] | null; p2_cs: number[] | null; p2_refine?: string | null;
   tol_f_p2: number | null; round_fallback: boolean | null; maxh_factor_used: number | null; model_meshes: number | null;
 }
 // label kind of a dataset (/api/datasets/{id}/quality): p2 = one solve on the model mesh, p3 = high fidelity

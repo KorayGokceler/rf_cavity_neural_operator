@@ -55,7 +55,7 @@ TOL_F_P2=${TOL_F_P2:-1e-3}             # field, p2 labels: refine the start mesh
 MODEL_MAX_ELEMENTS=${MODEL_MAX_ELEMENTS:-20000}   # field, LABEL_ORDER 3 only: tet cap of the model mesh (p2 labels have no cap)
 MAX_NDOF=${MAX_NDOF:-900000}           # field: DOF budget per sample; bounds p2 refinement too (≤ ~82k tets at 900k; ~12 GB conservative, measured ≤ 4.1 GB at 366k DOF)
 ROUND_EDGES=${ROUND_EDGES:-1}          # field: fillet re-entrant (singular) edges (docs/30 §3); 0 = keep them sharp
-DATA_VERSION=${DATA_VERSION:-v2}       # generator output version (src/service/jobs.py TAG_VERSION): part of TAG
+DATA_VERSION=${DATA_VERSION:-v3}       # generator output version (src/service/jobs.py TAG_VERSION): part of TAG
 HEAL=${HEAL:-1}                        # field: OCC healing of ridged_box / dtl before meshing (docs/29 §2.3)
 SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-3600}   # s; a stuck mesh/solve is skipped
 # _1s: one-solve high-fidelity labels (ADAPT=0, LABEL_ORDER > MODEL_ORDER), _sharp: unrounded geometries — never
