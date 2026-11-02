@@ -17,7 +17,7 @@ import re
 import shlex
 import subprocess
 
-from src.service.jobs import field_tag_of
+from src.service.jobs import field_core_s, field_tag_of
 
 ACTIONS = ("all", "dataset", "train", "status", "setup")
 TRAIN_FAMILIES = ("elliptical", "reentrant", "pillbox_pipes", "ridged_box", "composite", "freeform",
@@ -33,8 +33,8 @@ DEFAULT_REPO = "https://github.com/KorayGokceler/rf_cavity_neural_operator.git"
 DEFAULTS = {
     "PARTITION": "orfoz", "CPUS": 56, "TIME": "0-12:00:00", "ACCOUNT": "", "MAX_PARALLEL": 10,
     "MESH_SIZE": 0.10, "N_STORE": 10, "SAMPLING": "sobol", "DEFORM_PROB": 0.5, "DEFORM_MAX": 0.5, "SEED": 0,
-    "LABEL_ORDER": 3, "MODEL_ORDER": 2, "MIN_FILLET": "", "THREADS": 8, "FIELD_MAX_ELEMENTS": 30000,
-    "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 10000, "MAX_NDOF": 900000,
+    "LABEL_ORDER": 2, "MODEL_ORDER": 2, "MIN_FILLET": "", "THREADS": 8, "FIELD_MAX_ELEMENTS": 30000,
+    "MAXH_FACTOR": 3.0, "ADAPT": 1, "TOL_F": 1e-6, "TOL_F_P2": 1e-3, "TOL_Q": 1e-3, "MODEL_MAX_ELEMENTS": 20000, "MAX_NDOF": 900000,
     "ROUND_EDGES": 1, "HEAL": 1,
     "TAG": "", "TEST": 0,
     "GPU_PARTITION": "akya-cuda", "GPUS": 1, "GPU_CPUS": 10, "GPU_TIME": "3-00:00:00",
@@ -43,7 +43,7 @@ DEFAULTS = {
 DATASET_KEYS = ("LABELS", "PARTITION", "CPUS", "TIME", "ACCOUNT", "MAX_PARALLEL", "MESH_SIZE", "N_STORE",
                 "SAMPLING", "DEFORM_PROB", "DEFORM_MAX", "SEED", "TAG", "TEST")
 FIELD_KEYS = ("LABEL_ORDER", "MODEL_ORDER", "MIN_FILLET", "THREADS", "FIELD_MAX_ELEMENTS", "MAXH_FACTOR", "ADAPT",
-              "TOL_F", "TOL_Q", "MODEL_MAX_ELEMENTS", "MAX_NDOF", "ROUND_EDGES", "HEAL")
+              "TOL_F", "TOL_F_P2", "TOL_Q", "MODEL_MAX_ELEMENTS", "MAX_NDOF", "ROUND_EDGES", "HEAL")
 FIELD_TAG_KEYS = ("LABEL_ORDER", "MODEL_ORDER", "MIN_FILLET", "ADAPT", "ROUND_EDGES")   # config.sh derives TAG from these
 TRAIN_KEYS = ("GPU_PARTITION", "GPUS", "GPU_CPUS", "GPU_TIME", "EXP", "MODEL", "EPOCHS", "BATCH", "LR",
               "NUM_WORKERS", "CACHE_DIR", "TRAIN_EXTRA", "TRAIN_FAMILIES")
@@ -56,8 +56,8 @@ _DIR = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$")
 _PATH = re.compile(r"^(/|\$HOME/|\$USER/)?([A-Za-z0-9_.\-]+|\$USER|\$HOME)(/([A-Za-z0-9_.\-]+|\$USER))*/?$")
 _OVERRIDE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*=[A-Za-z0-9_.,:/\-\[\]\"']*$")
 
-# rough cost model (docs/29 §4): core-seconds per geometry, MB on disk
-FIELD_CORE_S = 560.0            # p3 label + p2 projection, ~18k curved tets (140 s on 4 threads)
+# rough cost model: core-seconds per geometry (src.service.jobs.field_core_s: p2 labels docs/37, p3 docs/29 §4),
+# MB on disk
 SHARD_SIZE = 1024               # families.tsv shard_size (every family); TEST: one shard of TEST_N = 112
 
 
@@ -153,10 +153,11 @@ def build_command(req):
     v["SEED"] = _num(r.get("seed", 0), 0, 2**31 - 1, "seed", True)
     v["TAG"] = _pat(r.get("tag", ""), _NAME, "tag")
     v["TEST"] = 1 if r.get("test") else 0
-    v["LABEL_ORDER"] = _num(r.get("label_order", 3), 2, 4, "label_order", True)
+    v["LABEL_ORDER"] = _num(r.get("label_order", 2), 2, 4, "label_order", True)
     v["MODEL_ORDER"] = _num(r.get("model_order", 2), 1, 3, "model_order", True)
-    if v["MODEL_ORDER"] >= v["LABEL_ORDER"]:
-        raise CommandError("model_order must be below label_order (the model space is nested in the label space)")
+    if v["MODEL_ORDER"] > v["LABEL_ORDER"]:
+        raise CommandError("model_order must not exceed label_order (the model space is nested in the label space; "
+                           "equal: p2 labels, docs/37)")
     mf = r.get("min_fillet", 0.05)
     v["MIN_FILLET"] = "" if mf in (None, "") else _fmt(_num(mf, 0.0, 0.3, "min_fillet"))
     if v["MIN_FILLET"] == "0.05":
@@ -168,8 +169,9 @@ def build_command(req):
     v["MAXH_FACTOR"] = _num(r.get("maxh_factor", 3.0), 1.0, 10.0, "maxh_factor")
     v["ADAPT"] = 1 if r.get("adapt", True) else 0
     v["TOL_F"] = _num(r.get("tol_f", 1e-6), 1e-9, 1e-2, "tol_f")
+    v["TOL_F_P2"] = _num(r.get("tol_f_p2", 1e-3), 1e-6, 0.1, "tol_f_p2")
     v["TOL_Q"] = _num(r.get("tol_q", 1e-3), 1e-6, 0.2, "tol_q")
-    v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 10000), 100, 500000, "model_max_elements", True)
+    v["MODEL_MAX_ELEMENTS"] = _num(r.get("model_max_elements", 20000), 100, 500000, "model_max_elements", True)
     v["MAX_NDOF"] = _num(r.get("max_ndof", 900000), 10000, 20_000_000, "max_ndof", True)
     v["ROUND_EDGES"] = 1 if r.get("round_edges", True) else 0
     v["HEAL"] = 1 if r.get("heal", True) else 0
@@ -239,10 +241,9 @@ def build_command(req):
         tag += "_test"
 
     n_geo = (112 if v["TEST"] else (n_per or 10240)) * len(fams)
-    core_h = n_geo * FIELD_CORE_S * (v["N_STORE"] / 10) ** 0.3 * (v["LABEL_ORDER"] / 3) ** 3 / 3600
-    if v["ADAPT"]:
-        core_h *= 3.0                        # ~3 refinement levels of a growing mesh (docs/30 §6)
-    size = min(v["MODEL_MAX_ELEMENTS"], 20000) / 20000 if v["ADAPT"] else 1.0
+    p2 = v["LABEL_ORDER"] == v["MODEL_ORDER"]          # p2 labels (docs/37): one solve on the model mesh
+    core_h = n_geo * field_core_s(v["LABEL_ORDER"], v["MODEL_ORDER"], bool(v["ADAPT"]), v["N_STORE"]) / 3600
+    size = 1.0 if p2 else min(v["MODEL_MAX_ELEMENTS"], 20000) / 20000 if v["ADAPT"] else 1.0
     mb = n_geo * (1.0 + 0.8 * v["N_STORE"] * size
                   * (1 if v["MODEL_ORDER"] == 2 else 0.27 if v["MODEL_ORDER"] == 1 else 2.2))
     workers = max(1, v["CPUS"] // v["THREADS"])
@@ -270,9 +271,9 @@ def defaults(root):
             "families": {"train": list(TRAIN_FAMILIES), "ood": list(OOD_FAMILIES)}, "models": list(MODELS),
             "labels": ["field"],
             "form": {"action": "all", "labels": "field", "families": [f for f in TRAIN_FAMILIES if f != "freeform"],
-                     "n_per_family": 1024, "mesh_size": 0.10, "n_modes": 10, "label_order": 3, "model_order": 2,
+                     "n_per_family": 1024, "mesh_size": 0.10, "n_modes": 10, "label_order": 2, "model_order": 2,
                      "min_fillet": 0.05, "threads": 8, "max_elements": 30000, "maxh_factor": 3.0,
-                     "adapt": True, "tol_f": 1e-6, "tol_q": 1e-3, "model_max_elements": 10000, "max_ndof": 900000,
+                     "adapt": True, "tol_f": 1e-6, "tol_f_p2": 1e-3, "tol_q": 1e-3, "model_max_elements": 20000, "max_ndof": 900000,
                      "round_edges": True, "heal": True, "deform_prob": 0.5, "deform_max": 0.5, "sampling": "sobol", "seed": 0, "tag": "",
                      "partition": "orfoz", "cpus": 56, "time": "0-12:00:00", "account": "", "max_parallel": 10,
                      "test": False, "gpu_partition": "akya-cuda", "gpus": 1, "gpu_cpus": 10,

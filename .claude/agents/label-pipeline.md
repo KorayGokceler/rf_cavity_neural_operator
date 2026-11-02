@@ -5,7 +5,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 model: sonnet
 ---
 You work on the code that turns a geometry id into a stored, validated label: CAD → curved netgen mesh →
-adaptive HCurl p3 eigenmodes → figures of merit → p2 projection on the model mesh → H5. Its correctness and
+HCurl p2 eigenmodes on the model mesh (default, docs/37; adaptive p3 + p2 projection with `--label_order 3`) → figures of merit → H5. Its correctness and
 reproducibility underlie every training run.
 
 ## Hard rules
@@ -22,8 +22,8 @@ reproducibility underlie every training run.
   - bisected meshes go through `highorder.single_level` before storage, guarded by
     `field_labels._check_reload`;
   - one explicit integration rule (`highorder.volume_measure`) for every curved-mesh form;
-  - frequencies and QoI from the p3 label mesh;
-  - the field target is the p2 projection on the model mesh.
+  - default p2 labels: one p2 solve on the model mesh (`field_labels.model_sized_mesh`, 5k–20k tets);
+  - with `--label_order 3`: frequencies and QoI from the p3 label mesh, field target = p2 projection on the model mesh.
 - Deformed samples get no STEP: their labels belong to the warped mesh.
 - Data is never committed (`*.h5`, `*.pkl`, `*.step` outputs live outside the repo or in ignored dirs).
 

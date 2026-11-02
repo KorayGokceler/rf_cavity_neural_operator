@@ -193,7 +193,7 @@ Nasıl okunur:
 EXP=field_base NAME=tesla cluster/truba/predict.sh --step $HOME/cad/tesla.step --unit mm --vol_div 9 --fe
 # üretilmiş bir geometri (aile + kimlik; alan datasetlerindeki geometrinin aynısı)
 EXP=field_base NAME=e1 cluster/truba/predict.sh --family elliptical --id 524300 --fe
-# alan-etiketi H5'indeki bir geometri (saklanan eğri mesh; p3 etiketleri de yazılır)
+# alan-etiketi H5'indeki bir geometri (saklanan eğri mesh; etiketler de yazılır (varsayılan p2, docs/37))
 EXP=field_base NAME=h1 cluster/truba/predict.sh --h5 $DATA/F_…/h5/elliptical/elliptical_s00000.h5 --sample 0
 ```
 

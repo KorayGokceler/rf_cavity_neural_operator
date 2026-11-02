@@ -10,6 +10,7 @@ FieldH5Dataset: the table adds the label quality (adaptive levels, stop reason, 
 mesh, rounded / sharp edges), and a geometry opens on its model mesh with the label fields as stored (HCurl
 p2 DOFs, drawn directly by src/viz/hcurl_display.py); the figures of merit shown are the stored p3 labels.
 """
+import collections
 import glob
 import json
 import os
@@ -56,6 +57,18 @@ def _attr(g, k, cast=float, default=None):
     return None if isinstance(out, float) and not np.isfinite(out) else out
 
 
+def _list(g, k, cast=float):
+    """An array attribute (one entry per p2 refinement round) as a list; None when absent."""
+    v = g.attrs.get(k, None)
+    if v is None:
+        return None
+    try:
+        out = [cast(x) for x in np.atleast_1d(v)]
+    except (TypeError, ValueError):
+        return None
+    return [x for x in out if not (isinstance(x, float) and not np.isfinite(x))]
+
+
 class FieldH5Dataset:
     kind = 'field'
 
@@ -89,6 +102,16 @@ class FieldH5Dataset:
                                           'adapt_iters': _attr(g, 'adapt_iters', int),
                                           'adapt_stop': _attr(g, 'adapt_stop', str),
                                           'est_rel_f': _attr(g, 'est_rel_f'), 'est_rel_wall': _attr(g, 'est_rel_wall'),
+                                          'label_order': _attr(g, 'label_order', int),
+                                          'model_order': _attr(g, 'model_order', int),
+                                          'label_ok': _attr(g, 'label_ok', lambda v: bool(int(v))),
+                                          'est_max': _attr(g, 'est_max'),
+                                          'tol_f_p2': _attr(g, 'tol_f_p2'), 'p2_rounds': _attr(g, 'p2_rounds', int),
+                                          'p2_stop': _attr(g, 'p2_stop', str), 'p2_tets': _list(g, 'p2_tets', int), 'p2_est': _list(g, 'p2_est'), 'p2_cs': _list(g, 'p2_cs'),
+                                          'round_fallback': _attr(g, 'round_fallback', lambda v: bool(int(float(v)))),
+                                          'curvaturesafety_used': _attr(g, 'curvaturesafety_used'),
+                                          'maxh_factor_used': _attr(g, 'maxh_factor_used'),
+                                          'model_meshes': _attr(g, 'model_meshes', int),
                                           'adapt_df': _attr(g, 'adapt_df'), 'adapt_dq': _attr(g, 'adapt_dq'),
                                           'rounded_edges': _attr(g, 'n_rounded_edges', lambda v: int(float(v))),
                                           'sharp_edges': _attr(g, 'sharp_edges', int, 0),
@@ -97,6 +120,31 @@ class FieldH5Dataset:
                             index[sid] = (fp, key)
                 self._rows, self._index = rows, index
             return self._rows
+
+    def quality(self):
+        """Label quality of the dataset: kind 'p2' (label_order == model_order: one solve on the model mesh) or
+        'p3' (high fidelity; older datasets without the attributes count as p3); for p2: samples with label_ok = 0
+        (count, share), est_rel_f median / max, model tets min / max."""
+        rows = self.rows()
+        fs = [r['field'] for r in rows]
+        orders = {(f['label_order'], f['model_order']) for f in fs}
+        p2 = bool(fs) and all(lo is not None and lo == mo for lo, mo in orders)
+        out = {'kind': 'p2' if p2 else 'p3', 'label_order': max((o[0] or 3 for o in orders), default=None),
+               'model_order': max((o[1] or 2 for o in orders), default=None), 'n': len(rows)}
+        if p2:
+            est = np.array([f['est_rel_f'] for f in fs if f['est_rel_f'] is not None], float)
+            ok = [f['label_ok'] for f in fs if f['label_ok'] is not None]
+            bad = sum(1 for v in ok if not v)
+            tets = [r['n_tets'] for r in rows if r['n_tets']]
+            stops = collections.Counter(f['p2_stop'] for f in fs if f.get('p2_stop'))
+            fb = [f['round_fallback'] for f in fs if f.get('round_fallback') is not None]
+            out.update(n_bad=bad, bad_share=bad / len(ok) if ok else None,
+                       est_median=float(np.median(est)) if est.size else None,
+                       est_max=float(est.max()) if est.size else None,
+                       tets_min=min(tets) if tets else None, tets_max=max(tets) if tets else None,
+                       p2_stop=dict(stops), n_fallback=sum(fb) if fb else None,
+                       fallback_share=sum(fb) / len(fb) if fb else None)
+        return out
 
     def open(self, sid):
         """Model mesh + the label fields as stored (HCurl DOFs of the model mesh, frequency order) + the stored p3
@@ -141,6 +189,7 @@ class FieldH5Dataset:
         return {'id': sid, 'family': rec['shape_type'], 'nodes': nodes, 'tets': tets, 'U': U, 'f_GHz': freqs,
                 'f_next': _float(rec['freq_next']), 'params': params, 'geom_params': geom_params_of(attrs),
                 'qoi_labels': labels, 'source_file': os.path.basename(fp), 'mesh_src': mesh_src,
+                'label_order': int(attrs.get('label_order', 3)),
                 'n_tets_model': n_tets, 'n_dof': int(n_dof), 'order': int(rec['model_order']), 'curved': curved,
                 'Mp': Mp, 'mesh': mesh}
 

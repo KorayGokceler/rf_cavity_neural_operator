@@ -76,8 +76,9 @@ def main(argv=None):
     ap.add_argument("--threads", type=int, default=os.cpu_count())
     a = ap.parse_args(argv)
     os.makedirs(a.out, exist_ok=True)
-    common = ["--max_ndof", str(a.max_ndof), "--n_eigen_modes", str(a.n_modes), "--n_workers", "1",
-              "--threads", str(a.threads)]
+    # CST-grade references: the high-fidelity adaptive p3 labels (the generator's default is p2 since docs/37)
+    common = ["--label_order", "3", "--max_ndof", str(a.max_ndof), "--n_eigen_modes", str(a.n_modes),
+              "--n_workers", "1", "--threads", str(a.threads)]
     for name in a.cases:
         res = run_case(name, a.out, common)
         print(f"{name}: {res['shape_type']}, f [GHz] = " + " ".join(f"{x:.6f}" for x in res["freqs"]),

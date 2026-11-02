@@ -3,8 +3,10 @@
 Problem: curl curl E = k^2 E in the cavity, n x E = 0 on the PEC wall; f = c k / (2 pi).  Per sample the
 generator draws a geometry from a family (src/data_gen/cavity_shapes.py), meshes the CAD solid with gmsh
 (mesh_sample: certified connected manifold, any number of handles / isolated conductors) and labels it
-with src/data_gen/field_labels.py: a curved netgen mesh, adaptive HCurl p3 FE modes, their L2 projection
-onto the model's p2 space, and the cavity figures of merit.  The H5 layout (one group ``sample_XXXX`` per
+with src/data_gen/field_labels.py.  Default (docs/37): the model mesh (curved netgen mesh, start near 10k tets,
+refined uniformly until the p2 error estimate is ≤ --tol_f_p2) and HCurl p2 solves on it — the model space's own
+modes, with their error estimate.  --label_order 3: high-fidelity labels (adaptive HCurl p3 modes L2-projected onto the model's p2
+space; test / CST sets, docs/30).  Both store the cavity figures of merit.  The H5 layout (one group ``sample_XXXX`` per
 geometry, file attr ``metadata``) is documented there and in docs/29_FIELD_LABELS.md; the common attrs
 written here are shape_type, geom_params (JSON) + one float attr per parameter, freq_next (GHz, mode K+1),
 mesh_h, volume, t_mesh, t_solve, field ('E'), n_bnd_components, betti1 (and freqs_analytic for the
@@ -91,7 +93,10 @@ def parse_args(argv=None):
     p.add_argument("--labels", type=str, default="field", help=argparse.SUPPRESS)   # deprecated, see below
     p.add_argument("--min_fillet", type=float, default=0.05,
                    help="Fillet radius floor as a fraction of the cavity size (cavity_shapes.MIN_FILLET).")
-    p.add_argument("--label_order", type=int, default=3, help="HCurl order of the labels.")
+    p.add_argument("--label_order", type=int, default=2,
+                   help="HCurl order of the labels.  Equal to --model_order (default 2, docs/37): one solve in the "
+                        "model space on the model mesh.  Above it (3: high-fidelity test / CST labels): adaptive "
+                        "p3 labels projected onto the model space (docs/30; --no_adapt: one solve).")
     p.add_argument("--model_order", type=int, default=2,
                    help="HCurl order of the model space the labels are projected onto "
                         "(2: field floor ~0.2 %%, frequency ~1e-4; 1: ~6x cheaper training, ~1 %% frequency floor).")
@@ -104,19 +109,33 @@ def parse_args(argv=None):
                         "1.5). Smaller = coarser mesh: cheap low-fidelity labels (docs/34).")
     p.add_argument("--field_max_elements", type=int, default=30000,
                    help="Curved meshes with more tets are re-drawn (training cost bound).")
-    p.add_argument("--max_ndof", type=int, default=900000, help="Label-space DOF guard (memory).")
+    p.add_argument("--max_ndof", type=int, default=900000,
+                   help="Label-space DOF guard (memory; the adaptive p3 labels' budget).")
     p.add_argument("--threads", type=int, default=1, help="NGSolve threads per worker.")
     p.add_argument("--no_heal", action="store_true",
                    help="Skip the OCC shape healing (small edges / faces, sewing) before meshing.")
     p.add_argument("--no_adapt", action="store_true",
-                   help="One solve on the curvature-sized mesh instead of adaptive refinement.")
+                   help="High-fidelity labels (--label_order 3): one solve on the curvature-sized mesh instead of "
+                        "adaptive refinement.")
     p.add_argument("--tol_f", type=float, default=1e-6,
                    help="Adaptive stop, relative frequency change between refinements.")
     p.add_argument("--tol_q", type=float, default=1e-3,
                    help="Adaptive stop, relative change of Q0 / G / R/Q / surface peaks.")
-    p.add_argument("--model_max_elements", type=int, default=10000,
-                   help="Adaptive: the model mesh is the finest refinement level with at most "
-                        "this many tets; the final-level labels are L2-projected onto it (training cost).")
+    p.add_argument("--model_max_elements", type=int, default=20000,
+                   help="Adaptive p3 labels only: the finest refinement level with at most this many tets is the model "
+                        "mesh (the final-level labels are L2-projected onto it).  p2 labels ignore it (no tet cap: "
+                        "the error limit --tol_f_p2 and --max_ndof bound the mesh).")
+    p.add_argument("--model_target_elements", type=int, default=10000,
+                   help="p2 labels: the START mesh has at least --model_min_elements tets, as close to this as netgen "
+                        "allows (field_labels.model_sized_mesh: maxh search, curvaturesafety fixed, no upper cap).")
+    p.add_argument("--model_min_elements", type=int, default=5000,
+                   help="p2 labels: lower bound of the start mesh's tet count (no too-simple meshes).")
+    p.add_argument("--tol_f_p2", type=float, default=1e-3,
+                   help="p2 labels: error limit.  While the frequency error estimate is above it the mesh is refined "
+                        "uniformly (field_labels.refine_p2_to_tolerance); label_ok = estimate <= this.")
+    p.add_argument("--p2_max_refine", type=int, default=3,
+                   help="p2 labels: at most this many uniform refinements (solves = 1 + refinements); stops earlier "
+                        "when the next p2 space would exceed --max_ndof.")
     p.add_argument("--no_round_edges", action="store_true",
                    help="Keep re-entrant edges sharp (by default they are filleted with radius "
                         "min_fillet × equivalent-sphere radius: singular fields there make the surface peaks "
@@ -645,7 +664,11 @@ def field_settings(args):
             "maxh_factor": float(args.maxh_factor), "max_elements": int(args.field_max_elements),
             "max_ndof": int(args.max_ndof), "adaptive": not getattr(args, "no_adapt", False),
             "tol_f": float(getattr(args, "tol_f", 1e-6)), "tol_q": float(getattr(args, "tol_q", 1e-3)),
-            "model_max_elements": int(getattr(args, "model_max_elements", 10000)),
+            "model_max_elements": int(getattr(args, "model_max_elements", 20000)),
+            "model_target_elements": int(getattr(args, "model_target_elements", 10000)),
+            "model_min_elements": int(getattr(args, "model_min_elements", 5000)),
+            "tol_f_p2": float(getattr(args, "tol_f_p2", 1e-3)),
+            "p2_max_refine": int(getattr(args, "p2_max_refine", 3)),
             **({"curvaturesafety": float(args.curvaturesafety), "adapt_cs": float(args.curvaturesafety)}
                if getattr(args, "curvaturesafety", None) else {})}
 
@@ -666,7 +689,11 @@ def generate_field_sample(s_id):
     lab = g["post"]
     at = lab["attrs"]
     print(f"sample {s_id}: done in {time.perf_counter() - t0:.0f} s ({g['shape_type']}, {at.get('n_dof_label', 0)} label "
-          f"DOF, {at.get('adapt_iters', 1)} level(s), stop {at.get('adapt_stop', 'single solve')})", flush=True)
+          + (f"DOF, {at.get('adapt_iters', 1)} level(s), stop {at.get('adapt_stop', 'single solve')})"
+             if "adapt_iters" in at else
+             f"DOF, {at['n_tets']} tets, {at.get('p2_rounds', 1)} solve(s), stop {at.get('p2_stop', '-')}, "
+             f"est δf/f {at.get('est_rel_f', float('nan')):.1e}"
+             + ("" if at.get("label_ok", 1) else " ABOVE tol_f_p2") + ")"), flush=True)
     return {"id": s_id, "labels": "field", "field": lab, "freqs": lab["freqs"], "freq_next": lab["freq_next"],
             "shape_type": g["shape_type"], "geom_params": g["params"], "mesh_h": float(g["h"]),
             "volume": float(g["volume"]), "t_mesh": g["t_mesh"] + lab["attrs"]["t_curved_mesh"],

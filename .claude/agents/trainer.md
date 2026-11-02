@@ -14,7 +14,7 @@ running experiments correctly and reporting them honestly.
   N0 edge model `eigenspace3d` was removed):
   - HCurl p2 on the curved model mesh;
   - tokens are the quadrature points;
-  - labels are p3 FE fields projected onto p2.
+  - labels are p2 FE fields on the model mesh by default (docs/37); p3 fields projected onto p2 with `--label_order 3`.
 - **Losses** (`src/training/lightning_module.py`):
   - span: 1.0 · mean √r_k, in the mass and energy norms;
   - frequency: 0.1 · MSE;

@@ -80,7 +80,8 @@ def _datasets_field(dc, random_seed, feature_indices):
     kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
               feature_indices=feature_indices, cache_dir=getattr(dc, 'cache_dir', None),
               n_modes=getattr(dc, 'n_modes', None), hf_repeat=getattr(dc, 'hf_repeat', 1),
-              train_extra=getattr(dc, 'train_extra', None))
+              train_extra=getattr(dc, 'train_extra', None),
+              require_label_ok=bool(getattr(dc, 'require_label_ok', False)))
     return tuple(FieldDataset(dc.data_path, split=s, **kw) for s in ('train', 'val', 'test'))
 
 

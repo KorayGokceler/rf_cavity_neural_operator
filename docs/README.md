@@ -29,6 +29,7 @@ Araştırma ve inceleme kayıtları (tarihsel; kararların gerekçesi burada, ko
 | [34_MULTI_FIDELITY](34_MULTI_FIDELITY.md) | çoklu doğruluk: düşük doğruluklu (p2, tek çözüm) etiketle eğitim, yüksek doğruluklu (p3) veride ve daha ince mesh / p3 uzayında çıkarım; maliyet ve etiket farkı ölçümleri, `Fidelity` / `fidelity_weights` / `train_extra` / `--init_from`, `scripts/eval_fidelity.py` |
 | [35_PAPER_CHECKS](35_PAPER_CHECKS.md) | preprint için hakem kontrolleri (İngilizce): varsayım (A) rank denetimi, Ritz üst sınırı stres testi (inexact CG), parametrik regresyon ve kaba FE taban çizgileri, makale şekilleri; betikler `scripts/paper/` |
 | [36_TRUBA_REFERENCE](36_TRUBA_REFERENCE.md) | TRUBA platform bilgisi (docs.truba.gov.tr tam metninden): kullanım kuralları, kuyruklar, GPU erişimi, kotalar, depolama (scratch 30 gün), conda yasağı ve Apptainer, `config.sh` ile karşılaştırma; ham sayfalar [research/truba](research/truba/README.md) |
+| [37_P2_LABELS](37_P2_LABELS.md) | varsayılan eğitim etiketi p2 (model mesh'inde tek çözüm): karar ve gerekçe, `model_sized_mesh` kuralı ve aile tablosu, p2 doğruluğu, `label_ok`, p4 referans aracı (`scripts/reference_check.py`), açık işler |
 | [research/2026-10_geometry](research/2026-10_geometry/README.md) | docs/33'ün ham malzemesi: dört araştırma raporu (İngilizce), kaynak listeleri ve sayıları üreten betikler |
 
 2D model (GNOT, SpectralNO, 2D eigenspace operator) ve onun belgeleri (eski 00–17) ile H-alanı formülasyonu

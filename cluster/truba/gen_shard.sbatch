@@ -28,7 +28,7 @@ CORES=${SLURM_CPUS_PER_TASK:-$CPUS}
 WORKERS=$(( CORES / THREADS )); [ "$WORKERS" -ge 1 ] || WORKERS=1
 LAB=(--label_order "$LABEL_ORDER" --model_order "$MODEL_ORDER" --threads "$THREADS"
      --field_max_elements "$FIELD_MAX_ELEMENTS" --maxh_factor "$MAXH_FACTOR"
-     --tol_f "$TOL_F" --tol_q "$TOL_Q" --model_max_elements "$MODEL_MAX_ELEMENTS" --max_ndof "$MAX_NDOF")
+     --tol_f "$TOL_F" --tol_f_p2 "$TOL_F_P2" --tol_q "$TOL_Q" --model_max_elements "$MODEL_MAX_ELEMENTS" --max_ndof "$MAX_NDOF")
 [ "$ADAPT" = 1 ] || LAB+=(--no_adapt)
 [ "$ROUND_EDGES" = 1 ] || LAB+=(--no_round_edges)
 [ "$HEAL" = 1 ] || LAB+=(--no_heal)

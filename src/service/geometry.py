@@ -62,17 +62,20 @@ def linear_mesh(mesh):
 
 
 def curved_from_cad(cad_path, h, deform=None, max_elements=None):
-    """Curved netgen mesh of a CAD solid [m] with the field-label settings (field_labels.start_mesh: the
-    adaptive labels' start mesh, maxh = maxh_factor·h, curvaturesafety 1.5 then 2) → dict(nodes, tets
-    [linear mesh], mesh_src {vol, brep (bytes), curve, deform}, n_tets).  Raises when netgen fails, folds
-    elements or exceeds max_elements (default field_labels.DEFAULTS['max_elements']).  'curved': the curved wall
+    """Curved netgen mesh of a CAD solid [m] built like the training meshes (field_labels.model_sized_mesh,
+    docs/37: the p2 START mesh: ≥ model_min_elements (5000) tets, closest to model_target_elements (10000), no cap
+    (max_elements only lowers min / target; no refinement);
+    h only seeds the maxh search) → dict(nodes, tets [linear mesh], mesh_src {vol, brep (bytes), curve, deform},
+    n_tets).  Raises when netgen fails.  'curved': the curved wall
     lattice, volume and bbox of the mesh (hcurl_display.curved_display) — the display surface and the geometry
     checks use the curved solid, not its linear facets."""
     import tempfile
 
     from src.data_gen import field_labels as fl
-    s = dict(fl.DEFAULTS, **({'max_elements': int(max_elements)} if max_elements else {}))
-    mesh, shape, _ = fl.start_mesh(cad_path, h, deform, s, (s['adapt_cs'], s['curvaturesafety']))
+    s = dict(fl.DEFAULTS, **({'model_max_elements': int(max_elements)} if max_elements else {}))
+    s['model_min_elements'] = min(int(s['model_min_elements']), int(s['model_max_elements']))
+    s['model_target_elements'] = min(int(s['model_target_elements']), int(s['model_max_elements']))
+    mesh, shape, _ = fl.model_sized_mesh(cad_path, h, deform, s)
     with tempfile.TemporaryDirectory() as tmp:
         brep = os.path.join(tmp, 's.brep')
         shape.WriteBrep(brep)

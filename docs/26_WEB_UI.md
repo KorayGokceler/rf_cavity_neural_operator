@@ -32,7 +32,7 @@
 1. **Eğri mesh** (`geometry.mesh_src`: netgen `.vol` + katının BREP'i [m] + eğrilik mertebesi + deformasyon,
    alan-etiketi H5'iyle aynı saklama). Kaynaklar:
    - **CAD yükleme** (STEP/IGES/BREP): katı ayrı süreçte metreye ölçeklenir, `field_labels.start_mesh` ile
-     eğri mesh (maxh = 3 h, curvaturesafety 1.5 → 2). Başarısızsa gmsh mesh'i yalnız gösterim için kalır.
+     eğri mesh. **2026-11-01 (docs/37):** mesh artık `field_labels.model_sized_mesh` ile kurulur (başlangıç mesh'i: ≥ 5000 tet, 10000'e yakın; **2026-11-02:** tahmin yalnız bu başlangıç mesh'inde yapılır, inceltme yok [seçenek a]; eğitimdeki inceltmeli kural docs/37 §3, `src/service/geometry.curved_from_cad`); eski kural maxh = 3 h, curvaturesafety 1.5 → 2 idi. Başarısızsa gmsh mesh'i yalnız gösterim için kalır.
    - **Aile örneği:** üretici alan-etiketi ayarlarıyla (kenar yuvarlatma, OCC onarımı, Sobol, seed 0) — alan
      datasetlerindeki geometrinin aynısı. Eğri mesh başarısız olursa üretici gibi geometri yeniden çekilir.
    - **Alan dataseti öğesi:** saklanan eğri mesh; tahmin, saklanan FE çözümüyle aynı gösterim mesh'inde olur
@@ -238,7 +238,7 @@ Değerler `tabular-nums` ile hizalanır; odak halkaları, üzerine gelme durumla
   rel-L2), seçili modun kavite değerleri, FE / model / Δ% tablosu, süreler (mesh, operatörler, model, değerler, gösterim, toplam)
   + modelin mesh'i (p2 DOF, eğri tet), JSON indir. Mod tablosu başlığında CSV düğmesi. Tablonun altında değerlerin kaynağı:
   model için "frekanslar modelin Ritz değerleri (bu mesh'in p2 özdeğerlerinin üst sınırları); kavite değerleri tahmin edilen
-  yüksek mertebe p2 alanlarından" (`qoi_source: p2_model`), alan datasetinin FE'si için "saklanan p3 etiketleri" (`p3_labels`).
+  yüksek mertebe p2 alanlarından" (`qoi_source: p2_model`), alan datasetinin FE'si için "saklanan p3 etiketleri" (`p3_labels`; p2 etiketli datasetlerde `p2_labels`, docs/37).
 - **Yüzen araç çubuğu (tuvalin sol üstü, gruplu, simge düğmeleri ve ipuçları):**
 
   | grup | denetim |
@@ -391,11 +391,13 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 
 - **Dataset sayfası:** sunucuya `RFCAV_DATA` ile verilen datasetler listelenir (`src/service/datasets.py`).
   - **H5 parçaları** klasör başına bir dataset (alan etiketi, tür `field`). TRUBA düzeninde `h5/<aile>/` her aile için ayrı bir dataset olur. Alan etiketli olmayan H5 dosyaları / klasörleri sessizce atlanır (eski N0 etiketli H5 görüntüleyicisi kaldırıldı).
+  - **Etiket kalitesi şeridi (docs/37):** p2 etiketli datasetlerde `GET /api/datasets/{id}/quality`: `label_ok` payı, `est_rel_f` medyan / en büyük, tet aralığı.
+  - **"p4 ile doğrula" kartı:** arka plan işi `POST /api/jobs/reference` (`scripts/reference_check.py`): aile başına bir örnekte saklanan model mesh'inde p4 çözümü, sonuç tablosu, bellek uyarısı (`GET /api/jobs/reference_plan`).
   - **Genel bakış:** aile başına geometri sayısı (tıklayınca filtreler), en düşük mod frekansı f₀ histogramı, model p2 DOF histogramı.
   - **Tablo:** id, aile, §3c'deki alan-etiketi sütunları, b1, f₀…f₅. Sıralanabilir, sayfalı, aileye göre filtrelenir. "Aç" geometriyi çalışma alanına gönderir.
 - **Geometri açılınca:**
   - mesh ve kontroller;
-  - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. alan datasetlerinde değerler saklanan p3 etiketleridir;
+  - **FE (etiket) çözümü:** modlar, alanlar, kavite değerleri. alan datasetlerinde değerler saklanan etiketlerdir (p2 varsayılan, p3 ise `--label_order 3`);
   - geometri bilgisi: dataset, dosya, id, tet sayısı (doğrusal mesh; `features.n_tets`), ölçek, torsiyon maksimumu, (K+1). mod frekansı, üretici parametreleri.
 - **"Tahmin et ve FE ile karşılaştır":**
   - **Kaynak** seçimi: FE / Model / **Fark**. Fark = hizalanmış model − FE: işaret ve dejenere çiftler hizalanır, renk ölçeği FE alanına göre.
@@ -449,17 +451,18 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 
 **Alan etiketleri (tek etiket türü: yüksek mertebe alan; docs/29–30):** TRUBA'daki `LABELS=field` ile aynı üretici
 ve aynı ayarlar:
-- uyarlamalı inceltme (aç / kapat), frekans ve Q0 / R/Q / tepe toleransı, etiket DOF bütçesi, model mesh
+- **etiket türü seçimi (docs/37):** p2 (varsayılan) / p3 uyarlamalı / p3 tek çözüm; p2 için hata sınırı alanı `tol_f_p2` (varsayılan 1e-3, CLI `--tol_f_p2`), tet tavanı yok; `model_order > label_order` reddedilir;
+- uyarlamalı inceltme (aç / kapat; yalnız p3), frekans ve Q0 / R/Q / tepe toleransı, etiket DOF bütçesi, model mesh
   bütçesi;
 - etiket / model mertebesi, fillet tabanı, eleman bütçesi, maxh çarpanı, örnek zaman aşımı;
 - keskin iç kenarları yuvarlatma, OCC onarımı.
 
 `freeform` seçilemez (CAD katısı yok). Çıktı yalnız H5'tir (eğitim `field3d`). TAG,
-TRUBA'nınkiyle aynı kuralla kurulur: `F_p3p2_ms0.10_k10_mf0.05_v2`, tek çözümde `_1s`, yuvarlatmasız
+TRUBA'nınkiyle aynı kuralla kurulur: p2'de `F_p2p2_ms0.10_k10_mf0.05_v2` (`_1s` hiç eklenmez), p3 uyarlamalıda `F_p3p2_ms0.10_k10_mf0.05_v2`, p3 tek çözümde `_1s`, yuvarlatmasız
 `_sharp` eki.
 
 **İşçi × thread planı** (`jobs.field_plan`): sunucu çekirdek sayısını (CPU affinity, cgroup kotası) ve
-belleği (`MemTotal`, cgroup sınırı) okur. Bir işçinin tepe belleği ≈ 1 GB + 12 GB · (DOF bütçesi / 900k).
+belleği (`MemTotal`, cgroup sınırı) okur. Bir işçinin tepe belleği ≈ 1 GB + 12 GB · (DOF bütçesi / 900k); p2 etiketlerde DOF, model uzayından (`jobs.label_ndof`: 11 DOF/tet × tavan).
 Belleğin %85'ine sığan sayıda 4 thread'li işçi açılır; artan çekirdekler işçilere ek thread olarak
 dağıtılır. Örnekler:
 
@@ -476,7 +479,7 @@ Varsayılan DOF bütçesi, en az bir işçinin belleğe sığdığı en büyük 
 uyarlamalı seviye sayısı, durma nedeni (yakınsadı / bütçe / en çok seviye), tahmini δf/f, yuvarlatılan
 ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde çalışma alanına getirir:
 - **Alanlar:** p2 etiket alanları (`u_model`) olduğu gibi çizilir (§1d); N0 izdüşümü yok. Fiziksel kütle matrisi ve eğri duvar kafesi `open` sırasında hesaplanır.
-- **Değerler:** Q0, R/Q ve tepe değerleri saklanan p3 etiketleridir (`qoi_source: p3_labels`). Eksende
+- **Değerler:** Q0, R/Q ve tepe değerleri saklanan etiketlerdir (`qoi_source: p3_labels`; p2 datasetlerde `p2_labels`, tepeler p3'e göre daha kaba, docs/37). Eksende
   alanı olmayan modlarda gerilime bağlı büyüklükler "—" olarak gösterilir.
 
 **Uç noktalar:**
@@ -525,7 +528,7 @@ ve keskin kalan kenarlar görünür. "Aç", geometriyi model mesh'i üzerinde ç
 
 - **Bölümler:**
   - İşlem: veri + eğitim, yalnız veri, yalnız eğitim, durum, kurulum.
-  - Etiket türü: yalnız yüksek mertebe alan (field3d); komut her zaman `LABELS=field` yazar (`config.sh` varsayılanı da `field`; başka değer hata verir).
+  - Etiket türü: p2 (varsayılan) / p3 uyarlamalı / p3 tek çözüm (`LABEL_ORDER`, docs/37); alan etiketi (field3d); komut her zaman `LABELS=field` yazar (`config.sh` varsayılanı da `field`; başka değer hata verir).
   - Aileler: eğitim ve OOD grupları.
   - Veri ayarları: geometri sayısı, mesh boyu, mod, p3/p2, fillet tabanı, thread, eleman bütçesi;
     uyarlamalı inceltme, toleranslar, model mesh ve DOF bütçesi, kenar yuvarlatma, OCC onarımı (docs/30).
@@ -564,7 +567,7 @@ docker compose up --build                                                 # http
 **Ortam değişkenleri:**
 - `RFCAV_CHECKPOINT`: `.ckpt` dosyası ya da eğitim klasörü.
 - `RFCAV_DEVICE`: `cpu` | `cuda`.
-- Sınırlar: `RFCAV_MAX_UPLOAD_MB` (25), `RFCAV_MESH_TIMEOUT` (120 s), `RFCAV_MESH_MEM_MB` (4096), `RFCAV_MAX_TETS` (400k).
+- Sınırlar: `RFCAV_MAX_UPLOAD_MB` (25), `RFCAV_MESH_TIMEOUT` (600 s; `Limits.mesh_timeout_s`; önceden 120 s: `model_sized_mesh` en çok ~30 netgen mesh'i kurabilir, ridged_box 73 s, elliptical_long reddedilen çizim dahil 285 s, docs/37), `RFCAV_MESH_MEM_MB` (4096), `RFCAV_MAX_TETS` (400k).
 - Bellek deposu: `RFCAV_MAX_ITEMS` (64), `RFCAV_TTL_S` (3600).
 
 **Ölçüm** (4 çekirdek CPU, küçük model, ~15k tet eliptik kavite):

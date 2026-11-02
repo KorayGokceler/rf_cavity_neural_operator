@@ -14,6 +14,7 @@ first and moved to gen_root when complete (gen_root may be a slow / network moun
 Drive); existing shards are skipped, so re-submitting the same job continues an interrupted one.
 """
 import collections
+import json
 import os
 import re
 import shutil
@@ -27,6 +28,7 @@ import uuid
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ID_BLOCK = 2 ** 19
 _PROGRESS = re.compile(r'(\d+)/(\d+) done \((\d+) ok, (\d+) failed\)')
+_REF_PROGRESS = re.compile(r'^ref\s+(\d+)/(\d+)')
 _TQDM = re.compile(r'\d+%\|.*\|\s*\d+/\d+')
 
 
@@ -46,19 +48,26 @@ TAG_VERSION = "v2"      # generator output version (cluster/truba/config.sh DATA
                         # geometry or labels change, so old and new shards never share a dataset folder
 
 
-def field_tag_of(mesh_size, n_modes, label_order=3, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
+def field_tag_of(mesh_size, n_modes, label_order=2, model_order=2, min_fillet=0.05, adapt=True, round_edges=True):
     """Field-label tag of cluster/truba/config.sh: F_p<label>p<model>_ms<mesh>_k<modes>_mf<fillet>_<version>, + _1s for
-    one-solve labels and _sharp for unrounded geometries (neither may mix with the defaults under one tag)."""
+    one-solve high-fidelity labels and _sharp for unrounded geometries (neither may mix with the defaults under one
+    tag).  p2 labels (label_order == model_order, docs/37) have no adaptive variant, so never _1s."""
+    one_solve = not adapt and int(label_order) > int(model_order)
     tag = (f"F_p{int(label_order)}p{int(model_order)}_ms{mesh_size:g}_k{int(n_modes)}_mf{min_fillet:g}_{TAG_VERSION}"
-           + ("" if adapt else "_1s") + ("" if round_edges else "_sharp"))
+           + ("_1s" if one_solve else "") + ("" if round_edges else "_sharp"))
     return tag.replace("_ms0.1_", "_ms0.10_")            # as config.sh's literal MESH_SIZE=0.10
 
 
 # field labels: peak memory of one worker ≈ FIELD_MEM_BASE_GB + FIELD_MEM_GB_PER_NDOF · max_ndof (p3 labels,
 # 10 modes; ~12 GB at the 900k budget, docs/30 §6), and ~560 core-seconds per geometry for one solve at
-# ~18k tets (docs/29 §4), ×3 with adaptive refinement
+# ~18k tets (docs/29 §4), ×3 with adaptive refinement.  p2 labels (docs/37): the label space is the model space,
+# no tet cap (owner decision 2026-11-02): the start mesh (~10k tets) is refined until the error estimate is
+# ≤ tol_f_p2, within the max_ndof budget, so a worker's memory is sized with the max_ndof budget like p3;
+# FIELD_P2_CORE_S per geometry (maxh search + 1–4 p2 solves + error estimates + QoI)
 FIELD_MEM_BASE_GB, FIELD_MEM_GB_PER_NDOF = 1.0, 12.0 / 900_000
 FIELD_CORE_S, FIELD_ADAPT_FACTOR = 560.0, 3.0
+FIELD_P2_CORE_S, P2_NDOF_PER_TET = 200.0, 11.0   # measured 2026-11-02 (docs/37): wall 44–428 s at 4 threads (most samples
+#   one solve, ~44–70 s; a refined one, 23k → 35k tets, 428 s); ≤ 4.1 GB at 366k DOF (the formula above is conservative)
 FIELD_THREADS = 4                    # default NGSolve threads per worker (more when memory limits the workers)
 
 
@@ -95,6 +104,19 @@ def field_mem_gb(max_ndof):
     return FIELD_MEM_BASE_GB + FIELD_MEM_GB_PER_NDOF * float(max_ndof)
 
 
+def label_ndof(label_order, model_order, max_ndof, model_max_elements):
+    """The label space's DOF budget that sets a worker's memory: max_ndof — for p2 labels too (no tet cap: the mesh
+    is refined until the error estimate is within tol_f_p2, but never beyond max_ndof; model_max_elements is p3-only)."""
+    return int(max_ndof)
+
+
+def field_core_s(label_order, model_order, adapt, n_modes=10):
+    """Core-seconds per geometry of one field-label sample (the cost model of the UI and TRUBA estimates)."""
+    if int(label_order) == int(model_order):
+        return FIELD_P2_CORE_S * (n_modes / 10) ** 0.3
+    return FIELD_CORE_S * (FIELD_ADAPT_FACTOR if adapt else 1.0) * (n_modes / 10) ** 0.3 * (label_order / 3) ** 3
+
+
 def field_plan(cpus, mem_gb, max_ndof, threads=None, workers=None, mem_frac=0.85):
     """Workers × NGSolve threads for field labels on a machine with `cpus` cores and `mem_gb` memory.
     Auto (None): as many workers of FIELD_THREADS threads as the memory holds (mem_frac of it; at least
@@ -127,7 +149,7 @@ def generator_args(p):
           '--model_order', str(p['model_order']), '--min_fillet', str(p['min_fillet']),
           '--maxh_factor', str(p['maxh_factor']), '--field_max_elements', str(p['field_max_elements']),
           '--max_ndof', str(p['max_ndof']), '--tol_f', str(p['tol_f']), '--tol_q', str(p['tol_q']),
-          '--model_max_elements', str(p['model_max_elements'])]
+          '--model_max_elements', str(p['model_max_elements']), '--tol_f_p2', str(p.get('tol_f_p2', 1e-3))]
     if not p.get('adapt', True):
         a.append('--no_adapt')
     if not p.get('round_edges', True):
@@ -175,6 +197,7 @@ class Job:
         self.created, self.started, self.finished = time.time(), None, None
         self.done = self.ok = self.failed = 0
         self.stage = ''
+        self.total = None                 # reference jobs: the sample count reported by the script
         self.error = None
         self.outputs = []
         self.log = collections.deque(maxlen=200)
@@ -184,7 +207,7 @@ class Job:
     def public(self):
         p = self.params
         return {'id': self.id, 'status': self.status, 'params': p, 'stage': self.stage,
-                'progress': {'done': self.done, 'total': int(p['n_total']), 'ok': self.ok, 'failed': self.failed},
+                'progress': {'done': self.done, 'total': int(p['n_total'] if self.total is None else self.total), 'ok': self.ok, 'failed': self.failed},
                 'created': self.created, 'started': self.started, 'finished': self.finished,
                 'error': self.error, 'outputs': self.outputs, 'log': list(self.log)[-40:]}
 
@@ -247,10 +270,50 @@ class JobManager:
                 except Exception as e:                               # noqa: BLE001
                     job.log.append(f"rescan failed: {e}")
 
-    def _exec(self, job, cmd, on_line=None):
-        run_logged(job, cmd, on_line)
+    def _exec(self, job, cmd, on_line=None, threads=1):
+        run_logged(job, cmd, on_line, threads=threads)
+
+    def ref_path(self, jid):
+        return os.path.join(self.scratch, jid, 'reference.json')
+
+    def _run_reference(self, job):
+        """p4 reference check (scripts/reference_check.py): the labels of a few samples per family against a
+        higher-order solve of the same curved mesh.  The job directory (scratch/<id>) keeps reference.json;
+        progress lines `ref <i>/<n> <family> …`."""
+        p = job.params
+        tmp = os.path.join(self.scratch, job.id)
+        os.makedirs(tmp, exist_ok=True)
+        out = self.ref_path(job.id)
+        files = list(p['files'])
+        target = files                           # the dataset's files, explicitly (a directory may hold nested datasets)
+        cmd = [self.python, 'scripts/reference_check.py', *target, '--out', out,
+               '--per_family', str(p['per_family']), '--order', str(p['order']), '--max_ndof', str(p['max_ndof']),
+               '--threads', str(p['threads'])]
+        if p.get('cross_check'):
+            cmd.append('--cross_check')
+
+        def prog(line):
+            m = _REF_PROGRESS.search(line)
+            if not m:
+                return
+            job.total = int(m.group(2))
+            job.stage = line[:120]
+            job.done = max(0, int(m.group(1)) - 1)
+            try:
+                with open(out) as f:
+                    job.done = len(json.load(f).get('samples', []))
+            except (OSError, ValueError):
+                pass
+
+        job.stage = 'p4 reference'
+        self._exec(job, cmd, prog, threads=p['threads'])
+        job.done = job.total if job.total is not None else job.done
+        job.stage = 'done'
+        job.outputs.append(out)
 
     def _run(self, job):
+        if job.params.get('kind') == 'reference':
+            return self._run_reference(job)
         p = job.params
         h5_dir = self.h5_dir(p)
         os.makedirs(h5_dir, exist_ok=True)

@@ -1,5 +1,7 @@
 # 29 — Field labels: CST-grade labels, a cheaper model space, one-line TRUBA runs
 
+> **2026-11-01:** the default training labels are now **p2** (one HCurl p2 solve on the model mesh; docs/37). This document describes the p3 high-fidelity labels, which remain available with `--label_order 3` (test, validation and CST sets).
+
 > **Partly historical:** the parts about the removed N0 model (`eigenspace3d`, `EigenspaceOperator3D`, PKL / `convert_3d.py`, `eval_3d.py` / `eval_qoi.py`, the torch QoI loss) no longer apply; removed in the `claude/field-model-ui` PR. The current model is `field3d` (docs/28, docs/29).
 
 > Status: implemented on `claude/field-model` (smoke-tested: generator → H5 → dataset → `train.py

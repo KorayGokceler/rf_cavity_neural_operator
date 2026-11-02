@@ -26,12 +26,12 @@ K_FIELD = 4
 
 
 def write_field_h5(path, ids):
-    """Cheap field-label H5 (calibration box / pillbox, coarse adaptive p3 → p2, as tests/test_field_labels.py)."""
+    """Cheap field-label H5 (calibration box / pillbox, coarse adaptive p3 → p2 (label_order 3: cheap; p2 labels need a 5k+ tet mesh), as tests/test_field_labels.py)."""
     import h5py
     import json
     old_args = gen.ARGS
     gen.ARGS = gen.parse_args(["--mode", "calibration", "--mesh_size", "0.2",
-                               "--n_eigen_modes", str(K_FIELD), "--tol_f", "1e-4", "--tol_q", "3e-2",
+                               "--n_eigen_modes", str(K_FIELD), "--label_order", "3", "--tol_f", "1e-4", "--tol_q", "3e-2",
                                "--max_ndof", "40000", "--model_max_elements", "60"])
     gen._init_worker(gen.ARGS)
     try:
@@ -212,7 +212,7 @@ def test_generation_job_writes_family_dataset(tmp_path, monkeypatch):
     monkeypatch.setenv("RFCAV_GEN_ROOT", str(root))
     c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
     cfg = c.get("/api/jobs/config").json()
-    assert cfg["enabled"] and cfg["blocks"]["box"] is not None and cfg["tag_example"].startswith("F_p3p2_")
+    assert cfg["enabled"] and cfg["blocks"]["box"] is not None and cfg["tag_example"].startswith("F_p2p2_")
     # cheapest field labels: one p2 solve projected onto p1, coarse box meshes
     body = {"families": ["box"], "n_total": 2, "mesh_size": 0.3, "n_modes": 2, "shard_size": 16,
             "workers": 1, "threads": 1, "deform_prob": 0.0, "tag": "t", "label_order": 2, "model_order": 1,
@@ -258,12 +258,19 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
     cfg = c.get("/api/jobs/config").json()
     assert cfg["cpu_count"] == 64 and cfg["mem_gb"] == 251.0
     fd = cfg["field"]["defaults"]
+    assert fd["label_order"] == 2 and fd["model_order"] == 2 and fd["model_max_elements"] == 20000
+    assert cfg["field"]["p2_core_s"] == J.FIELD_P2_CORE_S
     assert fd["max_ndof"] == 900_000 and fd["adapt"] and fd["round_edges"] and fd["tol_f"] == 1e-6
     assert cfg["field"]["plan"]["workers"] * cfg["field"]["plan"]["threads"] <= 64
+    # p2 labels (the default): memory of the model space; p3: of the label budget
     plan = c.get("/api/jobs/plan", params={"max_ndof": 900_000}).json()
+    assert plan == J.field_plan(64, 251.0, J.label_ndof(2, 2, 900_000, 20000))
+    assert J.label_ndof(2, 2, 900_000, 20000) == 900_000               # no tet cap: the DOF budget bounds the memory
+    assert plan["mem_per_worker_gb"] == round(J.field_mem_gb(900_000), 1)
+    plan = c.get("/api/jobs/plan", params={"max_ndof": 900_000, "label_order": 3}).json()
     assert plan == J.field_plan(64, 251.0, 900_000) and plan["workers"] == 16 and plan["threads"] == 4
-    assert c.get("/api/jobs/plan", params={"threads": 8}).json()["workers"] == 8
-    assert "memory" in c.get("/api/jobs/plan", params={"workers": 40}).json()["warnings"]
+    assert c.get("/api/jobs/plan", params={"threads": 8, "label_order": 3}).json()["workers"] == 8
+    assert "memory" in c.get("/api/jobs/plan", params={"workers": 60, "label_order": 3}).json()["warnings"]
 
     body = {"families": ["elliptical", "spoke"], "labels": "field", "n_total": 4, "shard_size": 8,
             "tol_q": 2e-3, "model_max_elements": 8000, "round_edges": False}
@@ -275,24 +282,164 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
         import time
         time.sleep(0.05)
     p = seen[0]
-    assert p["labels"] == "field" and "convert" not in p and (p["workers"], p["threads"]) == (16, 4)
-    assert p["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2_sharp"
+    assert p["labels"] == "field" and "convert" not in p and p["workers"] * p["threads"] <= 64
+    assert p["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2_sharp" and p["label_order"] == 2
     tr = TR.build_command(dict(TR.defaults(ROOT)["form"], action="dataset", round_edges=False, tag=""))
     assert tr["tag"] == p["tag"]                                       # same tag as the TRUBA run
     a = J.generator_args(p)
     assert "--labels" not in a                                              # field labels are the generator's only type
     for flag, val in (("--threads", "4"), ("--n_workers", "16"), ("--tol_q", "0.002"),
-                      ("--model_max_elements", "8000"), ("--max_ndof", "900000"), ("--sample_timeout", "7200")):
+                      ("--model_max_elements", "8000"), ("--max_ndof", "900000"), ("--sample_timeout", "7200"),
+                      ("--label_order", "2"), ("--model_order", "2")):
         assert a[a.index(flag) + 1] == val, flag
     assert "--no_round_edges" in a and "--no_adapt" not in a and "--no_heal" not in a
     # rejected: a family without a CAD solid, nested orders
     assert c.post("/api/jobs/generate", json=dict(body, families=["freeform"])).status_code == 422
-    assert c.post("/api/jobs/generate", json=dict(body, model_order=3)).status_code == 422
+    assert c.post("/api/jobs/generate", json=dict(body, model_order=3)).status_code == 422     # model_order > label_order
+    assert c.post("/api/jobs/generate", json=dict(body, label_order=3, model_order=2)).status_code == 200  # p3 labels
+    assert c.post("/api/jobs/generate", json=dict(body, label_order=2, model_order=2)).status_code == 200  # p2 = equal
     # small machine: the label budget follows the memory, one worker
     monkeypatch.setattr(J, "machine", lambda: {"cpus": 2, "mem_gb": 12.7})
     c2 = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
     cfg2 = c2.get("/api/jobs/config").json()
     assert cfg2["field"]["defaults"]["max_ndof"] == 600_000 and cfg2["field"]["plan"]["workers"] == 1
+
+
+def test_generate_defaults_are_p2_labels_and_p2_tag_has_no_one_solve_suffix(tmp_path, monkeypatch):
+    """An empty request is a p2 request (label_order 2 = model_order 2, model_max_elements 20000); ADAPT off never
+    gives a p2 tag the _1s suffix; label_order 3 without adaptivity does; model_order > label_order is a 422."""
+    from src.service import jobs as J
+    seen = []
+    monkeypatch.setattr(J.JobManager, "_run", lambda self, job: seen.append(dict(job.params)))
+    monkeypatch.setenv("RFCAV_GEN_ROOT", str(tmp_path / "drive"))
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    jobs = c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2}).json()
+    p = jobs[0]["params"]
+    assert (p["label_order"], p["model_order"], p["model_max_elements"]) == (2, 2, 20000)
+    assert p["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2"
+    assert c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "adapt": False}).json()[0][
+        "params"]["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2"
+    assert c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "adapt": False, "label_order": 3}
+                  ).json()[0]["params"]["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2_1s"
+    r = c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "label_order": 2, "model_order": 3})
+    assert r.status_code == 422 and "model_order" in r.json()["detail"]
+    assert J.field_tag_of(0.10, 10, 2, 2, adapt=False) == "F_p2p2_ms0.10_k10_mf0.05_v2"
+    # the plan of p2 labels uses the max_ndof budget (the mesh is refined up to it), like p3
+    p2 = c.get("/api/jobs/plan", params={"max_ndof": 300_000}).json()["mem_per_worker_gb"]
+    p3 = c.get("/api/jobs/plan", params={"max_ndof": 300_000, "label_order": 3}).json()["mem_per_worker_gb"]
+    assert p2 == p3 == round(J.field_mem_gb(300_000), 1)
+    assert p["tol_f_p2"] == 1e-3 and J.generator_args(p)[J.generator_args(p).index("--tol_f_p2") + 1] == "0.001"
+    assert "--est_max" not in J.generator_args(p)
+    assert c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "tol_f_p2": 0.5}).status_code == 422
+
+
+def test_dataset_label_quality(field_client, tmp_path):
+    """The dataset page's label kind: p2 for equal orders (est_rel_f median / max, label_ok count, model tets),
+    p3 for older datasets without the attributes; per item: est_rel_f, label_ok, n_tets, curvaturesafety_used."""
+    from src.service.datasets import FieldH5Dataset
+    did = field_client.get("/api/datasets").json()[0]["id"]
+    q = field_client.get(f"/api/datasets/{did}/quality").json()
+    assert q["kind"] == "p3" and q["n"] == 2 and q["label_order"] == 3
+    assert field_client.get("/api/datasets/nope/quality").status_code == 404
+    items = field_client.get(f"/api/datasets/{did}/items").json()["items"]
+    assert {"label_order", "model_order", "label_ok", "curvaturesafety_used", "est_rel_f"} <= set(items[0]["field"])
+
+    def fake(rows):
+        d = FieldH5Dataset([], "x")
+        d._rows = rows
+        return d
+
+    def row(est, ok, tets, lo=2, mo=2):
+        return {"n_tets": tets, "field": {"label_order": lo, "model_order": mo, "est_rel_f": est, "label_ok": ok}}
+
+    q = fake([row(1e-4, True, 5000), row(3e-4, True, 9000), row(2e-3, False, 20000), row(1e-3, True, 10000)]).quality()
+    assert q["kind"] == "p2" and q["n_bad"] == 1 and q["bad_share"] == 0.25 and q["est_max"] == 2e-3
+    assert q["est_median"] == pytest.approx(6.5e-4) and (q["tets_min"], q["tets_max"]) == (5000, 20000)
+    rr = [row(1e-4, True, 9000), row(2e-3, False, 12000)]
+    rr[0]["field"].update(p2_stop="converged", round_fallback=False)
+    rr[1]["field"].update(p2_stop="budget", round_fallback=True)
+    q = fake(rr).quality()
+    assert q["p2_stop"] == {"converged": 1, "budget": 1} and q["n_fallback"] == 1 and q["fallback_share"] == 0.5
+    old = fake([row(1e-6, None, 9000, None, None), row(None, None, 8000, 3, 2)]).quality()    # older p3 datasets
+    assert old["kind"] == "p3" and "n_bad" not in old
+    assert fake([row(1e-6, None, 9000, 3, 2)]).quality()["kind"] == "p3"
+
+
+def test_refined_p2_sample_with_array_attributes(tmp_path):
+    """p2_tets / p2_est / p2_cs hold one entry per refinement round (arrays): rows() reads them as lists."""
+    import h5py
+    import json
+    from src.service.datasets import FieldH5Dataset
+    fp = tmp_path / "r.h5"
+    with h5py.File(fp, "w") as f:
+        f.attrs["metadata"] = json.dumps({"labels": "field"})
+        g = f.create_group("sample_0000007")
+        g.create_dataset("freqs", data=np.array([2.0, 3.0]))
+        g.attrs.update(shape_type="pillbox", n_tets=34954, label_order=2, model_order=2, label_ok=1, est_rel_f=8e-4,
+                       p2_stop="converged", p2_rounds=2, p2_tets=np.array([23239, 34954]),
+                       p2_est=np.array([3e-3, 8e-4]), p2_cs=np.array([2.0, 2.0]), round_fallback=1.0)
+    row = FieldH5Dataset([str(fp)], "r").rows()[0]["field"]
+    assert row["p2_tets"] == [23239, 34954] and row["p2_est"] == [3e-3, 8e-4] and row["p2_cs"] == [2.0, 2.0]
+    assert row["p2_stop"] == "converged" and row["round_fallback"] is True
+    assert FieldH5Dataset([str(fp)], "r").quality()["p2_stop"] == {"converged": 1}
+
+
+def test_reference_check_job(tmp_path, monkeypatch, field_dir):
+    """POST /api/jobs/reference runs scripts/reference_check.py as a background job (mocked here: p4 is not run),
+    reads its progress lines and exposes reference.json."""
+    import json
+    import time
+    from src.service import jobs as J
+    cmds = []
+
+    def fake_exec(self, job, cmd, on_line=None, threads=1):
+        cmds.append((cmd, threads))
+        out = cmd[cmd.index("--out") + 1]
+        s = {"files": [], "settings": {}, "samples": [], "summary": {}}
+        for i, fam in enumerate(["calib", "calib"], 1):
+            s["samples"].append({"file": "f.h5", "sample": i, "family": fam, "n_tets": 1500, "label_order": 2,
+                                 "model_order": 2, "est_rel_f": 1e-4, "label_ok": True, "ref_order": 4,
+                                 "ref_ndof": 100000, "f_label_GHz": [1.0], "f_ref_GHz": [1.0],
+                                 "rel_err": [1e-4], "max_rel_err": 1e-4, "median_rel_err": 1e-4,
+                                 "est_over_true": 1.0, "t_ref_s": 3.0, "ref_self_err": None, "skipped": None})
+            json.dump(s, open(out, "w"))
+            on_line(f"ref {i}/2 {fam} sample {i}")
+
+    monkeypatch.setattr(J.JobManager, "_exec", fake_exec)
+    monkeypatch.setenv("RFCAV_GEN_ROOT", str(tmp_path / "drive"))
+    monkeypatch.setenv("RFCAV_DATA", str(field_dir))
+    monkeypatch.setattr(J, "machine", lambda: {"cpus": 4, "mem_gb": 8.0})
+    c = TestClient(A.create_app(ModelService(None, "cpu")))
+    did = [d for d in c.get("/api/datasets").json() if d["name"].startswith("h5/calib")][0]["id"]
+    plan = c.get("/api/jobs/reference_plan", params={"max_ndof": 700_000}).json()
+    assert plan["warnings"] == ["memory"] and plan["threads"] == 4                # 8 GB is a small machine
+    assert c.get("/api/jobs/reference_plan", params={"max_ndof": 100_000}).json()["warnings"] == []
+    assert c.post("/api/jobs/reference", json={"dataset": "nope"}).status_code == 404
+    assert c.post("/api/jobs/reference", json={"dataset": did, "order": 2}).status_code == 422
+    j = c.post("/api/jobs/reference", json={"dataset": did, "per_family": 2, "cross_check": True}).json()
+    assert j["params"]["kind"] == "reference" and j["params"]["order"] == 4
+    for _ in range(200):
+        j = c.get(f"/api/jobs/{j['id']}").json()
+        if j["status"] in ("done", "failed"):
+            break
+        time.sleep(0.05)
+    assert j["status"] == "done", j
+    assert j["progress"] == {"done": 2, "total": 2, "ok": 0, "failed": 0}
+    cmd, threads = cmds[0]
+    assert cmd[1] == "scripts/reference_check.py" and cmd[2] == str(field_dir / "h5" / "calib" / "calib_s00000.h5") and cmd[3] == "--out"
+    for flag, val in (("--per_family", "2"), ("--order", "4"), ("--max_ndof", "700000"), ("--threads", "4")):
+        assert cmd[cmd.index(flag) + 1] == val, flag
+    assert "--cross_check" in cmd and threads == 4
+    res = c.get(f"/api/jobs/{j['id']}/reference").json()
+    assert len(res["samples"]) == 2 and res["samples"][0]["family"] == "calib"
+    assert any(x["id"] == j["id"] for x in c.get("/api/jobs").json())
+    assert c.get("/api/jobs/zzz/reference").status_code == 404
+    # works without a generation root (read-only job); generation stays off
+    monkeypatch.delenv("RFCAV_GEN_ROOT")
+    c2 = TestClient(A.create_app(ModelService(None, "cpu")))
+    assert c2.get("/api/jobs/config").json()["enabled"] is False
+    assert c2.get("/api/jobs/reference_plan").status_code == 200 and c2.get("/api/jobs").json() == []
+    assert c2.post("/api/jobs/generate", json={"families": ["box"]}).status_code == 503
 
 
 def test_machine_and_field_plan():
@@ -303,7 +450,7 @@ def test_machine_and_field_plan():
     assert (p["workers"], p["threads"]) == (6, 10) and not p["warnings"]
     assert J.field_plan(64, 0, 300_000)["workers"] == 16  # unknown memory: cores only
     assert "oversubscribed" in J.field_plan(8, 64.0, 300_000, threads=4, workers=4)["warnings"]
-    assert J.field_tag_of(0.12, 6, adapt=False) == "F_p3p2_ms0.12_k6_mf0.05_v2_1s"
+    assert J.field_tag_of(0.12, 6, 3, 2, adapt=False) == "F_p3p2_ms0.12_k6_mf0.05_v2_1s"
 
 
 def test_generation_disabled_without_root(monkeypatch):

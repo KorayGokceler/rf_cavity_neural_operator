@@ -10,8 +10,9 @@ Geometry sources (exactly one; the field model needs the CAD solid, it predicts 
   --h5    SHARD.h5 [--sample sample_0000123 | index]   a field-label geometry (stored curved mesh, labels known)
 
 The beam axis and accelerating length follow the family (src.qoi.figures.beam_axis); a CAD file uses the
-z axis through the origin.  Mesh density: h = --mesh_size · (V / --vol_div)^(1/3) (n-cell cavity: --vol_div n),
-or --h_abs [m]; the curved mesh is netgen's at maxh = 3 h (field_labels.start_mesh).
+z axis through the origin.  The curved mesh is built like the training meshes (field_labels.model_sized_mesh,
+docs/37): the start mesh: ≥ 5000 tets near 10000, no cap, no refinement; h = --mesh_size · (V / --vol_div)^(1/3) (or --h_abs [m])
+only seeds the maxh search.
 
     python scripts/predict_geometry.py --checkpoint DIR --step tesla.step --vol_div 9 \\
         [--fe] [--out_dir pred_tesla]

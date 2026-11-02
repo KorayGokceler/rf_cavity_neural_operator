@@ -185,11 +185,14 @@ class FieldDataset(Dataset):
     files of both kinds can be mixed in data_path.  hf_repeat > 1 lists the HF geometries of the TRAIN split
     that many times per epoch (few expensive HF samples among many cheap LF ones).  train_extra: more H5 files
     (path / glob / directory / list) whose geometries all go to the train split, never to val / test (the HF
-    files of a mixed run: the held-out geometries come from data_path)."""
+    files of a mixed run: the held-out geometries come from data_path).
+    require_label_ok (default False): drop samples whose attr label_ok is 0 (p2 labels whose frequency error
+    estimate exceeds tol_f_p2, docs/37); files without the attr are kept.  The drop count per family is printed
+    with the train split."""
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,
                  feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False, with_ct=None,
-                 hf_repeat=1, train_extra=None):
+                 hf_repeat=1, train_extra=None, require_label_ok=False):
         if augment:
             raise ValueError("FieldDataset: rotation augmentation is not supported (the DOF maps C, QP "
                              "are built for the stored orientation)")
@@ -202,7 +205,7 @@ class FieldDataset(Dataset):
         self.with_ct = split == "train" if with_ct is None else bool(with_ct)      # Cᵀ for the backward (training only)
         index, freqs, nxt, Ks, types, fids = [], [], [], [], [], []
         self.qoi_names = tuple(default_qoi_names())
-        n_main = None
+        n_main, dropped = None, {}
         for i_file, path in enumerate(self.paths):
             if i_file == n_main_files:
                 n_main = len(index)
@@ -212,14 +215,21 @@ class FieldDataset(Dataset):
                     if str(g.attrs.get("labels", "")) != "field":
                         raise ValueError(f"{path}/{key}: not a field-label sample (dataset_generator_3d "
                                          "files); old N0-label data trains no model")
+                    if require_label_ok and int(g.attrs.get("label_ok", 1)) == 0:
+                        fam = str(g.attrs.get("shape_type", ""))
+                        dropped[fam] = dropped.get(fam, 0) + 1
+                        continue
                     index.append((path, key))
                     freqs.append(np.asarray(g["freqs"], np.float64))
                     nxt.append(float(g.attrs.get("freq_next", np.nan)))
                     Ks.append(len(freqs[-1]))
                     types.append(str(g.attrs.get("shape_type", "")))
                     fids.append(label_fidelity(g.attrs))
+        if dropped and split == "train":
+            print(f"FieldDataset: require_label_ok dropped {sum(dropped.values())} samples with label_ok = 0 "
+                  "(" + ", ".join(f"{k or '?'}: {v}" for k, v in sorted(dropped.items())) + ")")
         if not index:
-            raise ValueError(f"no samples in {self.paths}")
+            raise ValueError(f"no samples in {self.paths}" + (" (all dropped by require_label_ok)" if dropped else ""))
         self.n_modes = int(n_modes or min(Ks))
         self.index, self._freqs, self._next, self.shape_types, self.fidelities = index, freqs, nxt, types, fids
         n = len(index) if n_main is None else n_main            # train_extra geometries are outside the split

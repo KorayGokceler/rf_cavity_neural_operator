@@ -59,8 +59,8 @@ description of it.
   subspace, not the individual vectors.
 
 **Labels and data**
-- Frequencies and QoI come from the p3 label mesh. The training field target is the p2 projection on the
-  model mesh (≤ `model_max_elements` tets). The `rq_model` load-time check stays.
+- Default labels are p2, solved on the model mesh (docs/37). With `--label_order 3`, frequencies and QoI come from the p3 label mesh
+  and the training field target is the p2 projection on the model mesh (≤ `model_max_elements` tets). The `rq_model` load-time check stays.
 - Ids stay reproducible: block · 2^19 + i, seeded per id, Sobol balance per family. Generator behaviour
   changes need the owner's go-ahead (AGENTS.md); flag any.
 - Deformed samples: their labels belong to the warped mesh, so the undeformed CAD is not their geometry.

@@ -19,7 +19,7 @@ and report numbers, and the caller decides what to fix.
   - `import torch` before `ngsolve`;
   - `highorder.single_level` for bisected meshes;
   - one explicit integration rule (`highorder.volume_measure`);
-  - p3 labels → p2 model target.
+  - p2 labels on the model mesh (p3 labels → p2 projection with `--label_order 3`).
 
 ## 2. Run the matching tests
 

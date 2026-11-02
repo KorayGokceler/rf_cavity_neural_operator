@@ -124,7 +124,17 @@ export default function TrubaPage({ lang }: Props) {
               </>
               <label>TAG<input type="text" placeholder={res?.tag ?? ''} value={f.tag} onChange={(e) => set('tag', e.target.value)} /></label>
             </div>
-            {data && <label className="check"><input type="checkbox" checked={f.adapt} onChange={(e) => set('adapt', e.target.checked)} /><span>{t(lang, 'adaptOn')}</span></label>}
+            {data && (() => {          // label kind (docs/37): p2 on the model mesh, or high-fidelity p3 (adaptive / one solve)
+              const kind = f.label_order <= f.model_order ? 'p2' : f.adapt ? 'hf' : 'hf1';
+              return <label>{t(lang, 'labelKind')}
+                <select value={kind} data-testid="truba-label-kind"
+                        onChange={(e) => setF({ ...f, label_order: e.target.value === 'p2' ? f.model_order : Math.max(3, f.model_order + 1),
+                                                adapt: e.target.value !== 'hf1' })}>
+                  <option value="p2">{t(lang, 'labelKindP2')}</option>
+                  <option value="hf">{t(lang, 'labelKindHf')}</option>
+                  <option value="hf1">{t(lang, 'labelKindHf1')}</option>
+                </select></label>;
+            })()}
             {data && (
               <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
                 <div className="grid2">
@@ -132,10 +142,11 @@ export default function TrubaPage({ lang }: Props) {
                     <NumField lang={lang} label={t(lang, 'threads')} value={f.threads} min={1} max={128} onChange={nfld('threads')} />
                     <NumField lang={lang} label={t(lang, 'maxElements')} value={f.max_elements} min={1000} step={1000} onChange={nfld('max_elements')} />
                     <NumField lang={lang} label={t(lang, 'maxhFactor')} value={f.maxh_factor} min={1} max={10} step={0.5} onChange={nfld('maxh_factor')} />
-                    <NumField lang={lang} label={t(lang, 'modelMaxElements')} value={f.model_max_elements} min={100} step={1000} onChange={nfld('model_max_elements')} />
-                    <NumField lang={lang} label={t(lang, 'tolF')} value={f.tol_f} min={1e-9} step={1e-7} disabled={!f.adapt} onChange={nfld('tol_f')} />
-                    <NumField lang={lang} label={t(lang, 'tolQ')} value={f.tol_q} min={1e-6} step={1e-4} disabled={!f.adapt} onChange={nfld('tol_q')} />
-                    <NumField lang={lang} label={t(lang, 'maxNdof')} value={f.max_ndof} min={10000} step={100000} onChange={nfld('max_ndof')} />
+                    <NumField lang={lang} label={t(lang, 'modelMaxElementsP3')} value={f.model_max_elements} min={100} step={1000} disabled={f.label_order <= f.model_order} onChange={nfld('model_max_elements')} />
+                    <NumField lang={lang} label={t(lang, 'tolFP2')} value={f.tol_f_p2} min={1e-6} max={0.1} step={1e-4} disabled={f.label_order > f.model_order} onChange={nfld('tol_f_p2')} />
+                    <NumField lang={lang} label={t(lang, 'tolF')} value={f.tol_f} min={1e-9} step={1e-7} disabled={!(f.adapt && f.label_order > f.model_order)} onChange={nfld('tol_f')} />
+                    <NumField lang={lang} label={t(lang, 'tolQ')} value={f.tol_q} min={1e-6} step={1e-4} disabled={!(f.adapt && f.label_order > f.model_order)} onChange={nfld('tol_q')} />
+                    <NumField lang={lang} label={t(lang, 'maxNdof')} value={f.max_ndof} min={10000} step={100000} disabled={f.label_order <= f.model_order} onChange={nfld('max_ndof')} />
                   </>}
                   {data && <>
                     <NumField lang={lang} label={t(lang, 'deformProb')} value={f.deform_prob} min={0} max={1} step={0.1} onChange={nfld('deform_prob')} />

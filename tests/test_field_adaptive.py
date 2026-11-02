@@ -244,13 +244,13 @@ def test_too_many_tets_is_rejected_before_curving_and_not_retried_with_a_finer_m
 
     monkeypatch.setattr(fl, "curved_mesh", too_fine)
     with pytest.raises(ho.TooManyElements):
-        fl.label_sample(brep, 0.02, "pillbox", 2, settings={"adapt_cs": 1.5, "curvaturesafety": 2.0})
+        fl.label_sample(brep, 0.02, "pillbox", 2, settings={"label_order": 3, "adapt_cs": 1.5, "curvaturesafety": 2.0})
     assert calls == [1.5]                                   # cs 2 only has more tets
 
 
-def test_low_fidelity_labels_start_from_the_adaptive_paths_mesh(tmp_path, monkeypatch):
-    """--no_adapt with label_order == model_order (LF, docs/34) meshes like the adaptive path (adapt_cs, then
-    curvaturesafety when that folds), so LF and HF samples of a geometry share the model mesh."""
+def test_p2_labels_mesh_with_model_sized_mesh_and_p3_without_adaptivity_unchanged(tmp_path, monkeypatch):
+    """label_order == model_order (docs/37) meshes with model_sized_mesh (no retries, a fold raises curvaturesafety 2 → 3, never
+    lowers it); p3 without adaptivity keeps the single curved_mesh call with the generator's curvaturesafety."""
     from src.data_gen import field_labels as fl
     calls = []
 
@@ -259,11 +259,11 @@ def test_low_fidelity_labels_start_from_the_adaptive_paths_mesh(tmp_path, monkey
         raise RuntimeError("folded elements")
 
     monkeypatch.setattr(fl, "curved_mesh", folds)
-    lf = {"adaptive": False, "label_order": 2, "model_order": 2, "adapt_cs": 1.5, "curvaturesafety": 2.0}
-    for settings, expected in ((lf, [(1.5, 0), (2.0, 0)]), ({**lf, "adaptive": True}, [(1.5, 0), (2.0, 0)]),
-                               ({**lf, "label_order": 3}, [(2.0, 1)])):        # p3 without adaptivity: unchanged
+    base = {"adaptive": False, "curvaturesafety": 2.0, "model_mesh_tries": 2}
+    for settings, expected in (({**base, "label_order": 2, "model_order": 2},
+                                [(2.0, 0), (3.0, 0)]),
+                               ({**base, "label_order": 3}, [(2.0, 1)])):
         calls.clear()
         with pytest.raises(RuntimeError, match="folded"):
             fl.label_sample(str(tmp_path / "s.brep"), 0.02, "pillbox", 2, settings=settings)
         assert calls == expected
-
