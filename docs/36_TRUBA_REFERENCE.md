@@ -25,6 +25,14 @@
    (kullanım politikası): derlenmiş / hazır uygulama taşınır. Yeni uygulama için `trubadestek@tubitak.gov.tr`'e
    yazılır.
 
+6. **İşler yalnız `/arf/scratch` altından gönderilebilir** (ilk deneme, 2026-11-02): ev dizinindeki repodan `srun` çalışınca
+   TRUBA "Lutfen islerinizi /arf/scratch/ dizini altinda calistiriniz!" diyip işi reddetti ("Job violates accounting/QOS
+   policy"). Çözüm: `config.sh` `sbatch_common` her `srun` / `sbatch`'e `--chdir=$JOB_CWD` (varsayılan
+   `/arf/scratch/$USER/rfcav_run`) ekler; repo ve imaj ev dizininde kalır, komut hangi klasörden çalışırsa çalışsın.
+7. **İlk imaj kurulumu** (2026-11-02, debug `orfoz232`): paketler kuruldu, `%test` NGSolve'u yükleyemedi
+   (`libquadmath.so.0` yok: `ngsolve_openblas`'ın getirdiği `libgfortran` buna bağlı, `python:3.11-slim` tabanında yok).
+   `rfcav.def`'e `libgfortran5 libquadmath0` eklendi; TRUBA'da yeniden kurulum bekleniyor.
+
 ## 1. Kullanım politikası ve hesap
 
 *(`0-truba/kullanim_kurallari`, `uyelik_rehberi`, `kullanici_basvurulari`, SSS 13, 38)*

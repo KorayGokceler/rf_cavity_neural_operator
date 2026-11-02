@@ -19,7 +19,10 @@ From: python:3.11-slim-bookworm
 %post
     set -eu
     apt-get update
-    apt-get install -y --no-install-recommends libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1 libgomp1
+    # libgfortran5 + libquadmath0: the OpenBLAS that NGSolve bundles (ngsolve_openblas) links against them, and the slim
+    # base has neither (first TRUBA build, 2026-11-02: "libquadmath.so.0: cannot open shared object file" in %test)
+    apt-get install -y --no-install-recommends libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1 libgomp1 \
+        libgfortran5 libquadmath0
     rm -rf /var/lib/apt/lists/*
     export PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
     # CUDA torch first (it bundles the CUDA runtime; the host driver comes in with `apptainer exec --nv`)
