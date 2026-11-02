@@ -775,6 +775,20 @@ def file_metadata(args):
             "freq_unit": "GHz", "length_unit": "m", "c0": C0, "docs": "docs/29_FIELD_LABELS.md"}
 
 
+def _partial_samples(tmp_path):
+    """Sample ids already in a .partial file of an interrupted run, or None when it cannot be read.  A job killed
+    while writing (scancel, wall time) can leave a truncated HDF5 file (TRUBA 2026-11-02: "truncated file: eof = 96"):
+    it is moved aside to <tmp_path>.corrupt-<time> and the shard starts again instead of crashing on every resume."""
+    try:
+        with h5py.File(tmp_path, "r") as f_h5:
+            return {int(k.split("_", 1)[1]) for k in f_h5.keys() if k.startswith("sample_")}
+    except OSError as e:
+        bad = f"{tmp_path}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+        os.replace(tmp_path, bad)
+        print(f"cannot resume {tmp_path} ({e}); moved it to {bad} and starting the shard again", flush=True)
+        return None
+
+
 def main(argv=None):
     global ARGS
     ARGS = parse_args(argv)
@@ -799,9 +813,9 @@ def main(argv=None):
         list(range(ARGS.start_id, ARGS.start_id + ARGS.n_total))
     n_requested = len(ids)
     resume = bool(getattr(ARGS, "resume", False)) and os.path.exists(tmp_path)
+    done = _partial_samples(tmp_path) if resume else None
+    resume = done is not None
     if resume:
-        with h5py.File(tmp_path, "r") as f_h5:
-            done = {int(k.split("_", 1)[1]) for k in f_h5.keys() if k.startswith("sample_")}
         n_ok = len(done)
         ids = [i for i in ids if i not in done]
         print(f"Resuming {tmp_path}: {n_ok} samples already there, {len(ids)} ids left")
