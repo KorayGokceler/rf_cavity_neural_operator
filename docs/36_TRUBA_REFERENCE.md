@@ -34,7 +34,11 @@
    `rfcav.def`'e `libgfortran5 libquadmath0` eklendi. İkinci deneme (debug `hamsi38`) NGSolve'u geçti, gmsh'te
    `libGL.so.1` eksikti (Debian'da `libglu1-mesa` GL yükleyicisini çekmiyor). `ldd` ile gmsh / NGSolve / netgen'in bütün
    sistem kütüphaneleri çıkarıldı ve hepsi eklendi (GL: `libgl1 libglx0 libglvnd0 libopengl0`; X11; `libsm6 libice6`);
-   `%post` artık eksik kalan her kütüphaneyi tek listede yazdırıyor. TRUBA'da üçüncü kurulum bekleniyor.
+   `%post` artık eksik kalan her kütüphaneyi tek listede yazdırıyor. Üçüncü deneme: **imaj kuruldu**
+   (`torch 2.6.0+cu124 | CUDA build 12.4 | ngsolve 6.2.2608 | gmsh 4.15.2`); kalan "not found" satırları
+   (`libcudart.so.12`, `libnvrtc.so.12`: NGSolve'un isteğe bağlı CUDA eklentisi; `libopenblas.so.0`: paketlenmiş OpenBLAS'ın
+   kısa adı) zararsız. Kontrol adımı, henüz oluşmamış `$DATA_ROOT`'u bağlayamadı; `container_prefix` bağlanan klasörleri
+   artık önceden oluşturuyor.
 
 ## 1. Kullanım politikası ve hesap
 

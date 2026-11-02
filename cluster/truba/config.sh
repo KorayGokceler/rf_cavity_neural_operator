@@ -144,7 +144,11 @@ container_prefix() {
   if [ "${1:-}" = --nv ]; then nv=(--nv); fi
   if [ -n "$CACHE_DIR" ]; then bind+=,$CACHE_DIR; fi
   if [ -n "$EXTRA_BIND" ]; then bind+=,$EXTRA_BIND; fi
-  CX=("$APPTAINER" exec ${nv[@]+"${nv[@]}"} --bind "$bind" --pwd "$REPO_DIR" "$CONTAINER")
+  # apptainer refuses to bind a host path that does not exist (first TRUBA setup, 2026-11-02: the check step failed
+  # on a fresh account because $DATA_ROOT had not been created yet)
+  if [ "${DRY_RUN:-0}" != 1 ]; then mkdir -p "$DATA_ROOT" ${CACHE_DIR:+"$CACHE_DIR"}; fi
+  # matplotlib wants a writable config dir; the image's /root is read-only
+  CX=("$APPTAINER" exec ${nv[@]+"${nv[@]}"} --env MPLCONFIGDIR="/tmp/mplconfig-$USER" --bind "$bind" --pwd "$REPO_DIR" "$CONTAINER")
 }
 
 sbatch_common() {   # common sbatch / srun flags (partition / account / scratch working directory)
