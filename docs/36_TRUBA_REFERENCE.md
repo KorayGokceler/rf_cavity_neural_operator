@@ -31,7 +31,10 @@
    `/arf/scratch/$USER/rfcav_run`) ekler; repo ve imaj ev dizininde kalır, komut hangi klasörden çalışırsa çalışsın.
 7. **İlk imaj kurulumu** (2026-11-02, debug `orfoz232`): paketler kuruldu, `%test` NGSolve'u yükleyemedi
    (`libquadmath.so.0` yok: `ngsolve_openblas`'ın getirdiği `libgfortran` buna bağlı, `python:3.11-slim` tabanında yok).
-   `rfcav.def`'e `libgfortran5 libquadmath0` eklendi; TRUBA'da yeniden kurulum bekleniyor.
+   `rfcav.def`'e `libgfortran5 libquadmath0` eklendi. İkinci deneme (debug `hamsi38`) NGSolve'u geçti, gmsh'te
+   `libGL.so.1` eksikti (Debian'da `libglu1-mesa` GL yükleyicisini çekmiyor). `ldd` ile gmsh / NGSolve / netgen'in bütün
+   sistem kütüphaneleri çıkarıldı ve hepsi eklendi (GL: `libgl1 libglx0 libglvnd0 libopengl0`; X11; `libsm6 libice6`);
+   `%post` artık eksik kalan her kütüphaneyi tek listede yazdırıyor. TRUBA'da üçüncü kurulum bekleniyor.
 
 ## 1. Kullanım politikası ve hesap
 

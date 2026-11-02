@@ -19,15 +19,25 @@ From: python:3.11-slim-bookworm
 %post
     set -eu
     apt-get update
-    # libgfortran5 + libquadmath0: the OpenBLAS that NGSolve bundles (ngsolve_openblas) links against them, and the slim
-    # base has neither (first TRUBA build, 2026-11-02: "libquadmath.so.0: cannot open shared object file" in %test)
-    apt-get install -y --no-install-recommends libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1 libgomp1 \
-        libgfortran5 libquadmath0
+    # The shared libraries the pip wheels load but the slim base lacks (from `ldd` of libgmsh.so.4.15 and the
+    # NGSolve / netgen / ngsolve_openblas libraries; TRUBA builds of 2026-11-02 failed on libquadmath.so.0, then on
+    # libGL.so.1 — libglu1-mesa does not pull the GL loader in on Debian):
+    #   gmsh:    GL (libgl1 libglx0 libglvnd0 libopengl0 libglu1-mesa), X11 (libx11-6 libxext6 libxfixes3 libxrender1
+    #            libxcursor1 libxft2 libxinerama1), libgomp1; their own deps (fontconfig, freetype, xcb, png …) follow
+    #   netgen:  libsm6 libice6;  ngsolve_openblas: libgfortran5 libquadmath0
+    apt-get install -y --no-install-recommends \
+        libgl1 libglx0 libglvnd0 libopengl0 libglu1-mesa \
+        libx11-6 libxext6 libxfixes3 libxrender1 libxcursor1 libxft2 libxinerama1 libsm6 libice6 \
+        libgomp1 libgfortran5 libquadmath0
     rm -rf /var/lib/apt/lists/*
     export PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
     # CUDA torch first (it bundles the CUDA runtime; the host driver comes in with `apptainer exec --nv`)
     pip install --index-url {{ TORCH_INDEX }} torch
     pip install -r /opt/rfcav/requirements.txt
+    # every missing shared library of the compiled wheels at once (the %test import stops at the first one)
+    missing=$(find /usr/local/lib -name '*.so*' \( -path '*gmsh*' -o -path '*ngsolve*' -o -path '*netgen*' \) \
+        -exec ldd {} \; 2>/dev/null | grep 'not found' | sort -u || true)
+    if [ -n "$missing" ]; then echo "MISSING SHARED LIBRARIES:"; echo "$missing"; fi
 
 %environment
     export PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
