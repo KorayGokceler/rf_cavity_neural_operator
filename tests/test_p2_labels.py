@@ -20,7 +20,7 @@ from src.data_gen import field_labels as fl  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 C0 = 299792458.0
 R, L = 0.040, 0.050
-SMALL = {"model_min_elements": 800, "model_target_elements": 1500, "model_max_elements": 3000, "max_ndof": 200000}
+SMALL = {"model_min_elements": 800, "model_target_elements": 1500, "max_ndof": 200000, "tol_f_p2": 1.0}   # tol 1: no refinement
 
 
 def _brep(path):
@@ -31,22 +31,22 @@ def _brep(path):
     return str(path)
 
 
-def test_model_sized_mesh_lands_in_range_on_a_pillbox(tmp_path):
+def test_model_sized_mesh_lands_near_the_target_on_a_pillbox(tmp_path):
     mesh, _, info = fl.model_sized_mesh(_brep(tmp_path / "p.brep"), 0.02, None, SMALL)
-    assert SMALL["model_min_elements"] <= mesh.ne <= SMALL["model_max_elements"]
+    assert SMALL["model_min_elements"] <= mesh.ne <= 2 * SMALL["model_target_elements"]
     assert info["n_tets"] == mesh.ne and info["curvaturesafety"] == 2.0 and info["n_meshes"] >= 1
     assert mesh.levels == 1
 
 
 def test_model_sized_mesh_on_a_small_feature_shape(tmp_path):
-    """TESLA cell with pipes (iris radii, small curvature radii): inside the range, single level."""
+    """TESLA cell with pipes (iris radii, small curvature radii): at least the minimum, curvaturesafety 2, single level."""
     from src.data_gen import cavity_shapes as cs
     from tests import p2_reference as p2
     tesla = dict(Req=0.1033, Riris=0.035, L=0.0577, A=0.042, B=0.042, a=0.012, b=0.019, n_cells=1.0, Lpipe=0.08)
     brep = p2.write_brep(lambda occ: cs.build_elliptical(occ, None, dict(tesla)), tmp_path / "tesla.brep")
-    s = {"model_min_elements": 1500, "model_target_elements": 3000, "model_max_elements": 6000}
-    mesh, _, info = fl.model_sized_mesh(str(brep), 0.03, None, s)
-    assert 1500 <= mesh.ne <= 6000 and mesh.levels == 1 and info["curvaturesafety"] in (2.0, 1.5, 1.0)
+    s = {"model_min_elements": 1500, "model_target_elements": 3000}
+    mesh, _, info = fl.model_sized_mesh(str(brep), 0.03, None, s)   # folds at cs 2: retried at cs 3
+    assert mesh.ne >= 1500 and mesh.levels == 1 and info["curvaturesafety"] in (3.0, 4.0)
 
 
 def _fake_curved_mesh(counts, calls):
@@ -62,29 +62,136 @@ def _fake_curved_mesh(counts, calls):
     return fake
 
 
-def test_model_sized_mesh_falls_back_to_a_coarser_curvature_rule(monkeypatch):
+def test_model_sized_mesh_has_no_cap_and_no_curvature_fallback(monkeypatch):
+    """Curvature-bound shape (30k tets at curvaturesafety 2 whatever maxh): the 30k mesh is kept, cs is never lowered."""
     calls = []
     monkeypatch.setattr(fl, "curved_mesh", _fake_curved_mesh({2.0: 30000, 1.5: 12000, 1.0: 60000}, calls))
     monkeypatch.setattr(fl.ho, "single_level", lambda m, *a, **k: m)
     mesh, _, info = fl.model_sized_mesh("x.brep", 0.1, None, {})
-    assert info["curvaturesafety"] == 1.5 and mesh.ne == 12000 == info["n_tets"]   # cs 2: 30k whatever maxh
-    assert {cs for _, cs in calls} == {2.0, 1.5}
-    # no pointless retries once coarser maxh stops helping at a curvature rule
-    assert len([c for c in calls if c[1] == 2.0]) <= 4
-    # a mesh that fits at the first rule never touches the next one
-    calls.clear()
+    assert mesh.ne == 30000 == info["n_tets"] and info["curvaturesafety"] == 2.0
+    assert {cs for _, cs in calls} == {2.0} and len(calls) <= 5      # no pointless retries once coarser maxh stops helping
+    calls.clear()                                                    # an easy shape lands near the target
     monkeypatch.setattr(fl, "curved_mesh", _fake_curved_mesh({2.0: 100, 1.5: 100, 1.0: 100}, calls))
     mesh, _, info = fl.model_sized_mesh("x.brep", 0.1, None, {})
-    assert info["curvaturesafety"] == 2.0 and 5000 <= mesh.ne <= 20000 and {cs for _, cs in calls} == {2.0}
+    assert info["curvaturesafety"] == 2.0 and 8000 <= mesh.ne <= 12500 and {cs for _, cs in calls} == {2.0}
 
 
-def test_model_sized_mesh_raises_when_nothing_fits(monkeypatch):
+def test_model_sized_mesh_raises_when_only_too_coarse_meshes_exist(monkeypatch):
     calls = []
-    monkeypatch.setattr(fl, "curved_mesh", _fake_curved_mesh({2.0: 90000, 1.5: 90000, 1.0: 90000}, calls))
+    monkeypatch.setattr(fl, "curved_mesh", _fake_curved_mesh({2.0: 100, 1.5: 100, 1.0: 100}, calls))
     monkeypatch.setattr(fl.ho, "single_level", lambda m, *a, **k: m)
-    with pytest.raises(RuntimeError, match="no curved mesh with 5000–20000 tets"):
-        fl.model_sized_mesh("x.brep", 0.1, None, {})
-    assert {cs for _, cs in calls} == {2.0, 1.5, 1.0}
+    with pytest.raises(RuntimeError, match="no curved mesh with >= 5000 tets"):
+        fl.model_sized_mesh("x.brep", 0.1, None, {"model_min_elements": 5000, "model_target_elements": 10000,
+                                                  "maxh_factor": 1e3, "model_mesh_tries": 2})
+    assert {cs for _, cs in calls} == {2.0}
+
+
+def _fake_refine_env(monkeypatch, ests_by_ne, ndof_per_tet=11):
+    """refine_p2_to_tolerance with a fake mesh builder: tets = 1e7 / f³ (so f x 0.9 → 1.37x tets), estimate by tets."""
+    built = []
+
+    def single(cad, h, deform, s, f, cs, cap):
+        built.append((f, cs))
+        return SimpleNamespace(ne=int(1.0e7 / f ** 3), levels=1), "shape"
+    monkeypatch.setattr(fl, "_single_level_mesh", single)
+    monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=ndof_per_tet * m.ne))
+    return built
+
+
+def test_refine_p2_to_tolerance_refines_until_the_estimate_is_within_tol(monkeypatch):
+    built = _fake_refine_env(monkeypatch, None)
+    est_of = lambda m: (4e-3 * (10000 / m.ne) ** (4 / 3), m.ne)        # error ∝ h⁴ ∝ tets^(-4/3)  # noqa: E731
+    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3}
+    start = SimpleNamespace(ne=10000, levels=1)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, est_of)
+    assert r["stop"] == "converged" and r["est"] <= 1e-3 and r["rounds"] == len(r["tets"]) == len(built) + 1
+    assert r["rounds"] == 2 and r["tets"][1] > r["tets"][0] and r["payload"] == r["tets"][-1]
+    # (1) both sizes scale by r = (tol/est)^(1/4)·0.9: maxh_factor down, curvaturesafety up by the same factor
+    rr = (1e-3 / 4e-3) ** 0.25 * 0.9
+    (f1, cs1), = built
+    assert f1 == pytest.approx(10.0 * rr) and cs1 == pytest.approx(2.0 / rr) and cs1 > 2.0
+    assert r["css"] == pytest.approx([2.0, cs1]) and r["cs"] == pytest.approx(cs1) and r["f"] == pytest.approx(f1)
+    # already within tol: one solve, no mesh built
+    built.clear()
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (5e-4, None))
+    assert r["rounds"] == 1 and r["stop"] == "converged" and not built
+
+
+def test_refine_p2_to_tolerance_stalls_when_the_mesh_barely_grows(monkeypatch):
+    """Curvature-bound shape: refinement changes the tets by < 15 %: stop 'stalled', keep the last solved mesh, never 'converged'."""
+    def single(cad, h, deform, s, f, cs, cap):
+        return SimpleNamespace(ne=10500, levels=1), "shape"
+    monkeypatch.setattr(fl, "_single_level_mesh", single)
+    monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=11 * m.ne))
+    start = SimpleNamespace(ne=10000, levels=1)
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (4e-3, None))
+    assert r["stop"] == "stalled" and r["rounds"] == 1 and r["mesh"] is start and r["est"] > 1e-3
+
+
+def test_refine_p2_to_tolerance_retries_a_stalled_mesh_with_a_larger_step(monkeypatch):
+    """r (cs 2 → 2.3) grows 5 %, r² (cs 2.6) 10 %, r³ (cs 2.9) 40 %: the third meshing is solved (overshoot is fine); cs is capped."""
+    calls = []
+
+    def single(cad, h, deform, s, f, cs, cap):
+        calls.append(cs)
+        return SimpleNamespace(ne=10500 if cs < 2.5 else 11000 if cs < 2.8 else 14000, levels=1), "shape"
+    monkeypatch.setattr(fl, "_single_level_mesh", single)
+    monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=11 * m.ne))
+    start = SimpleNamespace(ne=10000, levels=1)
+    ests = iter([1.15e-3, 4e-4])
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (next(ests), None))
+    assert len(calls) == 3 and calls[0] < calls[1] < calls[2] and r["stop"] == "converged" and r["tets"] == [10000, 14000]
+    assert r["css"] == pytest.approx([2.0, calls[2]])
+    calls.clear()                                       # cs cap: est 4e-3 → r = 0.64, cs 3.1, 4.9, then 7.7 > 6: two meshings
+    monkeypatch.setattr(fl, "_single_level_mesh", lambda *a: (calls.append(a[5]), (SimpleNamespace(ne=10500), "s"))[1])
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "p2_max_cs": 6.0, "max_ndof": 10**9}, start, "shape",
+                                  10.0, lambda m: (4e-3, None))
+    assert len(calls) == 2 and max(calls) <= 6.0 and r["stop"] == "stalled"
+
+
+def test_refine_p2_to_tolerance_retries_a_folded_mesh_at_a_finer_cs(monkeypatch):
+    calls = []
+
+    def single(cad, h, deform, s, f, cs, cap):
+        calls.append(cs)
+        if len(calls) < 3:
+            raise RuntimeError("folded elements")
+        return SimpleNamespace(ne=20000, levels=1), "shape"
+    monkeypatch.setattr(fl, "_single_level_mesh", single)
+    monkeypatch.setattr("ngsolve.HCurl", lambda m, **k: SimpleNamespace(ndof=11 * m.ne))
+    start = SimpleNamespace(ne=10000, levels=1)
+    ests = iter([4e-3, 5e-4])
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (next(ests), None))
+    assert calls[1] == calls[0] + 1 and calls[2] == calls[0] + 2 and r["stop"] == "converged" and r["css"][-1] == calls[2]
+    calls.clear()
+    monkeypatch.setattr(fl, "_single_level_mesh", lambda *a: (_ for _ in ()).throw(RuntimeError("folded")))
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (4e-3, None))
+    assert r["stop"] == "mesh_failed" and r["mesh"] is start
+
+
+def test_model_sized_mesh_raises_cs_on_a_fold_and_never_lowers_it(monkeypatch):
+    calls = []
+
+    def fake(cad_path, h, deform, s):
+        calls.append(s["curvaturesafety"])
+        if s["curvaturesafety"] < 3.0:
+            raise RuntimeError("folded elements")
+        return SimpleNamespace(ne=int(1.08e6 / s["maxh_factor"] ** 3), levels=1), "shape"
+    monkeypatch.setattr(fl, "curved_mesh", fake)
+    monkeypatch.setattr(fl.ho, "single_level", lambda m, *a, **k: m)
+    mesh, _, info = fl.model_sized_mesh("x.brep", 0.1, None, {})
+    assert calls[:2] == [2.0, 3.0] and min(calls) == 2.0 and info["curvaturesafety"] == 3.0 and mesh.ne >= 5000
+
+
+def test_refine_p2_to_tolerance_budget_and_max_rounds(monkeypatch):
+    _fake_refine_env(monkeypatch, None)
+    start = SimpleNamespace(ne=10000, levels=1)
+    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 150000}           # 10k tets x 11 = 110k; ~1.4x tets exceeds 150k
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (4e-3, None))
+    assert r["stop"] == "budget" and r["rounds"] == 1 and r["est"] == 4e-3 and r["mesh"] is start
+    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 10**9, "p2_max_refine": 2}   # estimate never improves
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (4e-3, None))
+    assert r["stop"] == "max_rounds" and r["rounds"] == 3
 
 
 @pytest.fixture(scope="module")
@@ -97,11 +204,33 @@ def test_p2_label_sample_attrs_and_projection(p2_pillbox):
     a = p2_pillbox["attrs"]
     assert a["label_order"] == a["model_order"] == 2 and "adapt_iters" not in a
     assert np.isfinite(a["est_rel_f"]) and a["est_rel_f"] > 0 and a["label_ok"] in (0, 1)
-    assert a["label_ok"] == int(a["est_rel_f"] <= a["est_max"]) and a["est_max"] == 1e-3
-    assert a["curvaturesafety_used"] == 2.0 and a["model_meshes"] >= 1 and a["maxh_factor_used"] > 0
+    assert a["label_ok"] == int(a["est_rel_f"] <= a["tol_f_p2"]) == 1 and a["tol_f_p2"] == 1.0
+    assert a["curvaturesafety_used"] == 2.0 and a["model_meshes"] >= 1 and a["maxh_factor_used"] > 0   # no cs fallback
+    assert a["p2_rounds"] == 1 and a["p2_stop"] == "converged"
     assert 800 <= a["n_tets"] <= 3000 and a["n_tets"] == a["n_tets_label"] and a["n_dof_label"] == a["n_dof_model"]
     # same space: the "projection" is the identity (nested, unit-norm shortcut); _check_reload ran inside label_sample
     assert np.abs(p2_pillbox["proj_err"]).max() < 1e-6
+
+
+def test_p2_label_sample_refines_until_the_estimate_is_within_tol(tmp_path):
+    """Pillbox, h = 0.02: start mesh ~1.8k tets has est 1.6e-4; tol 5e-5 forces refinement (numbers in the assert message)."""
+    brep = _brep(tmp_path / "p.brep")
+    res = fl.label_sample(brep, 0.02, "pillbox", 3, settings={**SMALL, "tol_f_p2": 5e-5})
+    a = res["attrs"]
+    msg = (a["p2_tets"], a["p2_est"], a["p2_stop"])
+    assert a["p2_rounds"] >= 2 and a["p2_stop"] == "converged" and a["label_ok"] == 1 and a["est_rel_f"] <= 5e-5, msg
+    assert a["p2_est"][0] > 5e-5 and a["p2_tets"][-1] > a["p2_tets"][0] and a["n_tets"] == a["p2_tets"][-1], msg
+    assert a["curvaturesafety_used"] > 2.0 and a["p2_cs"][0] == 2.0 and a["p2_cs"][-1] == a["curvaturesafety_used"] and a["maxh_factor_used"] < 3.0 and np.abs(res["proj_err"]).max() < 1e-6
+
+
+def test_p2_label_sample_budget_stop_keeps_the_last_mesh_and_flags_it(tmp_path):
+    brep = _brep(tmp_path / "p.brep")
+    first = fl.label_sample(brep, 0.02, "pillbox", 3, settings=SMALL)["attrs"]
+    res = fl.label_sample(brep, 0.02, "pillbox", 3, settings={**SMALL, "tol_f_p2": 5e-5,
+                                                               "max_ndof": int(first["n_dof_model"] * 1.1)})
+    a = res["attrs"]
+    assert a["p2_stop"] == "budget" and a["p2_rounds"] == 1 and a["label_ok"] == 0 and a["est_rel_f"] > 5e-5
+    assert a["n_tets"] == first["n_tets"] and a["n_dof_model"] == first["n_dof_model"]
 
 
 def test_p2_pillbox_frequency_within_the_measured_p2_error(p2_pillbox):
@@ -123,7 +252,7 @@ def test_generator_cli_default_writes_p2_labels(tmp_path):
     out.mkdir()
     cmd = [sys.executable, os.path.join(REPO, "src/data_gen/dataset_generator_3d.py"), "--mode", "calibration",
            "--n_total", "2", "--n_eigen_modes", "2", "--mesh_size", "0.2", "--n_workers", "1", "--threads", "2",
-           "--model_min_elements", "300", "--model_target_elements", "600", "--model_max_elements", "1500",
+           "--model_min_elements", "300", "--model_target_elements", "600", "--tol_f_p2", "1",
            "--h5_filename", str(out / "d.h5")]
     r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=900)
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
@@ -133,7 +262,7 @@ def test_generator_cli_default_writes_p2_labels(tmp_path):
         assert json.loads(f.attrs["metadata"])["generator_args"]["label_order"] == 2
         g = f["sample_0001"]
         assert g.attrs["label_order"] == g.attrs["model_order"] == 2 and "est_rel_f" in g.attrs
-        assert 300 <= g.attrs["n_tets"] <= 1500
+        assert 300 <= g.attrs["n_tets"] and g.attrs["p2_stop"] == "converged"
 
 
 def test_reference_check_on_a_p2_label_file(p2_pillbox, tmp_path):

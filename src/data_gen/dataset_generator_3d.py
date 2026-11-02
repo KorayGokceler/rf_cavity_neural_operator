@@ -3,9 +3,9 @@
 Problem: curl curl E = k^2 E in the cavity, n x E = 0 on the PEC wall; f = c k / (2 pi).  Per sample the
 generator draws a geometry from a family (src/data_gen/cavity_shapes.py), meshes the CAD solid with gmsh
 (mesh_sample: certified connected manifold, any number of handles / isolated conductors) and labels it
-with src/data_gen/field_labels.py.  Default (docs/37): the model mesh (curved netgen mesh with the most tets
-≤ --model_max_elements) and one HCurl p2 solve on it — the model space's own modes, with their error
-estimate.  --label_order 3: high-fidelity labels (adaptive HCurl p3 modes L2-projected onto the model's p2
+with src/data_gen/field_labels.py.  Default (docs/37): the model mesh (curved netgen mesh, start near 10k tets,
+refined uniformly until the p2 error estimate is ≤ --tol_f_p2) and HCurl p2 solves on it — the model space's own
+modes, with their error estimate.  --label_order 3: high-fidelity labels (adaptive HCurl p3 modes L2-projected onto the model's p2
 space; test / CST sets, docs/30).  Both store the cavity figures of merit.  The H5 layout (one group ``sample_XXXX`` per
 geometry, file attr ``metadata``) is documented there and in docs/29_FIELD_LABELS.md; the common attrs
 written here are shape_type, geom_params (JSON) + one float attr per parameter, freq_next (GHz, mode K+1),
@@ -122,18 +122,20 @@ def parse_args(argv=None):
     p.add_argument("--tol_q", type=float, default=1e-3,
                    help="Adaptive stop, relative change of Q0 / G / R/Q / surface peaks.")
     p.add_argument("--model_max_elements", type=int, default=20000,
-                   help="Tet cap of every model mesh (training cost).  p2 labels: see --model_target_elements.  "
-                        "Adaptive p3 labels: the finest refinement level below it; the final-level labels are "
-                        "L2-projected onto it.")
+                   help="Adaptive p3 labels only: the finest refinement level with at most this many tets is the model "
+                        "mesh (the final-level labels are L2-projected onto it).  p2 labels ignore it (no tet cap: "
+                        "the error limit --tol_f_p2 and --max_ndof bound the mesh).")
     p.add_argument("--model_target_elements", type=int, default=10000,
-                   help="p2 labels: the model mesh has --model_min_elements … --model_max_elements tets, as close to "
-                        "this as netgen allows (field_labels.model_sized_mesh: maxh search, then coarser curvature "
-                        "rules for small features).")
+                   help="p2 labels: the START mesh has at least --model_min_elements tets, as close to this as netgen "
+                        "allows (field_labels.model_sized_mesh: maxh search, curvaturesafety fixed, no upper cap).")
     p.add_argument("--model_min_elements", type=int, default=5000,
-                   help="p2 labels: lower bound of the model mesh's tet count (no too-simple meshes).")
-    p.add_argument("--est_max", type=float, default=1e-3,
-                   help="p2 labels: samples whose frequency error estimate exceeds this get label_ok = 0 (kept; "
-                        "filter them at training time).")
+                   help="p2 labels: lower bound of the start mesh's tet count (no too-simple meshes).")
+    p.add_argument("--tol_f_p2", type=float, default=1e-3,
+                   help="p2 labels: error limit.  While the frequency error estimate is above it the mesh is refined "
+                        "uniformly (field_labels.refine_p2_to_tolerance); label_ok = estimate <= this.")
+    p.add_argument("--p2_max_refine", type=int, default=3,
+                   help="p2 labels: at most this many uniform refinements (solves = 1 + refinements); stops earlier "
+                        "when the next p2 space would exceed --max_ndof.")
     p.add_argument("--no_round_edges", action="store_true",
                    help="Keep re-entrant edges sharp (by default they are filleted with radius "
                         "min_fillet × equivalent-sphere radius: singular fields there make the surface peaks "
@@ -665,7 +667,8 @@ def field_settings(args):
             "model_max_elements": int(getattr(args, "model_max_elements", 20000)),
             "model_target_elements": int(getattr(args, "model_target_elements", 10000)),
             "model_min_elements": int(getattr(args, "model_min_elements", 5000)),
-            "est_max": float(getattr(args, "est_max", 1e-3)),
+            "tol_f_p2": float(getattr(args, "tol_f_p2", 1e-3)),
+            "p2_max_refine": int(getattr(args, "p2_max_refine", 3)),
             **({"curvaturesafety": float(args.curvaturesafety), "adapt_cs": float(args.curvaturesafety)}
                if getattr(args, "curvaturesafety", None) else {})}
 
@@ -688,8 +691,9 @@ def generate_field_sample(s_id):
     print(f"sample {s_id}: done in {time.perf_counter() - t0:.0f} s ({g['shape_type']}, {at.get('n_dof_label', 0)} label "
           + (f"DOF, {at.get('adapt_iters', 1)} level(s), stop {at.get('adapt_stop', 'single solve')})"
              if "adapt_iters" in at else
-             f"DOF, {at['n_tets']} tets, est δf/f {at.get('est_rel_f', float('nan')):.1e}"
-             + ("" if at.get("label_ok", 1) else " ABOVE est_max") + ")"), flush=True)
+             f"DOF, {at['n_tets']} tets, {at.get('p2_rounds', 1)} solve(s), stop {at.get('p2_stop', '-')}, "
+             f"est δf/f {at.get('est_rel_f', float('nan')):.1e}"
+             + ("" if at.get("label_ok", 1) else " ABOVE tol_f_p2") + ")"), flush=True)
     return {"id": s_id, "labels": "field", "field": lab, "freqs": lab["freqs"], "freq_next": lab["freq_next"],
             "shape_type": g["shape_type"], "geom_params": g["params"], "mesh_h": float(g["h"]),
             "volume": float(g["volume"]), "t_mesh": g["t_mesh"] + lab["attrs"]["t_curved_mesh"],

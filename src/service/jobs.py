@@ -61,11 +61,13 @@ def field_tag_of(mesh_size, n_modes, label_order=2, model_order=2, min_fillet=0.
 # field labels: peak memory of one worker ≈ FIELD_MEM_BASE_GB + FIELD_MEM_GB_PER_NDOF · max_ndof (p3 labels,
 # 10 modes; ~12 GB at the 900k budget, docs/30 §6), and ~560 core-seconds per geometry for one solve at
 # ~18k tets (docs/29 §4), ×3 with adaptive refinement.  p2 labels (docs/37): the label space is the model space,
-# ~P2_NDOF_PER_TET DOFs per tet of the ≤ model_max_elements model mesh, FIELD_P2_CORE_S per geometry (maxh
-# search + one p2 solve + error estimate + QoI)
+# no tet cap (owner decision 2026-11-02): the start mesh (~10k tets) is refined until the error estimate is
+# ≤ tol_f_p2, within the max_ndof budget, so a worker's memory is sized with the max_ndof budget like p3;
+# FIELD_P2_CORE_S per geometry (maxh search + 1–4 p2 solves + error estimates + QoI)
 FIELD_MEM_BASE_GB, FIELD_MEM_GB_PER_NDOF = 1.0, 12.0 / 900_000
 FIELD_CORE_S, FIELD_ADAPT_FACTOR = 560.0, 3.0
-FIELD_P2_CORE_S, P2_NDOF_PER_TET = 150.0, 11.0   # measured 2026-11-01 (docs/37 §9): 50–408 core-s, mean ~155, ≤ 1.8 GB
+FIELD_P2_CORE_S, P2_NDOF_PER_TET = 200.0, 11.0   # measured 2026-11-02 (docs/37): wall 44–428 s at 4 threads (most samples
+#   one solve, ~44–70 s; a refined one, 23k → 35k tets, 428 s); ≤ 4.1 GB at 366k DOF (the formula above is conservative)
 FIELD_THREADS = 4                    # default NGSolve threads per worker (more when memory limits the workers)
 
 
@@ -103,10 +105,8 @@ def field_mem_gb(max_ndof):
 
 
 def label_ndof(label_order, model_order, max_ndof, model_max_elements):
-    """The label space's DOF budget that sets a worker's memory: max_ndof for high-fidelity labels; for p2 labels
-    (label_order == model_order) the model space of a ≤ model_max_elements mesh."""
-    if int(label_order) == int(model_order):
-        return int(P2_NDOF_PER_TET * int(model_max_elements))
+    """The label space's DOF budget that sets a worker's memory: max_ndof — for p2 labels too (no tet cap: the mesh
+    is refined until the error estimate is within tol_f_p2, but never beyond max_ndof; model_max_elements is p3-only)."""
     return int(max_ndof)
 
 
@@ -149,7 +149,7 @@ def generator_args(p):
           '--model_order', str(p['model_order']), '--min_fillet', str(p['min_fillet']),
           '--maxh_factor', str(p['maxh_factor']), '--field_max_elements', str(p['field_max_elements']),
           '--max_ndof', str(p['max_ndof']), '--tol_f', str(p['tol_f']), '--tol_q', str(p['tol_q']),
-          '--model_max_elements', str(p['model_max_elements'])]
+          '--model_max_elements', str(p['model_max_elements']), '--tol_f_p2', str(p.get('tol_f_p2', 1e-3))]
     if not p.get('adapt', True):
         a.append('--no_adapt')
     if not p.get('round_edges', True):

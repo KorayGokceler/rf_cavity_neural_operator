@@ -32,7 +32,7 @@
 1. **Eğri mesh** (`geometry.mesh_src`: netgen `.vol` + katının BREP'i [m] + eğrilik mertebesi + deformasyon,
    alan-etiketi H5'iyle aynı saklama). Kaynaklar:
    - **CAD yükleme** (STEP/IGES/BREP): katı ayrı süreçte metreye ölçeklenir, `field_labels.start_mesh` ile
-     eğri mesh. **2026-11-01 (docs/37):** mesh artık `field_labels.model_sized_mesh` ile kurulur (5k–20k tet, 10k civarı; eğitim üreticisiyle aynı kural, `src/service/geometry.curved_from_cad`); eski kural maxh = 3 h, curvaturesafety 1.5 → 2 idi. Başarısızsa gmsh mesh'i yalnız gösterim için kalır.
+     eğri mesh. **2026-11-01 (docs/37):** mesh artık `field_labels.model_sized_mesh` ile kurulur (başlangıç mesh'i: ≥ 5000 tet, 10000'e yakın; **2026-11-02:** tahmin yalnız bu başlangıç mesh'inde yapılır, inceltme yok [seçenek a]; eğitimdeki inceltmeli kural docs/37 §3, `src/service/geometry.curved_from_cad`); eski kural maxh = 3 h, curvaturesafety 1.5 → 2 idi. Başarısızsa gmsh mesh'i yalnız gösterim için kalır.
    - **Aile örneği:** üretici alan-etiketi ayarlarıyla (kenar yuvarlatma, OCC onarımı, Sobol, seed 0) — alan
      datasetlerindeki geometrinin aynısı. Eğri mesh başarısız olursa üretici gibi geometri yeniden çekilir.
    - **Alan dataseti öğesi:** saklanan eğri mesh; tahmin, saklanan FE çözümüyle aynı gösterim mesh'inde olur
@@ -451,7 +451,7 @@ Arayüz geliştirme için de kullanılır. Geometriden model girdisine, FE çöz
 
 **Alan etiketleri (tek etiket türü: yüksek mertebe alan; docs/29–30):** TRUBA'daki `LABELS=field` ile aynı üretici
 ve aynı ayarlar:
-- **etiket türü seçimi (docs/37):** p2 (varsayılan) / p3 uyarlamalı / p3 tek çözüm; `model_order > label_order` reddedilir;
+- **etiket türü seçimi (docs/37):** p2 (varsayılan) / p3 uyarlamalı / p3 tek çözüm; p2 için hata sınırı alanı `tol_f_p2` (varsayılan 1e-3, CLI `--tol_f_p2`), tet tavanı yok; `model_order > label_order` reddedilir;
 - uyarlamalı inceltme (aç / kapat; yalnız p3), frekans ve Q0 / R/Q / tepe toleransı, etiket DOF bütçesi, model mesh
   bütçesi;
 - etiket / model mertebesi, fillet tabanı, eleman bütçesi, maxh çarpanı, örnek zaman aşımı;

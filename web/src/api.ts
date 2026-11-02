@@ -52,7 +52,7 @@ export interface JobsConfig {
 // field labels (docs/29–30): the generator's --labels field options
 export interface FieldGenParams {
   threads: number | null; label_order: number; model_order: number; min_fillet: number; maxh_factor: number;
-  field_max_elements: number; adapt: boolean; tol_f: number; tol_q: number; model_max_elements: number;
+  field_max_elements: number; adapt: boolean; tol_f: number; tol_f_p2: number; tol_q: number; model_max_elements: number;
   max_ndof: number | null; round_edges: boolean; heal: boolean; sample_timeout: number;
 }
 export interface GenParams extends FieldGenParams {
@@ -78,7 +78,7 @@ export interface TrubaForm {
   action: 'all' | 'dataset' | 'train' | 'status' | 'setup'; labels: 'field'; families: string[];
   n_per_family: number | ''; mesh_size: number; n_modes: number; label_order: number; model_order: number;
   min_fillet: number | ''; threads: number; max_elements: number; maxh_factor: number; adapt: boolean;
-  tol_f: number; tol_q: number; model_max_elements: number; max_ndof: number; round_edges: boolean; heal: boolean;
+  tol_f: number; tol_f_p2: number; tol_q: number; model_max_elements: number; max_ndof: number; round_edges: boolean; heal: boolean;
   deform_prob: number;
   deform_max: number; sampling: 'sobol' | 'random'; seed: number; tag: string; partition: string; cpus: number;
   time: string; account: string; max_parallel: number; test: boolean; gpu_partition: string; gpus: number;
@@ -127,13 +127,15 @@ export interface FieldRowInfo {
   rounded_edges: number | null; sharp_edges: number; proj_err_max: number | null; t_labels_s: number | null;
   // p2 labels (docs/37); null in older datasets
   label_order: number | null; model_order: number | null; label_ok: boolean | null; est_max: number | null;
-  curvaturesafety_used: number | null; maxh_factor_used: number | null; model_meshes: number | null;
+  curvaturesafety_used: number | null; p2_stop: string | null; p2_rounds: number | null; p2_tets: number | null;
+  tol_f_p2: number | null; round_fallback: boolean | null; maxh_factor_used: number | null; model_meshes: number | null;
 }
 // label kind of a dataset (/api/datasets/{id}/quality): p2 = one solve on the model mesh, p3 = high fidelity
 export interface DatasetQuality {
   kind: 'p2' | 'p3'; label_order: number | null; model_order: number | null; n: number;
   n_bad?: number; bad_share?: number | null; est_median?: number | null; est_max?: number | null;
   tets_min?: number | null; tets_max?: number | null;
+  p2_stop?: Record<string, number>; n_fallback?: number | null; fallback_share?: number | null;
 }
 // p4 reference check (scripts/reference_check.py → reference.json)
 export interface RefSample {

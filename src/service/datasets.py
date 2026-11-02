@@ -10,6 +10,7 @@ FieldH5Dataset: the table adds the label quality (adaptive levels, stop reason, 
 mesh, rounded / sharp edges), and a geometry opens on its model mesh with the label fields as stored (HCurl
 p2 DOFs, drawn directly by src/viz/hcurl_display.py); the figures of merit shown are the stored p3 labels.
 """
+import collections
 import glob
 import json
 import os
@@ -93,6 +94,9 @@ class FieldH5Dataset:
                                           'model_order': _attr(g, 'model_order', int),
                                           'label_ok': _attr(g, 'label_ok', lambda v: bool(int(v))),
                                           'est_max': _attr(g, 'est_max'),
+                                          'tol_f_p2': _attr(g, 'tol_f_p2'), 'p2_rounds': _attr(g, 'p2_rounds', int),
+                                          'p2_stop': _attr(g, 'p2_stop', str), 'p2_tets': _attr(g, 'p2_tets', int),
+                                          'round_fallback': _attr(g, 'round_fallback', lambda v: bool(int(float(v)))),
                                           'curvaturesafety_used': _attr(g, 'curvaturesafety_used'),
                                           'maxh_factor_used': _attr(g, 'maxh_factor_used'),
                                           'model_meshes': _attr(g, 'model_meshes', int),
@@ -120,10 +124,14 @@ class FieldH5Dataset:
             ok = [f['label_ok'] for f in fs if f['label_ok'] is not None]
             bad = sum(1 for v in ok if not v)
             tets = [r['n_tets'] for r in rows if r['n_tets']]
+            stops = collections.Counter(f['p2_stop'] for f in fs if f.get('p2_stop'))
+            fb = [f['round_fallback'] for f in fs if f.get('round_fallback') is not None]
             out.update(n_bad=bad, bad_share=bad / len(ok) if ok else None,
                        est_median=float(np.median(est)) if est.size else None,
                        est_max=float(est.max()) if est.size else None,
-                       tets_min=min(tets) if tets else None, tets_max=max(tets) if tets else None)
+                       tets_min=min(tets) if tets else None, tets_max=max(tets) if tets else None,
+                       p2_stop=dict(stops), n_fallback=sum(fb) if fb else None,
+                       fallback_share=sum(fb) / len(fb) if fb else None)
         return out
 
     def open(self, sid):

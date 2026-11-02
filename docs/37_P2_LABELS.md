@@ -1,5 +1,6 @@
 # 37 — p2 etiketleri: varsayılan eğitim etiketi, model mesh kuralı, p4 referans aracı
 
+> 2026-11-02: p2 mesh kuralı değişti (§3: tet tavanı yok, hata sınırı `tol_f_p2`); 5k–20k sürümü tarihçe (§3.1).
 > Durum: kod hazır, **commit edilmemiş** (`db1ba24` üzerine; dal `claude/gallant-goodall-bnd4lo`). Karar: sahip, 2026-11-01.
 > Ölçekli eğitim ve TRUBA koşusu yapılmadı. Bağlam: docs/29 (p3 etiketleri), docs/30 (uyarlamalı döngü),
 > docs/34 §8 (çoklu doğruluk), docs/31 §3.13 ve §6.
@@ -13,7 +14,7 @@ Eğitim etiketi artık **p2**: model mesh'inin kendisinde tek bir HCurl p2 çöz
 | etiket çözümü | uyarlamalı p3, ayrı etiket mesh'i | p2, model mesh'i (tek çözüm) |
 | alan hedefi | p3 alanının model mesh'indeki p2'ye L2 izdüşümü | p2 çözümün kendisi |
 | frekans, QoI | p3 etiket mesh'inden | p2 alanlarından (tepeler p3'e göre daha kaba) |
-| model mesh'i | ≤ 10k tet | 5k–20k tet, 10k civarı (§3) |
+| model mesh'i | ≤ 10k tet | başlangıç ~10k (≥ 5000), `est_rel_f ≤ tol_f_p2` olana dek tekdüze inceltme, tet tavanı yok (§3; 2026-11-02) |
 | etiket türü / TAG | `F_p3p2_ms0.10_k10_mf0.05_v2` | `F_p2p2_ms0.10_k10_mf0.05_v2` (`_1s` eki hiç yok) |
 
 p3 yolu duruyor: `--label_order 3` (uyarlamalı; `--no_adapt` tek çözüm). Test, doğrulama ve CST kümeleri için (§7).
@@ -38,18 +39,53 @@ p3 yolu duruyor: `--label_order 3` (uyarlamalı; `--no_adapt` tek çözüm). Tes
 
 Olumsuz taban çizgileri değişmedi: GP ve kaba FE, ≤ 10k tet ve ≥ 24 geometride modelden iyi (docs/35 §3). p2 etiket bunu değiştirmez.
 
-## 3. Model mesh kuralı: `field_labels.model_sized_mesh`
+## 3. Model mesh kuralı (2026-11-02): başlangıç mesh'i + hata sınırına kadar inceltme
+
+> Sahip kararı 2026-11-02. **Önceki sürüm (5k–20k tet tavanı, 2026-11-01) yerine geçildi:** tavan curvaturesafety'yi 1,5 / 1'e indirip katlanmış elemanlara, yuvarlatmasız (keskin) geri dönüşlere ve yeniden çekmelere yol açıyordu. Önceki sürümün sayıları §3.1'de tarihçe olarak duruyor.
+
+**Kural (p2 etiketleri):**
+1. Başlangıç mesh'i: `field_labels.model_sized_mesh` — ≥ 5000 tet, 10000'e en yakın, `curvaturesafety` 2; katlanma olursa 3, 4'e **çıkarılır, hiç düşürülmez**; tet tavanı yok.
+2. p2 çözümü ve hata tahmini `est_rel_f`.
+3. `est_rel_f > tol_f_p2` ise tekdüze inceltme, `r = (tol/est)^(1/4)·0,9`: `maxh_factor` → `f·r` ve `curvaturesafety` → `cs/r` birlikte (yalnız maxh eğrilik-sınırlı şekilleri inceltmiyor; hwr yoklaması: cs 2'de maxh 3 → 2: 6674 → 7660 tet; cs 2 → 3: 16628 tet).
+4. Yeniden kurulan mesh %15'ten az büyürse r², r³ ile yeniden denenir (cs ≤ 6, DOF ≤ `max_ndof`).
+5. En çok 3 inceltme turu. Durma nedeni `p2_stop`: `converged` | `budget` (`max_ndof` 900000) | `stalled` | `max_rounds` | `mesh_failed`.
+6. Saklanan öznitelikler: `p2_rounds`, `p2_stop`, `p2_tets`, `p2_est`, `p2_cs`, `tol_f_p2` (`est_max` takma adı). CLI: `--tol_f_p2` (varsayılan 1e-3); `label_ok = est_rel_f ≤ tol_f_p2`.
+7. %15 eşiği ve r-kuvveti yeniden denemeleri sezgiseldir.
+
+**Neden 1e-3 (dürüst gerekçe).**
+- Modelin hatası **bilinmiyor**. Eldeki tek sayı (%1,37–1,66, docs/34 §8) eğitilmiş bir model değil, küçük bir LF / HF karşılaştırma deneyi (tek aile, 8–40 geometri, 600 adım). Ölçekli eğitim yok; tek örnek ezberlemede frekans hatası 1e-6 – 9e-6 (docs/28).
+- Dayanak: docs/33 §10 tarama hedefi ≤ %2; 1e-3 bunun 20× altı. Tahmin edici gerçek hatayı 1–3× fazla tahmin ediyor (§4), yani gerçek ≈ 3e-4 – 1e-3.
+- Pilot eğitimden sonra (iş 1) yeniden bakılacak: model ~%0,1'e inerse sınır 2–3e-4'e sıkılaştırılır.
+
+**Ölçümler** (4 iş parçacığı, `mesh_size` 0,10, 10 mod):
+
+| örnek | tet | tahmin | tur / süre / bellek |
+|---|---|---|---|
+| pillbox | 10658 | 4,3e-5 | 1 çözüm, 44 s, 1,9 GB |
+| elliptical, rastgele id 0 | 17318 | 5,9e-4 | 68 s, 1,8 GB |
+| hwr 3670016 (sobol) | 9411 → 11588 | 1,08e-3 → 8,46e-4 | cs 2 → 2,57, 66 s, 1,1 GB |
+| elliptical, rastgele id 1 | 23239 → 34954 | 1,19e-3 → 8,65e-4 | yuvarlatılmış geometri cs 2, 3, 4'te katlandı (det-J −52,6) → keskin kenarla etiketlendi (`round_fallback` 1, tepeler NaN); 428 s, 4,1 GB (366k DOF) |
+| blob id 0 | 14294 | 1,01e-2 | `budget` ile durdu (sonraki adım ~1,2M DOF) → `label_ok` 0 |
+
+- Blob şimdilik eğitimde kullanılmıyor (zaten `families.tsv`'de yok); örnekleri işaretli kalır, kullanılırsa `require_label_ok` düşürür.
+- Maliyet: `FIELD_P2_CORE_S` → 200 çekirdek-saniye (arayüz ajanı ayarlıyor); 100k geometri için tahmin ≈ 4,3–8 bin çekirdek-saat (pay dahil). Diskte örnek başına 5,6–12 MB (ortalama ~8,5 MB) → 100k için 0,6–1,2 TB; scratch 30 günde siliniyor; bu ölçekte `CACHE_DIR` açılmamalı (geometri başına ~330 MB).
+
+**Tahmin (sahip kararı: seçenek a).** Tahmin başlangıç mesh'inde yapılır (~10k, inceltme yok). Bedeli: eğitimde inceltilen şekillerde (hwr, bazı elliptical) tahmin mesh'i eğitim mesh'inden kaba; oradaki taban 1e-3'ü aşabilir. Seçenek (b) — modelin kendi tahmin ettiği alanla aynı göstergeyi sürmek — açık iş (31 §6 iş 30).
+
+### 3.1 Önceki kural (5k–20k, 2026-11-01; yerine geçildi, tarihçe)
 
 Üretici **ve** tahmin (`src/service/geometry.curved_from_cad`, `scripts/predict_geometry.py`) aynı kuralı kullanır; eğitim ve tahmin mesh'leri aynı kurala uyar.
 
-- Eğri netgen mesh, **5k–20k tet, 10k civarı** (`model_min_elements` 5000, `model_target_elements` 10000, `model_max_elements` 20000).
+Üretici **ve** tahmin (`src/service/geometry.curved_from_cad`, `scripts/predict_geometry.py`) aynı kuralı kullanır; eğitim ve tahmin mesh'leri aynı kurala uyar.
+
+- (Eski) eğri netgen mesh, **5k–20k tet, 10k civarı** (`model_min_elements` 5000, `model_target_elements` 10000, `model_max_elements` 20000).
 - `maxh = f·h`, `f` aranır (tet sayısı ∝ f⁻³ ama netgen sıçrıyor: pillbox'ta iki maxh arasında %3 farkla 6,1k → 10,1k tet).
-- Sayı küçük detayların eğriliğiyle sınırlıysa (kaba maxh sayıyı düşürmüyorsa) `curvaturesafety` 2 → 1,5 → 1.
+- (Eski) Sayı küçük detayların eğriliğiyle sınırlıysa `curvaturesafety` 2 → 1,5 → 1 (yeni kuralda cs hiç düşürülmez).
 - `curvaturesafety` ikiye katlama denemeleri yok; `single_level` ile yeniden kurulur.
 - Aralıkta mesh bulunmazsa `RuntimeError`; sonrası aşağıdaki yedekleme kuralıyla (yuvarlatılmışsa keskin kenarla etiketleme, keskinse yeniden çekme).
-- p3 yolunun model mesh tavanı da artık 20000 (`model_max_elements` varsayılanı).
+- p3 yolunun model mesh tavanı 20000 (`model_max_elements` varsayılanı); p2 yolunda tavan yok.
 
-Aile başına ölçüm (sobol, `mesh_size` 0,10, aile başına bir çizim; tet, curvaturesafety, mesh'leme süresi):
+Aile başına ölçüm, **eski 5k–20k kuralıyla** (sobol, `mesh_size` 0,10, aile başına bir çizim; tet, curvaturesafety, mesh'leme süresi):
 
 | aile | tet | cs | süre | min det-J oranı | qoi_ok |
 |---|---|---|---|---|---|
@@ -73,11 +109,11 @@ Aile başına ölçüm (sobol, `mesh_size` 0,10, aile başına bir çizim; tet, 
 **`qoi_ok`:** model mesh'inin en küçük det-J oranı ≥ `qoi_min_jacobian` (DEFAULTS 0,3) ise 1. `netgen_mesh` docstring'i: oran 0,05'te Q0 10× kayıyor, 0,07'de tepe değerleri 3×; ≥ 0,4 sorunsuz. `label_ok` ve QoI değerleri değişmedi; QoI eğitimde kullanılmıyor.
 Tablodaki 16 çizimden **6'sında `qoi_ok` = 0** (blob, reentrant, ridged_box, composite, junction, dtl). QoI kalitesi yalnız det-J ile ölçüldü, QoI hatasıyla değil (§9).
 
-`ridged_box`, `elliptical_long` ve `dtl`'de **ilk çizim reddedildi** (cs 2'de sayı > 20k; cs 1,5 / 1'de katlanmış elemanlar, det-J oranı −25 … −6700) ve yeniden çekildi. `model_sized_mesh` başarısız olunca üretici (kod yolları değişmedi; eski 30k başlangıç tavanına göre 20k tavanında daha sık çalışması bekleniyor, ölçülmedi):
+`ridged_box`, `elliptical_long` ve `dtl`'de **ilk çizim reddedildi** (cs 2'de sayı > 20k; cs 1,5 / 1'de katlanmış elemanlar, det-J oranı −25 … −6700) ve yeniden çekildi. `model_sized_mesh` başarısız olunca üretici (kod yolları değişmedi; yeni kuralda yalnız başlangıç mesh'i cs 2, 3, 4'te de katlanırsa çalışır; inceltmedeki `mesh_failed` bunu tetiklemez, son çözülen mesh tutulur ve `label_ok = 0` olur; eski 30k başlangıç tavanına göre 20k tavanında daha sık çalışması bekleniyor, ölçülmedi):
 - **yuvarlatılmış çizim** (kenar yuvarlatma uygulanmış): aynı parametrelerle **keskin kenarlarla** yeniden etiketlenir (`round_fallback = 1`, `n_sharp_edges > 0`, tepe QoI NaN); yeniden çekilmez;
 - **keskin çizim** başarısız olursa en çok `max_geom_tries` = 6 kez yeniden çekilir (aile sabit; sonraki denemeler Sobol noktasının kalanını ve sonra `default_rng([seed, s_id])` kullanır: bu örneklerde düşük sapmalı kapsama kaybolur); 6'dan sonra örnek eksik kalır.
 
-Büyük ve ince detaylı şekillerin veride az temsil edilme riski var; oranı bilinmiyor (§8, iş 24).
+Büyük ve ince detaylı şekillerin veride az temsil edilme riski var; oranı bilinmiyor (§9, iş 24; yeni kuralda neden artık tavan değil, yuvarlatılmış elliptical'ın katlanması).
 
 ## 4. p2 doğruluğu mesh boyutuna göre
 
@@ -105,7 +141,7 @@ p4 referansı aynı mesh'te; yöntem doğrulandı: p4, analitik kutu spektrumuna
 ## 5. Hata tahmini ve `label_ok`
 
 Her p2 örneği saklar: `est_rel_f`, `est_rel_wall`, `label_ok` (`est_rel_f ≤ est_max`, `est_max = 1e-3`), `est_max`, `model_meshes`,
-`maxh_factor_used`, `curvaturesafety_used`. Örnekler üreticide **atılmaz**. Eğitimde süzme için `dataset.require_label_ok` (`configs/field_3d.yaml`, `FieldDataset(require_label_ok=False)`) var: true olursa eğitim bölmesinde `label_ok == 0` örnekler düşer, aile başına sayı yazılır. **Varsayılan false** (süzme kapalı). Dataset sayfası `GET /api/datasets/{id}/quality`
+`maxh_factor_used`, `curvaturesafety_used`. `label_ok = est_rel_f ≤ tol_f_p2` (`est_max` takma ad). Örnekler üreticide **atılmaz**. Eğitimde süzme için `dataset.require_label_ok` (`configs/field_3d.yaml`, `FieldDataset(require_label_ok=False)`) var: true olursa eğitim bölmesinde `label_ok == 0` örnekler düşer, aile başına sayı yazılır. **Varsayılan false** (süzme kapalı). Dataset sayfası `GET /api/datasets/{id}/quality`
 ile `label_ok` payını, `est` medyan / en büyük değerini ve tet aralığını gösterir.
 
 ## 6. Neden uyarlamalı p2 yok (A: kural mesh'i, B: p2 uyarlamalı)
@@ -138,15 +174,18 @@ Sonra: kontrollü deney (`/experiment`, iş 26) ya da tahmin zamanında modelin 
   - `ref_self_err`, order-1 etiket mertebesine eşitse null. "Gerçek hata" iki çözümde ortak olan eğri-3 geometri hatasını içermez (docs/29: pillbox'ta eğri 2 ile 3 arası 1,4e-4).
 - Maliyet: 6k tetlik mesh'in p4'ü ≈ 330k DOF, 4 iş parçacığında ~100 s, ~5 GB. Sahip çalıştırır.
 - Arayüz: Dataset sayfasında "p4 ile doğrula" (arka plan işi, `POST /api/jobs/reference`, sonuç tablosu, bellek uyarısı; `GET /api/jobs/{id}/reference`, `GET /api/jobs/reference_plan`).
-- Üretim ve TRUBA sayfalarında etiket türü seçimi: p2 / p3 uyarlamalı / p3 tek çözüm (varsayılan p2). `config.sh`: `LABEL_ORDER=2`, `MODEL_MAX_ELEMENTS=20000`.
-- İşçi belleği p2 için model uzayından: `jobs.label_ndof` = 11 DOF/tet × tavan. Dataset kavite değerleri kaynağı p2 datasetlerde `p2_labels`.
+- Üretim ve TRUBA sayfalarında etiket türü seçimi: p2 / p3 uyarlamalı / p3 tek çözüm (varsayılan p2). `config.sh`: `LABEL_ORDER=2`; arayüzde p2 için tolerans alanı `tol_f_p2` (varsayılan 1e-3).
+- İşçi belleği p2 için model uzayından: `jobs.label_ndof` = 11 DOF/tet × tet sayısı üst tahmini (inceltilmiş p2 için `max_ndof` 900000 sınırı). Dataset kavite değerleri kaynağı p2 datasetlerde `p2_labels`.
 
 ## 9. Açık işler
 
 | iş | durum |
 |---|---|
-| Reddedilen ilk çizimler (3 aile) ve oranı: TRUBA `TEST=1` ile ölç; seçenekler: bu aileler için tavanı gevşet, daha güçlü onarım. Tavan 20k kalıyor. Sahibin kararı. | açık (docs/31 §6 iş 24) |
-| `FIELD_P2_CORE_S` = 150 çekirdek-saniye (ölçüm: 50–408, ortalama ~155, tepe bellek ≤ 1,8 GB; docs/31 §3.13 e). TRUBA `THREADS` p2 için ayarlanmadı. | kısmen (iş 27) |
+| Yuvarlatılmış elliptical geometrilerin katlanması (cs 2, 3, 4; keskin kenarla etiketleme): oran bilinmiyor, TRUBA `TEST=1` ile `round_fallback` payı ölç. Artık tavan nedeni değil. Sahibin kararı. | açık (docs/31 §6 iş 24) |
+| Blob: `budget` ile duruyor (est 1,01e-2), eğitimde kullanılmıyor. | açık |
+| Tahmin seçeneği (b): modelin kendi alanıyla inceltme; bugün başlangıç mesh'inde tahmin (seçenek a). | açık (iş 30) |
+| %15 durma eşiği ve r-kuvveti yeniden denemeleri sezgisel; `tol_f_p2` pilot eğitimden sonra gözden geçirilecek. | açık (iş 30) |
+| `FIELD_P2_CORE_S`: 150 çekirdek-saniye ölçüldü (50–408, ortalama ~155, 20k kuralıyla; docs/31 §3.13 e); inceltmeli kural için 200 (§3). TRUBA `THREADS` p2 için ayarlanmadı. | kısmen (iş 27) |
 | p3 uyarlamalı düzeltme: zorunlu büyüme, `converged` koşulu, mutlak R/Q tabanı. | açık (iş 14) |
 | Kontrollü A/B mesh deneyi (kural mesh'i ile uyarlamalı p2). | açık (iş 26) |
 | Reddedilen ilk çizimler için ayrıca: `round_fallback` payı ve yeniden çekme sayısı aile başına TRUBA `TEST=1` ile ölçülecek (§3). | açık (iş 24) |

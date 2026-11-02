@@ -265,7 +265,8 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
     # p2 labels (the default): memory of the model space; p3: of the label budget
     plan = c.get("/api/jobs/plan", params={"max_ndof": 900_000}).json()
     assert plan == J.field_plan(64, 251.0, J.label_ndof(2, 2, 900_000, 20000))
-    assert plan["mem_per_worker_gb"] < J.field_mem_gb(900_000)
+    assert J.label_ndof(2, 2, 900_000, 20000) == 900_000               # no tet cap: the DOF budget bounds the memory
+    assert plan["mem_per_worker_gb"] == round(J.field_mem_gb(900_000), 1)
     plan = c.get("/api/jobs/plan", params={"max_ndof": 900_000, "label_order": 3}).json()
     assert plan == J.field_plan(64, 251.0, 900_000) and plan["workers"] == 16 and plan["threads"] == 4
     assert c.get("/api/jobs/plan", params={"threads": 8, "label_order": 3}).json()["workers"] == 8
@@ -323,12 +324,13 @@ def test_generate_defaults_are_p2_labels_and_p2_tag_has_no_one_solve_suffix(tmp_
     r = c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "label_order": 2, "model_order": 3})
     assert r.status_code == 422 and "model_order" in r.json()["detail"]
     assert J.field_tag_of(0.10, 10, 2, 2, adapt=False) == "F_p2p2_ms0.10_k10_mf0.05_v2"
-    # the plan of p2 labels uses the model-space memory (about 20000 tets × P2_NDOF_PER_TET), not max_ndof
-    p2 = c.get("/api/jobs/plan", params={"max_ndof": 900_000}).json()["mem_per_worker_gb"]
-    p3 = c.get("/api/jobs/plan", params={"max_ndof": 900_000, "label_order": 3}).json()["mem_per_worker_gb"]
-    assert p2 == round(J.field_mem_gb(J.label_ndof(2, 2, 900_000, 20000)), 1) and p2 < p3
-    small = c.get("/api/jobs/plan", params={"model_max_elements": 5000}).json()["mem_per_worker_gb"]
-    assert small < p2
+    # the plan of p2 labels uses the max_ndof budget (the mesh is refined up to it), like p3
+    p2 = c.get("/api/jobs/plan", params={"max_ndof": 300_000}).json()["mem_per_worker_gb"]
+    p3 = c.get("/api/jobs/plan", params={"max_ndof": 300_000, "label_order": 3}).json()["mem_per_worker_gb"]
+    assert p2 == p3 == round(J.field_mem_gb(300_000), 1)
+    assert p["tol_f_p2"] == 1e-3 and J.generator_args(p)[J.generator_args(p).index("--tol_f_p2") + 1] == "0.001"
+    assert "--est_max" not in J.generator_args(p)
+    assert c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "tol_f_p2": 0.5}).status_code == 422
 
 
 def test_dataset_label_quality(field_client, tmp_path):
@@ -353,6 +355,11 @@ def test_dataset_label_quality(field_client, tmp_path):
     q = fake([row(1e-4, True, 5000), row(3e-4, True, 9000), row(2e-3, False, 20000), row(1e-3, True, 10000)]).quality()
     assert q["kind"] == "p2" and q["n_bad"] == 1 and q["bad_share"] == 0.25 and q["est_max"] == 2e-3
     assert q["est_median"] == pytest.approx(6.5e-4) and (q["tets_min"], q["tets_max"]) == (5000, 20000)
+    rr = [row(1e-4, True, 9000), row(2e-3, False, 12000)]
+    rr[0]["field"].update(p2_stop="converged", round_fallback=False)
+    rr[1]["field"].update(p2_stop="budget", round_fallback=True)
+    q = fake(rr).quality()
+    assert q["p2_stop"] == {"converged": 1, "budget": 1} and q["n_fallback"] == 1 and q["fallback_share"] == 0.5
     old = fake([row(1e-6, None, 9000, None, None), row(None, None, 8000, 3, 2)]).quality()    # older p3 datasets
     assert old["kind"] == "p3" and "n_bad" not in old
     assert fake([row(1e-6, None, 9000, 3, 2)]).quality()["kind"] == "p3"

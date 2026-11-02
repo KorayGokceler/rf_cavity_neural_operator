@@ -1,6 +1,6 @@
 # 30 — Adaptive labels: CST-grade frequencies, fields and figures of merit, budgeted model mesh
 
-> **2026-11-01:** the default training labels are now **p2** (one HCurl p2 solve on the model mesh; docs/37). This document (the adaptive loop) describes the p3 high-fidelity labels, which remain available with `--label_order 3` (test, validation and CST sets); the model mesh cap is now 20000 tets (`model_max_elements`).
+> **2026-11-01:** the default training labels are now **p2** (one HCurl p2 solve on the model mesh; docs/37). This document (the adaptive loop) describes the p3 high-fidelity labels, which remain available with `--label_order 3` (test, validation and CST sets); for the p3 path the model mesh cap is 20000 tets (`model_max_elements`). The p2 path has no tet cap (error limit `tol_f_p2`, docs/37 §3).
 
 > **Known issue: stall on coarse start meshes (found 2026-11-01, open: docs/31 §6 item 14).** The adaptive loop can report `converged` without refining.
 > - Pillbox, `mesh_size` 0.12: 128 -> 132 tets over 8 levels; the consecutive-level change was 1e-15, so the loop stopped as "converged", while the true frequency error against the analytic value was 3.5e-4 (`tol_f` 1e-6, own estimate 7.5e-4).

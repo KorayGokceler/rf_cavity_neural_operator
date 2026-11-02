@@ -142,7 +142,8 @@ export default function TrubaPage({ lang }: Props) {
                     <NumField lang={lang} label={t(lang, 'threads')} value={f.threads} min={1} max={128} onChange={nfld('threads')} />
                     <NumField lang={lang} label={t(lang, 'maxElements')} value={f.max_elements} min={1000} step={1000} onChange={nfld('max_elements')} />
                     <NumField lang={lang} label={t(lang, 'maxhFactor')} value={f.maxh_factor} min={1} max={10} step={0.5} onChange={nfld('maxh_factor')} />
-                    <NumField lang={lang} label={t(lang, 'modelMaxElements')} value={f.model_max_elements} min={100} step={1000} onChange={nfld('model_max_elements')} />
+                    <NumField lang={lang} label={t(lang, 'modelMaxElementsP3')} value={f.model_max_elements} min={100} step={1000} disabled={f.label_order <= f.model_order} onChange={nfld('model_max_elements')} />
+                    <NumField lang={lang} label={t(lang, 'tolFP2')} value={f.tol_f_p2} min={1e-6} max={0.1} step={1e-4} disabled={f.label_order > f.model_order} onChange={nfld('tol_f_p2')} />
                     <NumField lang={lang} label={t(lang, 'tolF')} value={f.tol_f} min={1e-9} step={1e-7} disabled={!(f.adapt && f.label_order > f.model_order)} onChange={nfld('tol_f')} />
                     <NumField lang={lang} label={t(lang, 'tolQ')} value={f.tol_q} min={1e-6} step={1e-4} disabled={!(f.adapt && f.label_order > f.model_order)} onChange={nfld('tol_q')} />
                     <NumField lang={lang} label={t(lang, 'maxNdof')} value={f.max_ndof} min={10000} step={100000} disabled={f.label_order <= f.model_order} onChange={nfld('max_ndof')} />

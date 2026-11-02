@@ -193,6 +193,10 @@ export default function DatasetPage({ lang, onOpen }: Props) {
               {quality.bad_share === null || quality.bad_share === undefined ? '' : ` (${(100 * quality.bad_share).toFixed(1)} %)`}
             </span>
             <span>{t(lang, 'lqEst')}: <strong>{sci(quality.est_median)}</strong> / <strong>{sci(quality.est_max)}</strong></span>
+            {quality.p2_stop && Object.keys(quality.p2_stop).length > 0 &&
+              <span data-testid="ds-p2stops">{t(lang, 'lqStops')}: {Object.entries(quality.p2_stop).map(([k, v]) => <span key={k} className={`tag ${k === 'converged' ? '' : 'warn'}`}>{k} {v}</span>)}</span>}
+            {quality.fallback_share !== null && quality.fallback_share !== undefined &&
+              <span>{t(lang, 'lqFallback')}: <strong>{quality.n_fallback}</strong> ({(100 * quality.fallback_share).toFixed(1)} %)</span>}
             <span>{t(lang, 'lqTets')}: <strong>{quality.tets_min === null || quality.tets_min === undefined ? '—' : int(quality.tets_min)}–{quality.tets_max === null || quality.tets_max === undefined ? '—' : int(quality.tets_max)}</strong></span>
           </>}
         </div>
@@ -216,6 +220,7 @@ export default function DatasetPage({ lang, onOpen }: Props) {
               {!p2 && <th className="num" title={t(lang, 'adaptItersTip')}>{t(lang, 'adaptIters')}</th>}
               {!p2 && <th>{t(lang, 'adaptStop')}</th>}
               <th className="num" title={t(lang, 'estErrTip')}>{t(lang, 'estErr')}</th>
+              {p2 && <th>{t(lang, 'p2StopCol')}</th>}
               {p2 && <th title={t(lang, 'labelOkTip')}>{t(lang, 'labelOk')}</th>}
               {p2 && <th className="num" title={t(lang, 'curvSafetyTip')}>{t(lang, 'curvSafety')}</th>}
               <th className="num" title={t(lang, 'edgesTip')}>{t(lang, 'edgesRS')}</th>
@@ -235,6 +240,7 @@ export default function DatasetPage({ lang, onOpen }: Props) {
                 {!p2 && <td className="num">{r.field.adapt_iters ?? '—'}</td>}
                 {!p2 && <td><span className={`status ${r.field.adapt_stop === 'converged' ? 'good' : r.field.adapt_stop ? 'warning' : 'muted'}`}>{r.field.adapt_stop ? t(lang, `stop_${r.field.adapt_stop}` as Key) : t(lang, 'oneSolve')}</span></td>}
                 <td className="num">{sci(r.field.est_rel_f)}</td>
+                {p2 && <td>{r.field.p2_stop ? `${r.field.p2_stop} · ${r.field.p2_rounds ?? ''}` : '—'}</td>}
                 {p2 && <td><span className={`status ${r.field.label_ok === null ? 'muted' : r.field.label_ok ? 'good' : 'warning'}`}>{r.field.label_ok === null ? '—' : r.field.label_ok ? '✓ 1' : '! 0'}</span></td>}
                 {p2 && <td className="num">{r.field.curvaturesafety_used ?? '—'}</td>}
                 <td className="num">{r.field.rounded_edges ?? 0} / {r.field.sharp_edges ? <strong title={t(lang, 'sharpTip')}>{r.field.sharp_edges}</strong> : 0}</td>

@@ -72,7 +72,9 @@ OOD_FAMILIES = ('box', 'coax_qw', 'pillbox_port', 'elliptical_long', 'junction')
 RANDOM_SAMPLE_IDS = (2 ** 24, 2 ** 25)
 UPLOAD_AXIS_WARNING = ('beam axis assumed: z through the origin; L_acc = axis chord incl. pipes; R/Q, R_sh, T and '
                        'peaks/Eacc depend on it')
-TRAIN_MODEL_TETS = 20_000       # field_labels.DEFAULTS['model_max_elements']: the training meshes
+TRAIN_MODEL_TETS = 40_000       # prediction meshes are the p2 START meshes (~10k tets, ≥ 5k; no cap, curvature-bound shapes
+                                # reach ~23k, folds raise curvaturesafety); training meshes are refined to ~35k at most:
+                                # warn above 40k, where the model has not seen meshes
 BIG_MESH_WARNING = ('the curved mesh has {} tets, more than the <= {} of the training meshes: the model was '
                     'not trained on meshes this fine, accuracy is not validated')
 SHARP_EDGE_WARNING = ('sharp edges ({} re-entrant): Epk/Eacc and Bpk/Eacc are not converged and are not reported')
@@ -90,9 +92,9 @@ class Limits:
     mesh_mem_mb = _env('RFCAV_MESH_MEM_MB', 4096, int)
     max_tets = _env('RFCAV_MAX_TETS', 400_000, int)
     # curved tets the field model predicts on (CPU: ~3 GB, ~15 s at 10k tets); curved_from_cad builds the training
-    # meshes (5k–20k tets, target 10k, field_labels.model_sized_mesh), so this is only a guard above the 20k cap.
+    # start meshes (≥ 5k tets, near 10k, no cap: field_labels.model_sized_mesh; curvature-bound shapes ~23k), so this is only a guard.
     # mesh_timeout_s: model_sized_mesh tries up to ~30 netgen meshes (up to ~73 s per draw, ~285 s with a rejected draw)
-    max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 30_000, int)
+    max_predict_tets = _env('RFCAV_MAX_PREDICT_TETS', 60_000, int)
     min_mesh_size = 0.05
     max_items = _env('RFCAV_MAX_ITEMS', 64, int)
     ttl_s = _env('RFCAV_TTL_S', 3600.0)
@@ -588,7 +590,7 @@ def create_app(service=None, datasets=None):
     from src.service import jobs as J
     blocks = J.family_blocks()
     FIELD_PARAMS = {'threads', 'label_order', 'model_order', 'min_fillet', 'maxh_factor', 'field_max_elements',
-                    'adapt', 'tol_f', 'tol_q', 'model_max_elements', 'max_ndof', 'round_edges', 'heal',
+                    'adapt', 'tol_f', 'tol_f_p2', 'tol_q', 'model_max_elements', 'max_ndof', 'round_edges', 'heal',
                     'sample_timeout'}
     # one manager for generation (needs gen_root) and p4 reference checks (read-only: work without gen_root)
     jm = J.JobManager(gen_root or os.path.join(tempfile.gettempdir(), 'rfcav_nogen'),
@@ -618,7 +620,8 @@ def create_app(service=None, datasets=None):
         adapt: bool = True
         tol_f: float = Field(default=1e-6, ge=1e-9, le=1e-2)
         tol_q: float = Field(default=1e-3, ge=1e-6, le=0.2)
-        model_max_elements: int = Field(default=20000, ge=100, le=500000)
+        tol_f_p2: float = Field(default=1e-3, ge=1e-6, le=0.1)   # p2 labels: refine until the estimate is below
+        model_max_elements: int = Field(default=20000, ge=100, le=500000)   # p3 labels only
         max_ndof: int | None = Field(default=None, ge=10000, le=20_000_000)  # None: the machine's default
         round_edges: bool = True
         heal: bool = True

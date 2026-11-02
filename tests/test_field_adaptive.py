@@ -249,8 +249,8 @@ def test_too_many_tets_is_rejected_before_curving_and_not_retried_with_a_finer_m
 
 
 def test_p2_labels_mesh_with_model_sized_mesh_and_p3_without_adaptivity_unchanged(tmp_path, monkeypatch):
-    """label_order == model_order (docs/37) meshes with model_sized_mesh (no retries, cs 2 → 1.5 → 1 when elements
-    fold); p3 without adaptivity keeps the single curved_mesh call with the generator's curvaturesafety."""
+    """label_order == model_order (docs/37) meshes with model_sized_mesh (no retries, a fold raises curvaturesafety 2 → 3, never
+    lowers it); p3 without adaptivity keeps the single curved_mesh call with the generator's curvaturesafety."""
     from src.data_gen import field_labels as fl
     calls = []
 
@@ -261,7 +261,7 @@ def test_p2_labels_mesh_with_model_sized_mesh_and_p3_without_adaptivity_unchange
     monkeypatch.setattr(fl, "curved_mesh", folds)
     base = {"adaptive": False, "curvaturesafety": 2.0, "model_mesh_tries": 2}
     for settings, expected in (({**base, "label_order": 2, "model_order": 2},
-                                [(2.0, 0), (2.0, 0), (1.5, 0), (1.5, 0), (1.0, 0), (1.0, 0)]),
+                                [(2.0, 0), (3.0, 0)]),
                                ({**base, "label_order": 3}, [(2.0, 1)])):
         calls.clear()
         with pytest.raises(RuntimeError, match="folded"):

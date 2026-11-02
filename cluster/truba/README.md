@@ -52,7 +52,7 @@ bash cluster/truba/run.sh status LABELS=field
   (`config.sh` `container_prefix`: `apptainer exec [--nv] --bind <repo>,<DATA_ROOT>[,CACHE_DIR,EXTRA_BIND] …`).
   `requirements.txt` değişince `FORCE=1 bash cluster/truba/setup_env.sh` ile yeniden kur.
 - `LABELS=field` (varsayılan ve tek etiket türü; docs/29):
-  - Varsayılan (2026-11-01, docs/37): p2 etiketleri, model mesh'inde (5k–20k tet) tek HCurl p2 çözümü (`LABEL_ORDER=2`, `MODEL_MAX_ELEMENTS=20000`). `LABEL_ORDER=3`: NGSolve p3 uyarlamalı etiketler eğri mesh üzerinde üretilir, p2 model uzayına izdüşürülür. Dönüştürme adımı yoktur.
+  - Varsayılan (2026-11-01, docs/37): p2 etiketleri, model mesh'inde HCurl p2 çözümü: ~10k tetlik başlangıç, `est_rel_f ≤ tol_f_p2` (1e-3) olana dek inceltme, tet tavanı yok (`LABEL_ORDER=2`; docs/37 §3). `MODEL_MAX_ELEMENTS=20000` yalnız p3 yolunda. `LABEL_ORDER=3`: NGSolve p3 uyarlamalı etiketler eğri mesh üzerinde üretilir, p2 model uzayına izdüşürülür. Dönüştürme adımı yoktur.
   - Eğitim, train grubundaki ailelerin H5 parça klasörlerinden yapılır (OOD aileleri eğitime girmez).
   - Ayrı TAG kullanılır: p2 için `F_p2p2_ms0.10_k10_mf0.05_v2`, p3 için `F_p3p2_ms0.10_k10_mf0.05_v2`.
   - İş başına `CPUS / THREADS` örnek aynı anda çalışır (`THREADS=8` → 7 örnek, örnek başına ~5 GB).

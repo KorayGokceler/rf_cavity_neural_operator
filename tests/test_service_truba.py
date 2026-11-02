@@ -52,13 +52,17 @@ def test_label_defaults_mirror_config_sh():
     """p2 labels are the default (docs/37): LABEL_ORDER / MODEL_ORDER / MODEL_MAX_ELEMENTS equal config.sh's, so
     the command line carries them only when the form differs; the form defaults and DEFAULTS agree."""
     sh = subprocess.run(["bash", "-c", "source cluster/truba/config.sh; echo $LABEL_ORDER $MODEL_ORDER "
-                         "$MODEL_MAX_ELEMENTS $ADAPT"], cwd=ROOT, capture_output=True, text=True,
+                         "$MODEL_MAX_ELEMENTS $ADAPT $TOL_F_P2"], cwd=ROOT, capture_output=True, text=True,
                         env=dict(os.environ, USER="t"))
     got = sh.stdout.split()
-    assert got == [str(TR.DEFAULTS[k]) for k in ("LABEL_ORDER", "MODEL_ORDER", "MODEL_MAX_ELEMENTS", "ADAPT")]
+    keys = ("LABEL_ORDER", "MODEL_ORDER", "MODEL_MAX_ELEMENTS", "ADAPT", "TOL_F_P2")
+    assert [float(x) for x in got] == [float(TR.DEFAULTS[k]) for k in keys]
     assert (FORM["label_order"], FORM["model_order"], FORM["model_max_elements"]) == (2, 2, 20000)
     assert "model_order" not in TR.build_command(FORM)["run_args"].lower().replace("model_max", "")
     assert "LABEL_ORDER=3" in TR.build_command(dict(FORM, label_order=3))["run_args"]
+    assert "TOL_F_P2" not in TR.build_command(FORM)["run_args"] and FORM["tol_f_p2"] == 1e-3
+    assert "TOL_F_P2=0.0005" in TR.build_command(dict(FORM, tol_f_p2=5e-4))["run_args"]
+    assert "--tol_f_p2" in open(os.path.join(ROOT, "cluster/truba/gen_shard.sbatch")).read()
     # the cost estimate of p2 labels uses the p2 core-seconds, not the p3 model
     from src.service import jobs as J
     assert J.field_core_s(2, 2, True) == J.FIELD_P2_CORE_S

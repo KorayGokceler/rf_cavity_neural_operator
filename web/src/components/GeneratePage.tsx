@@ -44,7 +44,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
     labels: 'field', n_total: 100, mesh_size: 0.1, n_modes: 10, sampling: 'sobol', deform_prob: 0.5, deform_max: 0.5,
     seed: 0, shard_size: 32, workers: null, tag: null,
     threads: null, label_order: 2, model_order: 2, min_fillet: 0.05, maxh_factor: 3, field_max_elements: 30000,
-    adapt: true, tol_f: 1e-6, tol_q: 1e-3, model_max_elements: 20000, max_ndof: null, round_edges: true, heal: true,
+    adapt: true, tol_f: 1e-6, tol_f_p2: 1e-3, tol_q: 1e-3, model_max_elements: 20000, max_ndof: null, round_edges: true, heal: true,
     sample_timeout: 7200,
   });
   const [plan, setPlan] = useState<FieldPlan | null>(null);
@@ -102,7 +102,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
 
   // numeric fields: bounds mirror the server's validation; the start button waits for valid values
   type NumKey = keyof Form & ('n_total' | 'mesh_size' | 'n_modes' | 'deform_prob' | 'deform_max' | 'seed' | 'shard_size'
-    | 'workers' | 'tol_f' | 'tol_q' | 'max_ndof' | 'model_max_elements' | 'label_order' | 'model_order' | 'min_fillet'
+    | 'workers' | 'tol_f' | 'tol_f_p2' | 'tol_q' | 'max_ndof' | 'model_max_elements' | 'label_order' | 'model_order' | 'min_fillet'
     | 'threads' | 'field_max_elements' | 'maxh_factor' | 'sample_timeout');
   interface Spec { min?: number; max?: number; step?: number; integer?: boolean; allowEmpty?: boolean }
   const SPEC: Record<NumKey, Spec> = {
@@ -110,7 +110,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
     n_modes: { min: 1, max: 30, integer: true }, deform_prob: { min: 0, max: 1, step: 0.1 },
     deform_max: { min: 0, max: 0.9, step: 0.05 }, seed: { min: 0, integer: true },
     shard_size: { min: 16, max: 4096, integer: true }, workers: { min: 1, max: 256, integer: true, allowEmpty: true },
-    tol_f: { min: 1e-9, step: 1e-7 }, tol_q: { min: 1e-6, step: 1e-4 },
+    tol_f: { min: 1e-9, step: 1e-7 }, tol_f_p2: { min: 1e-6, max: 0.1, step: 1e-4 }, tol_q: { min: 1e-6, step: 1e-4 },
     max_ndof: { min: 10000, step: 100000, integer: true, allowEmpty: true },
     model_max_elements: { min: 100, step: 1000, integer: true }, label_order: { min: 2, max: 5, integer: true },
     model_order: { min: 1, max: 4, integer: true }, min_fillet: { min: 0, max: 0.3, step: 0.01 },
@@ -118,7 +118,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
     maxh_factor: { min: 1, max: 10, step: 0.5 }, sample_timeout: { min: 60, step: 600, integer: true },
   };
   const COMMON: NumKey[] = ['n_total', 'mesh_size', 'n_modes', 'deform_prob', 'deform_max', 'seed', 'shard_size', 'workers'];
-  const FIELD: NumKey[] = ['tol_f', 'tol_q', 'max_ndof', 'model_max_elements', 'label_order', 'model_order', 'min_fillet',
+  const FIELD: NumKey[] = ['tol_f', 'tol_f_p2', 'tol_q', 'max_ndof', 'model_max_elements', 'label_order', 'model_order', 'min_fillet',
                            'threads', 'field_max_elements', 'maxh_factor', 'sample_timeout'];
   const nf = (k: NumKey, label: string, placeholder?: string, disabled = false) => (
     <NumField lang={lang} label={label} value={p[k] as number | null} min={SPEC[k].min} max={SPEC[k].max}
@@ -127,7 +127,8 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
   );
   const setKind = (k: LabelKind) => setP({ ...p, label_order: k === 'p2' ? p.model_order : Math.max(3, p.model_order + 1),
                                             adapt: k !== 'hf1' });
-  const formOk = [...COMMON, ...FIELD.filter((k) => kind === 'hf' || (k !== 'tol_f' && k !== 'tol_q'))]
+  const formOk = [...COMMON, ...FIELD.filter((k) => kind === 'hf' || (k !== 'tol_f' && k !== 'tol_q'))
+    .filter((k) => k !== 'tol_f_p2' || kind === 'p2')]
     .every((k) => numOk(p[k] as number | null, SPEC[k]));
 
   const submit = async () => {
@@ -181,7 +182,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
             </select>
           </label>
           <div className="note">{t(lang, kind === 'p2' ? 'labelKindP2Note' : 'labelKindHfNote')}</div>
-          {kind === 'p2' && <div className="note" data-testid="gen-mesh-range">{t(lang, 'modelMeshRange')}: <strong>{t(lang, 'modelMeshRangeVal')}</strong> · {t(lang, 'modelMaxElements')}: <strong>{int(Number(p.model_max_elements) || 0)}</strong></div>}
+          {kind === 'p2' && <div className="note" data-testid="gen-mesh-range">{t(lang, 'modelMeshRange')}: <strong>{t(lang, 'modelMeshRangeVal')}</strong> · {t(lang, 'tolFP2')}: <strong>{p.tol_f_p2}</strong></div>}
           <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
             <div className="grid2">
               <label>{t(lang, 'sampling')}<select value={p.sampling} onChange={(e) => set('sampling', e.target.value as 'sobol' | 'random')}><option value="sobol">sobol</option><option value="random">random</option></select></label>
@@ -196,8 +197,9 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
               <div className="grid2">
                 {nf('tol_f', t(lang, 'tolF'), undefined, kind !== 'hf')}
                 {nf('tol_q', t(lang, 'tolQ'), undefined, kind !== 'hf')}
+                {nf('tol_f_p2', t(lang, 'tolFP2'), undefined, kind !== 'p2')}
                 {nf('max_ndof', t(lang, 'maxNdof'), String(cfg?.field.defaults.max_ndof ?? ''), kind === 'p2')}
-                {nf('model_max_elements', t(lang, 'modelMaxElements'))}
+                {nf('model_max_elements', t(lang, 'modelMaxElementsP3'), undefined, kind === 'p2')}
                 {nf('label_order', t(lang, 'labelOrder'))}
                 {nf('model_order', t(lang, 'modelOrder'))}
                 {nf('min_fillet', t(lang, 'minFillet'))}
