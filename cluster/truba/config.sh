@@ -8,6 +8,9 @@ if [ -z "${REPO_DIR:-}" ] && [ -n "${TRUBA_DIR:-}" ] && [ -f "$TRUBA_DIR/../../t
 fi
 REPO_DIR=${REPO_DIR:-$HOME/rf_cavity_neural_operator}
 DATA_ROOT=${DATA_ROOT:-/arf/scratch/$USER/rfcav3d}           # large files: scratch, not $HOME
+# TRUBA rejects jobs whose working directory is not under /arf/scratch ("Lutfen islerinizi /arf/scratch/ dizini altinda
+# calistiriniz", first run 2026-11-02): every srun / sbatch gets --chdir here, whatever directory the command runs from
+JOB_CWD=${JOB_CWD:-/arf/scratch/$USER/rfcav_run}
 # Apptainer image with the whole Python stack (rfcav.def; TRUBA forbids conda / pip under /arf, docs/36 §5).
 # setup_env.sh builds it once on a debug compute node. One file in $HOME: it must not live on scratch (30-day purge).
 CONTAINER=${CONTAINER:-$HOME/containers/rfcav.sif}
@@ -141,9 +144,14 @@ container_prefix() {
   if [ "${1:-}" = --nv ]; then nv=(--nv); fi
   if [ -n "$CACHE_DIR" ]; then bind+=,$CACHE_DIR; fi
   if [ -n "$EXTRA_BIND" ]; then bind+=,$EXTRA_BIND; fi
-  CX=("$APPTAINER" exec ${nv[@]+"${nv[@]}"} --bind "$bind" --pwd "$REPO_DIR" "$CONTAINER")
+  # apptainer refuses to bind a host path that does not exist (first TRUBA setup, 2026-11-02: the check step failed
+  # on a fresh account because $DATA_ROOT had not been created yet)
+  if [ "${DRY_RUN:-0}" != 1 ]; then mkdir -p "$DATA_ROOT" ${CACHE_DIR:+"$CACHE_DIR"}; fi
+  # matplotlib wants a writable config dir; the image's /root is read-only
+  CX=("$APPTAINER" exec ${nv[@]+"${nv[@]}"} --env MPLCONFIGDIR="/tmp/mplconfig-$USER" --bind "$bind" --pwd "$REPO_DIR" "$CONTAINER")
 }
 
-sbatch_common() {   # common sbatch flags (partition / account)
-  echo "-p $1 ${ACCOUNT:+-A $ACCOUNT}"
+sbatch_common() {   # common sbatch / srun flags (partition / account / scratch working directory)
+  [ "${DRY_RUN:-0}" = 1 ] || mkdir -p "$JOB_CWD"
+  echo "-p $1 ${ACCOUNT:+-A $ACCOUNT} --chdir=$JOB_CWD"
 }

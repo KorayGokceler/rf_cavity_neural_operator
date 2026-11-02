@@ -12,7 +12,7 @@
 1. **`/arf` üzerine conda / pip kurulumu yasak** (Python kılavuzu 2025-12, depolama 2026-04; yüz binlerce küçük dosya,
    500K inode kotası). Çözüm uygulandı (2026-10-30): yığın **Apptainer imajında** (`cluster/truba/rfcav.def`, tek `.sif`);
    `setup_env.sh` imajı bir `debug` düğümünde kurar, bütün işler `config.sh` `container_prefix` ile imajın içinde koşar.
-   **TRUBA'da henüz kurulup denenmedi** (§5, docs/31 madde 22).
+   TRUBA'da kuruldu ve denendi (2026-11-02, aşağıda madde 6–7).
 2. **Eşzamanlı çekirdek sınırı: standart kullanıcı 160, yüksek lisans 40, lisans 4** (SSS 16). Bizim varsayılanımız
    `CPUS=56` × `MAX_PARALLEL=10` = 560 çekirdek ister; aşan işler `AssocGrpCpuLimit` ile kuyrukta bekler. 160 sınırında
    en fazla **2 shard işi** (112 çekirdek) aynı anda çalışır. Gerçek sınırı `ACCOUNT`'un sahibi bilir.
@@ -24,6 +24,22 @@
 5. **Başvuruda belirtilen uygulamadan başka iş çalıştırılmaz** ve **TRUBA uygulama geliştirme için kullanılamaz**
    (kullanım politikası): derlenmiş / hazır uygulama taşınır. Yeni uygulama için `trubadestek@tubitak.gov.tr`'e
    yazılır.
+
+6. **İşler yalnız `/arf/scratch` altından gönderilebilir** (ilk deneme, 2026-11-02): ev dizinindeki repodan `srun` çalışınca
+   TRUBA "Lutfen islerinizi /arf/scratch/ dizini altinda calistiriniz!" diyip işi reddetti ("Job violates accounting/QOS
+   policy"). Çözüm: `config.sh` `sbatch_common` her `srun` / `sbatch`'e `--chdir=$JOB_CWD` (varsayılan
+   `/arf/scratch/$USER/rfcav_run`) ekler; repo ve imaj ev dizininde kalır, komut hangi klasörden çalışırsa çalışsın.
+7. **İlk imaj kurulumu** (2026-11-02, debug `orfoz232`): paketler kuruldu, `%test` NGSolve'u yükleyemedi
+   (`libquadmath.so.0` yok: `ngsolve_openblas`'ın getirdiği `libgfortran` buna bağlı, `python:3.11-slim` tabanında yok).
+   `rfcav.def`'e `libgfortran5 libquadmath0` eklendi. İkinci deneme (debug `hamsi38`) NGSolve'u geçti, gmsh'te
+   `libGL.so.1` eksikti (Debian'da `libglu1-mesa` GL yükleyicisini çekmiyor). `ldd` ile gmsh / NGSolve / netgen'in bütün
+   sistem kütüphaneleri çıkarıldı ve hepsi eklendi (GL: `libgl1 libglx0 libglvnd0 libopengl0`; X11; `libsm6 libice6`);
+   `%post` artık eksik kalan her kütüphaneyi tek listede yazdırıyor. Üçüncü deneme: **imaj kuruldu**
+   (`torch 2.6.0+cu124 | CUDA build 12.4 | ngsolve 6.2.2608 | gmsh 4.15.2`); kalan "not found" satırları
+   (`libcudart.so.12`, `libnvrtc.so.12`: NGSolve'un isteğe bağlı CUDA eklentisi; `libopenblas.so.0`: paketlenmiş OpenBLAS'ın
+   kısa adı) zararsız. Kontrol adımı, henüz oluşmamış `$DATA_ROOT`'u bağlayamadı; `container_prefix` bağlanan klasörleri
+   artık önceden oluşturuyor. Dördüncü çalıştırma: imaj atlandı, kontrol üretimi geçti; **`run.sh setup` TRUBA'da tamam**
+   (2026-11-02; `~/containers/rfcav.sif` 3,2 GB).
 
 ## 1. Kullanım politikası ve hesap
 
