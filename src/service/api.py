@@ -73,8 +73,9 @@ RANDOM_SAMPLE_IDS = (2 ** 24, 2 ** 25)
 UPLOAD_AXIS_WARNING = ('beam axis assumed: z through the origin; L_acc = axis chord incl. pipes; R/Q, R_sh, T and '
                        'peaks/Eacc depend on it')
 TRAIN_MODEL_TETS = 40_000       # prediction meshes are the p2 START meshes (~10k tets, ≥ 5k; no cap, curvature-bound shapes
-                                # reach ~23k, folds raise curvaturesafety); training meshes are refined to ~35k at most:
-                                # warn above 40k, where the model has not seen meshes
+                                # reach ~23k, folds raise curvaturesafety); training meshes have no cap (refined until
+                                # the estimate is within tol_f_p2; the bound is max_ndof, up to ~82k tets at 900k DOF):
+                                # warn above 40k, where few training meshes lie
 BIG_MESH_WARNING = ('the curved mesh has {} tets, more than the <= {} of the training meshes: the model was '
                     'not trained on meshes this fine, accuracy is not validated')
 SHARP_EDGE_WARNING = ('sharp edges ({} re-entrant): Epk/Eacc and Bpk/Eacc are not converged and are not reported')

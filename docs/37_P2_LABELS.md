@@ -46,8 +46,11 @@ Olumsuz taban çizgileri değişmedi: GP ve kaba FE, ≤ 10k tet ve ≥ 24 geome
 **Kural (p2 etiketleri):**
 1. Başlangıç mesh'i: `field_labels.model_sized_mesh` — ≥ 5000 tet, 10000'e en yakın, `curvaturesafety` 2; katlanma olursa 3, 4'e **çıkarılır, hiç düşürülmez**; tet tavanı yok.
 2. p2 çözümü ve hata tahmini `est_rel_f`.
-3. `est_rel_f > tol_f_p2` ise tekdüze inceltme, `r = (tol/est)^(1/4)·0,9`: `maxh_factor` → `f·r` ve `curvaturesafety` → `cs/r` birlikte (yalnız maxh eğrilik-sınırlı şekilleri inceltmiyor; hwr yoklaması: cs 2'de maxh 3 → 2: 6674 → 7660 tet; cs 2 → 3: 16628 tet).
+3. `est_rel_f > tol_f_p2` ise tekdüze inceltme, `r = (tol/est)^(1/q)·0,9`; 1. turda q = 4, 2. turdan itibaren **gözlenen** hız q = log(est_önceki/est) / log((ne/ne_önceki)^(1/3)), [1, 4] aralığına kırpılır (ölçülen: hwr ~3,5, keskin elliptical ~2,35; yuvarlatma / kenarlar h⁴'ten yavaş yakınsıyor): `maxh_factor` → `f·r` ve `curvaturesafety` → `cs/r` birlikte (yalnız maxh eğrilik-sınırlı şekilleri inceltmiyor; hwr yoklaması: cs 2'de maxh 3 → 2: 6674 → 7660 tet; cs 2 → 3: 16628 tet).
 4. Yeniden kurulan mesh %15'ten az büyürse r², r³ ile yeniden denenir (cs ≤ 6, DOF ≤ `max_ndof`).
+   - Bütçe: adım, `max_ndof`'a sığan en büyük adıma kırpılır (`r_fit = (ne·11/max_ndof)^(1/3)·1,02`); `budget` yalnız `r_fit` > 0,95 ise.
+   - `curvaturesafety` `p2_max_cs` = 6'da kırpılır, maxh küçülmeye devam eder.
+   - Onarımdan sonra sınırı aşan mesh katlanma değil `budget` sayılır.
 5. En çok 3 inceltme turu. Durma nedeni `p2_stop`: `converged` | `budget` (`max_ndof` 900000) | `stalled` | `max_rounds` | `mesh_failed`.
 6. Saklanan öznitelikler: `p2_rounds`, `p2_stop`, `p2_tets`, `p2_est`, `p2_cs`, `tol_f_p2` (`est_max` takma adı). CLI: `--tol_f_p2` (varsayılan 1e-3); `label_ok = est_rel_f ≤ tol_f_p2`.
 7. %15 eşiği ve r-kuvveti yeniden denemeleri sezgiseldir.
@@ -63,18 +66,17 @@ Olumsuz taban çizgileri değişmedi: GP ve kaba FE, ≤ 10k tet ve ≥ 24 geome
 |---|---|---|---|
 | pillbox | 10658 | 4,3e-5 | 1 çözüm, 44 s, 1,9 GB |
 | elliptical, rastgele id 0 | 17318 | 5,9e-4 | 68 s, 1,8 GB |
-| hwr 3670016 (sobol) | 9411 → 11588 | 1,08e-3 → 8,46e-4 | cs 2 → 2,57, 66 s, 1,1 GB |
+| hwr 3670016 (sobol) | 9411 → 11664 (önceki sürüm: 11588) | 1,08e-3 → 8,4e-4 (önceki: 8,46e-4) | 62 s (önceki: cs 2 → 2,57, 66 s, 1,1 GB) |
 | elliptical, rastgele id 1 | 23239 → 34954 | 1,19e-3 → 8,65e-4 | yuvarlatılmış geometri cs 2, 3, 4'te katlandı (det-J −52,6) → keskin kenarla etiketlendi (`round_fallback` 1, tepeler NaN); 428 s, 4,1 GB (366k DOF) |
-| blob id 0 | 14294 | 1,01e-2 | `budget` ile durdu (sonraki adım ~1,2M DOF) → `label_ok` 0 |
+| blob id 0 (gözlenen hızlı döngü) | 14294 → 30282 → 42408 | 1,01e-2 → 1,28e-3 → 6,6e-4 | cs 2 → 3,51 → 4,14; 3 çözüm, 428 s, 4,1 GB, 447576 DOF; `label_ok` 1 |
 
-- Blob şimdilik eğitimde kullanılmıyor (zaten `families.tsv`'de yok); örnekleri işaretli kalır, kullanılırsa `require_label_ok` düşürür.
+- Blob artık `budget` ile durmuyor (üstteki satır; önceki sürümde 14294 tet, 1,01e-2, `budget`, `label_ok` 0 idi), ama pahalı; sahibin tercihiyle eğitimde şimdilik kullanılmıyor (zaten `families.tsv`'de yok). `label_ok` 0 kalan örnekler işaretli, `require_label_ok` onları düşürür.
+- **Tolerans ortalamadır:** `est_rel_f` K moddaki bağıl frekans hatası tahminlerinin ortalaması (0,5·Σ ev / K). Bir mod `tol_f_p2`'nin üstünde kalırken `label_ok` = 1 olabilir; arayüz etiketi "modların ortalaması" der.
 - Maliyet: `FIELD_P2_CORE_S` → 200 çekirdek-saniye (arayüz ajanı ayarlıyor); 100k geometri için tahmin ≈ 4,3–8 bin çekirdek-saat (pay dahil). Diskte örnek başına 5,6–12 MB (ortalama ~8,5 MB) → 100k için 0,6–1,2 TB; scratch 30 günde siliniyor; bu ölçekte `CACHE_DIR` açılmamalı (geometri başına ~330 MB).
 
 **Tahmin (sahip kararı: seçenek a).** Tahmin başlangıç mesh'inde yapılır (~10k, inceltme yok). Bedeli: eğitimde inceltilen şekillerde (hwr, bazı elliptical) tahmin mesh'i eğitim mesh'inden kaba; oradaki taban 1e-3'ü aşabilir. Seçenek (b) — modelin kendi tahmin ettiği alanla aynı göstergeyi sürmek — açık iş (31 §6 iş 30).
 
 ### 3.1 Önceki kural (5k–20k, 2026-11-01; yerine geçildi, tarihçe)
-
-Üretici **ve** tahmin (`src/service/geometry.curved_from_cad`, `scripts/predict_geometry.py`) aynı kuralı kullanır; eğitim ve tahmin mesh'leri aynı kurala uyar.
 
 Üretici **ve** tahmin (`src/service/geometry.curved_from_cad`, `scripts/predict_geometry.py`) aynı kuralı kullanır; eğitim ve tahmin mesh'leri aynı kurala uyar.
 
@@ -141,7 +143,7 @@ p4 referansı aynı mesh'te; yöntem doğrulandı: p4, analitik kutu spektrumuna
 ## 5. Hata tahmini ve `label_ok`
 
 Her p2 örneği saklar: `est_rel_f`, `est_rel_wall`, `label_ok` (`est_rel_f ≤ est_max`, `est_max = 1e-3`), `est_max`, `model_meshes`,
-`maxh_factor_used`, `curvaturesafety_used`. `label_ok = est_rel_f ≤ tol_f_p2` (`est_max` takma ad). Örnekler üreticide **atılmaz**. Eğitimde süzme için `dataset.require_label_ok` (`configs/field_3d.yaml`, `FieldDataset(require_label_ok=False)`) var: true olursa eğitim bölmesinde `label_ok == 0` örnekler düşer, aile başına sayı yazılır. **Varsayılan false** (süzme kapalı). Dataset sayfası `GET /api/datasets/{id}/quality`
+`maxh_factor_used`, `curvaturesafety_used`. `label_ok = est_rel_f ≤ tol_f_p2` (`est_max` takma ad); `est_rel_f` modların **ortalamasıdır** (§3), tek bir mod sınırın üstünde olabilir. Örnekler üreticide **atılmaz**. Eğitimde süzme için `dataset.require_label_ok` (`configs/field_3d.yaml`, `FieldDataset(require_label_ok=False)`) var: true olursa eğitim bölmesinde `label_ok == 0` örnekler düşer, aile başına sayı yazılır. **Varsayılan false** (süzme kapalı). Dataset sayfası `GET /api/datasets/{id}/quality`
 ile `label_ok` payını, `est` medyan / en büyük değerini ve tet aralığını gösterir.
 
 ## 6. Neden uyarlamalı p2 yok (A: kural mesh'i, B: p2 uyarlamalı)
@@ -175,14 +177,15 @@ Sonra: kontrollü deney (`/experiment`, iş 26) ya da tahmin zamanında modelin 
 - Maliyet: 6k tetlik mesh'in p4'ü ≈ 330k DOF, 4 iş parçacığında ~100 s, ~5 GB. Sahip çalıştırır.
 - Arayüz: Dataset sayfasında "p4 ile doğrula" (arka plan işi, `POST /api/jobs/reference`, sonuç tablosu, bellek uyarısı; `GET /api/jobs/{id}/reference`, `GET /api/jobs/reference_plan`).
 - Üretim ve TRUBA sayfalarında etiket türü seçimi: p2 / p3 uyarlamalı / p3 tek çözüm (varsayılan p2). `config.sh`: `LABEL_ORDER=2`; arayüzde p2 için tolerans alanı `tol_f_p2` (varsayılan 1e-3).
-- İşçi belleği p2 için model uzayından: `jobs.label_ndof` = 11 DOF/tet × tet sayısı üst tahmini (inceltilmiş p2 için `max_ndof` 900000 sınırı). Dataset kavite değerleri kaynağı p2 datasetlerde `p2_labels`.
+- İşçi belleği p2 için model uzayından: `jobs.label_ndof` p2'de `max_ndof` döndürür (işçi belleği `field_mem_gb(max_ndof)` ≈ 13 GB @ 900k, tutucu; ölçülen ≤ 4,1 GB, 366k–448k DOF). Dataset kavite değerleri kaynağı p2 datasetlerde `p2_labels`.
 
 ## 9. Açık işler
 
 | iş | durum |
 |---|---|
 | Yuvarlatılmış elliptical geometrilerin katlanması (cs 2, 3, 4; keskin kenarla etiketleme): oran bilinmiyor, TRUBA `TEST=1` ile `round_fallback` payı ölç. Artık tavan nedeni değil. Sahibin kararı. | açık (docs/31 §6 iş 24) |
-| Blob: `budget` ile duruyor (est 1,01e-2), eğitimde kullanılmıyor. | açık |
+| Blob yakınsıyor ama pahalı (428 s, 4,1 GB); eğitimde kullanılmıyor (sahibin tercihi). | açık |
+| **Eğitim belleği:** p2 eğitim mesh'lerinde tavan yok; `MAX_NDOF` 900k'da ~82k tete kadar (`max_ndof` / 11). `BATCH` (2) ve 16 GB V100 ~20k tet için boyutlandırılmıştı; eğitimden önce TRUBA `TEST=1` shard'ının en büyük örneğinde bir batch denenecek. | açık (iş 31) |
 | Tahmin seçeneği (b): modelin kendi alanıyla inceltme; bugün başlangıç mesh'inde tahmin (seçenek a). | açık (iş 30) |
 | %15 durma eşiği ve r-kuvveti yeniden denemeleri sezgisel; `tol_f_p2` pilot eğitimden sonra gözden geçirilecek. | açık (iş 30) |
 | `FIELD_P2_CORE_S`: 150 çekirdek-saniye ölçüldü (50–408, ortalama ~155, 20k kuralıyla; docs/31 §3.13 e); inceltmeli kural için 200 (§3). TRUBA `THREADS` p2 için ayarlanmadı. | kısmen (iş 27) |

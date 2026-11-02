@@ -142,11 +142,11 @@ def test_refine_p2_to_tolerance_retries_a_stalled_mesh_with_a_larger_step(monkey
     r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS}, start, "shape", 10.0, lambda m: (next(ests), None))
     assert len(calls) == 3 and calls[0] < calls[1] < calls[2] and r["stop"] == "converged" and r["tets"] == [10000, 14000]
     assert r["css"] == pytest.approx([2.0, calls[2]])
-    calls.clear()                                       # cs cap: est 4e-3 → r = 0.64, cs 3.1, 4.9, then 7.7 > 6: two meshings
+    calls.clear()                                       # cs cap: est 4e-3 → r = 0.64, cs 3.1, 4.9, then 7.7 clamped to 6 (maxh keeps shrinking): three meshings
     monkeypatch.setattr(fl, "_single_level_mesh", lambda *a: (calls.append(a[5]), (SimpleNamespace(ne=10500), "s"))[1])
     r = fl.refine_p2_to_tolerance("x", 0.1, None, {**fl.DEFAULTS, "p2_max_cs": 6.0, "max_ndof": 10**9}, start, "shape",
                                   10.0, lambda m: (4e-3, None))
-    assert len(calls) == 2 and max(calls) <= 6.0 and r["stop"] == "stalled"
+    assert len(calls) == 3 and max(calls) == 6.0 and r["stop"] == "stalled"
 
 
 def test_refine_p2_to_tolerance_retries_a_folded_mesh_at_a_finer_cs(monkeypatch):
@@ -183,10 +183,43 @@ def test_model_sized_mesh_raises_cs_on_a_fold_and_never_lowers_it(monkeypatch):
     assert calls[:2] == [2.0, 3.0] and min(calls) == 2.0 and info["curvaturesafety"] == 3.0 and mesh.ne >= 5000
 
 
+def test_refine_p2_to_tolerance_uses_the_observed_rate(monkeypatch):
+    """est ∝ h^(4/3) (a singular problem): the rate p = 4 of round 1 undershoots, the observed rate (≈ 1.3) sizes round 2: ≤ 2 refinements."""
+    _fake_refine_env(monkeypatch, None)
+    est_of = lambda m: (4e-3 * (10000 / m.ne) ** (4 / 9), None)        # h^(4/3) with h ∝ tets^(-1/3)  # noqa: E731
+    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 10**9}
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, SimpleNamespace(ne=10000, levels=1), "shape", 10.0, est_of)
+    assert r["stop"] == "converged" and r["rounds"] <= 3 and r["est"] <= 1e-3, (r["tets"], r["ests"])
+
+
+def test_refine_p2_to_tolerance_clamps_the_step_to_the_dof_budget(monkeypatch):
+    """est 4e-3 wants r = 0.636 (3.9x tets = 430k DOF); max_ndof 300k allows ~2.7x tets: the clamped mesh is built, not a 'budget' stop."""
+    built = _fake_refine_env(monkeypatch, None)
+    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 300000, "p2_max_refine": 1}
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, SimpleNamespace(ne=10000, levels=1), "shape", 10.0,
+                                  lambda m: (4e-3, None))
+    assert r["rounds"] == 2 and r["stop"] == "max_rounds" and 25000 < r["tets"][1] * 1.0 <= 300000 / 11
+    assert built[0][0] == pytest.approx(10.0 * (10000 * 11 / 300000) ** (1 / 3) * 1.02)
+
+
+def test_refine_p2_to_tolerance_caps_cs_and_keeps_refining_maxh(monkeypatch):
+    built = _fake_refine_env(monkeypatch, None)
+    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 10**9, "p2_max_refine": 1, "p2_max_cs": 3.0}
+    r = fl.refine_p2_to_tolerance("x", 0.1, None, s, SimpleNamespace(ne=10000, levels=1), "shape", 10.0,
+                                  lambda m: (4e-3, None))
+    assert built[0][1] == 3.0 and built[0][0] < 10.0 * 0.7 and r["css"][-1] == 3.0
+
+
+def test_curved_mesh_over_the_cap_after_repair_is_a_budget_overflow(monkeypatch):
+    monkeypatch.setattr(fl, "curved_mesh", lambda *a: (_ for _ in ()).throw(RuntimeError("curved mesh has 9 tets > max_elements=5")))
+    with pytest.raises(fl.ho.TooManyElements):
+        fl._single_level_mesh("x", 0.1, None, dict(fl.DEFAULTS), 3.0, 2.0, 5)
+
+
 def test_refine_p2_to_tolerance_budget_and_max_rounds(monkeypatch):
     _fake_refine_env(monkeypatch, None)
     start = SimpleNamespace(ne=10000, levels=1)
-    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 150000}           # 10k tets x 11 = 110k; ~1.4x tets exceeds 150k
+    s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 115000}           # 10k tets x 11 = 110k; even the largest fitting step (r > 0.95) is < 16 % more tets
     r = fl.refine_p2_to_tolerance("x", 0.1, None, s, start, "shape", 10.0, lambda m: (4e-3, None))
     assert r["stop"] == "budget" and r["rounds"] == 1 and r["est"] == 4e-3 and r["mesh"] is start
     s = {**fl.DEFAULTS, "tol_f_p2": 1e-3, "max_ndof": 10**9, "p2_max_refine": 2}   # estimate never improves

@@ -107,10 +107,23 @@ def start_mesh(cad_path, h, deform, s, css):
     raise err
 
 
+def _p2_curved_mesh(cad_path, h, deform, s):
+    """curved_mesh for the p2 path: a mesh over max_elements after the bisection repair is a budget overflow
+    (TooManyElements), not a fold (which would raise cs)."""
+    try:
+        return curved_mesh(cad_path, h, deform, s)
+    except ho.TooManyElements:
+        raise
+    except RuntimeError as e:
+        if "tets > max_elements" in str(e):
+            raise ho.TooManyElements(str(e)) from e
+        raise
+
+
 def _single_level_mesh(cad_path, h, deform, s, f, cs, max_elements):
     """Curved mesh at maxh = f·h and curvaturesafety cs, one level (bisection repairs are rebuilt) → (mesh, shape)."""
-    mesh, shape = curved_mesh(cad_path, h, deform, {**s, "maxh_factor": f, "curvaturesafety": cs, "retries": 0,
-                                                    "max_elements": max_elements})
+    mesh, shape = _p2_curved_mesh(cad_path, h, deform, {**s, "maxh_factor": f, "curvaturesafety": cs, "retries": 0,
+                                                        "max_elements": max_elements})
     return ho.single_level(mesh, shape, s["curve"], deform), shape
 
 
@@ -142,8 +155,8 @@ def model_sized_mesh(cad_path, h, deform=None, s=None, log=None):
     for _ in range(int(s["model_mesh_tries"])):
         n_meshes += 1
         try:
-            mesh, shape = curved_mesh(cad_path, h, deform, {**s, "maxh_factor": f, "curvaturesafety": cs,
-                                                            "retries": 0, "max_elements": cap})
+            mesh, shape = _p2_curved_mesh(cad_path, h, deform, {**s, "maxh_factor": f, "curvaturesafety": cs,
+                                                                "retries": 0, "max_elements": cap})
             ne = int(mesh.ne)
         except ho.TooManyElements as e:               # beyond the DOF budget: coarsen a lot
             mesh, ne, err = None, 8 * n_t, e
@@ -196,12 +209,14 @@ def refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, f, estimate_fn, 
     (default s['curvaturesafety']).
     estimate_fn(mesh) → (est, payload): est = the relative frequency error estimate on that mesh (0.5·Σ ev / K,
     adaptive.indicator); payload = anything the caller needs of that solve (returned for the final mesh only).
-    Loop: est > tol and rounds left → r = (tol/est)^(1/4)·0.9 (p2 eigenvalue error ∝ h⁴, 10 % margin), f ← f·r AND
-    cs ← cs/r (netgen sizes curved faces by radius/curvaturesafety, so both sizes shrink by r), rebuild the curved
-    mesh, re-solve.  A folded finer mesh is retried at a still finer cs (+1, twice).  The accuracy never triggers a
+    Loop: est > tol and rounds left → r = (tol/est)^(1/p)·0.9 (10 % margin; p = 4, the p2 rate, in round 1, afterwards
+    the rate observed between the last two solves with their realised h-ratio, clamped to [1, 4]), f ← f·r AND
+    cs ← min(cs/r, p2_max_cs) (netgen sizes curved faces by radius/curvaturesafety), rebuild the curved mesh,
+    re-solve.  r is clamped to the largest step whose predicted DOF fits max_ndof ('budget' only when even that
+    step is > 0.95, i.e. under ~16 % more tets).  A folded finer mesh is retried at cs+1 (at the cs cap: a 7 % finer maxh); a mesh over the tet cap after repair is 'budget'.  The accuracy never triggers a
     re-draw.  Stops: est ≤ tol ('converged'); p2_max_refine refinements done ('max_rounds'); the next mesh would
     exceed max_ndof ('budget': predicted from the tets, checked on the built space); the rebuilt mesh has < 15 % more
-    tets than the last solved one even after the larger steps r² and r³ (cs ≤ p2_max_cs, DOF ≤ max_ndof; up to 3
+    tets than the last solved one even after the larger steps r² and r³ (cs capped at p2_max_cs, DOF clamped to max_ndof; up to 3
     meshings per round; 'stalled': the size field is bound by something refinement does not move; not solved); the finer mesh cannot be built ('mesh_failed').  Every stop but 'converged' keeps the last solved mesh.
     Returns dict(mesh, shape, f, cs, est, payload, rounds (= solves), stop, tets, ests, css [per round])."""
     from ngsolve import HCurl
@@ -215,16 +230,23 @@ def refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, f, estimate_fn, 
         if len(tets) > int(s["p2_max_refine"]):
             stop = "max_rounds"
             break
-        r0 = (tol / est) ** 0.25 * 0.9
-        m2, stop = None, "stalled"
+        p_rate = 4.0                                  # round 1: the asymptotic p2 rate (est ∝ h⁴)
+        if len(tets) > 1:                             # later: the rate observed between the last two solves
+            hr = (tets[-1] / tets[-2]) ** (1 / 3)     # realised h-ratio (coarse/fine)
+            p_rate = 1.0 if ests[-1] >= ests[-2] or hr <= 1 else float(
+                np.clip(np.log(ests[-2] / ests[-1]) / np.log(hr), 1.0, 4.0))
+        r0 = (tol / est) ** (1 / p_rate) * 0.9
+        r_fit = (mesh.ne * k_dof / s["max_ndof"]) ** (1 / 3) * 1.02    # the largest step whose predicted DOF fits
+        m2, stop, r_prev = None, "stalled", None
         for power in (1, 2, 3):                       # a mesh that barely grows: retry with the step r², then r³
-            r = r0 ** power
-            f_new, cs_new = f * r, cs / r
-            if mesh.ne / r ** 3 * k_dof > s["max_ndof"]:
-                stop = "budget" if power == 1 else "stalled"
+            r = max(r0 ** power, r_fit)               # budget: clamp to the largest step that fits
+            if r_fit > 0.95:
+                stop = "budget"
                 break
-            if cs_new > cs_max:
+            if r_prev is not None and r >= r_prev:    # clamped to the same size again: nothing new to try
                 break
+            r_prev = r
+            f_new, cs_new = f * r, min(cs / r, cs_max)
             m_try = None
             for _ in range(3):
                 try:
@@ -233,11 +255,14 @@ def refine_p2_to_tolerance(cad_path, h, deform, s, mesh, shape, f, estimate_fn, 
                 except ho.TooManyElements:
                     stop = "budget"
                     break
-                except RuntimeError as e:             # folded elements: finer curved elements
+                except RuntimeError as e:             # folded elements: finer curved elements (or maxh at the cs cap)
                     if log is not None:
                         log(f"refine_p2_to_tolerance: maxh_factor {f_new:.3g}, cs {cs_new:g} failed ({e})")
                     stop = "mesh_failed"
-                    cs_new = min(cs_new + 1.0, cs_max)
+                    if cs_new < cs_max:
+                        cs_new = min(cs_new + 1.0, cs_max)
+                    else:
+                        f_new *= 0.93
             if m_try is None:
                 break
             if m_try.ne >= 1.15 * mesh.ne:

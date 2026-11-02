@@ -365,6 +365,25 @@ def test_dataset_label_quality(field_client, tmp_path):
     assert fake([row(1e-6, None, 9000, 3, 2)]).quality()["kind"] == "p3"
 
 
+def test_refined_p2_sample_with_array_attributes(tmp_path):
+    """p2_tets / p2_est / p2_cs hold one entry per refinement round (arrays): rows() reads them as lists."""
+    import h5py
+    import json
+    from src.service.datasets import FieldH5Dataset
+    fp = tmp_path / "r.h5"
+    with h5py.File(fp, "w") as f:
+        f.attrs["metadata"] = json.dumps({"labels": "field"})
+        g = f.create_group("sample_0000007")
+        g.create_dataset("freqs", data=np.array([2.0, 3.0]))
+        g.attrs.update(shape_type="pillbox", n_tets=34954, label_order=2, model_order=2, label_ok=1, est_rel_f=8e-4,
+                       p2_stop="converged", p2_rounds=2, p2_tets=np.array([23239, 34954]),
+                       p2_est=np.array([3e-3, 8e-4]), p2_cs=np.array([2.0, 2.0]), round_fallback=1.0)
+    row = FieldH5Dataset([str(fp)], "r").rows()[0]["field"]
+    assert row["p2_tets"] == [23239, 34954] and row["p2_est"] == [3e-3, 8e-4] and row["p2_cs"] == [2.0, 2.0]
+    assert row["p2_stop"] == "converged" and row["round_fallback"] is True
+    assert FieldH5Dataset([str(fp)], "r").quality()["p2_stop"] == {"converged": 1}
+
+
 def test_reference_check_job(tmp_path, monkeypatch, field_dir):
     """POST /api/jobs/reference runs scripts/reference_check.py as a background job (mocked here: p4 is not run),
     reads its progress lines and exposes reference.json."""

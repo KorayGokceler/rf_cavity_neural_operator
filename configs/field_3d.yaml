@@ -28,7 +28,7 @@ dataset:
   random_seed: 42
   feature_indices: null         # null = all 9 point features (highorder.point_features)
   train_extra: null             # multi-fidelity: more H5 files (HF) whose geometries all go to the train split
-  require_label_ok: false       # p2 labels (docs/37): true drops samples with label_ok = 0 (frequency error estimate > est_max); files without the attr are kept
+  require_label_ok: false       # p2 labels (docs/37): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
   hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
 
 model:
@@ -55,7 +55,7 @@ model:
 training:
   learning_rate: 2.0e-4
   weight_decay: 1.0e-4
-  batch_size: 2                 # p2 on ~16k tets: ~175k DOF per geometry
+  batch_size: 2                 # p2 meshes are no longer capped at 20k tets: start ~10k, refined until the estimate is <= tol_f_p2, up to max_ndof/11 ~ 82k tets (~900k DOF); measure memory before training
   max_epochs: 200
   check_val_every_n_epoch: 1
   gradient_clip_val: 1.0

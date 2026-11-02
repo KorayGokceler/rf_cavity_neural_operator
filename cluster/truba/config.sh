@@ -50,7 +50,7 @@ TOL_F=${TOL_F:-1e-6}                   # field: adaptive stop, frequency change 
 TOL_Q=${TOL_Q:-1e-3}                   # field: adaptive stop, change of Q0 / G / R/Q / peaks
 TOL_F_P2=${TOL_F_P2:-1e-3}             # field, p2 labels: refine the start mesh (~10k tets) until the p2 error estimate is below this (label_ok)
 MODEL_MAX_ELEMENTS=${MODEL_MAX_ELEMENTS:-20000}   # field, LABEL_ORDER 3 only: tet cap of the model mesh (p2 labels have no cap)
-MAX_NDOF=${MAX_NDOF:-900000}           # field, LABEL_ORDER 3: label-space DOF budget per sample (~12 GB at p3)
+MAX_NDOF=${MAX_NDOF:-900000}           # field: DOF budget per sample; bounds p2 refinement too (≤ ~82k tets at 900k; ~12 GB conservative, measured ≤ 4.1 GB at 366k DOF)
 ROUND_EDGES=${ROUND_EDGES:-1}          # field: fillet re-entrant (singular) edges (docs/30 §3); 0 = keep them sharp
 DATA_VERSION=${DATA_VERSION:-v2}       # generator output version (src/service/jobs.py TAG_VERSION): part of TAG
 HEAL=${HEAL:-1}                        # field: OCC healing of ridged_box / dtl before meshing (docs/29 §2.3)
@@ -81,7 +81,7 @@ EXP=${EXP:-base}                       # run name → $OUT_DIR/runs/$EXP
 MODEL=${MODEL:-base}                   # small 0.9M | base 2.8M | large 6.5M | xl 22M (see model_overrides)
 EPOCHS=${EPOCHS:-150}
 LR=${LR:-3.0e-4}
-BATCH=${BATCH:-2}                      # p2 on ~20k curved tets: ~200k DOF per geometry
+BATCH=${BATCH:-2}                      # p2 meshes have no tet cap (≤ ~82k tets at MAX_NDOF 900k): check BATCH on the largest sample before training
 NUM_WORKERS=${NUM_WORKERS:-$(( GPU_CPUS > 2 ? GPU_CPUS - 2 : 0 ))}   # loader workers (assemble the p2 operators, ~10 s per geometry): cores - 2
 TRAIN_EXTRA=${TRAIN_EXTRA:-}           # more key=value overrides for train.py --override
 

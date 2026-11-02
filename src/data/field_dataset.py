@@ -187,7 +187,7 @@ class FieldDataset(Dataset):
     (path / glob / directory / list) whose geometries all go to the train split, never to val / test (the HF
     files of a mixed run: the held-out geometries come from data_path).
     require_label_ok (default False): drop samples whose attr label_ok is 0 (p2 labels whose frequency error
-    estimate exceeds est_max, docs/37); files without the attr are kept.  The drop count per family is printed
+    estimate exceeds tol_f_p2, docs/37); files without the attr are kept.  The drop count per family is printed
     with the train split."""
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,

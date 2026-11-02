@@ -63,10 +63,10 @@ def linear_mesh(mesh):
 
 def curved_from_cad(cad_path, h, deform=None, max_elements=None):
     """Curved netgen mesh of a CAD solid [m] built like the training meshes (field_labels.model_sized_mesh,
-    docs/37: a curved mesh of 5k–20k tets near 10k (DEFAULTS model_min / target / max_elements; max_elements overrides the cap, and
-    model_min_elements is lowered to it when smaller, so the range is never empty);
+    docs/37: the p2 START mesh: ≥ model_min_elements (5000) tets, closest to model_target_elements (10000), no cap
+    (max_elements only lowers min / target; no refinement);
     h only seeds the maxh search) → dict(nodes, tets [linear mesh], mesh_src {vol, brep (bytes), curve, deform},
-    n_tets).  Raises when netgen fails or no mesh fits under max_elements.  'curved': the curved wall
+    n_tets).  Raises when netgen fails.  'curved': the curved wall
     lattice, volume and bbox of the mesh (hcurl_display.curved_display) — the display surface and the geometry
     checks use the curved solid, not its linear facets."""
     import tempfile

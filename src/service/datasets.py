@@ -57,6 +57,18 @@ def _attr(g, k, cast=float, default=None):
     return None if isinstance(out, float) and not np.isfinite(out) else out
 
 
+def _list(g, k, cast=float):
+    """An array attribute (one entry per p2 refinement round) as a list; None when absent."""
+    v = g.attrs.get(k, None)
+    if v is None:
+        return None
+    try:
+        out = [cast(x) for x in np.atleast_1d(v)]
+    except (TypeError, ValueError):
+        return None
+    return [x for x in out if not (isinstance(x, float) and not np.isfinite(x))]
+
+
 class FieldH5Dataset:
     kind = 'field'
 
@@ -95,7 +107,7 @@ class FieldH5Dataset:
                                           'label_ok': _attr(g, 'label_ok', lambda v: bool(int(v))),
                                           'est_max': _attr(g, 'est_max'),
                                           'tol_f_p2': _attr(g, 'tol_f_p2'), 'p2_rounds': _attr(g, 'p2_rounds', int),
-                                          'p2_stop': _attr(g, 'p2_stop', str), 'p2_tets': _attr(g, 'p2_tets', int),
+                                          'p2_stop': _attr(g, 'p2_stop', str), 'p2_tets': _list(g, 'p2_tets', int), 'p2_est': _list(g, 'p2_est'), 'p2_cs': _list(g, 'p2_cs'),
                                           'round_fallback': _attr(g, 'round_fallback', lambda v: bool(int(float(v)))),
                                           'curvaturesafety_used': _attr(g, 'curvaturesafety_used'),
                                           'maxh_factor_used': _attr(g, 'maxh_factor_used'),

@@ -182,7 +182,7 @@ export default function GeneratePage({ lang, onShowDatasets }: Props) {
             </select>
           </label>
           <div className="note">{t(lang, kind === 'p2' ? 'labelKindP2Note' : 'labelKindHfNote')}</div>
-          {kind === 'p2' && <div className="note" data-testid="gen-mesh-range">{t(lang, 'modelMeshRange')}: <strong>{t(lang, 'modelMeshRangeVal')}</strong> · {t(lang, 'tolFP2')}: <strong>{p.tol_f_p2}</strong></div>}
+          {kind === 'p2' && <div className="note" data-testid="gen-mesh-range">{t(lang, 'modelMeshRange')}: <strong>{t(lang, 'modelMeshRangeVal')}</strong> · <span title={t(lang, 'tolFP2Tip')}>{t(lang, 'tolFP2')}</span>: <strong>{p.tol_f_p2}</strong></div>}
           <Collapsible title={t(lang, 'advanced')} defaultOpen={false} className="advanced">
             <div className="grid2">
               <label>{t(lang, 'sampling')}<select value={p.sampling} onChange={(e) => set('sampling', e.target.value as 'sobol' | 'random')}><option value="sobol">sobol</option><option value="random">random</option></select></label>
