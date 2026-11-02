@@ -12,7 +12,7 @@
 1. **`/arf` üzerine conda / pip kurulumu yasak** (Python kılavuzu 2025-12, depolama 2026-04; yüz binlerce küçük dosya,
    500K inode kotası). Çözüm uygulandı (2026-10-30): yığın **Apptainer imajında** (`cluster/truba/rfcav.def`, tek `.sif`);
    `setup_env.sh` imajı bir `debug` düğümünde kurar, bütün işler `config.sh` `container_prefix` ile imajın içinde koşar.
-   **TRUBA'da henüz kurulup denenmedi** (§5, docs/31 madde 22).
+   TRUBA'da kuruldu ve denendi (2026-11-02, aşağıda madde 6–7).
 2. **Eşzamanlı çekirdek sınırı: standart kullanıcı 160, yüksek lisans 40, lisans 4** (SSS 16). Bizim varsayılanımız
    `CPUS=56` × `MAX_PARALLEL=10` = 560 çekirdek ister; aşan işler `AssocGrpCpuLimit` ile kuyrukta bekler. 160 sınırında
    en fazla **2 shard işi** (112 çekirdek) aynı anda çalışır. Gerçek sınırı `ACCOUNT`'un sahibi bilir.
@@ -38,7 +38,8 @@
    (`torch 2.6.0+cu124 | CUDA build 12.4 | ngsolve 6.2.2608 | gmsh 4.15.2`); kalan "not found" satırları
    (`libcudart.so.12`, `libnvrtc.so.12`: NGSolve'un isteğe bağlı CUDA eklentisi; `libopenblas.so.0`: paketlenmiş OpenBLAS'ın
    kısa adı) zararsız. Kontrol adımı, henüz oluşmamış `$DATA_ROOT`'u bağlayamadı; `container_prefix` bağlanan klasörleri
-   artık önceden oluşturuyor.
+   artık önceden oluşturuyor. Dördüncü çalıştırma: imaj atlandı, kontrol üretimi geçti; **`run.sh setup` TRUBA'da tamam**
+   (2026-11-02; `~/containers/rfcav.sif` 3,2 GB).
 
 ## 1. Kullanım politikası ve hesap
 
