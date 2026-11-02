@@ -41,6 +41,12 @@
    artık önceden oluşturuyor. Dördüncü çalıştırma: imaj atlandı, kontrol üretimi geçti; **`run.sh setup` TRUBA'da tamam**
    (2026-11-02; `~/containers/rfcav.sif` 3,2 GB).
 
+8. **Bekleyen işin süre sınırı sonradan değiştirilemiyor** (2026-11-02): `scontrol update JobId=… TimeLimit=03:00:00`
+   orfoz'da "Interaktif isler sadece debug kuyrugunda calistirilabilir" ile reddedildi. `TIME` gönderimde doğru verilmeli
+   (iptal + yeniden gönderim: `scancel -u $USER`, sonra `run.sh dataset … TIME=0-03:00:00`; yeni gönderilmiş işte öncelik
+   kaybı yok, `sprio` `AGE` 0). Planlayıcı her işin sınırın tamamını kullanacağını varsayar: kısa sınır backfill ile erken
+   başlamayı kolaylaştırır. Öncelik (`sprio`): PARTITION 60000 + JOBSIZE 2 + AGE; fairshare bileşeni görünmüyor.
+
 ## 1. Kullanım politikası ve hesap
 
 *(`0-truba/kullanim_kurallari`, `uyelik_rehberi`, `kullanici_basvurulari`, SSS 13, 38)*
