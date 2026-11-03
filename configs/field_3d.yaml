@@ -21,7 +21,7 @@
 
 dataset:
   data_path: "data/field/*.h5"  # file, glob, directory or list of field-label H5 files
-  cache_dir: null               # e.g. /scratch/.../ops_cache: pickled operators per geometry (~0.5 GB at p2)
+  cache_dir: null               # e.g. /scratch/.../ops_cache: operators per geometry, ~130 MB (train/val, projection-free) / ~280 MB (test) at 23k tets, p2 (docs/38 §9)
   n_modes: null                 # null = min stored modes over the files
   train_ratio: 0.8
   val_ratio: 0.1

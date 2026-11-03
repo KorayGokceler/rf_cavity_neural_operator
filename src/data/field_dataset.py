@@ -19,7 +19,6 @@ operators are assembled (field_operators) and the stored projected labels are ch
 """
 import glob
 import os
-import pickle
 import warnings
 
 import h5py
@@ -28,6 +27,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
+from src.data import ops_cache
 from src.data.sparse import block_diag, length_mask
 
 
@@ -201,8 +201,9 @@ class FieldDataset(Dataset):
 
     data_path: one H5 file, a glob ("data/field/*.h5"), a directory or a list.  The split is by
     geometry (seeded permutation of the sorted (file, group) index).  cache_dir: keep the rebuilt
-    operators on disk (pickle per geometry; ~0.5 GB per 16k-tet geometry at p2) instead of
-    reassembling them every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6).
+    operators on disk (one file per geometry, src/data/ops_cache.py, docs/38 §9: 128 MB (projection-free
+    variant) / 284 MB (full) at 23k tets, p2; the plain pickle was 672 / 725 MB) instead of reassembling them
+    every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6; 1–2 s to read back at 23k tets).
 
     Multi-fidelity (docs/34): every item carries Fidelity (LF 0 / HF 1, label_fidelity of the H5 attrs), so
     files of both kinds can be mixed in data_path.  hf_repeat > 1 lists the HF geometries of the TRAIN split
@@ -222,7 +223,7 @@ class FieldDataset(Dataset):
     them into the items / batches.  False is for the TRAIN and VAL splits of a projection-free run
     (training.projection: false, docs/38), whose losses never project: it skips G / Kp (~0.5 s per 13k-tet
     geometry, and their batch tensors); the TEST split keeps True (the test step projects).  Cache: the operators without G / Kp are
-    pickled as `{tag}__{key}.nopot.ops.pkl`, a name the full variant never reads; a full pickle of the same
+    cached as `{tag}__{key}.nopot.ops2.pkl`, a name the full variant never reads; a full cache file of the same
     geometry is reused (G / Kp dropped after loading), so a cache is never served to a split that needs
     what it lacks.  False also warns (train and val splits, once each) when some labels were transferred from another
     mesh (n_tets_label != n_tets) or have a lower order than the model space: their M-orthogonality to the
@@ -324,7 +325,7 @@ class FieldDataset(Dataset):
             return None
         path, key = self.index[g_id]
         tag = os.path.splitext(os.path.basename(path))[0]
-        return os.path.join(self.cache_dir, f"{tag}__{key}{'' if potential else '.nopot'}.ops.pkl")
+        return os.path.join(self.cache_dir, f"{tag}__{key}{'' if potential else '.nopot'}{ops_cache.SUFFIX}")
 
     def load(self, g_id):
         """(ops, record) of geometry g_id: field_operators of the rebuilt curved mesh + stored labels."""
@@ -333,17 +334,19 @@ class FieldDataset(Dataset):
         path, key = self.index[g_id]
         cp = self._cache_path(g_id, self.build_potential)
         if cp and os.path.exists(cp):
-            with open(cp, "rb") as fh:
-                ops, rec = pickle.load(fh)
-            if self.build_potential and ("G" not in ops or "Kp" not in ops):
-                raise ValueError(f"{cp}: operator cache without the kernel potentials G, Kp "
-                                 "(written by a projection-free run?): delete it")
-            return ops, rec
+            hit = self._read_cache(cp)
+            if hit is not None:
+                ops, rec = hit
+                if self.build_potential and ("G" not in ops or "Kp" not in ops):
+                    raise ValueError(f"{cp}: operator cache without the kernel potentials G, Kp "
+                                     "(written by a projection-free run?): delete it")
+                return ops, rec
         full = self._cache_path(g_id, True)
-        if not self.build_potential and full and os.path.exists(full):     # the full pickle serves this variant too
-            with open(full, "rb") as fh:
-                ops, rec = pickle.load(fh)
-            return {k: v for k, v in ops.items() if k not in ("G", "Kp")} | {"n_pot": None}, rec
+        if not self.build_potential and full and os.path.exists(full):     # the full cache serves this variant too
+            hit = self._read_cache(full)
+            if hit is not None:
+                ops, rec = hit
+                return {k: v for k, v in ops.items() if k not in ("G", "Kp")} | {"n_pot": None}, rec
         with h5py.File(path, "r") as f:
             mesh, rec = read_field_group(f[key])
         center, scale = model_normalisation(mesh)
@@ -362,14 +365,21 @@ class FieldDataset(Dataset):
             raise ValueError(f"{path}/{key}: labels do not match the rebuilt operators (max Rayleigh-quotient "
                              f"mismatch {err.max():.2e}): mesh, curving or deformation differ from the generator's")
         ops = {k: v for k, v in ops.items() if k not in ("bary", "X", "tets")}
-        out = (ops, rec)
-        if cp:
-            os.makedirs(self.cache_dir, exist_ok=True)
-            tmp = f"{cp}.{os.getpid()}.tmp"
-            with open(tmp, "wb") as fh:
-                pickle.dump(out, fh, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp, cp)
-        return out
+        if cp:          # written once, atomically; what the next epoch reads is what this epoch uses
+            payload = ops_cache.pack(ops, rec, narrow=not self.build_potential)
+            ops_cache.write(cp, payload)
+            return ops_cache.unpack(payload)
+        return ops, rec
+
+    @staticmethod
+    def _read_cache(cp):
+        """(ops, rec) of a cache file, None (with a warning) if it is unreadable or of another format: the
+        caller rebuilds and overwrites it."""
+        try:
+            return ops_cache.unpack(ops_cache.read(cp))
+        except ops_cache.OpsCacheError as e:
+            warnings.warn(f"FieldDataset: {e}; rebuilding the operators", stacklevel=3)
+            return None
 
     def __getitem__(self, idx):
         g_id = self.active_geoms[idx]

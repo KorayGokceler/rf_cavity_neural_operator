@@ -205,7 +205,7 @@ varsayılan yolun bit düzeyinde aynı kalması kod okunarak da görülür, ve p
 `ValueError` ("needs batch keys ['G', ...]") verir, sessizce yanlış sonuç vermez. Test adımı G/Kp'siz batch alırsa aynı hatayı verir.
 
 **Önbellek (`dataset.cache_dir`).** Anahtar eki seçildi, "her zaman tam sözlüğü yaz, G/Kp'yi yüklemeden sonra at" seçilmedi:
-`{tag}__{key}.nopot.ops.pkl` yalnız `build_potential=False` tarafından (train ve val) okunur ve yazılır; tam varyant `{tag}__{key}.ops.pkl` dosyasını, eskisi gibi, kullanır.
+`{tag}__{key}.nopot.ops2.pkl` yalnız `build_potential=False` tarafından (train ve val) okunur ve yazılır; tam varyant `{tag}__{key}.ops2.pkl` dosyasını kullanır (dosya biçimi ve boyutlar: §9).
 Tam bir pikl varsa projeksiyonsuz varyant onu okuyup G/Kp'yi atar (yeniden kurulum yok). Böylece (i) G/Kp'siz bir önbellek, G/Kp isteyen bir bölmeye (test)
 hiçbir koşulda sunulmaz (elle kopyalanmış olsa bile `ValueError`), (ii) train ve val bölmelerinin ilk epoch'u da G/Kp kurmaz ve yazmaz (~0,5 s/geometri, docs/31 §3.7), (iii) önbellek diski küçülür.
 Bedel: aynı geometri iki varyantla önbelleğe yazılırsa iki dosya (test bölmesi ya da farklı projeksiyon ayarlı koşular).
@@ -329,3 +329,77 @@ Tek örnek (kompozit, 23k tet), tek makine; başka boyut ve aile için ölçülm
 Bellek ≈ 0,2 GB / 1000 tet (doğrusal). Üç noktadan ikisi arasında doğrusal enterpolasyon; 81k tet'in 16 GB'a sığmadığı ölçüldü. OOM'daki 3,26 GiB parçalanmadır: `cluster/truba/train.sbatch` artık `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
 dışa aktarır (`container_prefix` `--cleanenv` kullanmaz, `apptainer exec` ana makine ortamını geçirir; doğrulandı: `cluster/truba/config.sh`). Etkisi ölçülmedi.
 v3 `TEST=1` train-grubu verisi (878 örnek): > 40k tet 170 örnek, > 50k tet 95, > 60k tet 44. Sahibin koşusu `dataset.max_tets=60000` kullanır (≈ 12 GB tepe, 0,2 GB/1000 tet ile; 60k'nın üstündeki 44 örnek, 878'in %5'i, hem train hem val/test'ten çıkar).
+
+## 9. Operatör önbelleği: biçim ve boyut (`src/data/ops_cache.py`)
+
+> 2026-11-03, aynı dal, **commit edilmemiş**. Sahibin isteği: aynı içerik, ~3× küçük disk; boyut üst sınırı yok. Davranış (kayıp, gradyan, tam varyantın içeriği) değişmedi; yalnız
+> diskteki biçim ve train/val değerlerinin duyarlığı (float32, aşağıda ölçüldü).
+
+**Biçim.** Geometri başına tek dosya, `pickle` içinde `format = 2` sürümlü sözlük (`ops_cache.pack` / `unpack` / `write` / `read`):
+
+| öğe | eski (`.ops.pkl`) | yeni (`.ops2.pkl`) |
+|---|---|---|
+| K, M | tam CSR, float64 + int32 | **üst üçgen** (köşegen dahil); yükte tam CSR yeniden kurulur (COO → CSR sayım sıralaması, değerler yalnız taşınır, toplanmaz; açık sıfırlar yerinde kalır) |
+| indis dizileri | int32 | int32 (aralık denetlenir, sığmazsa int64: `index_dtypes`), **farkları** saklanır (CSR satırları ardışık sütun koşularıdır) |
+| tüm diziler | ham | ilk 1 MiB'lik deneme zlib-1 ile ≥ %10 kazandırıyorsa zlib, yoksa ham (sıkıştırılamayan değerler açma maliyeti ödemez) |
+| K, M, C değerleri | float64 | **projeksiyonsuz (`.nopot`) varyantta float32**, tam varyantta float64 |
+| P, qx, qw | float64 | nopot'ta float32 (kayıpsız: `field_item` zaten float32'ye çevirir), tam'da float64 |
+| `u_model` (etiketler) | float64 | float32 (H5'te zaten float32: kayıpsız; öyle değilse float64 kalır) |
+| G, Kp, bnd, qfeat, center | ham | aynı değerler (G, Kp float64; Kp = GᵀMG bit düzeyinde simetrik değil, tam saklanır) |
+
+Yüklemede her dizi özgün dtype'ına (float64, int32 …) döner; aşağı akış kodu (`field_item`, `field_collate`, `block_diag`, `SymmetricMK`) değişmedi.
+
+**Simetri denetimi.** Yazarken `pack`, üst üçgenden yeniden kurulan K / M'yi özgün matrisle **bit bit** karşılaştırır (indptr, indices, değerlerin bit deseni; `-0,0 ≠ +0,0`). Eşit değilse (ya da matris kare değil / kanonik değil)
+o matris tam saklanır (`sym: false`). Ölçülen: K ve M iki örnekte de bit düzeyinde simetrik (NGSolve simetrik depolamadan, tek üçgenden kurulur), Kp değil. float32'ye yuvarlama simetriyi bozmaz: yuvarlanan üst üçgen yansıtılır, K, M yüklemede **tam simetrik** (`(K != K.T).nnz == 0`, testte), yani `SymmetricMK = True` varsayımı geçerli kalır.
+**K'nın %76'sı açık sıfırdır** (pillbox: 5,09M / 6,65M; gradyan DOF'larının rot'u); yapı korunur (aynı CSR), zlib bunları ~4× küçültür.
+
+**Neden nopot float32, tam float64.** Projeksiyonsuz train/val kaybı yalnız `VᵀMV, VᵀKV, VᵀMT, VᵀKT` çarpımlarını kullanır (§2.4); göreli 6·10⁻⁸ yuvarlama modelin zaten float32 çalışan baz çıktısının (V) hata düzeyindedir, ve etiketler (`Y_field`) zaten float32'ydir.
+Tam varyant test bölmesi içindir: Kp = GᵀMG, M ve G ile **float64'te tutarlı** kalmalı (çekirdek projeksiyonu ve Kp CG float64 değişmezi, AGENTS.md); float32'ye yuvarlanmış Kp, GᵀMG'den ~10⁻⁷ sapardı (etkisi **ölçülmedi**); sahibin kararı ve AGENTS.md değişmezi gereği riske girilmedi. Bu yüzden tam varyantta hiçbir değer daralmaz (bit bit aynı, test + ölçüm).
+float32'nin tek sınırı: |a| < 1,2·10⁻³⁸ olan girdiler duyarlık kaybeder (montaj gürültüsü ~10⁻⁴⁰; K, M için anlamsız), > 3,4·10³⁸ olan girdi `OverflowError` verir.
+
+**Sürüm ve eski dosyalar.** Yeni dosya adı `….ops2.pkl` / `….nopot.ops2.pkl`; eski `….ops.pkl` / `….nopot.ops.pkl` dosyaları **okunmaz** (yok sayılır, operatörler yeniden kurulur, eski dosyaya dokunulmaz: elle silinmeli, yoksa disk boşuna dolar).
+Dosyanın içindeki `format` sayısı da denetlenir: farklı sürüm ya da bozuk/yarım dosya `UserWarning` ile yeniden kurulur ve üzerine yazılır. Tam önbellek nopot'u hâlâ besler (G/Kp atılır; değerler float64 kalır, yeniden yuvarlanmaz: bir çalışmada bir geometri hep aynı dosyadan gelir).
+Önbelleğe ilk yazan çağrı (ilk epoch) **diskteki biçimin açılmış hâlini** döndürür: nopot'ta epoch 1 ile sonraki epoch'lar aynı (float32-yuvarlanmış) değerleri görür; `cache_dir` yoksa taze float64 kullanılır (fark ~10⁻⁷).
+
+**Atomik yazma.** `write`: aynı dizinde `{ad}.{pid}.{rastgele}.tmp`, `pickle.dump`, `os.replace`; hata olursa `.tmp` silinir ve hedef dosya değişmez. DDP sıraları / DataLoader işçileri aynı dosyayı aynı anda yazarsa her biri tam dosya yazar, sonuncusu kazanır (testte 4 iş parçacığı × 3 yazma). Öldürülen bir yazıcıdan kalan `.tmp` dosyaları elle silinir (eskisi gibi).
+
+### 9.1 Boyut ve süre (ölçüldü)
+
+Tek koşu, tek örnek; CPU 4 çekirdek, `torch.get_num_threads() = 4`, `ngsolve.GetNumThreads()` = 1 (yükleme NGSolve kullanmaz), eşzamanlı iş yok (yükleme süreleri sıcak sayfa önbelleğinde; ağ dosya sisteminde okuma süresi ölçülmedi).
+Yükleme = dosyayı oku + dizileri aç + K/M kur (`pickle.load` / `ops_cache.unpack(read())`), 6 tekrarın **medyanı** (aralık: nopot 23k tet 2,4–3,3 s, tam 3,7–10 s; en büyük değerler soğuk disk önbelleği / bellek baskısı). Eski sayılar aynı makinede `7797382` kodundan. Bu ortamda scipy indisleri zaten int32'ydi (eski dosya 12 B/girdi; "16 B/girdi" varsayımı bu makinede geçerli değil), kazanç int32'den değil üst üçgen + float32 + zlib'den.
+
+| örnek | varyant | eski | yeni | oran | yeni yazma ek süresi (pack+yaz+aç) | yükleme eski → yeni |
+|---|---|---|---|---|---|---|
+| pillbox, 10 434 tet, 108 291 DOF | tam | 326,4 MB | 127,2 MB | 2,57× | ~3,2 s | 0,19 s → 2,07 s |
+| | nopot | 304,1 MB | 58,1 MB | 5,24× | ~5,7 s | 0,20 s → 1,31 s |
+| comp_adaptive, 23 155 tet, 234 738 DOF | tam | 725,3 MB | 284,1 MB | 2,55× | ~15 s | 0,54 s → 4,15 s |
+| | nopot | 671,8 MB | 128,4 MB | 5,23× | ~7,4 s | 0,38 s → 2,52 s |
+
+(Yazma ek süresi = yeni "kur + paketle + yaz + aç" − eski "kur + yaz" farkı; her geometri için bir kez.) Yükleme **6–10× yavaşlar** (zlib açma ~1 s, simetrik K/M kurulumu ~0,3–0,5 s/matris, tek iş parçacığı), ama taze kurulumdan (12–15 s) hâlâ ~5× hızlı ve CPU adımından (≈24 s/örnek) küçük.
+V100'de 23,7k tet'lik adım ileri+geri ~0,75 s + item/collate ~0,9 s (§8 tablosu): 14 işçiyle yükleme (~2,5 s/işçi ⇒ ~5 örnek/s) adımı (~0,6 örnek/s) beslemeye yeter, ama **işçi sayısı azsa (≲ 4) yükleme darboğaz olur**; eğitim çalışmasıyla ölçülmedi. Disk okuma süresi (Lustre) yeni biçimde ~2,5–5× daha az bayt okur, ölçülmedi.
+Dosya içeriği, nopot, 23k tet: C değerleri 43 MB, M 34 MB (sıkıştırılamaz float32), K 13 MB, P 11 MB, qfeat 11,7 MB, `u_model` 7,8 MB, indisler toplam ~12 MB.
+Hedef "~3×" nopot'ta (train + val, ~750 örnek ≈ 0,75 TB → ~0,1 TB) aşıldı (5,2×), tam varyantta (yalnız test bölmesi) sağlanmadı (2,55×; C ve M float64 değerleri sıkıştırılamaz).
+
+### 9.2 Sayısal etki (ölçüldü)
+
+Aynı makinede, tek koşu, model ağırlıkları aynı (`torch.manual_seed(0)`, küçük model: `embed_dim 64, n_basis 12, num_field_modes 4, rff_dim 32, n_layers 2`), 1 örnek, `batch_size 1`; "taze" = `cache_dir` yok (float64 kurulum), "önbellekli" = `.nopot.ops2.pkl`'den okunan öğe.
+Betik depoda değil (`scratchpad/cache/effect.py`).
+
+| ölçü | pillbox 10 434 tet | comp_adaptive 23 155 tet |
+|---|---|---|
+| nopot: K, M, C'de `max‖ΔA‖/max‖A‖` (taze − önbellekli) | 3,9·10⁻⁸ / 3,9·10⁻⁸ / 4,3·10⁻⁸ | 2,7·10⁻⁸ / 3,4·10⁻⁸ / 3,1·10⁻⁸ |
+| nopot: `X, Input_funcs, Area, QX, QP, Y_field, Y_freq, BndDof` | `torch.equal` (hepsi aynı) | hepsi aynı |
+| nopot: `hcurl_grams_plain`, aynı V: `G_M`, `G_A`, `MT` göreli en büyük fark | 9,9·10⁻¹⁰, 7,1·10⁻⁸, 4,8·10⁻⁸ | 7,4·10⁻¹⁰, 1,2·10⁻⁷, 4,6·10⁻⁸ |
+| nopot: eğitim kaybı `_compute_loss_3d_plain` (float32 skaler) ve bütün log değerleri | tam eşit (fark 0) | tam eşit |
+| nopot: 44 parametrenin gradyanı: global `‖Δg‖/‖g‖`; `max|Δg|/max|g|`; tensör başına en kötü `‖Δg‖/‖g‖` | 9,5·10⁻⁸; 1,0·10⁻⁷; 5,4·10⁻⁶ | 1,1·10⁻⁷; 1,5·10⁻⁷; 5,2·10⁻⁶ |
+| tam: tüm öğe girdileri (CSR indptr/indices/değer baytları, dtype, tensörler) | bit bit aynı (yazan çağrı ve dosyadan okuma) | bit bit aynı |
+| tam: projekteli kayıp `_compute_loss_3d` + 44 gradyan | kayıp eşit, gradyanlar `torch.equal` | ölçülemedi (süreç bellek yetersizliğiyle öldü; öğeler bit bit aynı olduğundan aşağı akış girdisi aynı) |
+
+Yani beklenen ~10⁻⁷ (float32 yarım-ulp 6·10⁻⁸) çıktı; gradyanın tensör başına en kötü farkı 5·10⁻⁶ en küçük normlu tensörde (norm oranı), global fark 10⁻⁷. Bu fark tek örnek, tek ağırlık kümesi için;
+eğitim eğrisine etkisi (kayıp azalması, `val/span_loss`) **ölçülmedi**: float32 önbelleğin eğitim sonucunu değiştirmediği iddia edilmez, yalnız adım düzeyinde farkın 10⁻⁷ olduğu ölçüldü.
+
+### 9.3 Testler
+
+`tests/test_operator_cache.py` (6): tam varyant bit bit gidiş-dönüş (K, M `sym`, Kp ve C tam), nopot float32 (tam float32 yuvarlaması, simetri, P/qx/qw `field_item` girdisi aynı, düz pikle göre > 2,5× küçük), üst üçgenin
+bit-bit doğrulaması (açık sıfırlar, eksik köşegen, 1 ulp asimetri, `-0,0`/`+0,0`, eksik yansıma, dikdörtgen, sırasız sütun → tam saklanır), tamsayı aralığı koruması (`index_dtypes`, fark taşması, float32 taşması), eski/yanlış sürüm/yarım dosya reddi,
+atomik ve eşzamanlı yazma. `tests/test_field_labels.py::test_dataset_without_potentials_cache_and_label_warning` güncellendi: önbellekli öğe = taze öğe (tam bit bit, nopot float32), eski `.ops.pkl` okunmaz ve dokunulmaz, farklı sürüm/yarım dosya uyarıyla yeniden kurulur, tam önbellek nopot'u besler.

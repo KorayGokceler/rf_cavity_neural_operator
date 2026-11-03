@@ -172,7 +172,7 @@ per geometry is the expensive part:
 
 - Batch 2 per GPU.
 - 14 loader workers: operator assembly is about 4–6 s per geometry at 13k tets, 4 threads (was ~10 s; docs/31 §3.6).
-- `CACHE_DIR` keeps the pickled operators, about 0.5 GB per geometry. Use it only when the scratch
+- `CACHE_DIR` keeps the operators (src/data/ops_cache.py, docs/38 §9), about 0.13 GB per 23k-tet geometry for the train / val splits of a projection-free run and 0.28 GB for the test split (a plain pickle was 0.7 GB). Use it only when the scratch
   quota allows.
 
 Knobs, from cheapest to most accurate:

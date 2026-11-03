@@ -2,11 +2,13 @@
 TRUBA one-line orchestrator (run.sh --dry-run)."""
 import json
 import os
+import pickle
 import subprocess
 
 import h5py
 import numpy as np
 import pytest
+import scipy.sparse as sp
 import torch
 
 pytest.importorskip("ngsolve")
@@ -268,11 +270,44 @@ def test_dataset_without_potentials_cache_and_label_warning(field_h5, tmp_path):
     full1 = FieldDataset(str(field_h5), split="train", cache_dir=str(c1), **kw)
     g0 = red1.active_geoms[0]
     key = red1.index[g0][1]
-    nopot, fullname = f"calib__{key}.nopot.ops.pkl", f"calib__{key}.ops.pkl"
+    nopot, fullname = f"calib__{key}.nopot.ops2.pkl", f"calib__{key}.ops2.pkl"
     assert "G" not in red1[0]
     assert {p.name for p in c1.iterdir()} == {nopot}
     assert "G" in full1[0] and "Kp" in full1[0]                                         # not served the reduced pickle
     assert {p.name for p in c1.iterdir()} == {nopot, fullname}
+    # items from the cache equal fresh ones: bit for bit for the full variant, to float32 rounding for the reduced one
+    fresh_full = FieldDataset(str(field_h5), split="train", **kw)
+    fresh_red = FieldDataset(str(field_h5), split="train", build_potential=False, **kw)
+    for a, b in ((full1[0], fresh_full[0]),):                                            # cache file against no cache at all
+        assert set(a) == set(b)
+        for k in a:
+            if sp.issparse(a[k]):
+                assert a[k].shape == b[k].shape and np.array_equal(a[k].indptr, b[k].indptr)
+                assert np.array_equal(a[k].indices, b[k].indices) and np.array_equal(a[k].data, b[k].data), k
+            elif torch.is_tensor(a[k]):
+                assert a[k].dtype == b[k].dtype and torch.allclose(a[k], b[k], rtol=0, atol=0, equal_nan=True), k
+    ra, rb = red1[0], fresh_red[0]
+    assert set(ra) == set(rb) and "G" not in ra
+    for k in ("M", "K", "C", "Ct"):
+        assert ra[k].shape == rb[k].shape and np.array_equal(ra[k].indices, rb[k].indices)
+        assert np.abs(ra[k].data - rb[k].data).max() <= 6e-8 * np.abs(rb[k].data).max()
+    assert (ra["K"] != ra["K"].T).nnz == 0 and (ra["M"] != ra["M"].T).nnz == 0
+    for k in ("X", "Input_funcs", "Area", "QX", "QP", "Y_field", "Y_freq", "BndDof"):
+        assert torch.equal(ra[k], rb[k]), k                                              # float32 items: no loss at all
+    # a file of the old format (".ops.pkl") or of another version is never read; an unreadable one is rebuilt
+    c4 = tmp_path / "c4"
+    c4.mkdir()
+    (c4 / f"calib__{key}.ops.pkl").write_bytes(b"not a pickle")
+    (c4 / nopot).write_bytes(pickle.dumps({"format": 1, "stale": True}))
+    with pytest.warns(UserWarning, match="another format"):
+        FieldDataset(str(field_h5), split="train", build_potential=False, cache_dir=str(c4), **kw)[0]
+    assert pickle.loads((c4 / nopot).read_bytes())["format"] == 2                                 # ... and replaced
+    (c4 / nopot).write_bytes((c4 / nopot).read_bytes()[:500])
+    with pytest.warns(UserWarning, match="unreadable"):
+        FieldDataset(str(field_h5), split="train", build_potential=False, cache_dir=str(c4), **kw)[0]
+    assert not [p for p in c4.iterdir() if p.name.endswith(".tmp")]
+    assert "G" in FieldDataset(str(field_h5), split="train", cache_dir=str(c4), **kw)[0]
+    assert (c4 / f"calib__{key}.ops.pkl").read_bytes() == b"not a pickle" and (c4 / fullname).exists()   # old name: untouched
     # full pickle first: the reduced variant reuses it (no .nopot file), G / Kp dropped
     c2 = tmp_path / "c2"
     full2 = FieldDataset(str(field_h5), split="train", cache_dir=str(c2), **kw)
