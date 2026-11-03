@@ -233,6 +233,7 @@ def main():
         max_epochs=tc.max_epochs, check_val_every_n_epoch=getattr(tc, 'check_val_every_n_epoch', 1),
         accelerator="auto", devices=n_gpus if n_gpus > 0 else "auto", strategy=strategy,
         gradient_clip_val=tc.gradient_clip_val,
+        accumulate_grad_batches=int(getattr(tc, 'accumulate_grad_batches', 1) or 1),
         callbacks=[checkpoint_callback, LearningRateMonitor(logging_interval='step'),
                    early_stopping,
                    TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate), progress_file],

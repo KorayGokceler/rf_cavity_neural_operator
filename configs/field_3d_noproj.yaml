@@ -67,6 +67,7 @@ training:
   max_epochs: 200
   check_val_every_n_epoch: 1
   gradient_clip_val: 1.0
+  accumulate_grad_batches: 1    # >1: sum the gradients of this many batches per optimizer step (effective batch = batch_size x this x GPUs; batch 1 keeps loader / shm memory low)
   strategy: "auto"
 
   # true (default): the training loss is computed on the kernel-projected Ritz problem (all terms below).
