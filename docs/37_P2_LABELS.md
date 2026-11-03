@@ -154,6 +154,50 @@ Ayarlar (`DEFAULTS`): `p2_refine` `'adaptive'`, `p2_force_growth` 1,3, `p2_min_g
 
 **Etkilenen veri.** Yalnız p2 yolunda `est > tol_f_p2` olan örnekler (başlangıç mesh'i yeterliyse mesh aynı kalır). Daha önce `uniform` ile üretilmiş p2 veri kümeleri geçerli kalır (`p2_refine` yok → uniform); mesh'ler farklı olduğundan etiketler aynı geometri için bit düzeyinde aynı değil. Tahmin yolu (başlangıç mesh'i) değişmedi.
 
+### 3.3 TRUBA denemesi v3 ve gerçek hata (2026-11-03)
+
+**TRUBA `TEST=1`, TAG `F_p2p2_ms0.10_k10_mf0.05_v3_test`** (orfoz, iş başına 56 çekirdek, 14 işçi × 4 iş parçacığı, aile başına 112 geometri; iş sürerken okunan ara durum, süre = `t_mesh + t_solve` geometri başına):
+
+| aile | n | süre s ort / min / max | tet ort / min / max | çözüm ort / max | `label_ok` | `qoi_ok` | keskin | durma |
+|---|---|---|---|---|---|---|---|---|
+| composite | 49 | 346 / 65 / 1134 | 31380 / 7920 / 75718 | 3,2 / 4 | 41 | 48 | 49 | converged 41, max_rounds 7, mesh_failed 1 |
+| dtl | 32 | 187 / 45 / 376 | 33577 / 15128 / 52496 | 1,3 / 2 | 32 | 26 | 2 | converged 32 |
+| elliptical | 112 | 145 / 17 / 714 | 22679 / 7281 / 76450 | 1,1 / 2 | 112 | 95 | 43 | converged 112 |
+| hwr | 66 | 134 / 12 / 652 | 20526 / 7915 / 74653 | 2,0 / 4 | 66 | 63 | 28 | converged 66 |
+| pillbox_pipes | 112 | 48 / 16 / 142 | 16592 / 7564 / 39761 | 1,1 / 2 | 112 | 100 | 0 | converged 112 |
+| reentrant | 112 | 105 / 33 / 341 | 28126 / 12507 / 63611 | 1,0 / 1 | 112 | 73 | 0 | converged 112 |
+| ridged_box | 112 | 145 / 41 / 435 | 44335 / 15604 / 78848 | 1,0 / 2 | 112 | 107 | 4 | converged 112 |
+| spoke | 34 | 155 / 23 / 570 | 17603 / 8431 / 32118 | 2,2 / 3 | 34 | 33 | 16 | converged 34 |
+
+- Ağırlıklı ortalama ~138 s / geometri (4 iş parçacığı) ≈ **550 çekirdek-saniye**; 10k geometri ≈ 1,5 bin çekirdek-saat (v2 denemesinde zor aileler 3 saatlik işi bitiremiyordu). Kalan aileler (box, coax_qw, pillbox_port, elliptical_long, junction) bu tabloda yok.
+- composite'ın `max_rounds` örneklerinin 4. çözümdeki `est`'i 1,0–1,3e-3 (tur başına tet 8–12k → 11–20k → 27–51k → 43–76k); ilk tur yalnız 1,3–1,7× büyüyor. `mesh_failed`: 2621455 (v2'de de sorunlu geometri).
+- `qoi_ok` düşüklüğü (reentrant 73/112, dtl 26/32) tek çözümlü örneklerde: başlangıç mesh'inin det-J oranı, inceltmeden değil (iş 29).
+
+**Uyarlamalı / tekdüze, aynı örnek** (yerel makine, 4 iş parçacığı, TRUBA ayarları):
+
+| örnek | yol | tet / tur | son `est` | durma | süre |
+|---|---|---|---|---|---|
+| spoke 4194304 | ikisi | 8431 (tek çözüm) | 8,7e-4 | converged | 189 s |
+| spoke 4194305 | adaptive | 8.3k → 14857 → 38757 → 58161 | 7,2e-4 | converged | 756 s |
+| spoke 4194305 | uniform | → 21605 → 50069 → … | 3. çözümde 1,35e-3 | (yarıda kesildi) | — |
+| hwr 3670021 | adaptive | → 16551 → 21596 | 8,9e-4 | converged | 304 s |
+| hwr 3670021 | uniform | → 25164 → 46514 | 8,4e-4 | converged | 418 s |
+
+**Gerçek hata** (`scripts/reference_check.py`, aynı mesh, 10 mod):
+
+| örnek | referans | `est` | gerçek en büyük | `est` / gerçek (en büyük) |
+|---|---|---|---|---|
+| pillbox 0 (10434 tet) | p4, 557745 DOF | 4,6e-5 | 4,8e-5 | ≈ 1 |
+| spoke 4194304 (8431 tet) | p4 | 8,7e-4 | 5,1e-4 | 1,7 |
+| hwr 3670021 (21596 tet) | p3, 581220 DOF | 8,9e-4 | 2,1e-4 | 4,2 |
+
+Ölçülen üç örnekte tahmin gerçek hatayı küçük göstermiyor. 15 GB makinede sığmayanlar: ridged_box 2097152 (p3 1,28M DOF), spoke 4194305 (p3 1,48M), composite 2621452 (p3 ~590k DOF, 14 GB'ta bellek dışı).
+
+**Kararlar (sahip, 2026-11-03).**
+- `label_ok` = 0 örnekler eğitime alınmaz: `configs/field_3d.yaml` `dataset.require_label_ok: true` (varsayılan). `p2_max_refine` 3 kalır; composite gerçek-hata testi yapılmadı (gerek görülmedi).
+- Keskin kenarlı örnekler eğitimde kalır (frekans, alan, Q0, G, R/Q geçerli; tepe değerler NaN, eğitim kaybı QoI kullanmıyor). Sonuçlar keskin / yuvarlatılmış ayrı raporlanacak (`sharp_edges`).
+- `MIN_FILLET` 0,05 kalır: 0,05 / 0,08 / 0,10 / 0,15 ile ilk 12 id (composite, hwr, spoke, ridged_box, yalnız mesh) yuvarlatılmış-başarı oranı aynı ya da kötü (composite 0/12 hepsinde; hwr 1/4 → 0/4; ridged_box 6/7 → 4/6), 0,08 ve üstünde netgen çökmeleri (5), taban ailelerin kendi köşe fillet'lerini de büyütüyor. Keskin etiketin iki nedeni: yuvarlatılmış katının mesh'i katlanıyor / netgen başarısız; OCC fillet'in kendisi başarısız (`n_round = 0`).
+
 ## 4. p2 doğruluğu mesh boyutuna göre
 
 p4 referansı aynı mesh'te; yöntem doğrulandı: p4, analitik kutu spektrumuna 3e-8; p3–p4 pillbox'ta ~6e-7. 10 mod üzerinden en büyük / medyan bağıl frekans hatası; parantezde hata tahmini.
@@ -233,5 +277,6 @@ Sonra: kontrollü deney (`/experiment`, iş 26) ya da tahmin zamanında modelin 
 | Kontrollü A/B mesh deneyi (kural mesh'i ile uyarlamalı p2). | açık (iş 26) |
 | Reddedilen ilk çizimler için ayrıca: `round_fallback` payı ve yeniden çekme sayısı aile başına TRUBA `TEST=1` ile ölçülecek (§3). | açık (iş 24) |
 | p2 etiketlerin QoI kalitesi düşük kaliteli mesh'lerde (6/16 çizimde `qoi_ok` = 0): yalnız det-J ile ölçüldü, QoI hatasıyla değil. | açık (iş 29) |
-| `require_label_ok` açık eğitim ile kapalının karşılaştırması yapılmadı. | açık |
+| `require_label_ok` artık varsayılan açık (§3.3); kapalıyla karşılaştırma yapılmadı. | açık |
+| Keskin etiketi azaltmak: OCC fillet başarısız olunca daha küçük yarıçap / kenar kenar fillet; yuvarlatılmış katı mesh katlanmasına netgen tarafında çözüm (§3.3). Geometriyi değiştirir. | açık (sahibin kararı) |
 | Ölçekli eğitim p2 etiketiyle yapılmadı. | açık (iş 1) |

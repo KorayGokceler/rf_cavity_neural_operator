@@ -28,7 +28,7 @@ dataset:
   random_seed: 42
   feature_indices: null         # null = all 9 point features (highorder.point_features)
   train_extra: null             # multi-fidelity: more H5 files (HF) whose geometries all go to the train split
-  require_label_ok: false       # p2 labels (docs/37): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
+  require_label_ok: true        # p2 labels (docs/37 §3.3, owner 2026-11-03): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
   hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
 
 model:
