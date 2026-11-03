@@ -403,3 +403,8 @@ eğitim eğrisine etkisi (kayıp azalması, `val/span_loss`) **ölçülmedi**: f
 `tests/test_operator_cache.py` (6): tam varyant bit bit gidiş-dönüş (K, M `sym`, Kp ve C tam), nopot float32 (tam float32 yuvarlaması, simetri, P/qx/qw `field_item` girdisi aynı, düz pikle göre > 2,5× küçük), üst üçgenin
 bit-bit doğrulaması (açık sıfırlar, eksik köşegen, 1 ulp asimetri, `-0,0`/`+0,0`, eksik yansıma, dikdörtgen, sırasız sütun → tam saklanır), tamsayı aralığı koruması (`index_dtypes`, fark taşması, float32 taşması), eski/yanlış sürüm/yarım dosya reddi,
 atomik ve eşzamanlı yazma. `tests/test_field_labels.py::test_dataset_without_potentials_cache_and_label_warning` güncellendi: önbellekli öğe = taze öğe (tam bit bit, nopot float32), eski `.ops.pkl` okunmaz ve dokunulmaz, farklı sürüm/yarım dosya uyarıyla yeniden kurulur, tam önbellek nopot'u besler.
+
+
+## 10. Colab'da eğitim (`notebooks/colab_train_noproj.ipynb`)
+
+Tek GPU'lu Colab ortamı (G4 = RTX PRO 6000 96 GB, A100, H100) için not defteri: makine kontrolü, Drive'daki TRUBA `TEST=1` verisinin yerel diske kopyalanması, ortam (`requirements.txt`, Colab'ın kendi CUDA torch'u korunur), iki örnekte GPU adım ölçümü (V100 referansıyla kıyas), izdüşümsüz eğitim (`configs/field_3d_noproj.yaml`, batch 4 = akya 4 GPU × batch 1, `max_tets` yok, önbellek yerel diskte, checkpoint / `progress.json` / log Drive'da; hücre yeniden çalıştırılınca `last.ckpt`'ten devam) ve izleme. Komut yerelde `--fast_dev_run` ile denendi (2026-11-03): eğitim, doğrulama (önbellek `.nopot.ops2`) ve izdüşümlü test (`.ops2`) çalıştı. G4'teki adım süresi ölçülmedi (FP64 1/64; seyrek çarpımlar bant genişliğine bağlı olduğu için etkinin küçük olması bekleniyor), 5. hücre ölçer.
