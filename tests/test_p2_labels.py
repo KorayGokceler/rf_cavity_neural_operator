@@ -527,6 +527,26 @@ def test_dataset_require_label_ok_drops_flagged_samples(p2_pillbox, tmp_path, ca
         FieldDataset(bad, require_label_ok=True, **kw)
 
 
+def test_dataset_max_tets_drops_large_meshes(p2_pillbox, tmp_path, capsys):
+    """dataset.max_tets: a GPU memory guard; samples whose model mesh has more tets are dropped."""
+    import h5py
+    from src.data.field_dataset import FieldDataset
+    f1 = _write_h5(tmp_path / "a.h5", p2_pillbox, ("sample_0001", "sample_0002"), label_ok=1)
+    with h5py.File(f1, "r") as f:
+        ne = int(f["sample_0001"].attrs["n_tets"])
+    kw = dict(train_ratio=1.0, val_ratio=0.0, with_ct=False)
+    assert len(FieldDataset(f1, max_tets=None, **kw)) == 2
+    assert len(FieldDataset(f1, max_tets=ne, **kw)) == 2                           # limit is inclusive
+    with pytest.raises(ValueError, match="max_tets"):
+        FieldDataset(f1, max_tets=ne - 1, **kw)
+    capsys.readouterr()
+    with h5py.File(f1, "r+") as f:
+        f["sample_0002"].attrs["n_tets"] = ne + 1000
+    ds = FieldDataset(f1, max_tets=ne, **kw)
+    out = capsys.readouterr().out
+    assert len(ds) == 1 and "max_tets=" in out and "dropped 1 samples" in out
+
+
 def test_reference_skips_labels_from_another_mesh_and_counts_families_over_files(p2_pillbox, tmp_path):
     from src.data_gen import reference as ref
     a = _write_h5(tmp_path / "a.h5", p2_pillbox, n_tets_label=99999)             # label mesh != model mesh

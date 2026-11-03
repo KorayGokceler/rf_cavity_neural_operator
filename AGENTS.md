@@ -55,7 +55,10 @@ bash cluster/truba/run.sh all LABELS=field ... --dry-run      # always dry-run T
   fields the gradient projection cannot remove; branch `legacy-h`).
 - The kernel projection is required: gradients have zero curl and would give spurious θ ≈ 0 modes.
   Ritz values must stay upper bounds of the discrete eigenvalues (θ_k ≥ λ_h,k). A cheap diagonal
-  penalty instead of the projection was measured and rejected (docs/31 §4).
+  penalty instead of the projection was measured and rejected (docs/31 §4). It stays mandatory for
+  Rayleigh–Ritz, test and prediction; training and validation may skip it with `training.projection: false`
+  (one span + ortho loss on the unprojected Grams for both, selfsup / freq weights 0, model selection by
+  `val/loss`, test still projected; default true; docs/38).
 - Kp CG runs in float64 (float32 does not converge, docs/21 B3).
 - `import torch` before `ngsolve` in any process that uses both (segfault otherwise; `tests/conftest.py`).
 - Curved meshes repaired by bisection must go through `highorder.single_level` before storage, or the

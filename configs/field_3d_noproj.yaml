@@ -1,0 +1,110 @@
+# ═══════════════════════════════════════════════════════════════
+#  RF Cavity 3D — EigenspaceOperatorField, PROJECTION-FREE TRAINING (docs/38)
+#  configs/field_3d.yaml with training.projection: false, selfsup_weight: 0, freq_weight: 0 (and nothing else
+#  changed; tests/test_projection_free.py keeps the two files in step).  Training AND validation build V and stop:
+#  no Kp CG, no Rayleigh-Ritz, no G / Kp in their batches; the loss is span (unprojected mass Gram + energy Gram)
+#  + ortho, the same function for both, and ModelCheckpoint / EarlyStopping monitor val/loss.  The test step
+#  (best checkpoint) and prediction project (Ritz frequencies and fields: test/field_rel_l2 ...).
+#
+#  RF Cavity 3D — EigenspaceOperatorField (E field, learned field in HCurl(p) on curved meshes)
+#  docs/28_FIELD_MODEL.md (model), docs/29_FIELD_LABELS.md (labels, cost)
+# ═══════════════════════════════════════════════════════════════
+#
+#  Data: dataset_generator_3d.py --labels field (one H5 per shard): per geometry a curved netgen
+#  mesh (.vol + BREP), NGSolve HCurl p3 labels (frequencies, QoI) and the label fields projected
+#  onto the model space HCurl(model_order) of the same mesh.  The dataset rebuilds the mesh and the
+#  model-order operators per geometry (~4–6 s at p2 for 13k tets, docs/31 §3.6; ~2–3 s when the file stores the
+#  token features, qfeat_wall, docs/29 §3.4 / scripts/add_field_features.py: num_workers ≥ 8 or cache_dir).
+#
+#  Model: mass-aware linear-attention trunk on the quadrature points, ψ(x_q) → L2(p) → HCurl(p)
+#  DOFs, Rayleigh–Ritz with the kernel projection (span / self-supervised / frequency losses).
+#  train.py's default config is configs/field_3d.yaml.
+#
+#  Usage:
+#    python src/data_gen/dataset_generator_3d.py --labels field --n_total 100 --h5_filename data/field/s0.h5
+#    python train.py --config configs/field_3d_noproj.yaml --override "dataset.data_path=data/field/*.h5"
+#  TRUBA (one line): bash cluster/truba/run.sh train CONFIG=configs/field_3d_noproj.yaml DATA='data/field/*.h5'
+# ═══════════════════════════════════════════════════════════════
+
+dataset:
+  data_path: "data/field/*.h5"  # file, glob, directory or list of field-label H5 files
+  cache_dir: null               # e.g. /scratch/.../ops_cache: pickled operators per geometry (~0.5 GB at p2)
+  n_modes: null                 # null = min stored modes over the files
+  train_ratio: 0.8
+  val_ratio: 0.1
+  random_seed: 42
+  feature_indices: null         # null = all 9 point features (highorder.point_features)
+  train_extra: null             # multi-fidelity: more H5 files (HF) whose geometries all go to the train split
+  require_label_ok: true        # p2 labels (docs/37 §3.3, owner 2026-11-03): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
+  max_tets: null                # drop samples with more model tets (GPU memory guard; V100 16 GB: measure first, docs/38 §6)
+  hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
+
+model:
+  type: field3d
+  val_dim: null
+  embed_dim: 128
+  n_heads: 4
+  n_basis: 24
+  num_field_modes: 6
+  rff_dim: 64
+  rff_length_scale: 0.1
+  dropout: 0.0
+
+  eigenspace:
+    n_layers: 4
+    edge_rff: true              # RFF(x_q) enters the field head
+    kp_tol: 1.0e-8
+    kp_maxiter: 3000            # p2 potential spaces are ~3× larger than the N0 vertex spaces
+    grad_checkpoint: true       # recompute encoder + attention/FFN halves in the backward: 9.9 → 3.8 GB, same gradients (docs/31 §3.6)
+    drop_tol: 1.0e-6
+    mass_ridge: 1.0e-8
+    eig_broadening: 1.0e-4
+
+training:
+  learning_rate: 2.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 2                 # p2 meshes are no longer capped at 20k tets: start ~10k, refined until the estimate is <= tol_f_p2, up to max_ndof/11 ~ 82k tets (~900k DOF); measure memory before training
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  strategy: "auto"
+
+  # true (default): the training loss is computed on the kernel-projected Ritz problem (all terms below).
+  # false: projection-free TRAINING step (docs/38): no Kp CG, no Rayleigh-Ritz, no G / Kp in the train batches;
+  # the loss is span_weight * span + ortho_weight * ortho on the unprojected mass Gram.  Needs selfsup_weight: 0
+  # and freq_weight: 0 (ValueError otherwise: configs/field_3d_noproj.yaml).  Validation / test / prediction
+  # always project.
+  projection: false
+
+  span_weight: 1.0
+  span_norm: both
+  span_root: true
+  span_ridge: 1.0e-9
+  selfsup_weight: 0.0           # must be 0 without the projection (compliance would reward gradients, docs/18 §3.4)
+  selfsup_form: compliance
+  ortho_weight: 0.01
+  freq_weight: 0.0              # must be 0 without the projection (no Ritz values in the training step)
+
+  # Multi-fidelity (docs/34): files of different label fidelity can be mixed in dataset.data_path. Each item carries
+  # Fidelity (0 = LF: label_order == model_order, one solve; 1 = HF: adaptive / p3 labels, from the H5 attrs).
+  # Per-sample weights (LF, HF) of the span and frequency terms; batch loss = mean_b(w_b * loss_b).
+  fidelity_weights: [1.0, 1.0]
+  # Extra (LF, HF) factors on the frequency term only: LF frequencies are the model space's own discrete eigenvalues
+  # (reachable by the Ritz values), HF frequencies lie below its floor (docs/30: 0.04-0.9 %).
+  fidelity_freq_scale: [1.0, 1.0]
+
+  near_deg_threshold: 0.05
+  near_deg_rel_threshold: 0.02
+
+  scheduler: "custom_cosine"
+  cosine_eta_min: 1.0e-6
+  patience: 40
+
+  num_workers: 8                # operator assembly runs in the loader workers
+  pin_memory: false
+
+  log_dir: "training_logs"
+  exp_name: "field3d_noproj_v1"
+  log_every_n_steps: 10
+  progress_bar_refresh_rate: 1
+  fast_dev_run: false

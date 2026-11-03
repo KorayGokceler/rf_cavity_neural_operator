@@ -3,10 +3,16 @@ field_operators, field_item + collate), inference without gradients and one trai
 backward), the Kp CG share of each, the dense FLOPs of the network and the peak memory.  CPU or CUDA.
 
     python scripts/profile_field_step.py <field-label H5> [--sample 1] [--device cuda] [--threads 4]
-        [--reps 2] [--config configs/field_3d.yaml] [--grad_checkpoint] [--cprofile] [--json out.json]
+        [--reps 2] [--config configs/field_3d.yaml] [--grad_checkpoint] [--no_projection] [--cprofile]
+        [--json out.json]
 
 The model has the sizes of --config; the weights are random (the cost does not depend on them).  Every
 timing is wall clock without a profiler; --cprofile adds a separate profiled run of field_operators.
+
+--no_projection: the training step of training.projection: false (docs/38): operators and batch WITHOUT G / Kp,
+trunk + unprojected Grams + span / ortho loss, no Kp CG, no Rayleigh–Ritz (selfsup_weight = freq_weight = 0).  The
+training steps run first, on the reduced batch (the peak memory is theirs); the inference pass (with the
+projection, as a test / prediction step; the validation step of a projection-free run needs no G / Kp either) follows on the full operators.
 """
 import argparse
 import json
@@ -72,14 +78,14 @@ class CGMeter:
         hcurl._pcg = self.orig
 
 
-def linear_flops(model, batch):
-    """Dense multiply-add FLOPs (2·in·out per row) of every nn.Linear in one forward."""
+def linear_flops(model, batch, forward=None):
+    """Dense multiply-add FLOPs (2·in·out per row) of every nn.Linear in one forward (default model(batch))."""
     total = [0]
     hooks = [m.register_forward_hook(lambda m, i, o: total.__setitem__(
         0, total[0] + 2 * i[0].numel() * m.out_features))
         for m in model.modules() if isinstance(m, torch.nn.Linear)]
     with torch.no_grad():
-        model(batch)
+        (forward or model)(batch)
     for h in hooks:
         h.remove()
     return total[0]
@@ -89,7 +95,7 @@ def to_device(batch, device):
     return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
 
 
-def build_model(cfg_path, val_dim, n_modes, **eigenspace):
+def build_model(cfg_path, val_dim, n_modes, projection=True, **eigenspace):
     with open(cfg_path) as fh:
         cfg = yaml.safe_load(fh)
     mc, tc = cfg["model"], cfg["training"]
@@ -98,9 +104,10 @@ def build_model(cfg_path, val_dim, n_modes, **eigenspace):
         val_dim=val_dim, num_field_modes=min(int(mc["num_field_modes"]), n_modes), hidden_dim=mc["embed_dim"],
         n_heads=mc["n_heads"], n_basis=mc["n_basis"], rff_dim=mc["rff_dim"],
         rff_length_scale=mc["rff_length_scale"], dropout=mc["dropout"], eigenspace_kwargs=mc["eigenspace"],
-        freq_weight=tc["freq_weight"], span_weight=tc["span_weight"], selfsup_weight=tc["selfsup_weight"],
+        freq_weight=tc["freq_weight"] if projection else 0.0, span_weight=tc["span_weight"],
+        selfsup_weight=tc["selfsup_weight"] if projection else 0.0,
         ortho_weight=tc["ortho_weight"], span_norm=tc["span_norm"], span_root=tc["span_root"],
-        span_ridge=tc["span_ridge"], selfsup_form=tc["selfsup_form"], model_type="field3d")
+        span_ridge=tc["span_ridge"], selfsup_form=tc["selfsup_form"], model_type="field3d", projection=projection)
     lm.freq_stats = {"mean": 3.0, "std": 1.0}
     lm.log = lambda *a, **k: None
     return lm
@@ -116,6 +123,9 @@ def main():
     ap.add_argument("--config", default="configs/field_3d.yaml")
     ap.add_argument("--cprofile", action="store_true")
     ap.add_argument("--grad_checkpoint", action="store_true", help="model.eigenspace.grad_checkpoint = true")
+    ap.add_argument("--no_projection", action="store_true",
+                    help="measure the projection-free training step (training.projection: false); the inference "
+                         "pass still projects")
     ap.add_argument("--no_stored_features", action="store_true",
                     help="compute the token wall-distance / torsion features instead of reading qfeat_wall")
     ap.add_argument("--json", default=None)
@@ -126,7 +136,8 @@ def main():
     ngsolve.SetNumThreads(a.threads)
     dev = torch.device(a.device)
     clock = Clock(dev)
-    res = {"device": str(dev), "threads": a.threads, "grad_checkpoint": a.grad_checkpoint}
+    res = {"device": str(dev), "threads": a.threads, "grad_checkpoint": a.grad_checkpoint,
+           "projection": not a.no_projection}
 
     with h5py.File(a.h5, "r") as f:
         keys = sorted(k for k in f.keys() if k.startswith("sample_"))
@@ -140,11 +151,29 @@ def main():
     tets = np.array([[v.nr - 1 for v in e.vertices] for e in mesh.ngmesh.Elements3D()])
     _, center, scale = normalise(Xv, tets)
 
-    t = clock()
     wall = None if a.no_stored_features else rec.get("wall_feat")
     res["stored_features"] = wall is not None
-    ops = ho.field_operators(mesh, order=rec["model_order"], scale=scale, center=center, wall_feat=wall)
-    res["t_operators"] = clock() - t
+    K = int(rec["u_model"].shape[1])
+
+    def prepare(potential):
+        """(ops, batch on the device, timings) with or without the kernel potentials G, Kp."""
+        t = clock()
+        ops = ho.field_operators(mesh, order=rec["model_order"], scale=scale, center=center, wall_feat=wall,
+                                 potential=potential)
+        t_ops = clock() - t
+        t = clock()
+        item = field_item(ops, rec["u_model"], rec["freqs"][:K], None, rec.get("shape_type", ""), check=False,
+                          with_ct=True)
+        t_item = clock()
+        batch = field_collate([item])
+        t_col = clock() - t_item
+        t_item -= t
+        t = clock()
+        batch = to_device(batch, dev)
+        return ops, batch, {"t_operators": t_ops, "t_item": t_item, "t_collate": t_col, "t_to_device": clock() - t}
+
+    ops, batch, tm = prepare(not a.no_projection)
+    res.update(tm)
     res["rss_after_operators_gb"] = peak_rss_gb()
     if a.cprofile:
         import cProfile
@@ -162,26 +191,15 @@ def main():
             if len(parts) == 6 and parts[1].replace(".", "").isdigit() and float(parts[1]) >= 0.05:
                 print(f"   {float(parts[1]):6.2f} s  {parts[5][:100]}")
 
-    K = int(rec["u_model"].shape[1])
-    t = clock()
-    item = field_item(ops, rec["u_model"], rec["freqs"][:K], None, rec.get("shape_type", ""), check=False,
-                      with_ct=True)
-    t_item = clock()
-    batch = field_collate([item])
-    res["t_item"], res["t_collate"] = t_item - t, clock() - t_item
-    t = clock()
-    batch = to_device(batch, dev)
-    res["t_to_device"] = clock() - t
-
-    lm = build_model(a.config, batch["Input_funcs"].shape[-1], K,
+    lm = build_model(a.config, batch["Input_funcs"].shape[-1], K, projection=not a.no_projection,
                      **({"grad_checkpoint": True} if a.grad_checkpoint else {}))
     lm.to(dev)
     model = lm.model
     res.update(n_tets=int(mesh.ne), n_tokens=int(batch["X"].shape[1]), n_dof=int(ops["n_dof"]),
-               n_pot=int(ops["n_pot"]), n_modes=lm.num_field_modes,
+               n_pot=None if ops["n_pot"] is None else int(ops["n_pot"]), n_modes=lm.num_field_modes,
                n_params=int(sum(p.numel() for p in model.parameters())),
-               nnz={k: int(ops[k].nnz) for k in ("K", "M", "G", "Kp", "C")})
-    res["gflop_forward"] = linear_flops(model, batch) / 1e9
+               nnz={k: int(ops[k].nnz) for k in ("K", "M", "G", "Kp", "C") if k in ops})
+    res["gflop_forward"] = linear_flops(model, batch, model.forward_basis if a.no_projection else None) / 1e9
 
     def mem_reset():
         if dev.type == "cuda":
@@ -190,44 +208,68 @@ def main():
     def mem_peak():
         return torch.cuda.max_memory_allocated() / 2 ** 30 if dev.type == "cuda" else peak_rss_gb()
 
-    with CGMeter(clock) as cg:
+    def infer_pass(cg, batch):
         model.eval()
-        res["infer"] = []
+        out = []
         for _ in range(a.reps):
             cg.reset()
             mem_reset()
             t = clock()
             with torch.no_grad():
                 model(batch)
-            res["infer"].append({"t": clock() - t, "t_cg": cg.t, "cg_iters": cg.iters, "mem_gb": mem_peak()})
+            out.append({"t": clock() - t, "t_cg": cg.t, "cg_iters": cg.iters, "mem_gb": mem_peak()})
+        return out
+
+    def train_pass(cg, batch):
         model.train()
-        res["train"] = []
+        out = []
         for _ in range(a.reps):
             lm.zero_grad(set_to_none=True)
             cg.reset()
             mem_reset()
             t = clock()
-            loss, _, _ = lm._compute_loss_3d(batch, "train")
+            if a.no_projection:
+                loss = lm._compute_loss_3d_plain(batch, "train")
+            else:
+                loss, _, _ = lm._compute_loss_3d(batch, "train")
             t1 = clock()
             t_cg_fwd = cg.t
             loss.backward()
-            res["train"].append({"t_forward": t1 - t, "t_backward": clock() - t1, "t_cg_forward": t_cg_fwd,
-                                 "t_cg_backward": cg.t - t_cg_fwd, "cg_iters": cg.iters, "mem_gb": mem_peak()})
+            out.append({"t_forward": t1 - t, "t_backward": clock() - t1, "t_cg_forward": t_cg_fwd,
+                        "t_cg_backward": cg.t - t_cg_fwd, "cg_iters": cg.iters, "calls_cg": cg.calls,
+                        "mem_gb": mem_peak()})
+        return out
+
+    with CGMeter(clock) as cg:
+        if a.no_projection:         # reduced batch first (its peak memory), then the projected inference pass
+            res["train"] = train_pass(cg, batch)
+            del batch, ops
+            ops, batch, tm = prepare(True)
+            res.update({f"{k}_full": v for k, v in tm.items()})
+            res["infer"] = infer_pass(cg, batch)
+        else:
+            res["infer"] = infer_pass(cg, batch)
+            res["train"] = train_pass(cg, batch)
 
     mem = "GPU allocated" if dev.type == "cuda" else "process RSS"
-    print(f"{key}: {res['n_tets']} tets, {res['n_tokens']} tokens, {res['n_dof']} DOF, {res['n_pot']} potentials, "
-          f"{res['n_modes']} modes; {res['n_params'] / 1e6:.3f} M parameters; {res['device']}, {a.threads} threads")
+    print(f"{key}: {res['n_tets']} tets, {res['n_tokens']} tokens, {res['n_dof']} DOF, "
+          f"{'no' if res['n_pot'] is None else res['n_pot']} potentials, "
+          f"{res['n_modes']} modes; {res['n_params'] / 1e6:.3f} M parameters; {res['device']}, {a.threads} threads; "
+          f"{'PROJECTION-FREE training step' if a.no_projection else 'projected training step'}")
     print(f"nnz: " + ", ".join(f"{k} {v / 1e6:.2f}M" for k, v in res["nnz"].items()))
     print(f"data   mesh (generator, from CAD) {res['t_mesh_generator']:6.2f} s | rebuild from .vol {res['t_mesh_rebuild']:.2f} s")
     print(f"       field_operators            {res['t_operators']:6.2f} s (token features "
           f"{'read from the H5' if res['stored_features'] else 'computed'}) | peak RSS {res['rss_after_operators_gb']:.2f} GB")
     print(f"       field_item / collate       {res['t_item']:6.2f} / {res['t_collate']:.2f} s | to {res['device']} {res['t_to_device']:.2f} s")
+    if a.no_projection:
+        print(f"       full operators (G, Kp) for the inference pass: field_operators {res['t_operators_full']:.2f} s, "
+              f"collate {res['t_collate_full']:.2f} s")
     for i, r in enumerate(res["infer"]):
         print(f"infer  #{i} forward {r['t']:6.2f} s (CG {r['t_cg']:.2f} s, iterations {r['cg_iters']}) | "
               f"peak {mem} {r['mem_gb']:.2f} GB")
     for i, r in enumerate(res["train"]):
         print(f"train  #{i} forward+loss {r['t_forward']:6.2f} s (CG {r['t_cg_forward']:.2f}), backward "
-              f"{r['t_backward']:6.2f} s (CG {r['t_cg_backward']:.2f}), iterations {r['cg_iters']} | "
+              f"{r['t_backward']:6.2f} s (CG {r['t_cg_backward']:.2f}), CG calls {r['calls_cg']}, iterations {r['cg_iters']} | "
               f"peak {mem} {r['mem_gb']:.2f} GB")
     print(f"network dense FLOPs, forward: {res['gflop_forward']:.1f} GFLOP")
     if a.json:

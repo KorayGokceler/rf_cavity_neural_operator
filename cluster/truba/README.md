@@ -88,6 +88,13 @@ LABELS=field EXP=field_base MODEL=base cluster/truba/submit_train.sh
 Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 cluster/truba/submit_family.sh dtl`.
 `config.sh`'deki her değişken bu şekilde ezilebilir.
 
+**Projeksiyonsuz eğitim** (docs/38; eğitimde ve doğrulamada Kp CG ve Rayleigh–Ritz yok, bu batch'lerde G/Kp yok, en iyi checkpoint `val/loss` ile seçilir; eğitim sonundaki test ve tahmin projekte eder):
+`TRAIN_EXTRA="training.projection=false training.selfsup_weight=0 training.freq_weight=0"`, örneğin
+`LABELS=field EXP=field_noproj MODEL=base TRAIN_EXTRA="training.projection=false training.selfsup_weight=0 training.freq_weight=0" cluster/truba/submit_train.sh`
+(`run.sh train/all` aynı değişkeni alır; arayüzün TRUBA sekmesinde "train_extra" alanına üç `key=value` yazılır). İkisi de 0 olmazsa
+`train.py` `ValueError` verir. Aynı EXP'yi yeniden göndermek `last.ckpt`'tan devam eder: `TRAIN_EXTRA` her gönderimde aynı verilmeli
+(devam, checkpoint'in `projection` değerinden farklıysa `train.py` uyarı yazar).
+
 ## Bir aileyi büyütmek, yeni aile eklemek
 
 - **Büyütmek:** `families.tsv`'de `n_total`'ı artır (ör. 10240 → 20480) ve `submit_family.sh <aile>`'yi

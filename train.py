@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from src.config import config_to_flat_dict, load_config
 from src.data.field_dataset import FieldDataset, field_collate, loader_worker_init
-from src.training.lightning_module import CavityLightning, count_near_degenerate
+from src.training.lightning_module import CavityLightning, count_near_degenerate, monitor_metric
 from src.training.progress import ProgressFile
 
 
@@ -75,14 +75,46 @@ def _eigenspace_kwargs(mc):
     return kw or None
 
 
-def _datasets_field(dc, random_seed, feature_indices):
-    """train / val / test FieldDataset (field-label H5 files: a path, glob, directory or list)."""
+def _datasets_field(dc, random_seed, feature_indices, projection=True):
+    """train / val / test FieldDataset (field-label H5 files: a path, glob, directory or list).
+    projection=False (training.projection, docs/38): the TRAIN and VAL splits do not build the kernel potentials
+    G, Kp (their loss never projects); the TEST split always does (the test step projects: Ritz frequencies,
+    fields)."""
     kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
               feature_indices=feature_indices, cache_dir=getattr(dc, 'cache_dir', None),
               n_modes=getattr(dc, 'n_modes', None), hf_repeat=getattr(dc, 'hf_repeat', 1),
               train_extra=getattr(dc, 'train_extra', None),
-              require_label_ok=bool(getattr(dc, 'require_label_ok', False)))
-    return tuple(FieldDataset(dc.data_path, split=s, **kw) for s in ('train', 'val', 'test'))
+              require_label_ok=bool(getattr(dc, 'require_label_ok', False)),
+              max_tets=getattr(dc, 'max_tets', None))
+    return tuple(FieldDataset(dc.data_path, split=s, build_potential=projection or s == 'test', **kw)
+                 for s in ('train', 'val', 'test'))
+
+
+def _checkpoint_filename(monitor):
+    """ModelCheckpoint file name of the best epoch.  The metric names contain '/': the name is given explicitly;
+    the score tag (val_rel_l2 | val_loss) tells src.training.checkpoint.resolve_checkpoint which metric the
+    number is."""
+    tag = {'val/field_rel_l2': 'val_rel_l2', 'val/loss': 'val_loss'}[monitor]
+    return f"best-epoch={{epoch:02d}}-{tag}={{{monitor}:.4f}}"
+
+
+def _selection_callbacks(tc, projection):
+    """(ModelCheckpoint, EarlyStopping): model selection by val/field_rel_l2 (Ritz fields), or by val/loss when
+    training and validation are projection-free (training.projection: false: the validation step has no Ritz
+    fields, docs/38).  The best checkpoint is the one trainer.test(ckpt_path="best") loads."""
+    monitor = monitor_metric(projection)
+    return (ModelCheckpoint(dirpath=f"{tc.log_dir}/{tc.exp_name}", filename=_checkpoint_filename(monitor),
+                            auto_insert_metric_name=False, save_top_k=1, save_last=True, monitor=monitor, mode="min"),
+            EarlyStopping(monitor=monitor, patience=tc.patience, mode="min"))
+
+
+def _warn_projection_mismatch(ckpt_path, projection):
+    """--resume continues the loss the run was started with: warn when training.projection differs from the
+    checkpoint's (a missing key = a checkpoint from before the option = projection true)."""
+    hp = torch.load(ckpt_path, map_location="cpu", weights_only=False).get("hyper_parameters") or {}
+    if bool(hp.get("projection", True)) != projection:
+        print(f"WARNING: --resume {ckpt_path} was trained with projection={bool(hp.get('projection', True))}, this "
+              f"run has training.projection={projection}: the loss changes from here on (docs/38).")
 
 
 def main():
@@ -111,7 +143,12 @@ def main():
         if getattr(tc, key, None):
             raise ValueError(f"training.{key} belonged to the removed N0 model; set it to 0 / false or drop it "
                              "(the p3 QoI labels are in the data)")
-    train_dataset, val_dataset, test_dataset = _datasets_field(dc, random_seed, feature_indices)
+    projection = getattr(tc, 'projection', True)
+    if not isinstance(projection, bool):
+        raise ValueError(f"training.projection must be true or false, not {projection!r}")
+    if args.resume and rank0:
+        _warn_projection_mismatch(args.resume, projection)
+    train_dataset, val_dataset, test_dataset = _datasets_field(dc, random_seed, feature_indices, projection)
     for name, ds in (('train', train_dataset), ('val', val_dataset), ('test', test_dataset)):
         if len(ds) == 0:     # an empty split never logs the monitored metric: fail early instead
             raise ValueError(f"'{name}' split is empty ({len(train_dataset.geom_to_samples)} geometries, "
@@ -155,6 +192,7 @@ def main():
         selfsup_form=getattr(tc, 'selfsup_form', 'compliance'),
         near_deg_threshold=getattr(tc, 'near_deg_threshold', 0.05),
         near_deg_rel_threshold=getattr(tc, 'near_deg_rel_threshold', None),
+        projection=projection,
         fidelity_weights=getattr(tc, 'fidelity_weights', None) or (1.0, 1.0),
         fidelity_freq_scale=getattr(tc, 'fidelity_freq_scale', None) or (1.0, 1.0),
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
@@ -172,12 +210,7 @@ def main():
                                                           getattr(tc, 'near_deg_rel_threshold', None))
         print(f"[degeneracy] train: {n_deg}/{n_tot} geometries with a near-degenerate cluster ({n_deg_modes} modes)")
 
-    # metric names contain '/': the checkpoint file name is given explicitly
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{tc.log_dir}/{tc.exp_name}",
-        filename="best-epoch={epoch:02d}-val_rel_l2={val/field_rel_l2:.4f}",
-        auto_insert_metric_name=False, save_top_k=1, save_last=True,
-        monitor="val/field_rel_l2", mode="min")
+    checkpoint_callback, early_stopping = _selection_callbacks(tc, projection)
     progress_file = ProgressFile(f"{tc.log_dir}/{tc.exp_name}/progress.json")   # read by the web UI
     try:
         logger = TensorBoardLogger(save_dir=tc.log_dir, name=tc.exp_name)
@@ -196,7 +229,7 @@ def main():
         accelerator="auto", devices=n_gpus if n_gpus > 0 else "auto", strategy=strategy,
         gradient_clip_val=tc.gradient_clip_val,
         callbacks=[checkpoint_callback, LearningRateMonitor(logging_interval='step'),
-                   EarlyStopping(monitor="val/field_rel_l2", patience=tc.patience, mode="min"),
+                   early_stopping,
                    TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate), progress_file],
         logger=logger, log_every_n_steps=tc.log_every_n_steps, fast_dev_run=tc.fast_dev_run)
 
