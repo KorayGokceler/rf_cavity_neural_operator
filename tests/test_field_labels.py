@@ -162,15 +162,15 @@ def test_noproj_fast_dev_run_train_py(field_h5, tmp_path, monkeypatch):
         return wrapped
 
     def spy_proj(orig):
-        def wrapped(self, batch, prefix):
+        def wrapped(self, batch, prefix, *a):
             seen["proj"].append(prefix)
-            return orig(self, batch, prefix)
+            return orig(self, batch, prefix, *a)
         return wrapped
 
     def spy_plain(orig):
-        def wrapped(self, batch, prefix="train"):
+        def wrapped(self, batch, prefix="train", *a):
             seen["plain"].append(prefix)
-            return orig(self, batch, prefix)
+            return orig(self, batch, prefix, *a)
         return wrapped
 
     def spy_pcg(*a, **k):
@@ -197,9 +197,9 @@ def test_noproj_fast_dev_run_train_py(field_h5, tmp_path, monkeypatch):
     assert set(seen["plain"]) == {"train", "val", None}                  # None: test/loss_plain
 
 
-def test_noproj_train_py_trains_selects_by_val_loss_and_tests_projected(field_h5, tmp_path, monkeypatch):
+def test_noproj_train_py_trains_selects_by_val_span_loss_and_tests_projected(field_h5, tmp_path, monkeypatch):
     """train.py end to end, 2 epochs, projection-free: the history has the like-for-like train/val keys and no
-    Ritz key, the checkpoint is chosen by val/loss (file name, progress.json, resolve_checkpoint), and the final
+    Ritz key, the checkpoint is chosen by val/span_loss (file name, progress.json, resolve_checkpoint), and the final
     test of the best checkpoint is projected (Ritz metrics + test/loss_plain)."""
     import sys
 
@@ -216,17 +216,17 @@ def test_noproj_train_py_trains_selects_by_val_loss_and_tests_projected(field_h5
     assert prog["status"] == "finished" and len(prog["history"]) == 2
     h = prog["history"][-1]
     for pre in ("train", "val"):
-        for key in ("loss", "span_loss", "ortho_loss", "span_rel_l2", "span_rel_l2_energy", "mass_diag_ratio",
+        for key in ("loss", "span_loss", "ortho_loss", "span_rel_l2", "span_rel_l2_energy", "mass_diag_ratio", "grad_frac_lb",
                     *(f"span_mode_{k}_rel_l2" for k in range(K))):
             assert f"{pre}/{key}" in h, f"{pre}/{key}"
     assert not any(k.endswith(("field_rel_l2", "freq_rel_err", "grad_frac", "kp_cg_iters", "r2", "selfsup_loss"))
                    for k in h if k.split("/")[0] in ("train", "val"))
     best = prog["best"]
-    assert best["monitor"] == "val/loss" and os.path.basename(best["path"]).startswith("best-epoch=")
-    assert "-val_loss=" in best["path"] and "val_rel_l2" not in best["path"] and (run / "last.ckpt").exists()
+    assert best["monitor"] == "val/span_loss" and os.path.basename(best["path"]).startswith("best-epoch=")
+    assert "-val_span_loss=" in best["path"] and "val_rel_l2" not in best["path"] and (run / "last.ckpt").exists()
     assert resolve_checkpoint(str(run)) == best["path"]
-    assert abs(best["score"] - min(e["val/loss"] for e in prog["history"])) < 1e-9
-    assert f"val_loss={best['score']:.4f}" in best["path"]
+    assert abs(best["score"] - min(e["val/span_loss"] for e in prog["history"])) < 1e-9
+    assert f"val_span_loss={best['score']:.4f}" in best["path"]
     t = prog["test"]                                                    # projected: the real quality
     for key in ("test/field_rel_l2", "test/freq_rel_err", "test/freq_mae_ghz", "test/grad_frac", "test/kp_cg_iters",
                 "test/mode_0_rel_l2", "test/loss", "test/loss_plain", "test/span_rel_l2"):

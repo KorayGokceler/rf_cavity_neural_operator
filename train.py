@@ -92,14 +92,14 @@ def _datasets_field(dc, random_seed, feature_indices, projection=True):
 
 def _checkpoint_filename(monitor):
     """ModelCheckpoint file name of the best epoch.  The metric names contain '/': the name is given explicitly;
-    the score tag (val_rel_l2 | val_loss) tells src.training.checkpoint.resolve_checkpoint which metric the
+    the score tag (val_rel_l2 | val_span_loss) tells src.training.checkpoint.resolve_checkpoint which metric the
     number is."""
-    tag = {'val/field_rel_l2': 'val_rel_l2', 'val/loss': 'val_loss'}[monitor]
+    tag = {'val/field_rel_l2': 'val_rel_l2', 'val/span_loss': 'val_span_loss'}[monitor]
     return f"best-epoch={{epoch:02d}}-{tag}={{{monitor}:.4f}}"
 
 
 def _selection_callbacks(tc, projection):
-    """(ModelCheckpoint, EarlyStopping): model selection by val/field_rel_l2 (Ritz fields), or by val/loss when
+    """(ModelCheckpoint, EarlyStopping): model selection by val/field_rel_l2 (Ritz fields), or by val/span_loss when
     training and validation are projection-free (training.projection: false: the validation step has no Ritz
     fields, docs/38).  The best checkpoint is the one trainer.test(ckpt_path="best") loads."""
     monitor = monitor_metric(projection)
@@ -108,13 +108,18 @@ def _selection_callbacks(tc, projection):
             EarlyStopping(monitor=monitor, patience=tc.patience, mode="min"))
 
 
-def _warn_projection_mismatch(ckpt_path, projection):
-    """--resume continues the loss the run was started with: warn when training.projection differs from the
-    checkpoint's (a missing key = a checkpoint from before the option = projection true)."""
+def _check_projection_matches(ckpt_path, projection):
+    """--resume continues a run with the loss it was started with: training.projection must equal the checkpoint's
+    (a missing key = a checkpoint from before the option = projection true), else ValueError.  ModelCheckpoint and
+    EarlyStopping restore the best score of the monitored metric from the checkpoint, and the two modes monitor
+    different metrics (val/field_rel_l2 vs val/span_loss): a restored best score of the other metric would block or
+    force every later "improvement" (docs/38 §4).  Start a new run from the weights with --init_from instead."""
     hp = torch.load(ckpt_path, map_location="cpu", weights_only=False).get("hyper_parameters") or {}
-    if bool(hp.get("projection", True)) != projection:
-        print(f"WARNING: --resume {ckpt_path} was trained with projection={bool(hp.get('projection', True))}, this "
-              f"run has training.projection={projection}: the loss changes from here on (docs/38).")
+    was = bool(hp.get("projection", True))
+    if was != projection:
+        raise ValueError(f"--resume {ckpt_path} was trained with projection={was}, but training.projection={projection}: "
+                         "the monitored metric (and its restored best score) would differ. Resume with the same "
+                         "training.projection, or start a new run from these weights with --init_from (docs/38 §4).")
 
 
 def main():
@@ -146,8 +151,8 @@ def main():
     projection = getattr(tc, 'projection', True)
     if not isinstance(projection, bool):
         raise ValueError(f"training.projection must be true or false, not {projection!r}")
-    if args.resume and rank0:
-        _warn_projection_mismatch(args.resume, projection)
+    if args.resume:                  # on every rank: an error on one rank only would hang the others
+        _check_projection_matches(args.resume, projection)
     train_dataset, val_dataset, test_dataset = _datasets_field(dc, random_seed, feature_indices, projection)
     for name, ds in (('train', train_dataset), ('val', val_dataset), ('test', test_dataset)):
         if len(ds) == 0:     # an empty split never logs the monitored metric: fail early instead

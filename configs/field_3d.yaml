@@ -29,7 +29,7 @@ dataset:
   feature_indices: null         # null = all 9 point features (highorder.point_features)
   train_extra: null             # multi-fidelity: more H5 files (HF) whose geometries all go to the train split
   require_label_ok: true        # p2 labels (docs/37 §3.3, owner 2026-11-03): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
-  max_tets: null                # drop samples with more model tets (GPU memory guard; V100 16 GB: measure first, docs/38 §6)
+  max_tets: null                # drop samples with more model tets (GPU memory guard, applied before the split, so it changes the split; V100 16 GB: measure first, docs/38 §8)
   hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
 
 model:
@@ -66,7 +66,7 @@ training:
   # validation step is the same projected step, and ModelCheckpoint / EarlyStopping monitor val/field_rel_l2.
   # false: projection-free TRAINING and VALIDATION (docs/38): no Kp CG, no Rayleigh-Ritz, no G / Kp in the train and
   # val batches; both compute span_weight * span + ortho_weight * ortho on the unprojected Grams (the same function),
-  # and the monitored metric is val/loss.  Needs selfsup_weight: 0 and freq_weight: 0 (ValueError otherwise:
+  # and the monitored metric is val/span_loss.  Needs selfsup_weight: 0, freq_weight: 0 and span_norm mass | both (ValueError otherwise:
   # configs/field_3d_noproj.yaml).  The TEST step (after training, best checkpoint) and prediction always project.
   projection: true
 

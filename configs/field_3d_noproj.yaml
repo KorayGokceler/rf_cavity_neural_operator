@@ -3,7 +3,7 @@
 #  configs/field_3d.yaml with training.projection: false, selfsup_weight: 0, freq_weight: 0 (and nothing else
 #  changed; tests/test_projection_free.py keeps the two files in step).  Training AND validation build V and stop:
 #  no Kp CG, no Rayleigh-Ritz, no G / Kp in their batches; the loss is span (unprojected mass Gram + energy Gram)
-#  + ortho, the same function for both, and ModelCheckpoint / EarlyStopping monitor val/loss.  The test step
+#  + ortho, the same function for both, and ModelCheckpoint / EarlyStopping monitor val/span_loss.  The test step
 #  (best checkpoint) and prediction project (Ritz frequencies and fields: test/field_rel_l2 ...).
 #
 #  RF Cavity 3D — EigenspaceOperatorField (E field, learned field in HCurl(p) on curved meshes)
@@ -36,7 +36,7 @@ dataset:
   feature_indices: null         # null = all 9 point features (highorder.point_features)
   train_extra: null             # multi-fidelity: more H5 files (HF) whose geometries all go to the train split
   require_label_ok: true        # p2 labels (docs/37 §3.3, owner 2026-11-03): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
-  max_tets: null                # drop samples with more model tets (GPU memory guard; V100 16 GB: measure first, docs/38 §6)
+  max_tets: null                # drop samples with more model tets (GPU memory guard, applied before the split, so it changes the split; V100 16 GB: measure first, docs/38 §8)
   hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
 
 model:
@@ -70,10 +70,10 @@ training:
   strategy: "auto"
 
   # true (default): the training loss is computed on the kernel-projected Ritz problem (all terms below).
-  # false: projection-free TRAINING step (docs/38): no Kp CG, no Rayleigh-Ritz, no G / Kp in the train batches;
-  # the loss is span_weight * span + ortho_weight * ortho on the unprojected mass Gram.  Needs selfsup_weight: 0
-  # and freq_weight: 0 (ValueError otherwise: configs/field_3d_noproj.yaml).  Validation / test / prediction
-  # always project.
+  # false: projection-free TRAINING and VALIDATION (docs/38): no Kp CG, no Rayleigh-Ritz, no G / Kp in the train and
+  # val batches; both compute span_weight * span + ortho_weight * ortho on the unprojected Grams (the same
+  # function).  The best checkpoint is selected by val/span_loss.  Needs selfsup_weight: 0, freq_weight: 0 and
+  # span_norm mass | both (ValueError otherwise).  The TEST step (after training) and prediction project.
   projection: false
 
   span_weight: 1.0

@@ -2,7 +2,7 @@
 
 > 2026-11-03, dal `claude/train-no-projection` (`50f8f82` üzerine), **commit edilmemiş**. Karar: sahip. Varsayılan değişmedi
 > (`projection: true`; çıktılar, kayıp, gradyanlar, doğrulama kaybı bit düzeyinde aynı, §5). Seçenek **eğitim çalışması olarak denenmedi**:
-> `val/loss` ile seçilen bir modelin test kalitesi (`test/field_rel_l2`, frekans hatası, `test/grad_frac`) projeksiyonlu eğitimle
+> `val/span_loss` ile seçilen bir modelin test kalitesi (`test/field_rel_l2`, frekans hatası, `test/grad_frac`) projeksiyonlu eğitimle
 > karşılaştırılmadı (§7). Bağlam: docs/18 §3.4–3.6 (Schur-projekteli Gram), docs/31 §3.5–3.6, §4 (ceza yöntemi reddi), docs/21 B3.
 
 ## 1. Ne yapar
@@ -16,13 +16,13 @@ birebir karşılaştırılabilir. **Test** (eğitim sonunda, en iyi checkpoint) 
 |---|---|---|
 | train / val ileri geçişi | gövde → V → `PV = V − G Kp⁻¹ GᵀMV` (CG) → `projected_eigh` | gövde → V (`forward_basis`), burada biter |
 | Kp CG (ileri + geri) | var (örnek başına ~6 s, 23k tet) | **yok** (train ve val) |
-| kütle Gram'ı `G_M` | `[[M_div, VᵀMT − Zᵀ(GᵀMT)], [·, TᵀMT]]` | `[[VᵀMV, VᵀMT], [·, TᵀMT]]`, V sütunları birim kütle normuna ölçeklenir (§2.6) |
+| kütle Gram'ı `G_M` | `[[M_div, VᵀMT − Zᵀ(GᵀMT)], [·, TᵀMT]]` | `[[VᵀMV, VᵀMT], [·, TᵀMT]]`, V sütunları birim kütle normuna ölçeklenir, çökmüş sütunlar ölü sayılır (§2.6) |
 | enerji Gram'ı `G_A` | `[[VᵀKV, VᵀKT], [·, TᵀKT]]` | aynı (bit düzeyinde; yalnız sütun ölçeği) |
 | kayıp | span + 0,01 selfsup + 0,01 ortho + 0,1 freq | `span_weight · span + ortho_weight · ortho` |
 | ortho | kütle Gram'ı `M_div` üzerinde | **enerji (curl–curl) Gram'ı** üzerinde, gradyan-kör (§2.5) |
 | train / val batch'inde `G, Gt, Kp, Kp_diag` | var | **yok** (veri kümesi kurmaz, collate koymaz) |
 | test | projeksiyon + Ritz | **aynı**; ek olarak `test/loss_plain` (§1.2) |
-| model seçimi (ModelCheckpoint, EarlyStopping, `reducelr`) | `val/field_rel_l2` | **`val/loss`** (§1.1) |
+| model seçimi (ModelCheckpoint, EarlyStopping, `reducelr`) | `val/field_rel_l2` | **`val/span_loss`** (§1.1) |
 | tahmin | projeksiyon + Ritz | aynı (değişmedi) |
 
 | bölme | `projection: true` | `projection: false` |
@@ -35,21 +35,22 @@ birebir karşılaştırılabilir. **Test** (eğitim sonunda, en iyi checkpoint) 
 selfsup terimi projeksiyonsuz gradyan içeriğini ödüllendirir (§3), frekans terimi Ritz değerleri ister. Örnek: `configs/field_3d_noproj.yaml`.
 
 **Loglananlar (train ve val, aynı anahtarlar, her adımda, her DDP sırasında).** `{train,val}/loss`, `…/span_loss`, `…/ortho_loss`,
-`…/span_rel_l2` (kütle normu, en iyi yaklaşım hatası, modların ortalaması), `…/span_rel_l2_energy`, `…/span_mode_k_rel_l2`, `…/mass_diag_ratio`;
+`…/span_rel_l2` (kütle normu, en iyi yaklaşım hatası, modların ortalaması), `…/span_rel_l2_energy`, `…/span_mode_k_rel_l2`, `…/mass_diag_ratio`, `…/grad_frac_lb`, `…/grad_frac_lb_max` (gradyan kütle payının kesin **alt sınırı**, §3.5);
 yalnız train: `lr`. **Yoktur** (train, val): `field_rel_l2`, `mode_k_rel_l2`, `freq_*`, `r2`, `mae`, `grad_frac`, `kp_cg_iters`, `selfsup_loss`
 (Ritz alanı, frekans ya da sınırsız bir terim gerektirirler); bunlar yalnız testte vardır. Test: bugünkü bütün test metrikleri
 (`test/field_rel_l2`, `test/mode_k_rel_l2`, `test/freq_*`, `test/grad_frac`, `test/kp_cg_iters`, `test/span_*`, `test/r2`, `test/mae`, `test/loss`) ve `test/loss_plain`.
-Epoch sonu konsol tablosu (`on_validation_epoch_end`) bu modda mod başına `span_mode_k_rel_l2` (en iyi yaklaşım hatası) ve `val/loss`, `val/span_rel_l2`, `val/mass_diag_ratio` yazar.
+Epoch sonu konsol tablosu (`on_validation_epoch_end`) bu modda mod başına `span_mode_k_rel_l2` (en iyi yaklaşım hatası) ve `val/span_loss` (seçilen), `val/loss`, `val/span_rel_l2`, `val/mass_diag_ratio`, `val/grad_frac_lb` yazar.
 
-### 1.1 Model seçimi: `val/loss`
+### 1.1 Model seçimi: `val/span_loss`
 
-`val/loss = span_weight · span + ortho_weight · ortho` (projeksiyonsuz, doğrulama kümesinde). Kütle normundaki span terimi, doğrulama
-kümesinin **projekteli span artığının üst sınırıdır** (§2.3, `r_düz ≥ r_proj`; enerji normunda eşit). ortho terimi (ağırlık 0,01, değer ∈ [0, 1])
-düzenleyicidir ve `val/loss`'a girer; yani `val/loss` yalnız span artığının sınırı değil, `0,01 · ortho` kadar farklı bir sayıdır.
-En iyi checkpoint dosya adı `best-epoch=NN-val_loss=0.xxxx.ckpt` (varsayılan: `…-val_rel_l2=0.xxxx.ckpt`);
-`src/training/checkpoint.py:resolve_checkpoint` iki etiketi de okur; iki çeşit içeren bir dizinde (koşu başka `projection` ile devam ettirilmiş) en son yazılan çeşit içinde en düşüğü
-seçer, çünkü iki skor karşılaştırılamaz. `progress.json`'daki `best.monitor` `val/loss` olur; web arayüzü bunu gösterir (§4).
-**`val/loss` Ritz alan hatasının vekilidir, ölçüsü değildir**: aynı `val/loss` farklı frekans/alan kalitelerine karşılık gelebilir (§3). Seçilen checkpoint'in gerçek kalitesi
+`val/span_loss` (`monitor_metric(False)`), kayıp fonksiyonunun **yalnız span terimidir** (`mean √(½(r_M + r_A) + 1e-8)`, doğrulama kümesinde, projeksiyonsuz). Kütle normundaki
+bileşeni doğrulama kümesinin **projekteli span artığının üst sınırıdır** (§2.3, `r_düz ≥ r_proj`; enerji normunda eşit). `val/loss = span_weight · span + 0,01 · ortho` ise
+ortho'yu da içerir; ortho (∈ [0, 1], düzenleyici) sütunların doğrusal bağımlılığını ölçer, bir kalite ölçüsü değildir ve seçimi gürültüyle bozar. Bu yüzden **seçim `val/span_loss` ile yapılır**;
+`val/loss` train/loss ile birebir karşılaştırılabilir olsun diye yine loglanır (grafiklerde "Kayıp" eğrisi). (Önceki sürüm `val/loss` ile seçiyordu; o dosya adlarını `resolve_checkpoint` hâlâ okur.)
+En iyi checkpoint dosya adı `best-epoch=NN-val_span_loss=0.xxxx.ckpt` (varsayılan: `…-val_rel_l2=0.xxxx.ckpt`);
+`src/training/checkpoint.py:resolve_checkpoint` `val_rel_l2=`, `val_span_loss=` ve `val_loss=` etiketlerini okur; birden çok çeşit içeren bir dizinde en son yazılan çeşit içinde en düşüğü
+seçer, çünkü skorlar karşılaştırılamaz. `progress.json`'daki `best.monitor` `val/span_loss` olur; web arayüzü bunu gösterir (§4).
+**`val/span_loss` Ritz alan hatasının vekilidir, ölçüsü değildir**: kütle normunda span hatası gradyan içeriğiyle şişer ve aynı değer farklı frekans/alan kalitelerine karşılık gelebilir (§3). Seçilen checkpoint'in gerçek kalitesi
 yalnız `trainer.test` çıktısındadır.
 
 ### 1.2 Test: projekte, ve `test/loss_plain`
@@ -57,7 +58,7 @@ yalnız `trainer.test` çıktısındadır.
 `test_step` değişmedi (`_compute_loss_3d(batch, "test")`: projeksiyon + Ritz, bütün test metrikleri, `test/loss` = projekteli kayıp). `projection: false` iken ek olarak
 `test/loss_plain` loglanır: **eğitim kaybı** (aynı fonksiyon) test kümesinde. `test/loss` ile `test/loss_plain` arasındaki fark projekteli ile projeksiyonsuz kaybın
 boşluğunu gösterir. İki sayı tam olarak aynı büyüklük değildir: `selfsup_weight = freq_weight = 0` olduğundan `test/loss = span + 0,01·ortho(kütle Gram'ı, projekteli)`,
-`test/loss_plain = span(projeksiyonsuz) + 0,01·ortho(enerji Gram'ı)`. Span kısmı için `r_düz ≥ r_proj` beklenir (§2.3). `test_step` gövdeyi iki kez çalıştırır (Ritz için, `loss_plain` için; test bir kez çalışır, gradyan yok).
+`test/loss_plain = span(projeksiyonsuz) + 0,01·ortho(enerji Gram'ı)`. Span kısmı için `r_düz ≥ r_proj` beklenir (§2.3). `test_step` gövdeyi **bir kez** çalıştırır: `loss_plain` projekteli geçişin bazını (`out['basis']`, `_compute_loss_3d(…, basis_out=)`) yeniden kullanır (test: `field_basis` çağrı sayısı 1).
 
 ## 2. Matematik
 
@@ -75,12 +76,13 @@ bloğu: `VᵀMV − M_div = Bᵀ Kp⁻¹ B ⪰ 0` (`B = GᵀMV`), yani projeksiy
 karesidir. `t ∈ range(P)` ve `c` herhangi bir katsayı vektörü için
 `‖t − Vc‖²_M = ‖t − PVc‖²_M + ‖(I − P)Vc‖²_M ≥ ‖t − PVc‖²_M`; `c` üzerinden minimum alınırsa `r_düz ≥ r_proj`. Yorumlar:
 
-- Projeksiyonsuz span terimi, projekteli span teriminin bir **üst sınırıdır** (etiketler `M`-dikse, §3.2). Bu yüzden `val/span_*` ve `val/loss`'un span kısmı, aynı doğrulama kümesinin
+- Projeksiyonsuz span terimi, projekteli span teriminin bir **üst sınırıdır** (etiketler `M`-dikse, §3.2). Bu yüzden `val/span_*` ve `val/span_loss`, aynı doğrulama kümesinin
   projekteli span hatasından küçük olamaz; test ve tahmin projeksiyonla çalıştığından orada ölçülen span hatası, eğitimde ve doğrulamada izlenen büyüklükten küçük ya da eşittir.
   Tahmin zamanındaki projeksiyon span hatasını yalnız düşürebilir.
 - Fark `V`'nin gradyan içeriğidir: gradyan kütlesi `VV` bloğunu şişirir ve `r_M`'yi artırır. Yani kayıp, gradyan içeriğini **yumuşak** bir
   ceza gibi cezalandırır (docs/18 §3.4: "ceza gibi davranır ama kesin değildir"; E4: %50 gradyan payında `r_M` = 0,174). Sıfırlanmasını
-  garanti etmez. Gradyan payı eğitimde/doğrulamada ölçülmez (`grad_frac` yalnız testte vardır); dolaylı göstergeler §3.5'te.
+  garanti etmez. Gradyan payının kendisi eğitimde/doğrulamada ölçülmez (`grad_frac` yalnız testte vardır); onun yerine kesin bir **alt sınırı** (`grad_frac_lb`) ve dolaylı göstergeler §3.5'te.
+- `span_norm: energy` ile `projection: false` **`ValueError`** verir: hem enerji normundaki span hem enerji-Gram ortho'su gradyan içeriğini görmez (`K G = 0`), yani V'yi gradyandan uzak tutacak hiçbir terim kalmaz (sıfır baskı). `mass` ve `both` (varsayılan) geçerlidir.
 - Enerji normu gradyanları hiç görmez (`‖curl e‖`); `span_norm: energy` projeksiyonlu ve projeksiyonsuz aynıdır.
 
 **2.4 Hesap.** `hcurl_grams_plain(V, T, batch)`: yalnız `MV, KV, MT, KT` seyrek çarpımları ve üç Gram. Kp çözümü, `G`, `Kp`, `Kp_diag` gerekmez.
@@ -95,14 +97,32 @@ enerji köşegeni sıfıra yakındır; köşegen, örnek içindeki en büyük k�
 patlar ne de diğerleriyle doğrusal bağımlı sayılır. Test: gradyan `G·φ` eklenmiş kopya sütunlarda enerji-ortho değişmez (float32 baz, `< 1e-5`) ve doğrusal bağımlılığı yine yakalar
 (değer `> 0,1`), kütle-Gram ortho'su ise aynı kurguda `< %30`'a düşer (ödülün kanıtı); saf gradyan sütunu ortho'yu artırmaz.
 
-**2.6 Ölü sütun kuralı ölçekten bağımsız olmalı.** `span_residual` her sütunun ölçeğine karşı değişmezdir, ama `_jacobi_cholesky`'nin ölü sütun kuralı
+**2.6 Ölü sütun kuralı ölçekten bağımsız olmalı; çökmüş sütun ölü olmalı.** `span_residual` her sütunun ölçeğine karşı değişmezdir, ama `_jacobi_cholesky`'nin ölü sütun kuralı
 (`diag ≤ 1e-12 · en büyük diag` ⇒ sütun 0) değildir. Projekteli yolda gradyan sütunları `M_div`'de de ölüdür ve kural zararsızdır. Projeksiyonsuz `VᵀMV`'de ise gradyan-ağır bir
 sütunun normu çok büyükse **temiz sütunlar "ölü" sayılır** (hakem sondajı: 3 temiz sütun + 2 saf gradyan sütunu ×10⁶⁻⁷ ⇒ mod 0 için `r_M = 1`). Çözüm: Gram'lar `hcurl_grams_plain`
 çıktısından sonra, V sütunları birim kütle normuna ölçeklenerek (`_normalise_columns`: `diag VᵀMV = 1`; sıfır sütun 0 kalır) hem `G_M` hem `G_A` için kullanılır. Birim kütle normunda ölü sınaması
-kütle Gram'ında hiçbir sütunu ölü yapmaz (sıfır sütun hariç); enerji Gram'ında ölü olan, gerçekten rot içeriği ~0 olan (Rayleigh bölümü `≈ 0`) sütundur: ölçekten değil içerikten kaynaklanır. `r_M`, `r_A` ve enerji-ortho,
-sütunların keyfî ölçeğinde (10⁻⁶ … 10⁶) `1e-6` bağıl içinde değişmez (test). Projekteli yol bit düzeyinde aynı: `_normalise_columns` yalnız projeksiyonsuz yolda çağrılır.
-Uç durum: gradyan kütlesi rot kütlesinin ~10⁶ katını aşan bir sütunun enerji köşegeni `1e-12` sınırının altına düşer ve enerji Gram'ında ölü sayılır (rot kısmı o sütundan alınamaz); bu `r_A`'yı yalnız büyütür (üst sınır korunur) ve kütle normu o sütunu zaten ağır cezalandırır.
-Bedel: sütun ölçeği artık kayıpta görünmez; ölçek dağılımı `mass_diag_ratio` ile izlenir (§3.5).
+kütle Gram'ında hiçbir canlı sütunu ölü yapmaz; enerji Gram'ında ölü olan, gerçekten rot içeriği ~0 olan (Rayleigh bölümü `≈ 0`) sütundur: ölçekten değil içerikten kaynaklanır.
+Projekteli yol bit düzeyinde aynı: `_normalise_columns` yalnız projeksiyonsuz yolda çağrılır.
+
+*Çökmüş sütun (hakem bulgusu).* Kayıp her sütunun ölçeğine karşı değişmez olduğundan, birim ölçekleme tek başına sıfıra çöken bir sütunu korumaz: kayıbın V üzerindeki gradyanı `∝ 1/‖V_i‖` büyür
+(hakem sondajı `probe3.py`: göreli genlik 10⁻⁹'da ~2,4·10⁶ kat, 10⁻²⁰'de ~10¹⁶ kat; `gradient_clip_val = 1` ile tek sütun bütün güncellemeyi küçültür). **İstenen "sınırlı ölçekleme"
+`s = 1/√max(d, ε·d_max)` bu gradyanı sınırlamıyor** (denendi: span_residual kendi Jacobi ölçeklemesiyle yeniden normalleştiğinden gradyan yine `1/genlik`). Uygulanan çözüm:
+`d_i ≤ COLUMN_FLOOR · d_ref` (`COLUMN_FLOOR = 1e-6`, yani genlik < 10⁻³) olan sütun **ölüdür** (ölçek 0: span ve ortho gradyanı yok; projekteli yoldaki Jacobi kuralının eşdeğeri), canlı bir sütunun gradyanı
+referans genlikteki bir sütunun en çok ~10³ katıdır. Referans `d_ref` = **rot taşıyan** sütunların en büyük `VᵀMV` köşegeni (Rayleigh bölümü `RQ_i ≥ 0,1 λ₁`, `λ₁` = saklanan hedeflerin en küçük Rayleigh bölümü; hiçbiri değilse bütün sütunlar):
+gradyan-ağır bir sütun (RQ ≈ 0) referansı belirlemez, bu yüzden 10⁷× gradyan sütununun yanındaki temiz sütunlar canlı kalır (eski sondaj testi geçiyor).
+Ölçüm (`gtab.py`, depoda değil; pillbox, 5 sütun: 2 hedef + 2 rastgele alan + göreli genliği `amp` olan 1 rastgele sütun, `r_M`/`r_A` + ortho kaybı; sütunun `‖dL/dV_i‖`'si, float64):
+
+| göreli genlik | 1 | 10⁻² | 10⁻³ | 10⁻⁴ | 10⁻⁶ | 10⁻⁹ | 10⁻¹² | 10⁻²⁰ |
+|---|---|---|---|---|---|---|---|---|
+| eski (tam birim ölçek) | 1,2·10⁻² | 1,2 | 1,2·10¹ | 1,2·10² | 1,2·10⁴ | 1,2·10⁷ | 1,2·10¹⁰ | 1,2·10¹⁸ |
+| yeni (`COLUMN_FLOOR = 1e-6`) | 1,2·10⁻² | 1,2 | 0 (eşikte, ölü) | 0 | 0 | 0 | 0 | 0 |
+
+Eşik d_i ≤ 10⁻⁶ d_ref'tir (10⁻³ genlik); testte canlı taraf 5·10⁻³ ile denenir (gradyan ≤ 1,2/amp). (Hakemin 2,4·10⁶ sayısı bundan farklı bir kurgudan geldi; sıra büyüklüğü ve `1/genlik` yasası aynı.)
+Bedel: referansın 10⁻³'ünden zayıf genlikli bir sütun kayıpta **yok sayılır** (ölü) ve gradyan almadığından kendiliğinden geri dönemez (yalnız ağırlık sönümü/diğer sütunlarla paylaşılan gövde ağırlıkları onu değiştirir);
+projekteli yolda eşik 10⁻⁶ genliktir (daha gevşek). Bu yüzden sütun ölçeğine karşı değişmezlik testi artık 10^±1,2 aralığında (genlik oranı ≤ ~250); 10⁻⁶ … 10⁶ aralığı bilerek kaldırıldı (genlik oranı 10¹² olan sütun ölü).
+Eşik `COLUMN_FLOOR` tek yerde; gradyan-ağır sütunun referans dışı bırakılması float32'de `K` köşegeni gürültüsüne dayanır (RQ ≥ 0,1 λ₁ ölçütü; `λ_max/λ₁ · 10⁻⁷ ≳ 0,1`, yani çok ince mesh'lerde, gradyan sütununu "rot taşıyan" gösterebilir: o durumda referans şişer ve temiz sütunlar ölü olabilir; ölçülmedi).
+Uç durum (değişmedi): gradyan kütlesi rot kütlesinin ~10⁶ katını aşan bir sütunun enerji köşegeni `1e-12` sınırının altına düşer ve enerji Gram'ında ölü sayılır; bu `r_A`'yı yalnız büyütür (üst sınır korunur).
+Sütun ölçeği kayıpta görünmez; ölçek dağılımı `mass_diag_ratio` ile izlenir (§3.5).
 
 ## 3. Kaybedilenler ve kesinlik sınırları
 
@@ -125,6 +145,14 @@ Bedel: sütun ölçeği artık kayıpta görünmez; ölçek dağılımı `mass_d
    Eğitim bunu yalnız §2.3'teki yumuşak ceza (kütle normu) ile engeller.
 5. **Eğitim sırasında görünmeyenler ve yerine izlenecekler.** Eğitim ve doğrulama sırasında **görünmez**: Ritz frekans hataları (`freq_*`), Ritz alan hatası (`field_rel_l2`, `mode_k_rel_l2`), `grad_frac`, `kp_cg_iters`, Ritz marjı.
    Yerine izlenecekler (hepsi train ve val'da, TensorBoard / `progress.json` / arayüz eğrilerinde):
+   - `train/grad_frac_lb`, `val/grad_frac_lb` (sütunlar üzerinde ortalama) ve `…_max` (en kötü sütun): **gradyan kütle payının kesin alt sınırı**, her adımda, yalnız projeksiyonsuz Gram'lardan
+     (`_grad_frac_lower_bound`). `RQ_i = (VᵀKV)_ii/(VᵀMV)_ii` sütunun Rayleigh bölümü, `λ₁` = saklanan hedeflerin en küçük Rayleigh bölümü (`(TᵀKT)_kk/(TᵀMT)_kk`'nin min'i) olmak üzere `grad_frac_lb_i = max(0, 1 − RQ_i/λ₁)`.
+     Türetme: `V_i = c + g`, `c ∈ range(P)`, `g = (I−P)V_i`; `K g = 0` ve `(c,g)_M = 0` olduğundan `RQ_i = cᵀKc/(cᵀMc + gᵀMg)`, ve bölünmüş-uzayda `cᵀKc ≥ λ₁ cᵀMc` (en küçük sıfırdan farklı özdeğer),
+     dolayısıyla `gᵀMg/‖V_i‖² ≥ 1 − RQ_i/λ₁`. **Hakemin "V = c + a·g için tam" iddiası yalnız `c` en düşük özmodlar (RQ_c = λ₁) için doğrudur**; genel `c` için eşitsizliktir:
+     yüksek frekanslı rot içeriği olan bir sütun (RQ_c ≫ λ₁) istediği kadar gradyan kütlesini saklayabilir, yani bu bir **alt sınırdır, ölçü değildir** (gerçek payı küçümser; "0" gradyan olmadığını göstermez). Testte (pillbox): `V_i = T_k + a g` için
+     en düşük modda alt sınır `a²/(1+a²)`'ye 10⁻⁴ içinde eşit, üst modlarda kesin küçük (a = 2'de > 0,01 eksik), ve rastgele karışık tabanda projekteli tabanın gerçek payı `1 − diag(M_div)/diag(M_V)`'yi hiçbir sütunda aşmaz. Sıfır sütun 0 sayılır.
+     `λ₁` p2 etiket + aynı mesh için tam (en düşük ayrık özdeğer); p3→p2 izdüşümlü etiketlerde izdüşümün Rayleigh bölümüdür (p2 özdeğerinden büyük olabilir, farkı ölçülmedi) ve sınır o oranda gevşer. DDP: her adımda ve her sırada loglanır
+     (`…_max` `reduce_fx='max'`). Arayüzde "gradyan kütle payı (alt sınır)" eğrisi (yoksa gizli).
    - `train/mass_diag_ratio`, `val/mass_diag_ratio`: örnek içinde `max/min diag(VᵀMV)` (sütun kütle normlarının karesi; sıfır sütun için tavan 10³⁰), batch ortalaması. Gradyan-ağır ya da ölçeği kaçmış sütunlar bunu büyütür. **Zayıf, dolaylı bir göstergedir**:
      eşit normlu ama gradyan-ağır sütunları göstermez, ve sağlıklı değer aralığı bilinmiyor (küçük fixture'da başlangıçta 8–13). Eğilime bakın: ani/sürekli artış alarm sayılır.
    - `val/span_rel_l2` ve `val/span_mode_k_rel_l2` (kütle normunda mod başına en iyi yaklaşım hatası) ile `val/span_rel_l2_energy` (enerji normunda): gradyan içeriği yalnız kütle normunu bozar (enerji normu gradyanı görmez),
@@ -144,17 +172,17 @@ python train.py --config configs/field_3d.yaml --override "dataset.data_path=dat
 - `configs/field_3d_noproj.yaml`, `field_3d.yaml` ile aynıdır (`tests/test_projection_free.py` bunu denetler); yalnız `training.projection: false`,
   `selfsup_weight: 0`, `freq_weight: 0`, `exp_name: field3d_noproj_v1`.
 - `training.projection` yalnız `true` / `false` olabilir (başka bir değer `ValueError`). Eski checkpoint'lerde anahtar yok: `projection=true` olarak yüklenir.
-- **İzlenen metrik:** `val/loss` (ModelCheckpoint, EarlyStopping, `reducelr` zamanlayıcısı); `projection: true` iken `val/field_rel_l2`. Tek yer: `lightning_module.monitor_metric(projection)`; `train.py:_selection_callbacks`
+- **İzlenen metrik:** `val/span_loss` (ModelCheckpoint, EarlyStopping, `reducelr` zamanlayıcısı; `val/loss` yalnız loglanır, §1.1); `projection: true` iken `val/field_rel_l2`. Tek yer: `lightning_module.monitor_metric(projection)`; `train.py:_selection_callbacks`
   callback'leri kurar. `--fast_dev_run` checkpoint yazmaz (callback seçimi testte doğrudan denetlenir).
-- **`--resume`:** checkpoint'in `projection` değeri config'ten farklıysa uyarı yazar (kayıp ve izlenen metrik o noktadan sonra değişir). İzlenen metrik değişince ModelCheckpoint'in en iyi skor kaydı
-  başka bir metriğe aittir; moda geçerek devam etmek **denenmedi**, önerilmez (aynı EXP'yi aynı `projection` ile sürdürün).
+- **`--resume`:** checkpoint'in `projection` değeri config'ten farklıysa `train.py` **`ValueError`** verir (kayıp ve izlenen metrik değişir; ModelCheckpoint/EarlyStopping başka metriğin en iyi skorunu geri yüklerdi).
+  Geçiş için `--init_from <ckpt>` ile yeni koşu başlatın (yalnız ağırlıklar). Kontrol her sırada çalışır (DDP'de tek sırada hata diğerlerini asılı bırakırdı). Anahtarı olmayan eski checkpoint `projection=true` sayılır.
 - **TRUBA:** `TRAIN_EXTRA="training.projection=false training.selfsup_weight=0 training.freq_weight=0"` (cluster/truba/README.md; `run.sh train/all` ve `submit_train.sh` aynı değişkeni alır). Arayüzün TRUBA sekmesi
   `train_extra` alanıyla aynısını geçirir; arayüzün yerel Eğitim sayfası bu anahtarı göndermez (varsayılan: projeksiyon açık, kod değişmedi).
-- **Web arayüzü / `src/service`:** `progress.json` okuyucusu (`src/service/training.py`) `best.monitor`'u olduğu gibi taşır; Eğitim sayfası en iyi skoru `val/loss` için `sci`, `val/field_rel_l2` için yüzde olarak yazar ve
+- **Web arayüzü / `src/service`:** `progress.json` okuyucusu (`src/service/training.py`) `best.monitor`'u olduğu gibi taşır; Eğitim sayfası en iyi skoru `val/span_loss` (ve eski `val/loss`) için `sci`, `val/field_rel_l2` için yüzde olarak yazar ve
   anahtarı gösterir; eğrilerde olmayan anahtarların grafiği çizilmez (`field_rel_l2`, `freq_rel_err` yoksa gizlenir, `field_rel_l2` yoksa span hatası grafiği, `mass_diag_ratio` varsa oran grafiği gösterilir). `CURVE_KEYS` genişledi:
-  `train/span_rel_l2`, `train/mass_diag_ratio`, `val/mass_diag_ratio`, `val/grad_frac`. `val_field_rel_l2` yoksa `null` döner. Arayüz derlendi (`npm run build`, tsc + vite temiz).
+  `val/span_loss`, `train/span_rel_l2`, `train/mass_diag_ratio`, `val/mass_diag_ratio`, `train/grad_frac_lb`, `val/grad_frac_lb`, `val/grad_frac`. `val_field_rel_l2` yoksa `null` döner. Arayüz derlendi (`npm run build`, tsc + vite temiz; `node_modules` ana depodan salt-okunur symlink ile geçici dizinde).
 - Tahmin yolları (`src/service/model.py`, `scripts/predict_geometry.py`, TRUBA `predict.sh`, `scripts/eval_fidelity.py`) değişmedi; checkpoint'te
-  `projection=false` bulunması onları etkilemez (yalnız `training_step`, `validation_step`, `test_step` bakar). Checkpoint seçimi (`resolve_checkpoint`) `val_loss=` etiketini okur.
+  `projection=false` bulunması onları etkilemez (yalnız `training_step`, `validation_step`, `test_step` bakar). Checkpoint seçimi (`resolve_checkpoint`) `val_rel_l2=`, `val_span_loss=` ve `val_loss=` etiketlerini okur.
 - Ölçüm: `python scripts/profile_field_step.py <H5> --sample 0 --grad_checkpoint --no_projection` (eğitim adımı projeksiyonsuz; çıkarım geçişi ayrıca projekteli ölçülür).
 
 ## 5. Uygulama
@@ -163,13 +191,14 @@ python train.py --config configs/field_3d.yaml --override "dataset.data_path=dat
 |---|---|
 | `src/models/hcurl.py` | `hcurl_grams_plain` (projeksiyonsuz Gram'lar) |
 | `src/models/eigenspace_operator_field.py` | `forward_basis` (gövde + DOF eşlemesi; `BASIS_KEYS`), `forward` aynı (anahtar denetimi `_require`'a taşındı) |
-| `src/training/lightning_module.py` | `projection` argümanı (+ `ValueError`), `_compute_loss_3d_plain` (train ve val), `_normalise_columns`, `_span_terms(prefix=None, selfsup, ortho)`, `_basis_conditioning_loss(rel_floor)`, `monitor_metric`, `training_step` / `validation_step` dalı, `test_step` (`test/loss_plain`), epoch sonu tablosu |
-| `src/training/checkpoint.py` | `resolve_checkpoint`: `val_rel_l2=` ve `val_loss=` etiketleri |
+| `src/training/lightning_module.py` | `projection` argümanı (+ `ValueError`), `_compute_loss_3d_plain` (train ve val), `_normalise_columns` (çökmüş sütun ölü), `_label_lambda1`, `_grad_frac_lower_bound`, `_span_terms(prefix=None, selfsup, ortho)`, `_basis_conditioning_loss(rel_floor)`, `monitor_metric`, `training_step` / `validation_step` dalı, `test_step` (`test/loss_plain`), epoch sonu tablosu |
+| `src/training/checkpoint.py` | `resolve_checkpoint`: `val_rel_l2=`, `val_span_loss=` ve `val_loss=` etiketleri |
 | `src/data_gen/highorder.py` | `field_operators(potential=True)`: `False` iken `G`, `Kp` kurulmaz (`n_pot = None`) |
 | `src/data/field_dataset.py` | `FieldDataset(build_potential=True)`, `field_item` / `field_collate` G/Kp yokken çalışır, önbellek (aşağıda), `labels_are_model_eigenvectors` + uyarı (train, val) |
-| `train.py` | `training.projection` okunur ve denetlenir, train ve val bölmeleri `build_potential=projection`, test her zaman `True`, `_selection_callbacks`, `_checkpoint_filename`, `--resume` uyarısı |
+| `train.py` | `training.projection` okunur ve denetlenir, train ve val bölmeleri `build_potential=projection`, test her zaman `True`, `_selection_callbacks`, `_checkpoint_filename`, `--resume` hatası (`_check_projection_matches`) |
 | `src/service/training.py`, `web/src/components/TrainPage.tsx`, `web/src/i18n.ts` | `CURVE_KEYS`; monitöre göre skor biçimi; olmayan anahtarların grafiği gizlenir; span ve oran grafikleri |
 | `scripts/profile_field_step.py` | `--no_projection` |
+| `src/data/field_dataset.py`, `configs/*.yaml`, `cluster/truba/train.sbatch` | `dataset.max_tets` (§8); `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` |
 
 **Model ileri geçişinde bayrak yerine ayrı yöntem.** `forward` hiç değişmedi (aynı satırlar), yeni `forward_basis` onun ilk adımıdır. Böylece
 varsayılan yolun bit düzeyinde aynı kalması kod okunarak da görülür, ve projeksiyonsuz batch'te (G/Kp yok) yanlışlıkla Ritz çağırmak
@@ -186,6 +215,7 @@ eğitim kaybı, 40 log değeri, 28 parametre gradyanı, özdeğerler, alanlar, b
 kayıp, `preds`, `targets`, log sözlüğü, gradyanlar, özdeğerler, alan, baz, val kaybı: hepsi `True`). (Etiketler NGSolve özdeğer çözücüsünden gelir;
 süreçler arasında etiket işaretleri değişebilir, bu yüzden `preds` / `targets` mutlak değerle karşılaştırılır.) Karşılaştırma bir betikle yapıldı
 (depoda değil, testte değil); testte `test_default_projection_loss_is_composed_as_before` bileşimi, `test_monitor_follows_the_projection_option` varsayılan izlenen metriği ve dosya adını denetler.
+İnceleme düzeltmelerinden sonra yeniden çalıştırıldı (`bitid.py`, aynı sabit batch): kayıp, 40 log değeri, özdeğerler, taban, alan, val kaybı `torch.equal`; 28 gradyan, aynı kodla değişmemiş depo arasında da süreçten sürece 3·10⁻⁸ (float32) oynıyor (değişmemiş kod iki süreçte 18 gradyanda ayrıştı, sonraki iki süreçte aynıydı): değişmiş kod, değişmemiş kodun ikinci/üçüncü süreciyle 28/28 bit düzeyinde aynı. Süreçler arası gürültü eşzamanlı çalıştırma/iş parçacığı sırasından gelir, koddan değil.
 
 ## 6. Ölçümler
 
@@ -254,7 +284,8 @@ Tek örnek (kompozit, 23k tet), tek makine; başka boyut ve aile için ölçülm
 
 ### 6.3 Testler
 
-- Tam takım: `python -m pytest -q tests/` → **283 geçti** (11 dk 33 s; 4 çekirdek, makinede başka iş görülmedi; `ruff check .` ve `vulture` temiz). Önceki sürüm (yalnız eğitim projeksiyonsuz): 274 geçti, değişiklik öncesi (`50f8f82`): 259.
+- Tam takım (inceleme düzeltmelerinden sonra): `python -m pytest -q tests/` → **290 geçti** (11 dk 33 s; 4 çekirdek, makinede başka iş görülmedi; `ruff check .` ve `vulture` temiz). Önceki sürüm: 283, daha önceki (yalnız eğitim projeksiyonsuz): 274, değişiklik öncesi (`50f8f82`): 259.
+  İnceleme düzeltmelerinin testleri: çökmüş sütun ölü + canlı sütun gradyanı sınırlı, `grad_frac_lb` alt sınır / en düşük modda tam / loglama, `span_norm: energy` hatası, `--resume` projeksiyon uyuşmazlığı hatası, `test_step` gövdeyi bir kez çalıştırır, `resolve_checkpoint` üç etiket.
   Yeni/değişen testler: `tests/test_projection_free.py` (20) ve `tests/test_field_labels.py` (`test_noproj_fast_dev_run_train_py`, `test_noproj_train_py_trains_selects_by_val_loss_and_tests_projected`, `test_dataset_without_potentials_cache_and_label_warning`), `tests/test_service_training.py` (`test_projection_free_run_is_listed_without_ritz_metrics`).
 - Denetlenenler: G/Kp'siz operatörler = tam operatörler − {G, Kp}; Gram'lar projeksiyonlu olanlarla (enerji bit düzeyinde, çapraz blok 1e-6 içinde, `VV` = `M_V`, `M_V − M_div ⪰ 0`, `r_düz ≥ r_proj`) ve scipy ile bağımsız kurulmuş Gram'larla uyumlu;
   kayıp = `span + 0,01·ortho(enerji)` (scipy Gram'ından, bağımsız); **val kaybı = aynı batch'te train adımı kaybı** (eval modu, aynı ağırlıklar, `torch.equal`, 9 anahtarın hepsi eşit) ve `test/loss_plain` aynı değer;
@@ -269,11 +300,32 @@ Tek örnek (kompozit, 23k tet), tek makine; başka boyut ve aile için ölçülm
 ## 7. Yapılmayanlar ve açık sorular
 
 - **Hiçbir eğitim çalışması yapılmadı.** Soru: aynı veri, aynı bölme (geometri kimliğine göre), aynı model boyutu, aynı adım sayısı ve ≥ 3 tohumla
-  `projection: false` (`val/loss` ile seçilmiş checkpoint) testte (`test/field_rel_l2`, frekans bağıl hatası, `test/grad_frac`, Ritz marjı) `projection: true`'dan (`val/field_rel_l2` ile seçilmiş) kötü mü, eşit mi?
+  `projection: false` (`val/span_loss` ile seçilmiş checkpoint) testte (`test/field_rel_l2`, frekans bağıl hatası, `test/grad_frac`, Ritz marjı) `projection: true`'dan (`val/field_rel_l2` ile seçilmiş) kötü mü, eşit mi?
   "Eşit maliyet" iki türlü okunabilir (eşit adım: `false` adım başına daha ucuz; eşit duvar saati: `false` daha çok adım atar); ikisi ayrı raporlanmalı. Tek tohum "tek koşu" sayılır.
-- `val/loss` ile `test/field_rel_l2` arasındaki ilişki bilinmiyor: `val/loss` seçimi projekteli en iyi checkpoint'ten farklı bir epoch seçebilir.
+- `val/span_loss` ile `test/field_rel_l2` arasındaki ilişki bilinmiyor: `val/span_loss` seçimi projekteli en iyi checkpoint'ten farklı bir epoch seçebilir.
 - Frekans doğruluğu: frekans ve selfsup terimleri olmadan Ritz frekansları (özellikle `drop_tol` ile atılan yönlerin sayısı) ne yapar, bilinmiyor.
 - Aktarılmış p3 etiketlerle (HF ince ayar, docs/34 §4.3; adaptif etiket mesh'i model mesh'inden farklı) kullanım: uyarı verir, etkisi ölçülmedi.
 - Karma kullanım: aynı koşuda LF/HF `Fidelity` ağırlıkları span terimine uygulanır (`fidelity_freq_scale` etkisizdir, frekans terimi yok).
 - Doğrulama adımının maliyet kazancı (CG ileri geçişi yok) ölçülmedi; §6.2 yalnız eğitim adımıdır.
-- `--resume` ile `projection` değiştirmek (izlenen metriğin değişmesi) denenmedi.
+- `--resume` ile `projection` değiştirmek **hata**dır (§4); geçiş `--init_from` ile. `val/loss` ile seçen önceki (yayımlanmamış) sürümün checkpoint'lerinden `val/span_loss` ile devam etmek desteklenmez (aynı hata değil, ama ModelCheckpoint eski metriğin skorunu geri yükler).
+- `grad_frac_lb` bir alt sınırdır (§3.5); gerçek gradyan payı yalnız test/ara testte ölçülür. Çökmüş-sütun eşiği (`COLUMN_FLOOR = 1e-6`) ve float32 `K` gürültüsüne duyarlılığı gerçek eğitimde denenmedi.
+
+## 8. GPU belleği koruması: `dataset.max_tets`
+
+`dataset.max_tets` (varsayılan `null` = sınır yok; `FieldDataset(max_tets=)`), model mesh'i bu kadar tetten fazla olan örnekleri eler (H5 özniteliği `n_tets`; sınır dahil, `n_tets ≤ max_tets` kalır).
+- **Bölmeyi değiştirir.** Eleme **tüm bölmelerde, tohumlu train/val/test bölmesinden önce** yapılır (`require_label_ok` ile aynı yer): `max_tets` koyunca kalan örneklerin permütasyonu değişir ve geometrilerin hangi bölmeye düştüğü, `max_tets = null` koşusundakinden farklıdır.
+  İki koşuyu (ör. projeksiyonlu ve projeksiyonsuz) karşılaştırırken ikisinde de aynı `max_tets` kullanılmalı. Test kümesi de küçülür: büyük geometriler testte de yoktur (rapor edilirken belirtilmeli).
+- Eleme sayısı aile bazında **bir kez, train bölmesi oluşturulurken** yazılır ("`max_tets=N dropped K samples (…) before the train/val/test split`"); sayı tüm bölmeler için aynıdır, val/test için tekrar yazılmaz. Hepsi elenirse `ValueError`.
+- Bellek: bir eğitim adımının belleği tet sayısıyla yaklaşık doğrusal artar. Aşağıdaki GPU ölçümleri TRUBA'dan; yerel CPU ölçümü (§6.2) yalnız tepe RSS'dir.
+
+**TRUBA ölçümü (2026-11-03, akya-cuda, Tesla V100-SXM2-16GB, küçük model 0,854 M, 6 mod; `scripts/profile_field_step.py --device cuda --threads 10 --reps 2 --grad_checkpoint --no_projection`; tek koşu, tek örnek/boyut):**
+
+| örnek | tet | DOF | token | eğitim adımı (projeksiyonsuz), tepe GPU tahsisi | adım ileri + geri (ısınmış; ilk) | çıkarım (projekte), tepe | çıkarım süresi (CG) | `field_operators` (G/Kp'li) | .vol'den yeniden kurma | item / collate |
+|---|---|---|---|---|---|---|---|---|---|---|
+| elliptical sample_524388 | 23 711 | 251 892 | 331 954 | **4,74 GB** | 0,23 + 0,51 s (1,29 + 1,01 s) | 3,06 GB | 0,39 s (CG 0,17 s, 120 it) | 4,08 s (4,90 s) | 2,70 s | 0,39 / 0,52 s |
+| ridged_box sample_2097174 | 51 038 | 542 820 | 714 532 | **10,18 GB** | 0,49 + 1,08 s | 6,56 GB | 0,82 s (CG 0,35 s) | 8,79 s (10,23 s) | 3,99 s | 0,89 / 1,01 s |
+| hwr sample_3670100 | 81 530 | | | **CUDA OOM** eğitim adımında (15,77 GiB toplam; 11,88 tahsisli + 3,26 ayrılmış-tahsissiz) | | | | | | |
+
+Bellek ≈ 0,2 GB / 1000 tet (doğrusal). Üç noktadan ikisi arasında doğrusal enterpolasyon; 81k tet'in 16 GB'a sığmadığı ölçüldü. OOM'daki 3,26 GiB parçalanmadır: `cluster/truba/train.sbatch` artık `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+dışa aktarır (`container_prefix` `--cleanenv` kullanmaz, `apptainer exec` ana makine ortamını geçirir; doğrulandı: `cluster/truba/config.sh`). Etkisi ölçülmedi.
+v3 `TEST=1` train-grubu verisi (878 örnek): > 40k tet 170 örnek, > 50k tet 95, > 60k tet 44. Sahibin koşusu `dataset.max_tets=60000` kullanır (≈ 12 GB tepe, 0,2 GB/1000 tet ile; 60k'nın üstündeki 44 örnek, 878'in %5'i, hem train hem val/test'ten çıkar).

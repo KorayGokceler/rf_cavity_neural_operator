@@ -9,6 +9,8 @@ source "$TRUBA_DIR/config.sh"
 command -v module > /dev/null && module purge || true      # no host modules leaking into the container
 container_prefix --nv
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=2
+# V100 OOM (2026-11-03): 3.26 GiB reserved but unallocated (fragmentation); apptainer exec passes the host env (no --cleanenv)
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 CONFIG=${CONFIG:-configs/field_3d.yaml}
 DIRS=()                               # docs/29: the H5 shard directories of TRAIN_FAMILIES
 for fam in ${TRAIN_FAMILIES:-$(family_list train)}; do

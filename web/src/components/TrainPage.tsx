@@ -23,8 +23,9 @@ const hasPts = (series: LineSeries[]) => series.some((s) => s.pts.length > 0);  
 const live = (s?: RunStatus) => s === 'running' || s === 'preparing';
 const pct = (v: number) => `${(100 * v).toFixed(v < 0.01 ? 2 : 1)} %`;
 // best_score is the ModelCheckpoint's monitored metric: val/field_rel_l2 (a fraction) or, for a projection-free
-// run (docs/38), val/loss (not a percentage)
-const bestScore = (score: number, monitor: string | null) => (monitor === 'val/loss' ? sci(score, 3) : pct(score));
+// run (docs/38), val/span_loss (or val/loss in earlier runs): not a percentage
+const bestScore = (score: number, monitor: string | null) =>
+  (monitor === 'val/span_loss' || monitor === 'val/loss' ? sci(score, 3) : pct(score));
 
 function stamp() {
   const d = new Date(), p = (n: number) => String(n).padStart(2, '0');
@@ -123,6 +124,7 @@ export default function TrainPage({ lang, model, onModel }: Props) {
       field: [ser('train/field_rel_l2', tr, 's1'), ser('val/field_rel_l2', va, 's2')],
       span: [ser('train/span_rel_l2', tr, 's1'), ser('val/span_rel_l2', va, 's2')],
       ratio: [ser('train/mass_diag_ratio', tr, 's1'), ser('val/mass_diag_ratio', va, 's2')],
+      gradLb: [ser('train/grad_frac_lb', tr, 's1'), ser('val/grad_frac_lb', va, 's2')],
       freq: [ser('train/freq_rel_err', tr, 's1'), ser('val/freq_rel_err', va, 's2')],
       lr: [ser('lr-AdamW', t(lang, 'lr'), 's1')],
     };
@@ -257,6 +259,7 @@ export default function TrainPage({ lang, model, onModel }: Props) {
               {hasPts(curves.freq) && <LineChart title={t(lang, 'curveFreq')} series={curves.freq} log fmt={pct} xLabel="epoch" />}
               <LineChart title={t(lang, 'curveLoss')} series={curves.loss} fmt={(v) => sci(v, 2)} xLabel="epoch" />
               {hasPts(curves.ratio) && <LineChart title={t(lang, 'curveRatio')} series={curves.ratio} log fmt={(v) => sci(v, 1)} xLabel="epoch" />}
+              {hasPts(curves.gradLb) && <LineChart title={t(lang, 'curveGradLb')} series={curves.gradLb} fmt={pct} xLabel="epoch" />}
               <LineChart title={t(lang, 'curveLr')} series={curves.lr} log fmt={(v) => sci(v, 1)} xLabel="epoch" />
             </div>
           )}

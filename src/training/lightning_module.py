@@ -7,7 +7,7 @@ M-norm rel-L2 (subspace error inside near-degenerate clusters), frequency MAE / 
 
 projection=False (docs/38): the TRAIN and VALIDATION steps skip the kernel projection and the Rayleigh–Ritz solve;
 both compute the same loss (_compute_loss_3d_plain: span on the unprojected mass Gram and the energy Gram + ortho),
-and val/loss is the monitored metric (monitor_metric).  The TEST step stays projected (Ritz frequencies, fields) and
+and val/span_loss is the monitored metric (monitor_metric).  The TEST step stays projected (Ritz frequencies, fields) and
 adds test/loss_plain, the training loss on the test set.
 """
 import math
@@ -78,10 +78,11 @@ def count_near_degenerate(dataset, threshold, rel_threshold=None):
 
 def monitor_metric(projection):
     """The metric of ModelCheckpoint, EarlyStopping and the ReduceLROnPlateau scheduler: the Ritz field error
-    val/field_rel_l2 (projection: true), or val/loss (projection: false: the validation step has no Ritz fields;
-    val/loss is the training loss on the validation set, an upper bound of its projected span residual,
-    docs/38 §2.3)."""
-    return 'val/field_rel_l2' if projection else 'val/loss'
+    val/field_rel_l2 (projection: true), or val/span_loss (projection: false: the validation step has no Ritz
+    fields; val/span_loss is the span term of the training loss on the validation set, an upper bound of its
+    projected span residual, docs/38 §2.3; the ortho term of val/loss is a regulariser, not a quality measure,
+    and stays logged only)."""
+    return 'val/field_rel_l2' if projection else 'val/span_loss'
 
 
 def _basis_conditioning_loss(M_mat: torch.Tensor, rel_floor=None) -> torch.Tensor:
@@ -214,9 +215,10 @@ class CavityLightning(pl.LightningModule):
             above); validation is the same projected step (monitor val/field_rel_l2).  False = projection-free
             TRAINING and VALIDATION (docs/38): the forward builds V only (no Kp CG, no Rayleigh–Ritz) and the
             loss is span_weight · span + ortho_weight · ortho on the UNPROJECTED mass Gram (VᵀMV, VᵀMT, TᵀMT)
-            and the energy Gram, computed by one function for both steps (monitor val/loss).  Needs
+            and the energy Gram, computed by one function for both steps (monitor val/span_loss).  Needs
             selfsup_weight = freq_weight = 0 (ValueError otherwise: the compliance term rewards gradient content
-            without the projection, the frequency term needs Ritz values).  The test step and prediction always
+            without the projection, the frequency term needs Ritz values) and span_norm 'mass' or 'both' (ValueError for
+            'energy': nothing in an energy-norm loss sees gradient content).  The test step and prediction always
             project; the test step adds test/loss_plain.
         data_cfg: dataset settings at train time (split, seed, feature_indices, field ...), stored in
             the checkpoint so evaluation rebuilds the same split and inputs.
@@ -245,6 +247,10 @@ class CavityLightning(pl.LightningModule):
                 f"freq_weight={freq_weight}): without the kernel projection the self-supervised compliance term "
                 "rewards gradient content (docs/18 §3.4) and the frequency term needs the Ritz values "
                 "(configs/field_3d_noproj.yaml)")
+        if not projection and span_norm == 'energy':
+            raise ValueError("projection=False with span_norm='energy': the energy norm and the energy-Gram ortho are blind "
+                             "to the gradient content of V (K G = 0), so nothing would keep V free of gradients "
+                             "(docs/38 §2.3); use span_norm 'mass' or 'both' (default)")
         hp = {k: v for k, v in locals().items()
               if k not in ('self', '_legacy', 'field', '__class__')}
         self.save_hyperparameters(hp)
@@ -359,7 +365,7 @@ class CavityLightning(pl.LightningModule):
                 self.log(f'{prefix}/span_mode_{k}_rel_l2', rl_M[:, k].mean().float(), **kw)
         return total
 
-    def _compute_loss_3d(self, batch, prefix):
+    def _compute_loss_3d(self, batch, prefix, basis_out=None):
         """Loss of EigenspaceOperatorField (E-field HCurl(p) DOFs).
 
         Loss = the span / selfsup / ortho terms (_span_terms) on the Grams
@@ -372,10 +378,14 @@ class CavityLightning(pl.LightningModule):
         NaN = excluded for a cluster that the K-th output splits, see
         _clusters_3d), freq MAE [GHz] and relative error, the basis' gradient
         mass fraction 1 − diag(M_div)/diag(VᵀMV), CG iterations.
+        basis_out (dict or None): receives the basis V of this pass under 'basis' (test_step of a projection-free run
+        reuses it for test/loss_plain instead of running the trunk again).
         """
         from src.models.hcurl import KpSolve, hcurl_grams, mode_rel_l2
         out = self.model(batch)
         V, T = out['basis'], batch['Y_field']
+        if basis_out is not None:
+            basis_out['basis'] = V
         B, _, m = V.shape
         G_M, G_A, MT = hcurl_grams(V, T, out, batch)
         fid = batch.get('Fidelity', None)                 # mixed LF / HF labels (docs/34)
@@ -454,23 +464,71 @@ class CavityLightning(pl.LightningModule):
                  prog_bar=True, batch_size=n_valid, sync_dist=True)
         return total, preds, targets
 
+    # a V column whose mass norm² is below this fraction of the curl-bearing columns' largest one is dead in the
+    # unprojected loss (amplitude < 1e-3 of them): its loss gradient on V would grow as 1/amplitude otherwise
+    COLUMN_FLOOR = 1e-6
+
     @staticmethod
-    def _normalise_columns(G_M, G_A, m):
-        """Scale the V columns of the unprojected Grams [B, m+n, m+n] to unit mass norm (diag VᵀMV = 1; a null
-        column keeps 0): span_residual is invariant to column scaling, but its dead-column rule (diag ≤ 1e-12 ·
-        max, _jacobi_cholesky) is not, and in the unprojected mass Gram a gradient-heavy column of huge norm
-        would turn the clean columns "dead".  Mass-normalised, a pure-gradient column has a ~0 curl–curl
-        diagonal (dead there, as in the projected path) while the mass diagonal is 1.  Returns (G_M, G_A, ratio)
-        with ratio [B] = max/min of the original mass diagonal over the columns (capped at 1e30)."""
+    def _label_lambda1(G_M, G_A, m):
+        """[B, 1] smallest Rayleigh quotient diag(TᵀKT)/diag(TᵀMT) of the stored targets T (the lowest nonzero eigenvalue
+        of the model space for p2 labels on the model mesh); +inf when no target has mass."""
+        tm, ta = (torch.diagonal(G, dim1=-2, dim2=-1)[:, m:] for G in (G_M, G_A))
+        return torch.where(tm > 0, ta / tm.clamp(min=1e-300), torch.full_like(tm, float('inf'))).amin(-1, keepdim=True)
+
+    @staticmethod
+    def _normalise_columns(G_M, G_A, m, floor=COLUMN_FLOOR):
+        """Scale the V columns of the unprojected Grams [B, m+n, m+n] to unit mass norm (diag VᵀMV = 1) and kill the
+        collapsed ones; a null column keeps 0.  span_residual is invariant to column scaling, but its dead-column
+        rule (diag ≤ 1e-12 · max, _jacobi_cholesky) is not, and in the unprojected mass Gram a gradient-heavy column
+        of huge norm would turn the clean columns "dead": hence the unit scaling.  Because the loss is invariant to
+        the scaling, the unit scaling alone does not tame a column that collapses towards zero amplitude: its loss
+        gradient on V grows as 1/‖V_i‖ (2.4e6 at 1e-9 relative amplitude, 1e16 at 1e-20), and with gradient clipping
+        that one column shrinks every other update.  So a column with d_i ≤ floor · d_ref is dead (scale 0: no span
+        or ortho gradient, as the Jacobi rule does in the projected path), which bounds the loss gradient of a live
+        column by ~1/√floor = 1e3 times a column at the reference amplitude.  d_ref = the largest mass norm² among the
+        curl-bearing columns (Rayleigh quotient ≥ 0.1 λ₁, λ₁ from _label_lambda1; all columns when none is): a
+        gradient-heavy column (RQ ≈ 0) does not set the reference, so clean columns next to a 1e7× gradient column
+        stay alive.  A live column's gradient is still ∝ 1/amplitude (a scale-invariant loss), so a scaling bound
+        s = 1/√max(d, floor·d_max) alone does NOT bound it (probed: ratio 1/amplitude, not 1e3).  Returns
+        (G_M, G_A, ratio) with ratio [B] = max/min of the original mass diagonal over the columns (capped at
+        1e30, detached)."""
         d = torch.diagonal(G_M, dim1=-2, dim2=-1)[:, :m]
-        s = torch.where(d > 0, d.clamp(min=1e-300).rsqrt(), torch.zeros_like(d))
+        with torch.no_grad():
+            dd, da = d.detach(), torch.diagonal(G_A, dim1=-2, dim2=-1)[:, :m].detach()
+            lam = CavityLightning._label_lambda1(G_M.detach(), G_A.detach(), m)
+            curl = (dd > 0) & (da >= 0.1 * lam * dd)
+            d_ref = torch.where(curl, dd, torch.zeros_like(dd)).amax(-1, keepdim=True)
+            d_ref = torch.where(d_ref > 0, d_ref, dd.amax(-1, keepdim=True))
+            alive = (dd > 0) & (dd > floor * d_ref)
+        s = torch.where(alive, d.clamp(min=1e-300).rsqrt(), torch.zeros_like(d))
         S = torch.cat([s, torch.ones(G_M.shape[0], G_M.shape[1] - m, dtype=d.dtype, device=d.device)], -1)
         scale = S.unsqueeze(-1) * S.unsqueeze(-2)
-        dmax = d.amax(-1)
-        ratio = dmax / d.amin(-1).clamp(min=1e-30 * dmax).clamp(min=1e-300)
-        return G_M * scale, G_A * scale, ratio.detach()
+        dmax = d.detach().amax(-1)
+        ratio = dmax / d.detach().amin(-1).clamp(min=1e-30 * dmax).clamp(min=1e-300)
+        return G_M * scale, G_A * scale, ratio
 
-    def _compute_loss_3d_plain(self, batch, prefix='train'):
+    @staticmethod
+    def _grad_frac_lower_bound(G_M, G_A, m):
+        """Rigorous lower bound of the gradient mass fraction of each V column, from the unscaled unprojected Grams
+        [B, m+n, m+n] of [V | T] (no projection, no Kp solve), [B, m]: max(0, 1 − RQ_i/λ₁) with
+        RQ_i = (VᵀKV)_ii / (VᵀMV)_ii the Rayleigh quotient of column i (scale invariant) and λ₁ = min_k
+        (TᵀKT)_kk / (TᵀMT)_kk the smallest label Rayleigh quotient of the sample (the lowest nonzero eigenvalue).
+        With V_i = c + g, c ∈ range(P) (M-orthogonal to the gradients), g = (I − P)V_i: K g = 0 and (c, g)_M = 0, so
+        RQ_i = cᵀKc / (cᵀMc + gᵀMg) and cᵀKc ≥ λ₁ cᵀMc for every divergence-free c of the model space; hence
+        1 − gᵀMg/‖V_i‖² = cᵀMc/‖V_i‖² ≤ RQ_i/λ₁ and the gradient fraction gᵀMg/‖V_i‖² = 1 − diag(M_div)/diag(M_V) ≥
+        1 − RQ_i/λ₁.  Equality when c is a combination of the lowest eigenmodes (RQ_c = λ₁), otherwise a bound: a
+        column with high-frequency curl content (RQ_c ≫ λ₁) can hide any amount of gradient mass.  The bound is
+        exact in λ₁ for p2 labels on the model mesh (the stored lowest mode is the lowest nonzero eigenpair of the
+        model space); for p3 labels projected onto p2 it is the Rayleigh quotient of the projected mode (≥ the p2
+        eigenvalue by an amount that was not measured): the bound then holds only up to that factor.  A zero
+        column counts as 0.  Needs T to hold the lowest eigenmode."""
+        dM, dA = (torch.diagonal(G, dim1=-2, dim2=-1) for G in (G_M, G_A))
+        rq = dA[:, :m] / dM[:, :m].clamp(min=1e-300)
+        lam = CavityLightning._label_lambda1(G_M, G_A, m)
+        frac = (1.0 - rq / lam).clamp(min=0.0, max=1.0)
+        return torch.where((dM[:, :m] > 0) & torch.isfinite(lam), frac, torch.zeros_like(frac))
+
+    def _compute_loss_3d_plain(self, batch, prefix='train', basis=None):
         """Projection-free loss (projection=False, docs/38), the SAME function for the train and the validation step:
         span_weight · span + ortho_weight · ortho on the Grams of [V | T] WITHOUT the kernel projection
         (hcurl_grams_plain: mass VV = VᵀMV, cross VᵀMT, energy unchanged), the V columns scaled to unit mass norm
@@ -483,12 +541,18 @@ class CavityLightning(pl.LightningModule):
         the mass correlations of columns with independent gradient parts shrink at constant span, which
         would reward gradient content), mass_diag_ratio is logged.
         Logged under `prefix` ('train' / 'val'): loss, span_loss, ortho_loss, span_rel_l2, span_rel_l2_energy,
-        span_mode_k_rel_l2, mass_diag_ratio — every key on every step (DDP).  prefix None logs nothing
-        (test_step's loss_plain).  Needs no G / Kp in the batch.  Returns the loss."""
+        span_mode_k_rel_l2, mass_diag_ratio, grad_frac_lb, grad_frac_lb_max (_grad_frac_lower_bound: a rigorous
+        lower bound of the gradient mass fraction of the columns, mean / max over columns) — every key on every
+        step (DDP).  prefix None logs nothing (test_step's loss_plain).  basis: the V of an already computed forward
+        pass (test_step reuses the projected pass's), else the trunk runs here.  Needs no G / Kp in the batch.
+        Returns the loss."""
         from src.models.hcurl import hcurl_grams_plain
-        V, T = self.model.forward_basis(batch)['basis'], batch['Y_field']
+        V, T = (self.model.forward_basis(batch)['basis'] if basis is None else basis), batch['Y_field']
         B, _, m = V.shape
         G_M, G_A, _ = hcurl_grams_plain(V, T, batch)
+        if prefix is not None:
+            with torch.no_grad():
+                gf = self._grad_frac_lower_bound(G_M.detach(), G_A.detach(), m)
         G_M, G_A, ratio = self._normalise_columns(G_M, G_A, m)
         fid = batch.get('Fidelity', None)                 # mixed LF / HF labels (docs/34)
         w_fid = None
@@ -500,6 +564,9 @@ class CavityLightning(pl.LightningModule):
         with torch.no_grad():       # gradient-content watch: columns whose VᵀMV norm dwarfs the others' are mostly gradient
             self.log(f'{prefix}/mass_diag_ratio', ratio.mean().float(), on_step=False, on_epoch=True,
                      batch_size=B, sync_dist=True)
+            self.log(f'{prefix}/grad_frac_lb', gf.mean().float(), on_step=False, on_epoch=True, batch_size=B, sync_dist=True)
+            self.log(f'{prefix}/grad_frac_lb_max', gf.amax().float(), on_step=False, on_epoch=True, batch_size=B,
+                     sync_dist=True, reduce_fx='max')
         self.log(f'{prefix}/loss', total, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         return total
 
@@ -615,9 +682,12 @@ class CavityLightning(pl.LightningModule):
             print(f"  GLOBAL VAL  │  Rel L2: {global_val_l2:.4f}  │  R²: {global_val_r2:.4f}")
         else:
             val_loss = metrics.get('val/loss_epoch', metrics.get('val/loss', 0.0))
-            val_span = metrics.get('val/span_rel_l2', 0.0)
+            val_span = metrics.get('val/span_loss', 0.0)
+            val_rl2 = metrics.get('val/span_rel_l2', 0.0)
             ratio = metrics.get('val/mass_diag_ratio', 0.0)
-            print(f"  GLOBAL VAL  │  loss: {float(val_loss):.4f}  │  span rel L2: {float(val_span):.4f}  │  mass diag ratio: {float(ratio):.3g}")
+            gf = metrics.get('val/grad_frac_lb', 0.0)
+            print(f"  GLOBAL VAL  │  span loss (selected): {float(val_span):.4f}  │  loss: {float(val_loss):.4f}  │  span rel L2: "
+                  f"{float(val_rl2):.4f}  │  mass diag ratio: {float(ratio):.3g}  │  grad frac >= {float(gf):.3f}")
         print(f"{'━'*64}\n")
 
         # Per-geometry rel L2 error distribution histograms (every 5 epochs).
@@ -633,10 +703,11 @@ class CavityLightning(pl.LightningModule):
                                      global_step=self.current_epoch)
 
     def test_step(self, batch, batch_idx):
-        loss, preds, targets = self._compute_loss_3d(batch, "test")       # always projected: the real quality
-        if not self.projection:         # the training loss on the test set, next to the projected one (docs/38 §3.3)
-            self.log('test/loss_plain', self._compute_loss_3d_plain(batch, None).float(), on_step=False, on_epoch=True,
-                     batch_size=batch['Y_field'].shape[0], sync_dist=True)
+        shared = {}
+        loss, preds, targets = self._compute_loss_3d(batch, "test", shared)     # always projected: the real quality
+        if not self.projection:         # the training loss on the test set, next to the projected one (docs/38 §1.2)
+            self.log('test/loss_plain', self._compute_loss_3d_plain(batch, None, shared['basis']).float(),
+                     on_step=False, on_epoch=True, batch_size=batch['Y_field'].shape[0], sync_dist=True)
         self.test_r2(preds, targets)
         self.test_mae(preds, targets)
         self.log('test/r2', self.test_r2, on_step=False, on_epoch=True, sync_dist=True)

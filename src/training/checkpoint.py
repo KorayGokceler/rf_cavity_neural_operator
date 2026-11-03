@@ -3,14 +3,15 @@ import glob
 import os
 import re
 
-# the score in the file name of train.py's ModelCheckpoint: val_rel_l2 (monitor val/field_rel_l2) or val_loss
-# (monitor val/loss: projection-free training, docs/38); both are minimised
-_SCORE = re.compile(r'(val_rel_l2|val_loss)=([0-9.]+?)(?:-v\d+)?\.ckpt$')
+# the score in the file name of train.py's ModelCheckpoint: val_rel_l2 (monitor val/field_rel_l2), or, for
+# projection-free training (docs/38), val_span_loss (monitor val/span_loss; val_loss = val/loss was the monitor of
+# an earlier version and is still read); all are minimised
+_SCORE = re.compile(r'(val_rel_l2|val_span_loss|val_loss)=([0-9.]+?)(?:-v\d+)?\.ckpt$')
 
 
 def resolve_checkpoint(path):
     """A .ckpt file, or a training dir (training_logs/<exp_name>): the best checkpoint there (lowest
-    val_rel_l2 or val_loss in the file name, as written by train.py's ModelCheckpoint), else last.ckpt.
+    val_rel_l2, val_span_loss or val_loss in the file name, as written by train.py's ModelCheckpoint), else last.ckpt.
     A directory with checkpoints of both kinds (a run resumed with another training.projection) is judged
     within the kind of the most recently written best checkpoint: the two scores are not comparable."""
     if os.path.isfile(path):

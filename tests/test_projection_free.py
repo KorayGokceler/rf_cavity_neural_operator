@@ -234,7 +234,8 @@ def test_noproj_loss_is_span_plus_ortho_of_the_unprojected_grams(pill, box):
     assert torch.isfinite(loss) and abs(float(loss) - float(expected)) < 1e-4 * float(expected)
     assert set(logs) == {"train/span_loss", "train/ortho_loss", "train/span_rel_l2", "train/span_rel_l2_energy",
                          *(f"train/span_mode_{k}_rel_l2" for k in range(K_MODES)), "train/loss",
-                         "train/mass_diag_ratio"}
+                         "train/mass_diag_ratio",
+                         "train/grad_frac_lb", "train/grad_frac_lb_max"}
     assert abs(logs["train/span_loss"][0] - float(span)) < 1e-4 * float(span)
     assert abs(logs["train/ortho_loss"][0] - float(np.mean(ortho))) < 1e-4 * float(np.mean(ortho))
     assert logs["train/mass_diag_ratio"][0] >= 1.0
@@ -267,7 +268,8 @@ def test_noproj_train_and_val_steps_have_no_kp_solve_and_the_test_step_projects(
         lm.validation_step(red, 0)
     assert cg.n == 0 and not calls
     assert set(logs) == {"val/span_loss", "val/ortho_loss", "val/span_rel_l2", "val/span_rel_l2_energy",
-                         *(f"val/span_mode_{k}_rel_l2" for k in range(K_MODES)), "val/loss", "val/mass_diag_ratio"}
+                         *(f"val/span_mode_{k}_rel_l2" for k in range(K_MODES)), "val/loss", "val/mass_diag_ratio",
+                         "val/grad_frac_lb", "val/grad_frac_lb_max"}
     # the test step projects: CG runs, the Ritz metrics are logged, and the training loss comes next to the projected one
     logs.clear()
     with torch.no_grad():
@@ -297,7 +299,7 @@ def test_noproj_val_loss_is_the_train_loss_on_the_same_batch(pill, box):
     assert torch.equal(tl, vl)
     tr = {k[len("train/"):]: v for k, v in logs.items() if k.startswith("train/")}
     va = {k[len("val/"):]: v for k, v in logs.items() if k.startswith("val/")}
-    assert tr == va and "loss" in va and "mass_diag_ratio" in va and len(va) == 6 + K_MODES
+    assert tr == va and "loss" in va and "mass_diag_ratio" in va and len(va) == 8 + K_MODES
     # the projected test batch (with G, Kp) gives the same plain loss: the plain loss never reads them
     with torch.no_grad():
         assert torch.equal(lm._compute_loss_3d_plain(full, None), lm._compute_loss_3d_plain(batch, None))
@@ -312,23 +314,24 @@ def test_noproj_val_loss_is_the_train_loss_on_the_same_batch(pill, box):
 
 def test_monitor_follows_the_projection_option(tmp_path):
     """ModelCheckpoint, EarlyStopping and the ReduceLROnPlateau scheduler monitor val/field_rel_l2 by default and
-    val/loss without the projection; the file name carries the metric (src.training.checkpoint reads it)."""
+    val/span_loss without the projection (the span part of the loss: val/loss adds the ortho regulariser); the file
+    name carries the metric (src.training.checkpoint reads it)."""
     import train
     from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
     from src.training.lightning_module import monitor_metric
-    assert monitor_metric(True) == "val/field_rel_l2" and monitor_metric(False) == "val/loss"
+    assert monitor_metric(True) == "val/field_rel_l2" and monitor_metric(False) == "val/span_loss"
     tc = types.SimpleNamespace(log_dir=str(tmp_path), exp_name="e", patience=7)
     for projection, monitor, name in ((True, "val/field_rel_l2", "best-epoch={epoch:02d}-val_rel_l2={val/field_rel_l2:.4f}"),
-                                      (False, "val/loss", "best-epoch={epoch:02d}-val_loss={val/loss:.4f}")):
+                                      (False, "val/span_loss", "best-epoch={epoch:02d}-val_span_loss={val/span_loss:.4f}")):
         ckpt, stop = train._selection_callbacks(tc, projection)
         assert isinstance(ckpt, ModelCheckpoint) and isinstance(stop, EarlyStopping)
         assert ckpt.monitor == stop.monitor == monitor and ckpt.mode == stop.mode == "min"
         assert ckpt.filename == name and ckpt.save_top_k == 1 and ckpt.save_last and stop.patience == 7
         assert ckpt.dirpath == f"{tmp_path}/e" and ckpt.auto_insert_metric_name is False
         assert ckpt.format_checkpoint_name({"epoch": 3, monitor: torch.tensor(0.123456)}).endswith(
-            ("val_rel_l2=0.1235.ckpt" if projection else "val_loss=0.1235.ckpt"))
-    for projection, monitor in ((True, "val/field_rel_l2"), (False, "val/loss")):
+            ("val_rel_l2=0.1235.ckpt" if projection else "val_span_loss=0.1235.ckpt"))
+    for projection, monitor in ((True, "val/field_rel_l2"), (False, "val/span_loss")):
         lm = _module(**({} if projection else dict(projection=False, freq_weight=0.0, selfsup_weight=0.0)),
                      scheduler="reducelr")
         lm.trainer = types.SimpleNamespace(check_val_every_n_epoch=1, max_epochs=3)
@@ -336,7 +339,7 @@ def test_monitor_follows_the_projection_option(tmp_path):
         assert cfg["lr_scheduler"]["monitor"] == monitor
 
 
-def test_resolve_checkpoint_reads_both_score_tags(tmp_path):
+def test_resolve_checkpoint_reads_all_score_tags(tmp_path):
     import os
 
     from src.training.checkpoint import resolve_checkpoint
@@ -348,6 +351,12 @@ def test_resolve_checkpoint_reads_both_score_tags(tmp_path):
     (d / "best-epoch=02-val_loss=0.3000-v1.ckpt").write_bytes(b"0")
     assert resolve_checkpoint(str(d)).endswith("val_loss=0.2500.ckpt")                 # lowest within the kind
     assert resolve_checkpoint(str(d / "last.ckpt")).endswith("last.ckpt")
+    # the current projection-free tag (val/span_loss) is read as a kind of its own; val_loss files stay readable
+    sp = tmp_path / "span"
+    sp.mkdir()
+    for n in ("last.ckpt", "best-epoch=01-val_span_loss=0.4000.ckpt", "best-epoch=05-val_span_loss=0.3000-v1.ckpt"):
+        (sp / n).write_bytes(b"0")
+    assert resolve_checkpoint(str(sp)).endswith("best-epoch=05-val_span_loss=0.3000-v1.ckpt")
     # a run resumed with the other option: the scores are not comparable, the newest kind wins
     new = d / "best-epoch=09-val_rel_l2=0.9000.ckpt"
     new.write_bytes(b"0")
@@ -464,13 +473,14 @@ def test_plain_span_residual_survives_huge_gradient_columns(pill):
 def test_plain_loss_terms_are_invariant_to_the_scale_of_every_column(pill):
     """span_residual is invariant to column scaling, its dead-column rule is not: in the plain path the V columns are
     scaled to unit mass norm first, so r_M, r_A and the (energy-Gram) ortho do not move when each column is multiplied
-    by any factor in 1e-6 … 1e6 (basis: targets + gradient content + random fields)."""
+    by any factor in 1e-1.2 … 1e1.2 (basis: targets + gradient content + random fields).  Columns below 1e-3 of the
+    curl-bearing columns' amplitude are dead by design (test_a_collapsed_column_is_dead_...), so the range is limited."""
     ops, batch, T, G, keep = _plain_setup(pill)
     lm = _module(projection=False, freq_weight=0.0, selfsup_weight=0.0)
     Gphi = (G @ torch.randn(G.shape[1], 4, dtype=torch.float64, generator=torch.Generator().manual_seed(9)))[None]
     V = _mixed_basis(batch, T, Gphi)
     m = V.shape[-1]
-    fac = 10.0 ** torch.tensor([-6.0, 6.0, 2.0, -3.0, 5.0])[:m].double()
+    fac = 10.0 ** torch.tensor([-1.2, 1.2, 1.0, -1.0, 0.5])[:m].double()
     res = []
     for scale in (torch.ones(m, dtype=torch.float64), fac):
         G_M, G_A, ratio = lm._normalise_columns(*hcurl_grams_plain((V * scale).double(), batch["Y_field"], batch)[:2], m)
@@ -479,8 +489,104 @@ def test_plain_loss_terms_are_invariant_to_the_scale_of_every_column(pill):
     for a, b in zip(res[0][:3], res[1][:3], strict=True):
         assert torch.allclose(a, b, rtol=1e-6, atol=1e-9), (a, b)
     print("r_M", res[0][0], "r_A", res[0][1], "ortho", res[0][2], "ratios", float(res[0][3]), float(res[1][3]))
-    assert float(res[1][3]) > 1e10 * float(res[0][3])                  # the scale change moved the ratio, nothing else
+    assert float(res[1][3]) > 10 * float(res[0][3])                  # the scale change moved the ratio, nothing else
     assert (res[0][0] > 1e-3).all() and (res[0][1] < 1e-6).all()      # nontrivial: gradient content costs mass-norm error
+
+
+def test_a_collapsed_column_is_dead_and_a_live_columns_gradient_is_bounded(pill):
+    """Review finding: a column that collapses to 1e-9 of the others' amplitude was blown up to unit norm by the exact
+    1/√diag scale and its loss gradient on V grew ~1/‖V_i‖ (stalling gradient-clipped training).  The loss is invariant
+    to each column's scale, so a scaling bound alone does not help (the gradient stays ∝ 1/amplitude); the column is
+    dead (scale 0) when its mass norm² is below 1e-6 of the curl-bearing columns' largest, which bounds a live
+    column's gradient by ~1e3 x a healthy one's.  A gradient-heavy column does not set the reference."""
+    ops, batch, T, G, keep = _plain_setup(pill)
+    lm = _module(projection=False, freq_weight=0.0, selfsup_weight=0.0)
+    Tn = T / (T * spmm(batch["M"], T)).sum(1, keepdim=True).sqrt()
+    rnd = torch.randn(1, T.shape[1], 3, dtype=torch.float64, generator=torch.Generator().manual_seed(11)) * keep
+    rnd = rnd / (rnd * spmm(batch["M"], rnd)).sum(1, keepdim=True).sqrt()
+
+    def column_grads(amp, exact=False):
+        V = (torch.cat([Tn[..., :2], rnd[..., :1], amp * rnd[..., 1:2], rnd[..., 2:]], -1) * keep).double().requires_grad_()
+        m = V.shape[-1]
+        G_M, G_A, _ = hcurl_grams_plain(V, batch["Y_field"], batch)
+        if exact:                                              # the earlier exact unit-norm scale
+            d = torch.diagonal(G_M, dim1=-2, dim2=-1)[:, :m].rsqrt()
+            sc = torch.cat([d, torch.ones(1, G_M.shape[1] - m, dtype=d.dtype)], -1)
+            Gn, An = G_M * sc[:, :, None] * sc[:, None, :], G_A * sc[:, :, None] * sc[:, None, :]
+        else:
+            Gn, An, _ = lm._normalise_columns(G_M, G_A, m)
+        lm._span_terms(Gn, An, m, None, None, selfsup=False, ortho="energy").backward()
+        return V.grad[0].norm(dim=0)                            # per column [m]
+    healthy = column_grads(1.0)
+    assert torch.isfinite(healthy).all() and float(healthy.min()) > 0
+    for amp in (1.0, 1e-1, 1e-2, 5e-3):                         # live: gradient ∝ 1/amp, bounded by ~1/amp_min
+        g = column_grads(amp)
+        assert torch.isfinite(g).all() and float(g[3] / healthy[3]) < 1.2 / amp, amp
+        assert float(g[[0, 1, 2, 4]].max()) < 10 * float(healthy.max())      # the other columns are not affected
+    for amp in (1e-4, 1e-6, 1e-9, 1e-20):                       # collapsed: dead, no gradient (the exact scale: 1/amp)
+        g = column_grads(amp)
+        assert float(g[3]) == 0.0 and torch.isfinite(g).all(), amp
+        assert float(g[[0, 1, 2, 4]].max()) < 10 * float(healthy.max())
+    assert float(column_grads(1e-9, exact=True)[3] / healthy[3]) > 1e6
+    # the dead column drops out of the span residuals: same r_M, r_A as without it
+    V = torch.cat([Tn[..., :2], rnd[..., :1], rnd[..., 2:]], -1) * keep
+    V9 = torch.cat([Tn[..., :2], rnd[..., :1], 1e-9 * rnd[..., 1:2], rnd[..., 2:]], -1) * keep
+    r = []
+    for X in (V, V9):
+        G_M, G_A, _ = hcurl_grams_plain(X.double(), batch["Y_field"], batch)
+        Gn, An, _ = lm._normalise_columns(G_M, G_A, X.shape[-1])
+        r.append(torch.stack([span_residual(Gn, X.shape[-1]), span_residual(An, X.shape[-1])]))
+    assert torch.allclose(r[0], r[1], rtol=1e-6, atol=1e-9)
+
+
+def test_grad_frac_lower_bound_is_a_lower_bound_and_exact_on_the_lowest_mode(pill):
+    """grad_frac_lb = max(0, 1 − RQ_i/λ₁) from the unprojected Grams only.  With V_i = T_k + a·g (g a unit-mass gradient,
+    M-orthogonal to T_k) the true gradient fraction is a²/(1 + a²); the bound is exact for the lowest mode (RQ = λ₁),
+    smaller for higher modes (the bound cannot see the gradient mass behind curl content of RQ > λ₁), and never above the
+    true fraction 1 − diag(M_div)/diag(VᵀMV) of the projected basis (random mixed columns, too)."""
+    ops, batch, T, G, keep = _plain_setup(pill)
+    lm = _module(projection=False, freq_weight=0.0, selfsup_weight=0.0)
+    Tn = T / (T * spmm(batch["M"], T)).sum(1, keepdim=True).sqrt()
+    Gphi = (G @ torch.randn(G.shape[1], K_MODES, dtype=torch.float64, generator=torch.Generator().manual_seed(5)))[None]
+    Gn = Gphi / (Gphi * spmm(batch["M"], Gphi)).sum(1, keepdim=True).sqrt()
+    f = lambda a: a * a / (1 + a * a)                                         # noqa: E731
+    for a in (0.0, 0.5, 2.0, 10.0):
+        V = (Tn + a * Gn) * keep
+        G_M, G_A, _ = hcurl_grams_plain(V, batch["Y_field"], batch)
+        lb = lm._grad_frac_lower_bound(G_M, G_A, V.shape[-1])[0]
+        proj = project_basis(V, batch, 1e-12)
+        true = 1.0 - torch.diagonal(proj["M_div"], dim1=-2, dim2=-1)[0] / torch.diagonal(proj["M_V"], dim1=-2, dim2=-1)[0]
+        assert (lb <= true + 1e-6).all(), (a, lb, true)                      # a lower bound (tolerance: the 1e-12 Cholesky tol)
+        assert abs(float(lb[0]) - f(a)) < 1e-4, (a, float(lb[0]))              # exact on the lowest mode
+        assert (lb <= f(a) + 1e-6).all()
+        if a == 2.0:                                                         # a higher mode (RQ > λ₁): a strict bound
+            assert float(lb[-1]) < f(a) - 0.01
+    # random mixed basis: the bound never exceeds the projected basis's true gradient fraction
+    V = _mixed_basis(batch, T, (G @ torch.randn(G.shape[1], 4, dtype=torch.float64, generator=torch.Generator().manual_seed(6)))[None])
+    G_M, G_A, _ = hcurl_grams_plain(V, batch["Y_field"], batch)
+    lb = lm._grad_frac_lower_bound(G_M, G_A, V.shape[-1])[0]
+    proj = project_basis(V, batch, 1e-12)
+    true = 1.0 - torch.diagonal(proj["M_div"], dim1=-2, dim2=-1)[0] / torch.diagonal(proj["M_V"], dim1=-2, dim2=-1)[0]
+    assert (lb <= true + 1e-6).all() and float(lb.max()) > 0.05 and (lb >= 0).all()
+    # a zero column counts 0, a pure-gradient column is ~1
+    V = torch.cat([Tn[..., :1], torch.zeros_like(Tn[..., :1]), 3.0 * Gn[..., :1]], -1) * keep
+    G_M, G_A, _ = hcurl_grams_plain(V.float(), batch["Y_field"], batch)
+    lb = lm._grad_frac_lower_bound(G_M, G_A, 3)[0]
+    assert float(lb[0]) < 1e-3 and float(lb[1]) == 0.0 and float(lb[2]) > 0.999
+
+
+def test_noproj_logs_grad_frac_lb_every_step_for_train_and_val(pill):
+    _, _, ops_np, r, Y = pill
+    batch = field_collate([_item(ops_np, r, Y)])
+    lm = _module(projection=False, freq_weight=0.0, selfsup_weight=0.0)
+    logs = _capture(lm)
+    with torch.no_grad():
+        lm._compute_loss_3d_plain(batch, "train")
+        lm._compute_loss_3d_plain(batch, "val")
+    for pre in ("train", "val"):
+        mean, mx = logs[f"{pre}/grad_frac_lb"], logs[f"{pre}/grad_frac_lb_max"]
+        assert 0.0 <= mean[0] <= mx[0] <= 1.0 and mean[1] == mx[1] == 1
+    assert logs["train/grad_frac_lb"] == logs["val/grad_frac_lb"]
 
 
 def test_p3_labels_projected_onto_p2_of_the_same_mesh_are_m_orthogonal_to_the_gradients(pill):
@@ -513,6 +619,55 @@ def test_selfsup_or_freq_weight_with_projection_off_is_an_error():
     assert lm.projection is False and lm.hparams.projection is False
     with pytest.raises(ValueError, match="true or false"):
         CavityLightning(val_dim=9, projection="no")
+
+
+def test_span_norm_energy_with_projection_off_is_an_error():
+    """The energy norm and the energy-Gram ortho are blind to gradients: nothing would keep V free of them."""
+    kw = dict(val_dim=9, hidden_dim=16, n_heads=2, n_basis=8, num_field_modes=K_MODES, rff_dim=8,
+              eigenspace_kwargs={"n_layers": 1}, selfsup_weight=0.0, freq_weight=0.0)
+    with pytest.raises(ValueError, match="span_norm='energy'"):
+        CavityLightning(projection=False, span_norm="energy", **kw)
+    for ok in ("mass", "both"):
+        assert CavityLightning(projection=False, span_norm=ok, **kw).span_norm == ok
+    CavityLightning(projection=True, span_norm="energy", **{**kw, "selfsup_weight": 0.01, "freq_weight": 0.1})   # projected: allowed
+
+
+def test_test_step_of_a_projection_free_run_runs_the_trunk_once(pill, monkeypatch):
+    """test/loss_plain reuses the basis of the projected pass: one trunk evaluation per test step, not two."""
+    full = field_collate([_item(pill[1], pill[3], pill[4])])
+    lm = _module(projection=False, freq_weight=0.0, selfsup_weight=0.0)
+    logs = _capture(lm)
+    calls = []
+    orig = lm.model.field_basis
+    monkeypatch.setattr(lm.model, "field_basis", lambda b: calls.append(1) or orig(b))
+    with torch.no_grad():
+        lm.test_step(full, 0)
+        assert len(calls) == 1
+        plain = lm._compute_loss_3d_plain(full, None)                       # alone (no basis handed in): runs the trunk itself
+    assert len(calls) == 2
+    assert abs(logs["test/loss_plain"][0] - float(plain)) < 1e-6 * float(plain)
+
+
+def test_resume_with_another_projection_is_an_error(tmp_path, monkeypatch):
+    import train
+    ckpt = tmp_path / "last.ckpt"
+    torch.save({"hyper_parameters": {"projection": True}}, ckpt)
+    old = tmp_path / "old.ckpt"
+    torch.save({"hyper_parameters": {}}, old)                                # before the option: projection true
+    train._check_projection_matches(str(ckpt), True)
+    train._check_projection_matches(str(old), True)
+    with pytest.raises(ValueError, match="projection=True, but training.projection=False"):
+        train._check_projection_matches(str(ckpt), False)
+    with pytest.raises(ValueError, match="projection=True, but training.projection=False"):
+        train._check_projection_matches(str(old), False)
+    torch.save({"hyper_parameters": {"projection": False}}, tmp_path / "np.ckpt")
+    train._check_projection_matches(str(tmp_path / "np.ckpt"), False)
+    with pytest.raises(ValueError, match="projection=False, but training.projection=True"):
+        train._check_projection_matches(str(tmp_path / "np.ckpt"), True)
+    # and through main(): the error comes before any dataset is built
+    monkeypatch.setattr(sys, "argv", ["train.py", "--config", "configs/field_3d_noproj.yaml", "--resume", str(ckpt)])
+    with pytest.raises(ValueError, match="--init_from"):
+        train.main()
 
 
 def test_checkpoint_without_the_key_loads_with_projection(tmp_path):

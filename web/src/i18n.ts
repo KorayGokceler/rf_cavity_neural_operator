@@ -150,6 +150,7 @@ const S = {
   curveField: { tr: 'Alan hatası (göreli L2, M-normu)', en: 'Field error (relative L2, M-norm)' },
   curveSpan: { tr: 'Aralık hatası (en iyi yaklaşım, göreli L2)', en: 'Span error (best approximation, relative L2)' },
   curveRatio: { tr: 'Taban sütunlarının kütle normu oranı (maks/min)', en: 'Basis column mass-norm ratio (max/min)' },
+  curveGradLb: { tr: 'Taban sütunlarının gradyan kütle payı (alt sınır)', en: 'Basis column gradient mass fraction (lower bound)' },
   curveFreq: { tr: 'Frekans hatası (göreli)', en: 'Frequency error (relative)' },
   curveLr: { tr: 'Öğrenme hızı', en: 'Learning rate' },
   train: { tr: 'eğitim', en: 'train' },

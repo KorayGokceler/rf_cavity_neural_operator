@@ -214,8 +214,9 @@ class FieldDataset(Dataset):
     with the train split.
     max_tets (default None = no limit): drop samples whose model mesh has more tets (attr n_tets) — a GPU memory
     guard (one training step's memory grows ~linearly with the tets; a 16 GB V100 holds ~45–55k tets with the
-    small model, docs/38 §6).  Applied before the split, so the split depends on it; the drop count per family is
-    printed with the train split.
+    small model, docs/38 §8).  Applied to ALL splits before the seeded split, so setting it changes which geometries
+    are train / val / test; the drop count per family is the same for every split and is printed once, with the
+    train split (as for require_label_ok).
 
     build_potential (default True): build the kernel potentials G, Kp (field_operators(potential=...)) and put
     them into the items / batches.  False is for the TRAIN and VAL splits of a projection-free run
@@ -273,7 +274,7 @@ class FieldDataset(Dataset):
                   "(" + ", ".join(f"{k or '?'}: {v}" for k, v in sorted(dropped.items())) + ")")
         if too_big and split == "train":
             print(f"FieldDataset: max_tets={int(max_tets)} dropped {sum(too_big.values())} samples "
-                  "(" + ", ".join(f"{k or '?'}: {v}" for k, v in sorted(too_big.items())) + ")")
+                  "(" + ", ".join(f"{k or '?'}: {v}" for k, v in sorted(too_big.items())) + ") before the train/val/test split")
         if not index:
             raise ValueError(f"no samples in {self.paths}" + (" (all dropped by require_label_ok / max_tets)"
                                                               if dropped or too_big else ""))
