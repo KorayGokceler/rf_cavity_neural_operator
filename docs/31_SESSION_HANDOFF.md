@@ -594,6 +594,15 @@ Neden: `size_field` yalnız %20–40 küçük eleman istiyor (üs 1/(2p) = 1/6, 
 - Gerçek hata (p4/p3): pillbox, spoke, hwr'de `est` ≥ gerçek (oran 1–4,2).
 - `MIN_FILLET` büyütmek keskin yedeği azaltmıyor (0,05 kalır). Sahip: `require_label_ok: true`, keskin örnekler eğitimde, `p2_max_refine` 3.
 
+### 3.15 İzdüşümsüz eğitim ve ilk pilot eğitim (2026-11-04, `claude/train-no-projection`; ayrıntı docs/38)
+
+- `training.projection: false` (`configs/field_3d_noproj.yaml`): eğitim ve doğrulama adımı çekirdek izdüşümü, Kp CG ve Ritz olmadan; kayıp = izdüşümsüz Gram'larla span + enerji Gram'ında ortho; model seçimi `val/span_loss`; test adımı izdüşümlü + Ritz. Varsayılan (`true`) bit düzeyinde aynı. İki fizik incelemesi; bulgular düzeltildi.
+- Etiketlerin gradyan içeriği (p2, aynı mesh) ~2e-8; p3→p2 aynı mesh ≤ 3e-10; mesh'ler arası aktarım 1e-5–6e-4 (uyarı).
+- Ölçümler: CPU eğitim adımı 33,9 → 27,0 s (23k tet). TRUBA V100: adım belleği ~0,2 GB / 1000 tet (23,7k: 4,74 GB; 51k: 10,18 GB; 81,5k: bellek dışı) → `dataset.max_tets`. Colab G4 (RTX PRO 6000): adım 0,26 s (23,7k) / 0,57 s (51k), V100'ün ~2,8 katı.
+- Önbellek biçimi 2 (`src/data/ops_cache.py`): izdüşümsüz varyant 5,2×, tam varyant 2,6× küçük. Hız: `training.accumulate_grad_batches`, `diag_metrics_every_n_steps`, `gpu_prefetch`, `prefetch_factor`, `dataset.cache_compress`, `scripts/profile_loader.py`, `training.profile_steps` (GPU etkisi ölçülmedi).
+- İlk pilot eğitim (sahip, Colab G4, `notebooks/colab_train_noproj.ipynb`): v3 `TEST=1` verisi, 686 / 85 / 87 örnek, small model, batch 1 × 4 biriktirme, 50 epoch. 1. epoch (önbellek kurulurken) 19 dk, sonrakiler ~5,7 dk; GPU kullanımı ~%40–50 (veri tarafı + ana süreç sınırlı). Doğrulama `span_rel_l2` 0,84 → 0,41 (1. epoch). Test sonuçları (izdüşümlü alan / frekans hatası) henüz kaydedilmedi.
+- TRUBA GPU: `normal` QOS ile akya-cuda ~6 hafta, barbun-cuda ~6 gün kuyruk tahmini (proje QOS'ları +10–30k öncelik) → proje hesabı açık iş.
+
 ## 4. Kararlar ve gerekçeleri
 
 - **E formülasyonu kalıyor.** H formülasyonu CG'yi kaldırmıyor (Neumann Laplace'ı yine gerekli).
