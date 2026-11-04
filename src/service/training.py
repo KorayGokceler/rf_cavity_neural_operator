@@ -1,7 +1,7 @@
 """Model training from the web UI: one train.py run at a time (one GPU), in <runs_root>/<name>/ — the
 same layout as the notebooks' training_logs/<EXP> and TRUBA's runs/<EXP>, so every run is listed:
 
-    <runs_root>/<name>/best-epoch=…-val_rel_l2=….ckpt, last.ckpt   (ModelCheckpoint)
+    <runs_root>/<name>/best-epoch=…-val_rel_l2=….ckpt (or …-val_span_loss=… for a projection-free run), last.ckpt
     <runs_root>/<name>/progress.json                                 (src/training/progress.py)
     <runs_root>/<name>/train_params.json                             (what the UI started: for resume)
 
@@ -30,8 +30,11 @@ PRESETS = {
 }
 PRESET_PARAMS_M = {'tiny': 0.03, 'small': 0.85, 'base': 2.8, 'large': 6.5, 'xl': 21.7}
 # metrics sent to the UI per epoch (progress.json keeps all of them)
-CURVE_KEYS = ('train/loss', 'val/loss', 'train/field_rel_l2', 'val/field_rel_l2', 'val/span_rel_l2',
-              'train/freq_rel_err', 'val/freq_rel_err', 'val/freq_mae_ghz', 'lr-AdamW')
+# (a projection-free run, docs/38, has no *field_rel_l2 / freq_* / grad_frac keys in train, and none but the loss
+# terms, span_rel_l2, mass_diag_ratio and grad_frac_lb in val: absent keys are simply not in the history entries)
+CURVE_KEYS = ('train/loss', 'val/loss', 'val/span_loss', 'train/field_rel_l2', 'val/field_rel_l2', 'train/span_rel_l2',
+              'val/span_rel_l2', 'train/freq_rel_err', 'val/freq_rel_err', 'val/freq_mae_ghz', 'val/grad_frac',
+              'train/mass_diag_ratio', 'val/mass_diag_ratio', 'train/grad_frac_lb', 'val/grad_frac_lb', 'lr-AdamW')
 NAME_RE = r'^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$'      # no '..', no hidden dirs
 
 

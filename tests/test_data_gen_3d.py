@@ -478,3 +478,21 @@ def test_residual_indicator(pillbox_p2):
     noisy[~free] = 0.0
     noisy /= np.sqrt(np.einsum("ij,ij->j", noisy, M @ noisy))
     assert residual_indicator(K, M, noisy, vals, free=free).min() > 1e-2
+
+
+def test_resume_moves_a_truncated_partial_file_aside(tmp_path):
+    """A shard killed while writing leaves a truncated .partial HDF5 file (TRUBA, 2026-11-02): resuming must move it
+    aside and start the shard again, not crash with "truncated file"."""
+    import h5py
+
+    from src.data_gen.dataset_generator_3d import _partial_samples
+    good = tmp_path / "ok.h5.partial"
+    with h5py.File(good, "w") as f:
+        f.create_group("sample_0007")
+        f.create_group("sample_0012")
+    assert _partial_samples(str(good)) == {7, 12}
+    bad = tmp_path / "x.h5.partial"
+    bad.write_bytes(b"\x89HDF\r\n\x1a\n" + b"\0" * 88)        # 96 bytes: the superblock of a file cut off mid-write
+    assert _partial_samples(str(bad)) is None
+    assert not bad.exists()
+    assert len(list(tmp_path.glob("x.h5.partial.corrupt-*"))) == 1

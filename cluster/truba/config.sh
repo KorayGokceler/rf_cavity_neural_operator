@@ -55,7 +55,7 @@ TOL_F_P2=${TOL_F_P2:-1e-3}             # field, p2 labels: refine the start mesh
 MODEL_MAX_ELEMENTS=${MODEL_MAX_ELEMENTS:-20000}   # field, LABEL_ORDER 3 only: tet cap of the model mesh (p2 labels have no cap)
 MAX_NDOF=${MAX_NDOF:-900000}           # field: DOF budget per sample; bounds p2 refinement too (≤ ~82k tets at 900k; ~12 GB conservative, measured ≤ 4.1 GB at 366k DOF)
 ROUND_EDGES=${ROUND_EDGES:-1}          # field: fillet re-entrant (singular) edges (docs/30 §3); 0 = keep them sharp
-DATA_VERSION=${DATA_VERSION:-v2}       # generator output version (src/service/jobs.py TAG_VERSION): part of TAG
+DATA_VERSION=${DATA_VERSION:-v3}       # generator output version (src/service/jobs.py TAG_VERSION): part of TAG
 HEAL=${HEAL:-1}                        # field: OCC healing of ridged_box / dtl before meshing (docs/29 §2.3)
 SAMPLE_TIMEOUT=${SAMPLE_TIMEOUT:-3600}   # s; a stuck mesh/solve is skipped
 # _1s: one-solve high-fidelity labels (ADAPT=0, LABEL_ORDER > MODEL_ORDER), _sharp: unrounded geometries — never
@@ -78,7 +78,7 @@ GPUS=${GPUS:-1}                        # >1: one DDP rank per GPU (srun), traini
 GPU_CPUS=${GPU_CPUS:-10}               # cores per GPU (DataLoader workers assemble the operators)
 CONFIG=${CONFIG:-}                     # training config (empty: configs/field_3d.yaml)
 TRAIN_FAMILIES=${TRAIN_FAMILIES:-}     # families whose H5 shards train the model (empty: group "train")
-CACHE_DIR=${CACHE_DIR:-}               # on-disk operator cache (~0.5 GB per geometry at p2; empty: none)
+CACHE_DIR=${CACHE_DIR:-}               # on-disk operator cache (~0.13 GB train/val + ~0.28 GB test per 23k-tet geometry at p2, docs/38 §9; empty: none)
 GPU_TIME=${GPU_TIME:-3-00:00:00}       # killed runs resume from last.ckpt when re-submitted
 EXP=${EXP:-base}                       # run name → $OUT_DIR/runs/$EXP
 MODEL=${MODEL:-base}                   # small 0.9M | base 2.8M | large 6.5M | xl 22M (see model_overrides)

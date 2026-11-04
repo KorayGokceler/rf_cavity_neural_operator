@@ -2,7 +2,9 @@
 
 > **2026-11-01:** the default training labels are now **p2** (one HCurl p2 solve on the model mesh; docs/37). This document (the adaptive loop) describes the p3 high-fidelity labels, which remain available with `--label_order 3` (test, validation and CST sets); for the p3 path the model mesh cap is 20000 tets (`model_max_elements`). The p2 path has no tet cap (error limit `tol_f_p2`, docs/37 §3).
 
-> **Known issue: stall on coarse start meshes (found 2026-11-01, open: docs/31 §6 item 14).** The adaptive loop can report `converged` without refining.
+> **Fixed 2026-11-02 (code, owner-approved; docs/31 §6 item 14): forced growth in the remesh loop.** Each pass now aims at `max(Σ(h/hn)³, 1.3·ne)` tets (`adaptive.size_field_for_count`, capped by the DOF budget), the REALISED count decides (`adaptive.grow_mesh`: < 15 % growth → stronger target, up to 3 meshings; over budget → `remesh.reset()` and a smaller target), `converged` needs the tolerances AND a last pass that grew the mesh by ≥ 15 % (else another pass, and `stop = 'stalled'` when none can grow), and the QoI change has an absolute R/Q floor (`rq_abs_floor` 1e-3 ohm, `adaptive.qoi_change`; blob gave 1e59). The text below is the original finding. The bisection mode (`remesh=None`) is unchanged.
+>
+> **Known issue (original finding): stall on coarse start meshes (found 2026-11-01).** The adaptive loop can report `converged` without refining.
 > - Pillbox, `mesh_size` 0.12: 128 -> 132 tets over 8 levels; the consecutive-level change was 1e-15, so the loop stopped as "converged", while the true frequency error against the analytic value was 3.5e-4 (`tol_f` 1e-6, own estimate 7.5e-4).
 > - Box: 145 tets, stopped at `max_iter`, true error 2.5e-4.
 > - Cause: `size_field` asks for elements only 20-40 % smaller (exponent 1/(2p) = 1/6, rho 0.25). netgen ignores such small `RestrictH` requests on coarse meshes, and `RestrictH` keeps the minimum, so identical requests give an identical mesh. There is no forced minimum growth per pass (HFSS has "maximum refinement per pass", default 30 %).

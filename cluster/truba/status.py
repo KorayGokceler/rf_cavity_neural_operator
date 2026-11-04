@@ -19,6 +19,8 @@ def families(tsv, test=False, test_n=112):
         if not p or p[0].startswith('#') or len(p) < 5:
             continue
         fam, block, n, shard, group = p[0], int(p[1]), int(p[2]), int(p[3]), p[4]
+        if fam == 'freeform':         # no CAD solid: field labels never generate it (config.sh family_list skips it)
+            continue
         if test:
             n = shard = test_n
         rows.append((fam, block, n, shard, group))

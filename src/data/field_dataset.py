@@ -4,7 +4,8 @@ HCurl(p) operators (src.data_gen.highorder.field_operators) and optional high-or
 Item keys (one geometry): the model's tokens are the nq quadrature points of every element —
 X [Nt·nq, 3] (normalised, curved geometry), Input_funcs [Nt·nq, F] (highorder.point_features),
 Area [Nt·nq] (quadrature weights: the attention's mass weights); QX [Nt, nq, 3], QP [Nt, nl, nq];
-scipy M, K [n×n], G [n×p], Kp [p×p], C [n×3·Nt·nl]; BndDof [n] bool; Scale; Y_field [n, K] (DOF
+scipy M, K [n×n], G [n×p], Kp [p×p] (absent when the operators were built without the kernel potentials:
+projection-free training, docs/38), C [n×3·Nt·nl]; BndDof [n] bool; Scale; Y_field [n, K] (DOF
 labels, wall rows 0) and Y_freq [K] GHz when labelled.
 
 Batch (field_collate): padded tensors, block-diagonal CSR operators on the padded layout (sample
@@ -18,7 +19,7 @@ operators are assembled (field_operators) and the stored projected labels are ch
 """
 import glob
 import os
-import pickle
+import warnings
 
 import h5py
 import numpy as np
@@ -26,6 +27,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
+from src.data import ops_cache
 from src.data.sparse import block_diag, length_mask
 
 
@@ -53,6 +55,20 @@ def label_fidelity(attrs):
     if "adapt_iters" in attrs or int(attrs.get("label_order", 3)) > int(attrs.get("model_order", 2)):
         return HF
     return LF
+
+
+def labels_are_model_eigenvectors(attrs):
+    """True when the stored labels are M-orthogonal to the gradients of the model space (GᵀMT = 0), which the
+    projection-free loss relies on (docs/38 §2.1, §3.2): the label mesh is the model mesh (n_tets_label == n_tets) and
+    label_order ≥ model_order.  Then the label is either the model space's own discrete eigenvector, or the exact
+    M-orthogonal projection of a p3 eigenvector onto the nested p2 space of the same mesh (field_labels.project_to_model):
+    for every p2 gradient g (also a p3 field) (g, P e₃) = (g, e₃) = 0 — what remains is the difference of the
+    integration rules dx₂ / dx₃ and the float32 storage.  Labels transferred from another mesh
+    (n_tets_label != n_tets, field_labels.transfer_to_model) or of a lower order are only close to it.
+    Attributes the file lacks are not held against it."""
+    if int(attrs.get("label_order", 2)) < int(attrs.get("model_order", 2)):
+        return False
+    return int(attrs.get("n_tets_label", attrs.get("n_tets", 0))) == int(attrs.get("n_tets", 0))
 
 
 def check_labels(ops, Y_field, Y_freq, rtol=1e-8):
@@ -93,6 +109,8 @@ def field_item(ops, Y_field=None, Y_freq=None, feature_indices=None, shape_type=
             "BndDof": torch.from_numpy(bnd), "Scale": torch.tensor(float(ops["scale"]), dtype=torch.float32),
             "shape_type": str(shape_type)}
     for k in ("M", "K", "G", "Kp", "C"):
+        if k in ("G", "Kp") and k not in ops:       # field_operators(potential=False): no kernel projection
+            continue
         item[k] = ops[k]
     if with_ct:
         item["Ct"] = ops["C"].T.tocsr()
@@ -110,9 +128,12 @@ def field_collate(batch):
     nv = [it["X"].shape[0] for it in batch]
     nt = [it["QX"].shape[0] for it in batch]
     nd = [it["M"].shape[0] for it in batch]
-    npot = [it["Kp"].shape[0] for it in batch]
+    has_pot = ["G" in it and "Kp" in it for it in batch]
+    if any(has_pot) and not all(has_pot):
+        raise ValueError("field_collate: some items carry the kernel potentials (G, Kp), others do not")
+    has_pot = all(has_pot)
     nl2 = [it["C"].shape[1] for it in batch]
-    Nv, Nt, Nd, Np, Nl = max(nv), max(nt), max(nd), max(npot), max(nl2)
+    Nv, Nt, Nd, Nl = max(nv), max(nt), max(nd), max(nl2)
     if len({it["QP"].shape[1:] for it in batch}) != 1:
         raise ValueError("field_collate: items of different order / quadrature")
     nq = batch[0]["QX"].shape[1]
@@ -125,11 +146,13 @@ def field_collate(batch):
     out["shape_type"] = [it["shape_type"] for it in batch]
     out["M"] = block_diag([it["M"] for it in batch], Nd, Nd)
     out["K"] = block_diag([it["K"] for it in batch], Nd, Nd)
-    out["G"] = block_diag([it["G"] for it in batch], Nd, Np)
-    out["Gt"] = block_diag([it["G"].T for it in batch], Np, Nd)
-    out["Kp"] = block_diag([it["Kp"] for it in batch], Np, Np)
-    out["Kp_diag"] = pad_sequence([torch.from_numpy(it["Kp"].diagonal().astype(np.float64)) for it in batch],
-                                  batch_first=True)
+    if has_pot:         # without them (projection-free training step) the batch cannot be projected
+        Np = max(it["Kp"].shape[0] for it in batch)
+        out["G"] = block_diag([it["G"] for it in batch], Nd, Np)
+        out["Gt"] = block_diag([it["G"].T for it in batch], Np, Nd)
+        out["Kp"] = block_diag([it["Kp"] for it in batch], Np, Np)
+        out["Kp_diag"] = pad_sequence([torch.from_numpy(it["Kp"].diagonal().astype(np.float64)) for it in batch],
+                                      batch_first=True)
     # C maps the element-major L2 coefficients (t, c, l); padded elements have QP = 0 → coefficient 0
     out["C"] = block_diag([it["C"] for it in batch], Nd, Nl)
     if all("Ct" in it for it in batch):
@@ -144,6 +167,12 @@ def field_collate(batch):
     if all("Y_qoi" in it for it in batch):
         out["Y_qoi"] = pad_sequence([it["Y_qoi"] for it in batch], batch_first=True, padding_value=float("nan"))
     return out
+
+
+def field_collate_parts(batch):
+    """field_collate with the CSR operators as dense parts (training.gpu_prefetch: pinnable, src/data/gpu_transfer.py)."""
+    from src.data.gpu_transfer import split_sparse
+    return split_sparse(field_collate(batch))
 
 
 def loader_worker_init(_worker_id=0):
@@ -178,8 +207,10 @@ class FieldDataset(Dataset):
 
     data_path: one H5 file, a glob ("data/field/*.h5"), a directory or a list.  The split is by
     geometry (seeded permutation of the sorted (file, group) index).  cache_dir: keep the rebuilt
-    operators on disk (pickle per geometry; ~0.5 GB per 16k-tet geometry at p2) instead of
-    reassembling them every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6).
+    operators on disk (one file per geometry, src/data/ops_cache.py, docs/38 §9: 128 MB (projection-free
+    variant) / 284 MB (full) at 23k tets, p2; the plain pickle was 672 / 725 MB; cache_compress False writes no zlib: about
+    twice that, nothing to decompress when reading, 'fast' compresses only what shrinks to 30 %) instead of reassembling them
+    every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6; 1–2 s to read back at 23k tets).
 
     Multi-fidelity (docs/34): every item carries Fidelity (LF 0 / HF 1, label_fidelity of the H5 attrs), so
     files of both kinds can be mixed in data_path.  hf_repeat > 1 lists the HF geometries of the TRAIN split
@@ -188,11 +219,27 @@ class FieldDataset(Dataset):
     files of a mixed run: the held-out geometries come from data_path).
     require_label_ok (default False): drop samples whose attr label_ok is 0 (p2 labels whose frequency error
     estimate exceeds tol_f_p2, docs/37); files without the attr are kept.  The drop count per family is printed
-    with the train split."""
+    with the train split.
+    max_tets (default None = no limit): drop samples whose model mesh has more tets (attr n_tets) — a GPU memory
+    guard (one training step's memory grows ~linearly with the tets; a 16 GB V100 holds ~45–55k tets with the
+    small model, docs/38 §8).  Applied to ALL splits before the seeded split, so setting it changes which geometries
+    are train / val / test; the drop count per family is the same for every split and is printed once, with the
+    train split (as for require_label_ok).
+
+    build_potential (default True): build the kernel potentials G, Kp (field_operators(potential=...)) and put
+    them into the items / batches.  False is for the TRAIN and VAL splits of a projection-free run
+    (training.projection: false, docs/38), whose losses never project: it skips G / Kp (~0.5 s per 13k-tet
+    geometry, and their batch tensors); the TEST split keeps True (the test step projects).  Cache: the operators without G / Kp are
+    cached as `{tag}__{key}.nopot.ops2.pkl`, a name the full variant never reads; a full cache file of the same
+    geometry is reused (G / Kp dropped after loading), so a cache is never served to a split that needs
+    what it lacks.  False also warns (train and val splits, once each) when some labels were transferred from another
+    mesh (n_tets_label != n_tets) or have a lower order than the model space: their M-orthogonality to the
+    gradients, which the projection-free loss relies on, then holds only approximately (labels_are_model_eigenvectors)."""
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,
                  feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False, with_ct=None,
-                 hf_repeat=1, train_extra=None, require_label_ok=False):
+                 hf_repeat=1, train_extra=None, require_label_ok=False, build_potential=True, max_tets=None,
+                 cache_compress=True):
         if augment:
             raise ValueError("FieldDataset: rotation augmentation is not supported (the DOF maps C, QP "
                              "are built for the stored orientation)")
@@ -202,10 +249,12 @@ class FieldDataset(Dataset):
             self.paths = self.paths + [p for p in _expand(train_extra) if p not in self.paths]
         self.split, self.feature_indices, self.rq_rtol = split, feature_indices, float(rq_rtol)
         self.cache_dir = cache_dir
+        self.cache_compress = cache_compress          # True | 'fast' | False: ops_cache.pack(compress=)
+        self.build_potential = bool(build_potential)
         self.with_ct = split == "train" if with_ct is None else bool(with_ct)      # Cᵀ for the backward (training only)
         index, freqs, nxt, Ks, types, fids = [], [], [], [], [], []
         self.qoi_names = tuple(default_qoi_names())
-        n_main, dropped = None, {}
+        n_main, dropped, exact, too_big = None, {}, [], {}
         for i_file, path in enumerate(self.paths):
             if i_file == n_main_files:
                 n_main = len(index)
@@ -219,17 +268,26 @@ class FieldDataset(Dataset):
                         fam = str(g.attrs.get("shape_type", ""))
                         dropped[fam] = dropped.get(fam, 0) + 1
                         continue
+                    if max_tets is not None and int(g.attrs.get("n_tets", 0)) > int(max_tets):
+                        fam = str(g.attrs.get("shape_type", ""))
+                        too_big[fam] = too_big.get(fam, 0) + 1
+                        continue
                     index.append((path, key))
                     freqs.append(np.asarray(g["freqs"], np.float64))
                     nxt.append(float(g.attrs.get("freq_next", np.nan)))
                     Ks.append(len(freqs[-1]))
                     types.append(str(g.attrs.get("shape_type", "")))
                     fids.append(label_fidelity(g.attrs))
+                    exact.append(labels_are_model_eigenvectors(g.attrs))
         if dropped and split == "train":
             print(f"FieldDataset: require_label_ok dropped {sum(dropped.values())} samples with label_ok = 0 "
                   "(" + ", ".join(f"{k or '?'}: {v}" for k, v in sorted(dropped.items())) + ")")
+        if too_big and split == "train":
+            print(f"FieldDataset: max_tets={int(max_tets)} dropped {sum(too_big.values())} samples "
+                  "(" + ", ".join(f"{k or '?'}: {v}" for k, v in sorted(too_big.items())) + ") before the train/val/test split")
         if not index:
-            raise ValueError(f"no samples in {self.paths}" + (" (all dropped by require_label_ok)" if dropped else ""))
+            raise ValueError(f"no samples in {self.paths}" + (" (all dropped by require_label_ok / max_tets)"
+                                                              if dropped or too_big else ""))
         self.n_modes = int(n_modes or min(Ks))
         self.index, self._freqs, self._next, self.shape_types, self.fidelities = index, freqs, nxt, types, fids
         n = len(index) if n_main is None else n_main            # train_extra geometries are outside the split
@@ -239,6 +297,14 @@ class FieldDataset(Dataset):
         parts = {"train": np.concatenate([perm[:n_tr], extra]).astype(int),
                  "val": perm[n_tr:n_tr + n_va], "test": perm[n_tr + n_va:]}
         self.active_geoms = [int(i) for i in parts.get(split, parts["test"])]
+        approx = sorted({i for i in self.active_geoms if not exact[i]})
+        if approx and not self.build_potential and split in ("train", "val"):
+            warnings.warn(f"FieldDataset: {len(approx)} of {len(set(self.active_geoms))} {split} geometries have labels "
+                          "that are not eigenvectors of the model space itself nor its exact projection (n_tets_label != "
+                          "n_tets: labels transferred from another mesh; or label_order < model_order).  "
+                          "Their M-orthogonality to the gradients, which the projection-free loss "
+                          "(training.projection: false) relies on, holds only approximately (docs/38 §3.2).",
+                          stacklevel=2)
         if split == "train" and int(hf_repeat) > 1:
             self.active_geoms += [i for i in self.active_geoms if fids[i] == HF] * (int(hf_repeat) - 1)
         tr = np.concatenate([freqs[i][:self.n_modes] for i in parts["train"]]) if len(parts["train"]) else \
@@ -263,29 +329,41 @@ class FieldDataset(Dataset):
         """Stored label frequencies [GHz] of geometry g_id (count_near_degenerate)."""
         return self._freqs[g_id][:self.n_modes]
 
-    def _cache_path(self, g_id):
+    def _cache_path(self, g_id, potential=True):
         if not self.cache_dir:
             return None
         path, key = self.index[g_id]
         tag = os.path.splitext(os.path.basename(path))[0]
-        return os.path.join(self.cache_dir, f"{tag}__{key}.ops.pkl")
+        return os.path.join(self.cache_dir, f"{tag}__{key}{'' if potential else '.nopot'}{ops_cache.SUFFIX}")
 
     def load(self, g_id):
         """(ops, record) of geometry g_id: field_operators of the rebuilt curved mesh + stored labels."""
         from src.data_gen.field_labels import model_normalisation, read_field_group
         from src.data_gen.highorder import field_operators
         path, key = self.index[g_id]
-        cp = self._cache_path(g_id)
+        cp = self._cache_path(g_id, self.build_potential)
         if cp and os.path.exists(cp):
-            with open(cp, "rb") as fh:
-                return pickle.load(fh)
+            hit = self._read_cache(cp)
+            if hit is not None:
+                ops, rec = hit
+                if self.build_potential and ("G" not in ops or "Kp" not in ops):
+                    raise ValueError(f"{cp}: operator cache without the kernel potentials G, Kp "
+                                     "(written by a projection-free run?): delete it")
+                return ops, rec
+        full = self._cache_path(g_id, True)
+        if not self.build_potential and full and os.path.exists(full):     # the full cache serves this variant too
+            hit = self._read_cache(full)
+            if hit is not None:
+                ops, rec = hit
+                return {k: v for k, v in ops.items() if k not in ("G", "Kp")} | {"n_pot": None}, rec
         with h5py.File(path, "r") as f:
             mesh, rec = read_field_group(f[key])
         center, scale = model_normalisation(mesh)
         wf = rec.pop("wall_feat", None)             # stored wall-distance / torsion columns, else computed
         if wf is not None and wf.shape[0] != mesh.ne:
             raise ValueError(f"{path}/{key}: qfeat_wall has {wf.shape[0]} elements, the mesh {mesh.ne}")
-        ops = field_operators(mesh, order=rec["model_order"], scale=scale, center=center, wall_feat=wf)
+        ops = field_operators(mesh, order=rec["model_order"], scale=scale, center=center, wall_feat=wf,
+                              potential=self.build_potential)
         U = rec["u_model"]
         if U.shape[0] != ops["n_dof"]:
             raise ValueError(f"{path}/{key}: {U.shape[0]} label DOFs, the rebuilt HCurl(p={rec['model_order']}) "
@@ -296,18 +374,31 @@ class FieldDataset(Dataset):
             raise ValueError(f"{path}/{key}: labels do not match the rebuilt operators (max Rayleigh-quotient "
                              f"mismatch {err.max():.2e}): mesh, curving or deformation differ from the generator's")
         ops = {k: v for k, v in ops.items() if k not in ("bary", "X", "tets")}
-        out = (ops, rec)
-        if cp:
-            os.makedirs(self.cache_dir, exist_ok=True)
-            tmp = f"{cp}.{os.getpid()}.tmp"
-            with open(tmp, "wb") as fh:
-                pickle.dump(out, fh, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp, cp)
-        return out
+        if cp:          # written once, atomically; what the next epoch reads is what this epoch uses
+            payload = ops_cache.pack(ops, rec, narrow=not self.build_potential, compress=self.cache_compress)
+            ops_cache.write(cp, payload)
+            return ops_cache.unpack(payload)
+        return ops, rec
+
+    @staticmethod
+    def _read_cache(cp):
+        """(ops, rec) of a cache file, None (with a warning) if it is unreadable or of another format: the
+        caller rebuilds and overwrites it."""
+        try:
+            return ops_cache.unpack(ops_cache.read(cp))
+        except ops_cache.OpsCacheError as e:
+            warnings.warn(f"FieldDataset: {e}; rebuilding the operators", stacklevel=3)
+            return None
 
     def __getitem__(self, idx):
         g_id = self.active_geoms[idx]
         ops, rec = self.load(g_id)
+        return self.make_item(g_id, ops, rec)
+
+    def make_item(self, g_id, ops, rec):
+        """The model item of geometry g_id from its operators and label record (load): field_item + z-scored
+        frequencies, FreqNext, geom_id, Fidelity, Y_qoi.  Separate from __getitem__ so that scripts/profile_loader.py
+        can time the stages."""
         K = self.n_modes
         item = field_item(ops, rec["u_model"][:, :K], rec["freqs"][:K], self.feature_indices,
                           rec.get("shape_type", self.shape_types[g_id]), check=False, with_ct=self.with_ct)

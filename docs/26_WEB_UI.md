@@ -458,7 +458,7 @@ ve aynı ayarlar:
 - keskin iç kenarları yuvarlatma, OCC onarımı.
 
 `freeform` seçilemez (CAD katısı yok). Çıktı yalnız H5'tir (eğitim `field3d`). TAG,
-TRUBA'nınkiyle aynı kuralla kurulur: p2'de `F_p2p2_ms0.10_k10_mf0.05_v2` (`_1s` hiç eklenmez), p3 uyarlamalıda `F_p3p2_ms0.10_k10_mf0.05_v2`, p3 tek çözümde `_1s`, yuvarlatmasız
+TRUBA'nınkiyle aynı kuralla kurulur: p2'de `F_p2p2_ms0.10_k10_mf0.05_v3` (`_1s` hiç eklenmez), p3 uyarlamalıda `F_p3p2_ms0.10_k10_mf0.05_v3`, p3 tek çözümde `_1s`, yuvarlatmasız
 `_sharp` eki.
 
 **İşçi × thread planı** (`jobs.field_plan`): sunucu çekirdek sayısını (CPU affinity, cgroup kotası) ve

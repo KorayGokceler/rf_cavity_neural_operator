@@ -41,6 +41,12 @@
    artık önceden oluşturuyor. Dördüncü çalıştırma: imaj atlandı, kontrol üretimi geçti; **`run.sh setup` TRUBA'da tamam**
    (2026-11-02; `~/containers/rfcav.sif` 3,2 GB).
 
+8. **Bekleyen işin süre sınırı sonradan değiştirilemiyor** (2026-11-02): `scontrol update JobId=… TimeLimit=03:00:00`
+   orfoz'da "Interaktif isler sadece debug kuyrugunda calistirilabilir" ile reddedildi. `TIME` gönderimde doğru verilmeli
+   (iptal + yeniden gönderim: `scancel -u $USER`, sonra `run.sh dataset … TIME=0-03:00:00`; yeni gönderilmiş işte öncelik
+   kaybı yok, `sprio` `AGE` 0). Planlayıcı her işin sınırın tamamını kullanacağını varsayar: kısa sınır backfill ile erken
+   başlamayı kolaylaştırır. Öncelik (`sprio`): PARTITION 60000 + JOBSIZE 2 + AGE; fairshare bileşeni görünmüyor.
+
 ## 1. Kullanım politikası ve hesap
 
 *(`0-truba/kullanim_kurallari`, `uyelik_rehberi`, `kullanici_basvurulari`, SSS 13, 38)*
@@ -121,6 +127,8 @@
 | `/arf/scratch/$USER` | hesaplama, büyük veri, paralel I/O | aynı kota | **en çok 30 gün**, otomatik temizlenir |
 | `/tmp` (düğüm), `/localscratch` (palamut) | düğüm içi NVMe geçici alan | – | iş bitince gider |
 
+- `/tmp` bütün sunucularda NVMe; **akya-cuda'da 1,4 TB** (TRUBA duyurusu, sahibin aktardığı 2026-11-02). Üretim I/O ağırlıklı değil (geometri başına dakikalar, birkaç MB): gerek yok. Eğitimde denenecek (ölçülmedi): H5'leri iş başında `/tmp`'ye kopyalamak (deneme ~12 GB, 100k ~0,6–1,2 TB) ya da `CACHE_DIR`'i `/tmp`'ye koymak (~330 MB/geometri (eski pikl biçimi; yeni biçimde 128–284 MB/geometri, docs/38 §9) → ~4k geometri sığar). docs/31 §3.3: veri hazırlamanın maliyeti asıl operatör kurulumu (CPU).
+
 - Kota bilgisi `arf-ui1`'e girince görülür. Eski sayfalar 1000 GB / 100 GB / 1 TB der; güncel olan 2 TB.
 - Kota ya da inode dolarsa yeni dosya oluşmaz, iş başlamaz, veri kaybolabilir. Küçük dosyaları `tar` ile birleştirin.
 - Ev dizini izinleri yalnız kullanıcıya açıktır (`chmod 700 $HOME`); paylaşım için ACL (`setfacl`, SSS 35).
@@ -191,7 +199,7 @@
 | `ACCOUNT` | boş | `-A` TRUBA hesabı (örneklerde zorunlu görünüyor) | sahibi verir |
 | log yolu | `$OUT_DIR/logs` (scratch) | `--output/--error` scratch'te olmalı | uyumlu |
 | kurulum kontrolü | `debug` düğümünde `srun` (2 geometri) | login düğümünde ağır iş yok | uyumlu |
-| `CACHE_DIR` | geometri başına ~0,5 GB | inode 500K | az dosya, büyük dosya: sorun değil |
+| `CACHE_DIR` | geometri başına ~0,13 GB (train/val, projeksiyonsuz) / ~0,28 GB (test), 23k tet'te; docs/38 §9 | inode 500K | az dosya, büyük dosya: sorun değil |
 | kullanım izni | – | başvuruda belirtilen uygulama dışında iş yok | sahibi, başvuruda bu uygulamayı belirtmiş mi? |
 
 ## 8. Açık sorular (sahibe)

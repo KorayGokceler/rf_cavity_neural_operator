@@ -99,3 +99,40 @@ def test_training_off_without_runs_root(monkeypatch):
     c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
     assert c.get("/api/train/config").json()["enabled"] is False
     assert c.post("/api/train/start", json={"name": "x", "datasets": ["d"]}).status_code == 503
+
+
+def test_projection_free_run_is_listed_without_ritz_metrics(tmp_path, monkeypatch):
+    """A run of training.projection: false (docs/38; e.g. from TRUBA) has no val/field_rel_l2, freq_* or grad_frac in
+    its history: the listing and the detail still work, the curves carry the keys of the run, the monitored metric
+    is val/span_loss and the best checkpoint is found by its val_span_loss tag (runs of the earlier val/loss monitor
+    keep working)."""
+    import json
+    run = tmp_path / "runs" / "noproj"
+    run.mkdir(parents=True)
+    hist = [{"epoch": e, "step": 2 * e, "time": 1.0 + e, "train/loss": 0.8 - 0.1 * e, "val/loss": 0.9 - 0.1 * e, "val/span_loss": 0.85 - 0.1 * e, "train/grad_frac_lb": 0.3, "val/grad_frac_lb": 0.2,
+             "train/span_rel_l2": 0.7 - 0.1 * e, "val/span_rel_l2": 0.75 - 0.1 * e, "train/mass_diag_ratio": 9.0,
+             "val/mass_diag_ratio": 8.0, "train/ortho_loss": 0.01, "lr-AdamW": 2e-4} for e in range(3)]
+    best = str(run / "best-epoch=02-val_span_loss=0.6500.ckpt")
+    for p in (best, str(run / "last.ckpt")):
+        open(p, "wb").write(b"0")
+    json.dump({"status": "finished", "epoch": 3, "max_epochs": 3, "history": hist,
+               "best": {"path": best, "score": 0.65, "monitor": "val/span_loss"},
+               "test": {"test/field_rel_l2": 0.4, "test/loss": 0.5, "test/loss_plain": 0.6}}, open(run / "progress.json", "w"))
+    mgr = T.TrainManager(str(tmp_path / "runs"))
+    (s,) = mgr.runs()
+    assert s["name"] == "noproj" and s["status"] == "finished" and s["monitor"] == "val/span_loss"
+    assert s["best_score"] == 0.65 and s["val_field_rel_l2"] is None and s["val_freq_rel_err"] is None
+    d = mgr.detail("noproj")
+    keys = set().union(*(h.keys() for h in d["history"]))
+    assert {"val/loss", "val/span_loss", "train/loss", "train/span_rel_l2", "val/span_rel_l2", "train/mass_diag_ratio",
+            "val/mass_diag_ratio", "train/grad_frac_lb", "val/grad_frac_lb"} <= keys
+    assert not (keys & {"val/field_rel_l2", "train/field_rel_l2", "val/freq_rel_err", "val/grad_frac"})
+    assert d["test"]["test/loss_plain"] == 0.6 and d["best"]["monitor"] == "val/span_loss"
+    assert {"train/span_rel_l2", "val/span_rel_l2", "train/mass_diag_ratio", "val/mass_diag_ratio", "val/grad_frac", "train/grad_frac_lb", "val/grad_frac_lb",
+            "val/span_loss"} <= set(T.CURVE_KEYS)
+    monkeypatch.setenv("RFCAV_RUNS_ROOT", str(tmp_path / "runs"))
+    monkeypatch.delenv("RFCAV_GEN_ROOT", raising=False)
+    c = TestClient(A.create_app(ModelService(None, "cpu"), datasets={}))
+    r = c.get("/api/train/runs/noproj")
+    assert r.status_code == 200 and r.json()["monitor"] == "val/span_loss" and len(r.json()["history"]) == 3
+    assert [x["name"] for x in c.get("/api/train/runs").json()] == ["noproj"]

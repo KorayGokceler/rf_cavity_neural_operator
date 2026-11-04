@@ -490,7 +490,7 @@ def _quadrature(mesh, order, quad_order=None):
     return ir, ref, wq, mips, qx, detJ
 
 
-def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wall_feat=None):
+def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wall_feat=None, potential=True):
     """Operators of the high-order learned-field Ritz (model option B, docs/28) on a curved mesh,
     on the NORMALISED geometry ξ = (x − center)/scale (λ_ξ = λ_x·scale²):
 
@@ -498,6 +498,8 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wal
         G       [n×p]    gradients of the kernel potentials: interior H1(order+1) DOFs, then one
                          potential per extra wall shell (isolated conductors)
         Kp      [p×p]    GᵀMG (SPD)
+                         (potential=False leaves G and Kp out, n_pot = None: the projection-free training
+                         step needs neither, ~0.5 s per 13k-tet geometry; everything else is unchanged)
         C       [n×L]    projection-based interpolation VectorL2(order) → HCurl(order), columns in
                          element-major order (element t, component c, local l)
         P       [Nt, nl, nq]  per element: point values at the nq quadrature points → L2(order)
@@ -519,8 +521,9 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wal
     with TaskManager():
         K = BilinearForm(curl(u) * curl(v) * dx, symmetric=True).Assemble()
         M = BilinearForm(u * v * dx, symmetric=True).Assemble()
-        Gm, fesh1 = fes.CreateGradient()
-    Ks, Ms, Gs = _tosp(K.mat), _tosp(M.mat), _tosp(Gm)
+        if potential:
+            Gm, fesh1 = fes.CreateGradient()
+    Ks, Ms = _tosp(K.mat), _tosp(M.mat)
     Xv = np.array([tuple(p.p) for p in mesh.ngmesh.Points()], dtype=np.float64)
     tets = np.array([[vv.nr - 1 for vv in el.vertices] for el in mesh.ngmesh.Elements3D()], dtype=np.int64)
     if center is None:
@@ -530,14 +533,16 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wal
     s = float(scale)
     Ks.data *= s                                              # ξ-scaling of the covariant basis, in place
     Ms.data *= 1 / s                                          # (= scipy's Ms / s, bit for bit)
-    free_h1 = np.flatnonzero(np.asarray(list(fesh1.FreeDofs()), dtype=bool))
-    cols = [Gs[:, free_h1]]
-    for shell in wall_shells(mesh)[1:]:                       # H1 vertex DOF i = vertex i
-        ind = np.zeros(fesh1.ndof)
-        ind[shell] = 1.0
-        cols.append(sp.csr_matrix(Gs @ ind).T)
-    G = sp.hstack(cols).tocsr()
-    Kp = (G.T @ Ms @ G).tocsr()
+    if potential:
+        Gs = _tosp(Gm)
+        free_h1 = np.flatnonzero(np.asarray(list(fesh1.FreeDofs()), dtype=bool))
+        cols = [Gs[:, free_h1]]
+        for shell in wall_shells(mesh)[1:]:                   # H1 vertex DOF i = vertex i
+            ind = np.zeros(fesh1.ndof)
+            ind[shell] = 1.0
+            cols.append(sp.csr_matrix(Gs @ ind).T)
+        G = sp.hstack(cols).tocsr()
+        Kp = (G.T @ Ms @ G).tocsr()
     bnd = ~np.asarray(list(fes.FreeDofs()), dtype=bool)
 
     # learned field → DOFs: point values → VectorL2 (per element) → HCurl (ConvertOperator)
@@ -571,11 +576,12 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wal
     # NGSolve's reference tet: vertices (1,0,0), (0,1,0), (0,0,1), (0,0,0) ↔ the element's vertices
     qxn = (qx - center) / s
     feats = point_features(mesh, mips, qxn, W / s ** 3, center, s, order, wall=wall_feat)
-    return {"K": Ks, "M": Ms, "G": G, "Kp": Kp, "C": C, "P": P, "bnd": bnd,
-            "qx": qxn, "qw": W / s ** 3, "qfeat": feats.reshape(nt, nq, -1), "bary": bary,
-            "X": (Xv - center) / s, "tets": tets,
-            "scale": s, "center": np.asarray(center, dtype=np.float64), "order": int(order),
-            "n_dof": int(fes.ndof), "n_pot": int(G.shape[1])}
+    ops = {"K": Ks, "M": Ms, **({"G": G, "Kp": Kp} if potential else {}), "C": C, "P": P, "bnd": bnd,
+           "qx": qxn, "qw": W / s ** 3, "qfeat": feats.reshape(nt, nq, -1), "bary": bary,
+           "X": (Xv - center) / s, "tets": tets,
+           "scale": s, "center": np.asarray(center, dtype=np.float64), "order": int(order),
+           "n_dof": int(fes.ndof), "n_pot": int(G.shape[1]) if potential else None}
+    return ops
 
 
 WALL_FEATURES = ("dist_to_boundary", "dir_bnd_x", "dir_bnd_y", "dir_bnd_z", "torsion")

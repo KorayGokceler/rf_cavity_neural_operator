@@ -172,7 +172,7 @@ per geometry is the expensive part:
 
 - Batch 2 per GPU.
 - 14 loader workers: operator assembly is about 4–6 s per geometry at 13k tets, 4 threads (was ~10 s; docs/31 §3.6).
-- `CACHE_DIR` keeps the pickled operators, about 0.5 GB per geometry. Use it only when the scratch
+- `CACHE_DIR` keeps the operators (src/data/ops_cache.py, docs/38 §9), about 0.13 GB per 23k-tet geometry for the train / val splits of a projection-free run and 0.28 GB for the test split (a plain pickle was 0.7 GB). Use it only when the scratch
   quota allows.
 
 Knobs, from cheapest to most accurate:
@@ -201,7 +201,7 @@ Knobs, from cheapest to most accurate:
 - `--dry-run` prints every sbatch command with its dependencies and submits nothing
   (`dry_sbatch.sh`).
 - Re-running is safe: finished shards are skipped, and the same `EXP` resumes from `last.ckpt`.
-- The TAG is `F_p3p2_ms0.10_k10_mf0.05_v2` (the former N0 tag `E_…` no longer exists).
+- The TAG is `F_p3p2_ms0.10_k10_mf0.05_v3` (the former N0 tag `E_…` no longer exists).
 
 The web UI's **TRUBA** tab (`src/service/truba.py`, `/api/truba/config`, `/api/truba/command`)
 turns a form into the line to paste on a login node:

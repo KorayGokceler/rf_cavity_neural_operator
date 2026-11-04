@@ -23,7 +23,7 @@ type Form = Omit<GenParams, 'families'>;
 /** TAG as the server derives it (src/service/jobs.field_tag_of = cluster/truba/config.sh). */
 function defaultTag(p: Form) {
   const oneSolve = !p.adapt && p.label_order > p.model_order;     // p2 labels have no adaptive variant
-  return `F_p${p.label_order}p${p.model_order}_ms${p.mesh_size}_k${p.n_modes}_mf${p.min_fillet}_v2`
+  return `F_p${p.label_order}p${p.model_order}_ms${p.mesh_size}_k${p.n_modes}_mf${p.min_fillet}_v3`
     .replace('_ms0.1_', '_ms0.10_') + (oneSolve ? '_1s' : '') + (p.round_edges ? '' : '_sharp');
 }
 

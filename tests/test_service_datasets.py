@@ -283,7 +283,7 @@ def test_field_generation_jobs_plan_and_settings(tmp_path, monkeypatch):
         time.sleep(0.05)
     p = seen[0]
     assert p["labels"] == "field" and "convert" not in p and p["workers"] * p["threads"] <= 64
-    assert p["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2_sharp" and p["label_order"] == 2
+    assert p["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v3_sharp" and p["label_order"] == 2
     tr = TR.build_command(dict(TR.defaults(ROOT)["form"], action="dataset", round_edges=False, tag=""))
     assert tr["tag"] == p["tag"]                                       # same tag as the TRUBA run
     a = J.generator_args(p)
@@ -316,14 +316,14 @@ def test_generate_defaults_are_p2_labels_and_p2_tag_has_no_one_solve_suffix(tmp_
     jobs = c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2}).json()
     p = jobs[0]["params"]
     assert (p["label_order"], p["model_order"], p["model_max_elements"]) == (2, 2, 20000)
-    assert p["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2"
+    assert p["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v3"
     assert c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "adapt": False}).json()[0][
-        "params"]["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v2"
+        "params"]["tag"] == "F_p2p2_ms0.10_k10_mf0.05_v3"
     assert c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "adapt": False, "label_order": 3}
-                  ).json()[0]["params"]["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v2_1s"
+                  ).json()[0]["params"]["tag"] == "F_p3p2_ms0.10_k10_mf0.05_v3_1s"
     r = c.post("/api/jobs/generate", json={"families": ["box"], "n_total": 2, "label_order": 2, "model_order": 3})
     assert r.status_code == 422 and "model_order" in r.json()["detail"]
-    assert J.field_tag_of(0.10, 10, 2, 2, adapt=False) == "F_p2p2_ms0.10_k10_mf0.05_v2"
+    assert J.field_tag_of(0.10, 10, 2, 2, adapt=False) == "F_p2p2_ms0.10_k10_mf0.05_v3"
     # the plan of p2 labels uses the max_ndof budget (the mesh is refined up to it), like p3
     p2 = c.get("/api/jobs/plan", params={"max_ndof": 300_000}).json()["mem_per_worker_gb"]
     p3 = c.get("/api/jobs/plan", params={"max_ndof": 300_000, "label_order": 3}).json()["mem_per_worker_gb"]
@@ -450,7 +450,7 @@ def test_machine_and_field_plan():
     assert (p["workers"], p["threads"]) == (6, 10) and not p["warnings"]
     assert J.field_plan(64, 0, 300_000)["workers"] == 16  # unknown memory: cores only
     assert "oversubscribed" in J.field_plan(8, 64.0, 300_000, threads=4, workers=4)["warnings"]
-    assert J.field_tag_of(0.12, 6, 3, 2, adapt=False) == "F_p3p2_ms0.12_k6_mf0.05_v2_1s"
+    assert J.field_tag_of(0.12, 6, 3, 2, adapt=False) == "F_p3p2_ms0.12_k6_mf0.05_v3_1s"
 
 
 def test_generation_disabled_without_root(monkeypatch):

@@ -4,7 +4,7 @@ Problem: curl curl E = k^2 E in the cavity, n x E = 0 on the PEC wall; f = c k /
 generator draws a geometry from a family (src/data_gen/cavity_shapes.py), meshes the CAD solid with gmsh
 (mesh_sample: certified connected manifold, any number of handles / isolated conductors) and labels it
 with src/data_gen/field_labels.py.  Default (docs/37): the model mesh (curved netgen mesh, start near 10k tets,
-refined uniformly until the p2 error estimate is ≤ --tol_f_p2) and HCurl p2 solves on it — the model space's own
+refined locally until the p2 error estimate is ≤ --tol_f_p2) and HCurl p2 solves on it — the model space's own
 modes, with their error estimate.  --label_order 3: high-fidelity labels (adaptive HCurl p3 modes L2-projected onto the model's p2
 space; test / CST sets, docs/30).  Both store the cavity figures of merit.  The H5 layout (one group ``sample_XXXX`` per
 geometry, file attr ``metadata``) is documented there and in docs/29_FIELD_LABELS.md; the common attrs
@@ -22,7 +22,9 @@ import os
 import sys
 import tempfile
 import time
-from multiprocessing import Pool, TimeoutError as MPTimeoutError, cpu_count
+import multiprocessing as mp
+from multiprocessing import cpu_count
+from multiprocessing.connection import wait as mp_wait
 
 import h5py
 import numpy as np
@@ -132,9 +134,14 @@ def parse_args(argv=None):
                    help="p2 labels: lower bound of the start mesh's tet count (no too-simple meshes).")
     p.add_argument("--tol_f_p2", type=float, default=1e-3,
                    help="p2 labels: error limit.  While the frequency error estimate is above it the mesh is refined "
-                        "uniformly (field_labels.refine_p2_to_tolerance); label_ok = estimate <= this.")
+                        "(field_labels.refine_p2_to_tolerance, --p2_refine); label_ok = estimate <= this.")
+    p.add_argument("--p2_refine", choices=("adaptive", "uniform"), default="adaptive",
+                   help="p2 labels: how the start mesh is refined while the estimate exceeds --tol_f_p2.  adaptive: locally, "
+                        "the size field follows the per-element error indicator and is scaled to a target tet count "
+                        "(every round grows the mesh by >= 15 %%); uniform: maxh and curvaturesafety shrink globally "
+                        "(the 2026-11-02 rule, docs/37 3).")
     p.add_argument("--p2_max_refine", type=int, default=3,
-                   help="p2 labels: at most this many uniform refinements (solves = 1 + refinements); stops earlier "
+                   help="p2 labels: at most this many refinements (solves = 1 + refinements); stops earlier "
                         "when the next p2 space would exceed --max_ndof.")
     p.add_argument("--no_round_edges", action="store_true",
                    help="Keep re-entrant edges sharp (by default they are filleted with radius "
@@ -669,6 +676,7 @@ def field_settings(args):
             "model_min_elements": int(getattr(args, "model_min_elements", 5000)),
             "tol_f_p2": float(getattr(args, "tol_f_p2", 1e-3)),
             "p2_max_refine": int(getattr(args, "p2_max_refine", 3)),
+            "p2_refine": str(getattr(args, "p2_refine", "adaptive")),
             **({"curvaturesafety": float(args.curvaturesafety), "adapt_cs": float(args.curvaturesafety)}
                if getattr(args, "curvaturesafety", None) else {})}
 
@@ -749,19 +757,81 @@ def write_sample(f_h5, res):
     return g
 
 
-def _run_chunk(pool, chunk_range, timeout, on_result=None):
-    """Run the samples of one chunk; on_result(result or None) after each one (progress)."""
-    handles = [(s_id, pool.apply_async(generate_sample_data, (s_id,))) for s_id in chunk_range]
-    results, hung = [], []
-    for s_id, h in handles:
+def _sample_process(conn, args, s_id):
+    """Body of one worker process: exactly one sample, then exit (gmsh / netgen OCC / NGSolve state never accumulates)."""
+    _init_worker(args)
+    res = generate_sample_data(s_id)
+    conn.send(res)
+    conn.close()
+
+
+def _death_reason(exitcode):
+    if exitcode is None:
+        return "unknown exit"
+    if exitcode < 0:
+        import signal
         try:
-            results.append(h.get(timeout=timeout))
-        except MPTimeoutError:
-            print(f"Sample {s_id} timed out after {timeout:.0f}s, skipped.")
-            hung.append(s_id)
-        if on_result is not None:
-            on_result(results[-1] if not hung or hung[-1] != s_id else None)
-    return results, hung
+            return f"killed by {signal.Signals(-exitcode).name}"
+        except ValueError:
+            return f"killed by signal {-exitcode}"
+    return f"exit code {exitcode}"
+
+
+def run_samples(ids, n_workers, timeout, args):
+    """Generator over (s_id, result or None), yielded in COMPLETION order as soon as each sample finishes.
+
+    One process per sample (the maxtasksperchild=1 semantics of the former Pool) so a dying worker is attributed to
+    exactly one sample: a segfault / OOM-kill gives `sample <id>: worker died (...); skipped` at once (TRUBA
+    2026-11-02: a lost Pool task blocked the whole chunk for up to the timeout).  The timeout runs from the moment
+    the sample's process started; a timed-out process is killed.  Results do not depend on the order of execution
+    (the per-sample RNG is keyed by id)."""
+    pending = list(ids)[::-1]
+    running = {}                                   # s_id -> (process, parent connection, start time)
+    try:
+        while pending or running:
+            while pending and len(running) < n_workers:
+                s_id = pending.pop()
+                rx, tx = mp.Pipe(duplex=False)
+                proc = mp.Process(target=_sample_process, args=(tx, args, s_id), daemon=True)
+                proc.start()
+                tx.close()
+                running[s_id] = (proc, rx, time.monotonic())
+            now = time.monotonic()
+            wait_s = max(0.0, min(t0 + timeout - now for _, _, t0 in running.values()))
+            handles = [rx for _, rx, _ in running.values()] + [p.sentinel for p, _, _ in running.values()]
+            mp_wait(handles, timeout=min(wait_s, 5.0))
+            now = time.monotonic()
+            for s_id in list(running):
+                proc, rx, t0 = running[s_id]
+                res, finished = None, False
+                if rx.poll():                      # data (or EOF) before looking at liveness: the child may have exited
+                    try:
+                        res, finished = rx.recv(), True
+                    except (EOFError, OSError):
+                        proc.join(5)
+                        print(f"sample {s_id}: worker died ({_death_reason(proc.exitcode)}); skipped", flush=True)
+                        finished = True
+                elif not proc.is_alive():
+                    proc.join()
+                    print(f"sample {s_id}: worker died ({_death_reason(proc.exitcode)}); skipped", flush=True)
+                    finished = True
+                elif now - t0 > timeout:
+                    proc.kill()
+                    print(f"Sample {s_id} timed out after {timeout:.0f}s, skipped.", flush=True)
+                    finished = True
+                if finished:
+                    rx.close()
+                    proc.join(30)
+                    if proc.is_alive():
+                        proc.kill()
+                        proc.join()
+                    del running[s_id]
+                    yield s_id, res
+    finally:
+        for proc, rx, _ in running.values():
+            proc.kill()
+            proc.join()
+            rx.close()
 
 
 def file_metadata(args):
@@ -773,6 +843,20 @@ def file_metadata(args):
             "storage": "per sample: netgen .vol + BREP of the meshed shape (+ deformation map); "
                        "src.data_gen.field_labels.read_field_group rebuilds the curved mesh",
             "freq_unit": "GHz", "length_unit": "m", "c0": C0, "docs": "docs/29_FIELD_LABELS.md"}
+
+
+def _partial_samples(tmp_path):
+    """Sample ids already in a .partial file of an interrupted run, or None when it cannot be read.  A job killed
+    while writing (scancel, wall time) can leave a truncated HDF5 file (TRUBA 2026-11-02: "truncated file: eof = 96"):
+    it is moved aside to <tmp_path>.corrupt-<time> and the shard starts again instead of crashing on every resume."""
+    try:
+        with h5py.File(tmp_path, "r") as f_h5:
+            return {int(k.split("_", 1)[1]) for k in f_h5.keys() if k.startswith("sample_")}
+    except OSError as e:
+        bad = f"{tmp_path}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+        os.replace(tmp_path, bad)
+        print(f"cannot resume {tmp_path} ({e}); moved it to {bad} and starting the shard again", flush=True)
+        return None
 
 
 def main(argv=None):
@@ -792,52 +876,31 @@ def main(argv=None):
           f"with {n_workers} workers")
     tmp_path = ARGS.h5_filename + ".partial"
     n_ok, n_fail, times, calib = 0, 0, [], []
-    # maxtasksperchild: one sample per process (minutes each; gmsh + netgen OCC and NGSolve state never accumulate)
-    per_child = 1
-    new_pool = lambda: Pool(n_workers, initializer=_init_worker, initargs=(ARGS,), maxtasksperchild=per_child)  # noqa: E731
     ids = [int(x) for x in open(ARGS.ids_file).read().split()] if ARGS.ids_file else \
         list(range(ARGS.start_id, ARGS.start_id + ARGS.n_total))
     n_requested = len(ids)
     resume = bool(getattr(ARGS, "resume", False)) and os.path.exists(tmp_path)
+    done = _partial_samples(tmp_path) if resume else None
+    resume = done is not None
     if resume:
-        with h5py.File(tmp_path, "r") as f_h5:
-            done = {int(k.split("_", 1)[1]) for k in f_h5.keys() if k.startswith("sample_")}
         n_ok = len(done)
         ids = [i for i in ids if i not in done]
         print(f"Resuming {tmp_path}: {n_ok} samples already there, {len(ids)} ids left")
-    pool = new_pool()
-    try:
-        with h5py.File(tmp_path, "a" if resume else "w") as f_h5:
-            if not resume:
-                f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
-            chunk = 4 * n_workers
-            for i in range(0, len(ids), chunk):
-                seen = {"n": 0, "ok": 0}
-
-                def progress(res, i=i, seen=seen):     # per sample, before the chunk is written (UI progress bar)
-                    seen["n"] += 1
-                    seen["ok"] += res is not None
-                    if seen["n"] < min(chunk, len(ids) - i):
-                        print(f"  {i + seen['n']}/{len(ids)} done ({n_ok + seen['ok']} ok, "
-                              f"{n_fail + seen['n'] - seen['ok']} failed)", flush=True)
-                results, hung = _run_chunk(pool, ids[i:i + chunk], ARGS.sample_timeout, on_result=progress)
-                if hung:
-                    pool.terminate()
-                    pool = new_pool()
-                n_fail += len(hung)
-                for res in results:
-                    if res is None:
-                        n_fail += 1
-                        continue
-                    g = write_sample(f_h5, res)
-                    n_ok += 1
-                    times.append((res["t_mesh"], res["t_solve"]) + tuple(res["size"]))
-                    if "freqs_analytic" in g.attrs:
-                        calib.append((res["shape_type"], res["freqs"], g.attrs["freqs_analytic"]))
+    with h5py.File(tmp_path, "a" if resume else "w") as f_h5:
+        if not resume:
+            f_h5.attrs["metadata"] = json.dumps(file_metadata(ARGS))
+            f_h5.flush()
+        for n_seen, (_, res) in enumerate(run_samples(ids, n_workers, ARGS.sample_timeout, ARGS), 1):
+            if res is None:
+                n_fail += 1
+            else:                                  # written and flushed at once: a killed job keeps what finished
+                g = write_sample(f_h5, res)
+                n_ok += 1
+                times.append((res["t_mesh"], res["t_solve"]) + tuple(res["size"]))
+                if "freqs_analytic" in g.attrs:
+                    calib.append((res["shape_type"], res["freqs"], g.attrs["freqs_analytic"]))
                 f_h5.flush()
-                print(f"  {min(i + chunk, len(ids))}/{len(ids)} done ({n_ok} ok, {n_fail} failed)")
-    finally:
-        pool.terminate()
+            print(f"  {n_seen}/{len(ids)} done ({n_ok} ok, {n_fail} failed)", flush=True)
     with h5py.File(tmp_path, "a") as f_h5:          # bookkeeping for cluster status reports
         f_h5.attrs["n_requested"] = n_requested
         f_h5.attrs["n_failed_last_run"] = n_fail

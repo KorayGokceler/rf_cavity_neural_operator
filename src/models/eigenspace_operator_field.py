@@ -32,6 +32,8 @@ from src.models.layers import MassAwareBlock, MLPEncoder, RandomFourierFeatures,
 
 REQUIRED_KEYS = ('X', 'Input_funcs', 'QX', 'QP', 'C', 'DofMask', 'BndDof', 'M', 'K', 'G', 'Gt', 'Kp',
                  'Kp_diag', 'Scale')
+# forward_basis (projection-free training step): the trunk and the DOF map only, no G / Kp / Scale
+BASIS_KEYS = ('X', 'Input_funcs', 'QX', 'QP', 'C', 'DofMask', 'BndDof')
 
 
 class EigenspaceOperatorField(nn.Module):
@@ -107,11 +109,22 @@ class EigenspaceOperatorField(nn.Module):
         keep = batch['DofMask'] & ~batch['BndDof'].bool()
         return V * keep.unsqueeze(-1).to(V.dtype)
 
-    def forward(self, batch: dict) -> dict:
-        missing = [k for k in REQUIRED_KEYS if batch.get(k, None) is None]
+    @staticmethod
+    def _require(batch: dict, keys) -> None:
+        missing = [k for k in keys if batch.get(k, None) is None]
         if missing:
             raise ValueError(f"EigenspaceOperatorField needs batch keys {missing}: use the field dataset "
                              "(src.data.field_dataset) and its collate.")
+
+    def forward_basis(self, batch: dict) -> dict:
+        """Trunk + DOF map only: {'basis': V [B, Ndof, m]} (float32, as forward's 'basis'), with no kernel
+        projection and no Rayleigh–Ritz (no Kp solve, no G / Kp / M / K needed).  The training step of a
+        projection-free run (training.projection: false, docs/38) builds its Grams from V alone."""
+        self._require(batch, BASIS_KEYS)
+        return {'basis': self.field_basis(batch).float()}
+
+    def forward(self, batch: dict) -> dict:
+        self._require(batch, REQUIRED_KEYS)
         basis = self.field_basis(batch).float()
         with torch.autocast(device_type=basis.device.type, enabled=False):
             lam, modes, proj = hcurl_ritz(basis.double(), batch, self.num_field_modes, self.mass_ridge,

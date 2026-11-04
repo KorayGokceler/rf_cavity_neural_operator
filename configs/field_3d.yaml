@@ -21,14 +21,16 @@
 
 dataset:
   data_path: "data/field/*.h5"  # file, glob, directory or list of field-label H5 files
-  cache_dir: null               # e.g. /scratch/.../ops_cache: pickled operators per geometry (~0.5 GB at p2)
+  cache_dir: null               # e.g. /scratch/.../ops_cache: operators per geometry, ~130 MB (train/val, projection-free) / ~280 MB (test) at 23k tets, p2 (docs/38 §9)
+  cache_compress: true          # true | "fast" | false: zlib for the operator cache files you write now: all arrays that gain 10 %, only those that shrink to 30 % (~1.3x the disk, half the decompression), none (~2x the disk, nothing to decompress); the reader reads all kinds and existing files stay valid (docs/38 §11)
   n_modes: null                 # null = min stored modes over the files
   train_ratio: 0.8
   val_ratio: 0.1
   random_seed: 42
   feature_indices: null         # null = all 9 point features (highorder.point_features)
   train_extra: null             # multi-fidelity: more H5 files (HF) whose geometries all go to the train split
-  require_label_ok: false       # p2 labels (docs/37): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
+  require_label_ok: true        # p2 labels (docs/37 §3.3, owner 2026-11-03): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
+  max_tets: null                # drop samples with more model tets (GPU memory guard, applied before the split, so it changes the split; V100 16 GB: measure first, docs/38 §8)
   hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
 
 model:
@@ -59,7 +61,26 @@ training:
   max_epochs: 200
   check_val_every_n_epoch: 1
   gradient_clip_val: 1.0
+  accumulate_grad_batches: 1    # >1: sum the gradients of this many batches per optimizer step (effective batch = batch_size x this x GPUs; batch 1 keeps loader / shm memory low)
   strategy: "auto"
+
+  # Throughput options (docs/38 §11); the values below are today's behaviour.
+  diag_metrics_every_n_steps: 1 # projection: false only: compute/log the diagnostic train metrics (span_rel_l2, span_mode_k_rel_l2, mass_diag_ratio, grad_frac_lb ...) on every N-th batch (same batches on every DDP rank; their epoch value is then a mean over those batches); the loss, its gradient, train/loss, span_loss, ortho_loss stay every step. Validation unchanged
+  prefetch_factor: 2            # batches each loader worker keeps ready (shared memory: num_workers x prefetch_factor batches per loader)
+  val_persistent_workers: true  # false: the validation workers exist only during validation (frees their prefetched batches in /dev/shm in between; costs a worker start per epoch)
+  val_num_workers: null         # null = num_workers
+  gpu_prefetch: false           # CUDA only: sparse operators travel as pinned dense parts, copied asynchronously on a side stream (src/data/gpu_transfer.py); untested on a GPU, pins up to num_workers x prefetch_factor batches in RAM
+  profile_steps: 0              # N > 0: step-time breakdown of the first N training batches (loader wait, transfer, trunk, Grams, loss, backward, optimizer ...), printed and written to <log_dir>/<exp_name>/step_profile.json
+  profile_only: false           # true (with profile_steps > 0): stop after the profile, skip the validation/test (a measuring run)
+  sync_debug_steps: 0           # N > 0 (CUDA): torch.cuda.set_sync_debug_mode('warn') for N batches after the first 3 -> every host<->GPU sync of the step is reported with its Python stack (docs/38 section 11.2)
+
+  # true (default): the training loss is computed on the kernel-projected Ritz problem (all terms below), the
+  # validation step is the same projected step, and ModelCheckpoint / EarlyStopping monitor val/field_rel_l2.
+  # false: projection-free TRAINING and VALIDATION (docs/38): no Kp CG, no Rayleigh-Ritz, no G / Kp in the train and
+  # val batches; both compute span_weight * span + ortho_weight * ortho on the unprojected Grams (the same function),
+  # and the monitored metric is val/span_loss.  Needs selfsup_weight: 0, freq_weight: 0 and span_norm mass | both (ValueError otherwise:
+  # configs/field_3d_noproj.yaml).  The TEST step (after training, best checkpoint) and prediction always project.
+  projection: true
 
   span_weight: 1.0
   span_norm: both

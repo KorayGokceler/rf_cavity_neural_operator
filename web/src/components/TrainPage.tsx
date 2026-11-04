@@ -19,8 +19,13 @@ const ST: Record<RunStatus, { key: Key; cls: string; icon: string }> = {
   checkpoint: { key: 'stCheckpoint', cls: 'muted', icon: '•' },
   empty: { key: 'stCheckpoint', cls: 'muted', icon: '•' },
 };
+const hasPts = (series: LineSeries[]) => series.some((s) => s.pts.length > 0);   // keys absent from a run's history: no chart
 const live = (s?: RunStatus) => s === 'running' || s === 'preparing';
 const pct = (v: number) => `${(100 * v).toFixed(v < 0.01 ? 2 : 1)} %`;
+// best_score is the ModelCheckpoint's monitored metric: val/field_rel_l2 (a fraction) or, for a projection-free
+// run (docs/38), val/span_loss (or val/loss in earlier runs): not a percentage
+const bestScore = (score: number, monitor: string | null) =>
+  (monitor === 'val/span_loss' || monitor === 'val/loss' ? sci(score, 3) : pct(score));
 
 function stamp() {
   const d = new Date(), p = (n: number) => String(n).padStart(2, '0');
@@ -117,6 +122,9 @@ export default function TrainPage({ lang, model, onModel }: Props) {
     return {
       loss: [ser('train/loss', tr, 's1'), ser('val/loss', va, 's2')],
       field: [ser('train/field_rel_l2', tr, 's1'), ser('val/field_rel_l2', va, 's2')],
+      span: [ser('train/span_rel_l2', tr, 's1'), ser('val/span_rel_l2', va, 's2')],
+      ratio: [ser('train/mass_diag_ratio', tr, 's1'), ser('val/mass_diag_ratio', va, 's2')],
+      gradLb: [ser('train/grad_frac_lb', tr, 's1'), ser('val/grad_frac_lb', va, 's2')],
       freq: [ser('train/freq_rel_err', tr, 's1'), ser('val/freq_rel_err', va, 's2')],
       lr: [ser('lr-AdamW', t(lang, 'lr'), 's1')],
     };
@@ -193,7 +201,7 @@ export default function TrainPage({ lang, model, onModel }: Props) {
                       <span className="run-head">
                         <span className={`status ${s.cls}`}>{s.icon}</span><strong>{r.name}</strong>
                         {model?.run === r.name && <span className="badge">{t(lang, 'inUse')}</span>}
-                        <span className="muted">{r.epoch}{r.max_epochs ? `/${r.max_epochs}` : ''} · {r.best_score != null ? pct(r.best_score) : '—'}</span>
+                        <span className="muted">{r.epoch}{r.max_epochs ? `/${r.max_epochs}` : ''} · {r.best_score != null ? bestScore(r.best_score, r.monitor) : '—'}</span>
                       </span>
                       {r.max_epochs ? <span className="progress"><span style={{ width: `${f * 100}%` }} className={s.cls} /></span> : null}
                     </button>
@@ -215,7 +223,7 @@ export default function TrainPage({ lang, model, onModel }: Props) {
               <dl className="kv">
                 <dt>{t(lang, 'epochs')}</dt><dd>{run.epoch}{run.max_epochs ? ` / ${run.max_epochs}` : ''}{run.n_batches && live(run.status) ? ` · batch ${run.batch}/${run.n_batches}` : ''}</dd>
                 <dt>{t(lang, 'modelSize')}</dt><dd>{run.preset ?? '—'}{run.n_params ? ` · ${(run.n_params / 1e6).toFixed(2)} M` : ''}</dd>
-                <dt>{t(lang, 'bestVal')}</dt><dd>{run.best_score != null ? `${pct(run.best_score)} (val/field_rel_l2)` : '—'}</dd>
+                <dt>{t(lang, 'bestVal')}</dt><dd>{run.best_score != null ? `${bestScore(run.best_score, run.monitor)} (${run.monitor ?? 'val/field_rel_l2'})` : '—'}</dd>
                 {run.params && <><dt>{t(lang, 'sources')}</dt><dd>{run.params.sources.join(', ')}</dd></>}
                 {run.error && <><dt>{t(lang, 'stFailed')}</dt><dd className="critical-text">{run.error}</dd></>}
               </dl>
@@ -246,9 +254,12 @@ export default function TrainPage({ lang, model, onModel }: Props) {
           )}
           {run && run.history.length > 0 && (
             <div className="curves">
-              <LineChart title={t(lang, 'curveField')} series={curves.field} log fmt={pct} xLabel="epoch" />
-              <LineChart title={t(lang, 'curveFreq')} series={curves.freq} log fmt={pct} xLabel="epoch" />
+              {hasPts(curves.field) && <LineChart title={t(lang, 'curveField')} series={curves.field} log fmt={pct} xLabel="epoch" />}
+              {!hasPts(curves.field) && hasPts(curves.span) && <LineChart title={t(lang, 'curveSpan')} series={curves.span} log fmt={pct} xLabel="epoch" />}
+              {hasPts(curves.freq) && <LineChart title={t(lang, 'curveFreq')} series={curves.freq} log fmt={pct} xLabel="epoch" />}
               <LineChart title={t(lang, 'curveLoss')} series={curves.loss} fmt={(v) => sci(v, 2)} xLabel="epoch" />
+              {hasPts(curves.ratio) && <LineChart title={t(lang, 'curveRatio')} series={curves.ratio} log fmt={(v) => sci(v, 1)} xLabel="epoch" />}
+              {hasPts(curves.gradLb) && <LineChart title={t(lang, 'curveGradLb')} series={curves.gradLb} fmt={pct} xLabel="epoch" />}
               <LineChart title={t(lang, 'curveLr')} series={curves.lr} log fmt={(v) => sci(v, 1)} xLabel="epoch" />
             </div>
           )}

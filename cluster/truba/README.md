@@ -4,7 +4,7 @@ Her aile (elliptical, reentrant, …, dtl ve OOD test aileleri) **ayrı ayrı ü
 dokunmaz.
 
 ```
-$DATA_ROOT/$TAG/                         (LABELS=field: /arf/scratch/$USER/rfcav3d/F_p2p2_ms0.10_k10_mf0.05_v2)
+$DATA_ROOT/$TAG/                         (LABELS=field: /arf/scratch/$USER/rfcav3d/F_p2p2_ms0.10_k10_mf0.05_v3)
 ├── h5/<aile>/<aile>_s00000.h5 …         FEM etiketleri (asıl kayıt, eğitim doğrudan bunları okur): parça = 1024 geometri
 ├── runs/<EXP>/                          eğitim koşuları (last.ckpt, best-*.ckpt)
 └── logs/                                gen_<aile>_<parça>_<job>.out, train_<EXP>_<job>.out
@@ -54,7 +54,7 @@ bash cluster/truba/run.sh status LABELS=field
 - `LABELS=field` (varsayılan ve tek etiket türü; docs/29):
   - Varsayılan (2026-11-01, docs/37): p2 etiketleri, model mesh'inde HCurl p2 çözümü: ~10k tetlik başlangıç, `est_rel_f ≤ tol_f_p2` (1e-3) olana dek inceltme, tet tavanı yok (`LABEL_ORDER=2`; docs/37 §3). `MODEL_MAX_ELEMENTS=20000` yalnız p3 yolunda. `LABEL_ORDER=3`: NGSolve p3 uyarlamalı etiketler eğri mesh üzerinde üretilir, p2 model uzayına izdüşürülür. Dönüştürme adımı yoktur.
   - Eğitim, train grubundaki ailelerin H5 parça klasörlerinden yapılır (OOD aileleri eğitime girmez).
-  - Ayrı TAG kullanılır: p2 için `F_p2p2_ms0.10_k10_mf0.05_v2`, p3 için `F_p3p2_ms0.10_k10_mf0.05_v2`.
+  - Ayrı TAG kullanılır: p2 için `F_p2p2_ms0.10_k10_mf0.05_v3`, p3 için `F_p3p2_ms0.10_k10_mf0.05_v3`.
   - İş başına `CPUS / THREADS` örnek aynı anda çalışır (`THREADS=8` → 7 örnek, p2 etiketlerde örnek başına ölçülen ≤ 4.1 GB (366k DOF'ta); plan muhafazakâr: field_mem_gb(MAX_NDOF) ≈ 13 GB).
 - Eski `LABELS=n0` (N0 etiketleri) kaldırıldı: `config.sh` `LABELS=field` dışındaki her değerde hata verir.
 
@@ -87,6 +87,13 @@ LABELS=field EXP=field_base MODEL=base cluster/truba/submit_train.sh
 
 Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 cluster/truba/submit_family.sh dtl`.
 `config.sh`'deki her değişken bu şekilde ezilebilir.
+
+**Projeksiyonsuz eğitim** (docs/38; eğitimde ve doğrulamada Kp CG ve Rayleigh–Ritz yok, bu batch'lerde G/Kp yok, en iyi checkpoint `val/span_loss` ile seçilir; eğitim sonundaki test ve tahmin projekte eder):
+`TRAIN_EXTRA="training.projection=false training.selfsup_weight=0 training.freq_weight=0"`, örneğin
+`LABELS=field EXP=field_noproj MODEL=base TRAIN_EXTRA="training.projection=false training.selfsup_weight=0 training.freq_weight=0" cluster/truba/submit_train.sh`
+(`run.sh train/all` aynı değişkeni alır; arayüzün TRUBA sekmesinde "train_extra" alanına üç `key=value` yazılır). İkisi de 0 olmazsa
+`train.py` `ValueError` verir. Aynı EXP'yi yeniden göndermek `last.ckpt`'tan devam eder: `TRAIN_EXTRA` her gönderimde aynı verilmeli
+(devam, checkpoint'in `projection` değerinden farklıysa `train.py` hata verir; `--init_from` ile yeni koşu başlatın).
 
 ## Bir aileyi büyütmek, yeni aile eklemek
 

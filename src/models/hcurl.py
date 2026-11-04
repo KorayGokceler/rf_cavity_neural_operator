@@ -242,6 +242,34 @@ def hcurl_grams(V, T, proj, batch):
     return G_M, G_A, MT
 
 
+def hcurl_grams_plain(V, T, batch):
+    """Mass / curl–curl Grams of [V | T] WITHOUT the kernel projection, float64 (projection-free training
+    step, docs/38): no Kp solve, no G, Kp in the batch.
+
+    Same layout and return values as hcurl_grams.  Mass: VV = VᵀMV (= project_basis' M_V), cross = VᵀMT
+    (no Z term), TT = TᵀMT; energy: VᵀKV, VᵀKT, TᵀKT (= hcurl_grams' blocks bit for bit: K G = 0, so the
+    projection never touches them).  For targets M-orthogonal to range(G), the stored discrete
+    eigenmodes (GᵀMT = 0), the cross block equals the projected one and the VV mass block is only larger
+    than M_div (gradient mass of V counts): r_plain ≥ r_proj, docs/38 §2.
+    Returns G_M, G_A [B, m+n, m+n] and MT [B, Nd, n].
+    """
+    dt = torch.float64
+    V, T = V.to(dt), T.to(dt)
+    M, K = (_sparse(batch, k, dt) for k in ('M', 'K'))
+    sym_mk = bool(batch.get('SymmetricMK', False))
+    sym = lambda A: 0.5 * (A + A.transpose(-1, -2))          # noqa: E731
+    MT, KT = spmm(M, T), spmm(K, T)
+    A_V = sym(bgram(V, spmm(K, V, K if sym_mk else None)))
+    M_V = sym(bgram(V, spmm(M, V, M if sym_mk else None)))
+
+    def block(VV, VT, TT):
+        return torch.cat([torch.cat([VV, VT], -1),
+                          torch.cat([VT.transpose(-1, -2), TT], -1)], -2)
+    G_M = block(M_V, bgram(V, MT), bgram(T, MT))
+    G_A = block(A_V, bgram(V, KT), bgram(T, KT))
+    return G_M, G_A, MT
+
+
 def mode_rel_l2(F, T, MT, clusters):
     """Per-mode M-norm rel-L2 of predicted DOF fields F [Nd, K] vs targets
     T [Nd, K] (one sample, MT = M·T): sign-agnostic for isolated modes
