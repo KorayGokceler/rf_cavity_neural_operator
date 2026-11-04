@@ -170,9 +170,9 @@ def test_noproj_fast_dev_run_train_py(field_h5, tmp_path, monkeypatch):
         return wrapped
 
     def spy_plain(orig):
-        def wrapped(self, batch, prefix="train", *a):
+        def wrapped(self, batch, prefix="train", *a, **kw):
             seen["plain"].append(prefix)
-            return orig(self, batch, prefix, *a)
+            return orig(self, batch, prefix, *a, **kw)
         return wrapped
 
     def spy_pcg(*a, **k):
@@ -434,3 +434,61 @@ def test_multi_fidelity_items_split_and_loss_weights(field_h5, tmp_path):
     only0 = mod._span_terms(G_M[:1], G_A[:1], m, "train")
     w0 = mod._span_terms(G_M, G_A, m, "train", torch.tensor([2.0, 0.0], dtype=torch.float64))
     assert torch.allclose(w0, only0)                       # mean_b(w_b l_b) = (2 l_0 + 0) / 2
+
+
+def test_cache_compress_policies_give_the_same_items_and_train_py_runs_with_the_throughput_options(field_h5, tmp_path, monkeypatch):
+    """dataset.cache_compress true | 'fast' | false: the cache files differ in size and codec, the items read back are bit for bit
+    the same; a 2-epoch projection-free train.py run with the throughput options (diagnostic metrics every 2nd batch,
+    prefetch_factor, non-persistent val workers, uncompressed cache, step profile) trains, logs the diagnostics on the
+    epoch level, and writes the profile (docs/38 §11)."""
+    import sys
+    import warnings
+
+    import train
+    from src.data import ops_cache
+    kw = dict(train_ratio=0.5, val_ratio=0.25, build_potential=False)
+    items = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for pol in (True, "fast", False):
+            d = tmp_path / f"c_{pol}"
+            ds = FieldDataset(str(field_h5), split="train", cache_dir=str(d), cache_compress=pol, **kw)
+            ds[0]                                                       # writes the file (and returns its unpacked form)
+            items[pol] = (ds[0], sorted(d.glob("*.nopot.ops2.pkl"))[0])  # second call: read from the file
+    sizes = {pol: p.stat().st_size for pol, (_, p) in items.items()}
+    assert sizes[False] > sizes["fast"] > sizes[True]
+    codecs = {pol: {a["codec"] for q in ops_cache.read(str(p))["ops"].values() if q["kind"] == "csr"
+                    for a in (q["indptr"], q["indices"], q["data"])} for pol, (_, p) in items.items()}
+    assert codecs[False] == {"raw"} and "zlib" in codecs[True]
+    ref = items[True][0]
+    for pol in ("fast", False):
+        it = items[pol][0]
+        assert it.keys() == ref.keys()
+        for k in ("M", "K", "C", "Ct"):
+            for attr in ("indptr", "indices", "data"):
+                assert np.array_equal(getattr(it[k], attr), getattr(ref[k], attr)), (pol, k, attr)
+        for k in ("X", "Input_funcs", "Y_field", "Y_freq", "QP", "QX", "Area"):
+            assert torch.equal(it[k], ref[k]), (pol, k)
+
+    cache = tmp_path / "ops"
+    monkeypatch.setattr(sys, "argv", [
+        "train.py", "--config", "configs/field_3d_noproj.yaml", "--override",
+        f"dataset.data_path={field_h5}", "dataset.train_ratio=0.5", "dataset.val_ratio=0.25", f"dataset.cache_dir={cache}",
+        "dataset.cache_compress=false", *_SMALL, f"training.log_dir={tmp_path}", "training.exp_name=thr",
+        "training.max_epochs=2", "training.patience=5", "training.diag_metrics_every_n_steps=2", "training.prefetch_factor=1",
+        "training.val_persistent_workers=false", "training.num_workers=1", "training.val_num_workers=0",
+        "training.profile_steps=2", "training.progress_bar_refresh_rate=10", "training.gpu_prefetch=true"])
+    with pytest.warns(UserWarning, match="not eigenvectors of the model space"):
+        train.main()
+    run = tmp_path / "thr"
+    prog = json.load(open(run / "progress.json"))
+    assert prog["status"] == "finished" and len(prog["history"]) == 2
+    h = prog["history"][-1]
+    for key in ("train/loss", "train/span_loss", "train/ortho_loss", "train/span_rel_l2", "train/mass_diag_ratio",
+                "train/grad_frac_lb", "val/span_rel_l2", "val/mass_diag_ratio", "val/grad_frac_lb", "val/span_loss"):
+        assert key in h, key
+    prof = json.load(open(run / "step_profile.json"))
+    assert prof["n_batches"] >= 1 and prof["stages"]["trunk"]["mean"] > 0 and prof["gpu_prefetch"] is False   # no CUDA here
+    files = list(cache.glob("*.ops2.pkl"))
+    assert files and all(a["codec"] == "raw" for f in files for q in ops_cache.read(str(f))["ops"].values()
+                         if q["kind"] == "csr" for a in (q["indptr"], q["indices"], q["data"]))

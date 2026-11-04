@@ -408,3 +408,143 @@ atomik ve eşzamanlı yazma. `tests/test_field_labels.py::test_dataset_without_p
 ## 10. Colab'da eğitim (`notebooks/colab_train_noproj.ipynb`)
 
 Tek GPU'lu Colab ortamı (G4 = RTX PRO 6000 96 GB, A100, H100) için not defteri: makine kontrolü, Drive'daki TRUBA `TEST=1` verisinin yerel diske kopyalanması, ortam (`requirements.txt`, Colab'ın kendi CUDA torch'u korunur), iki örnekte GPU adım ölçümü (V100 referansıyla kıyas), izdüşümsüz eğitim (`configs/field_3d_noproj.yaml`, batch 4 = akya 4 GPU × batch 1, `max_tets` yok, önbellek yerel diskte, checkpoint / `progress.json` / log Drive'da; hücre yeniden çalıştırılınca `last.ckpt`'ten devam) ve izleme. Komut yerelde `--fast_dev_run` ile denendi (2026-11-03): eğitim, doğrulama (önbellek `.nopot.ops2`) ve izdüşümlü test (`.ops2`) çalıştı. G4'teki adım süresi ölçülmedi (FP64 1/64; seyrek çarpımlar bant genişliğine bağlı olduğu için etkinin küçük olması bekleniyor), 5. hücre ölçer.
+
+## 11. Verim (throughput): ölçüm araçları ve seçenekler
+
+> 2026-11-04, aynı dal, **commit edilmemiş**. Sahibin Colab G4 ölçümü (RTX PRO 6000 96 GB, 48 vCPU, 176 GB RAM; küçük model, `batch_size 1`, `accumulate_grad_batches 4`, önbellek yerel diskte, biçim-2 önbellek hazır):
+> 1. epoch ≥ 2: 686 örnek ≈ 5,7 dk ≈ **0,5 s/örnek**; yalıtılmış GPU adımı 0,26 s (23,7k tet) / 0,57 s (51k tet).
+> 2. `nvidia-smi` kullanımı 0–100 % arasında salınıyor, ortalama ~%40 (8 işçi), ~%45–50 (16 işçi). `top`: ana python süreci ~%82 CPU; epoch 1'de işçiler kısmen D durumunda (disk), sonra önbellek (~110 GB sıkıştırılmış) sayfa önbelleğinde.
+> 3. `/dev/shm` 16 işçiyle 64 GB (train ve val yükleyicileri kalıcı, `prefetch_factor 2`).
+>
+> Sonuç (sahibin): ana süreç (batch alma, host→GPU, adım başı loglama / host senkronizasyonu) ve örnek başına önbellek çözme (~1,5–2,5 s: zlib + üst üçgen yeniden kurma) GPU'yu aç bırakıyor. Aşağıdakiler bunu **ölçmek** ve hafifletmek içindir.
+> **Hiçbir GPU ölçümü bu oturumda yapılmadı (makinede GPU yok)**; CPU sayıları yalnız ana süreç payını ve işçi tarafı aşama süreleri sırasını gösterir. Kullanıcıya görünen varsayılanlar değişmedi (aşağıdaki "varsayılan" sütunu); not defteri (`notebooks/colab_train_noproj.ipynb`) güvenli olanları açar.
+
+| seçenek / araç | varsayılan | ne yapar | sayısal etki |
+|---|---|---|---|
+| `scripts/profile_loader.py` | – | modelsiz train yükleyici ölçümü (§11.1) | – |
+| `training.profile_steps=N` (+ `profile_only`) | 0 | ilk N batch'in adım süresi dökümü (§11.1) | yok |
+| `_jacobi_cholesky` senkronsuz, `fidelity` tablosu, `lr` tensörü | her zaman | adım başına host senkronizasyonları kalktı (§11.2) | normal durumda bit düzeyinde aynı |
+| `training.diag_metrics_every_n_steps` | 1 | pahalı tanı metriklerini her N. batch'te hesapla/logla (§11.3) | kayıp ve gradyan aynı; yalnız loglanan `train/*` tanıları seyrelir |
+| `training.gpu_prefetch` | false | seyrek operatörler pinned yoğun parçalar + yan akımda eşzamansız kopya (§11.4) | batch bire bir aynı |
+| `dataset.cache_compress` (+ `scripts/recode_ops_cache.py`) | true | önbelleği zlib'siz / `fast` yaz; eski dosyalar aynen okunur (§11.5) | okunan değerler bit düzeyinde aynı |
+| okuyucu hızlandırma (K/M deseni bir kez) | her zaman | `ops_cache.unpack` ~2× hızlı (§11.5) | bit düzeyinde aynı |
+| `training.prefetch_factor`, `val_persistent_workers`, `val_num_workers` | 2, true, null | `/dev/shm` ve işçi belleği (§11.6) | yok |
+| `training.sync_debug_steps=N` | 0 | GPU'da kalan senkronizasyonları yığın izleriyle listeler (§11.2) | yok |
+
+### 11.1 Ölçüm araçları
+
+**`scripts/profile_loader.py`** — train `DataLoader`'ını (train.py ile aynı `loader_kwargs`) modelsiz gezer. Her işçi sayısı için: örnek/s, batch boyutu (MB), işçi tarafında örnek başına aşama süreleri (`cache_read` = `pickle.load`, `cache_decode` = `ops_cache.unpack`,
+`load_build` = önbelleksiz kurma/yazma, `field_item` = `field_item` + Cᵀ, `collate`), ana süreçte `wait` (`next()`'te beklenen süre; batch'in shm'den açılmasını içerir), `to_device` (senkronize), ana sürecin CPU süresi/batch ve ana süreç CPU payı.
+`--step_time T`, GPU adımını `time.sleep(T)` ile taklit eder (CPU işçilere kalır, eşzamansız GPU adımında olduğu gibi): `T=0` yükleyicinin kapasitesini, `T=0,3` eğitim döngüsünün batch başına kaybedeceği `wait` süresini verir; `predicted_gpu_util = T / (T + wait + to_device)`.
+`--gpu_prefetch` SparseParts + pinned yolunu ölçer (yalnız CUDA'da). `--json` yazar.
+
+**`training.profile_steps=N`** — `StepProfiler` (callback, `src/training/step_profile.py`) + `StepClock` (modüle takılır): ana süreçte ilk N eğitim batch'i için `loader_wait`, `transfer` (`transfer_batch_to_device`), `trunk` (`forward_basis`), `grams`, `loss` (span+ortho, tanılar dahil), `log`, `step_other` (Lightning'in kapanışı),
+`backward`, `accum_other`, `optimizer` (kırpma + AdamW), `post` (callback'ler, ilerleme çubuğu), `total`. CUDA'da her damgadan önce `torch.cuda.synchronize()` çağrılır: toplam normal adım süresinin **üst sınırıdır** (CPU ile GPU seri çalışır), aşamaları **sıralamak** içindir, verimi tahmin etmek için değil.
+N batch sonra saat çıkarılır (eğitim tam hızda sürer), tablo yazdırılır ve `<log_dir>/<exp_name>/step_profile.json` yazılır; `training.profile_only=true` N batch sonra durur (best checkpoint ve test yok). Projekteli yolda `trunk/grams/loss` damgaları yok (hepsi `step_other`'a düşer).
+
+CPU ölçümleri (4 çekirdek, `torch.get_num_threads() = 4`, NGSolve 1 iş parçacığı yükleyicide, makinede başka iş yok, **tek koşu**):
+
+Küçük model (`embed_dim 64, n_basis 12, num_field_modes 4, rff_dim 32, n_layers 2`), `batch_size 1`, `accumulate_grad_batches 2`, 2 işçi, projeksiyonsuz, 3 gerçek örnek (hwr 21,6k tet, pillbox 10,4k tet, spoke 8,4k tet; önbellekten), ilk 8 batch'in sonuncu 6'sı, `scratchpad/speed/step_cpu.py`
+(`StepProfiler` + `make_loaders`; örnekler farklı boyutta olduğundan yayılım geniştir). Ortalama ms: `loader_wait` 1642 (medyan 208; işçiler aynı 4 çekirdeği paylaşıyor), `transfer` 0,2, **`trunk` 3589**, `grams` 124, **`loss` 9,1**, **`log` 3,2**, `step_other` 0,3, **`backward` 2244**,
+`accum_other` 0,1, `optimizer` 0,1, **`post` 22,5**, `total` 7634. CPU'da hesap baskın olduğundan bu yalnızca şunu söyler: kayıp + loglama + callback + Lightning kapanışı toplam ~35 ms (< %0,5); GPU'da (adım 260 ms) aynı 35 ms CPU işi, senkronizasyonlarla birlikte, GPU boşluklarına dönüşür — bu **GPU'da ölçülmeli** (§11.8).
+
+`profile_loader.py`, aynı örnekler (hwr + pillbox, nopot önbelleği sahibin biçiminde, hazır), 2 işçi, `batch_size 1`, 16 batch + 4 ısınma, CPU (4 çekirdek, 2 işçi + ana süreç + yükleyici: örnek/s anlamlı değil, **aşamalar** anlamlı); batch 829 MB (4 işlem: M, K, C, Cᵀ: int64 indisler + float64 değerler ≈ 46M nnz):
+
+| aşama (örnek başına ort. ms) | eski okuyucu (`e519ede`) | yeni okuyucu | not |
+|---|---|---|---|
+| `cache_read` | 37 | 34 | |
+| `cache_decode` | 2153 (medyan 1967) | **1643** (medyan 1636) | tek koşu; aynı koşuda `collate` 2118 → 1760 gürültü (makine) |
+| `field_item` | 555 | 512 | Cᵀ dahil |
+| `collate` | 2118 (medyan 1215) | 1760 (medyan 1072) | `block_diag`: 829 MB yazım; en büyük değerler 6 s (bellek sayfalama) |
+| işçi toplamı / örnek | 4,86 s | 3,95 s | |
+| ana süreç CPU / batch | 90 ms (%2 çekirdek) | 93 ms | `step_time 1,0` ile 100 ms |
+
+Ana süreç, 829 MB'lık bir batch'i almak (shm'den açma, `pin_memory` yok) için batch başına ~0,1 s CPU harcıyor (adım süresi 0,26 s olan bir GPU adımının ~%35'i; eşzamansız GPU'da ana iş parçacığıyla aynı çekirdekte çalışır). Bu CPU ölçümü sahibin ana süreçteki %82 CPU'sunun kaynağını **göstermez** (CUDA başlatma, loglama, senkronizasyon beklemesi burada yok); bunu GPU'da `profile_steps` ayrıştıracak (§11.8).
+
+### 11.2 Host→GPU senkronizasyonları
+
+Eğitim adımında (projeksiyonsuz yol + ortak yardımcılar) bulunan ve kaldırılanlar:
+
+| nerede | neden senkronize | adım başına | şimdi |
+|---|---|---|---|
+| `_jacobi_cholesky` (`span_residual` iki kez: kütle + enerji; `ritz_*` ortak) | `if bool((info > 0).any())` | 2 | `torch.where` ile cihaz tarafında; yedek Cholesky her zaman çalışır (küçük matrisler), bayrak kapalıyken `C` bit düzeyinde aynı. Bayrak açıkken sonuç eskisiyle aynı (testte). Büyük ridge de başarısız olursa **NaN** (eskiden `LinAlgError`): kayıp NaN olur ve `EarlyStopping(check_finite)` bir sonraki doğrulamada durdurur |
+| `_compute_loss_3d(_plain)` | `torch.tensor(self.fidelity_weights, device=…)`: sayfalanabilir host→GPU kopyası akımı senkronize eder | 1 (projekteli yolda 2) | `_table`: bir kez kurulur, önbellekte |
+| `training_step` | `self.log('lr', float)`: Lightning `torch.tensor(float, device=…)` yapar | 1 | `_lr_tensor`: değer değişince (epoch başında) kurulur. Loglanan değer Lightning'in float32'ye çevirdiği ile aynı |
+
+Kalanlar (dokunulmadı / yapılandırmayla): ilerleme çubuğu `prog_bar=True` metriklerini her `progress_bar_refresh_rate` batch'te `.item()` ile okur (config'te 1 → **her adımda bir senkronizasyon**; not defteri 20 yapar);
+`log_every_n_steps=10`: her 10. optimizer adımında günlükçü `on_step` değerlerini okur; `torch.sparse.mm`'in cuSPARSE çalışma alanı ayırması (ölçülmedi); projekteli yolda `_pcg` yakınsama denetimi (her 10 iterasyonda `bool(...)`), küme/NaN mantığı (`.tolist()`, `int(valid.sum())`) — **projekteli yol bu işte değiştirilmedi** (bit düzeyinde aynı, bkz. §11.7).
+`tests/test_throughput.py::test_noproj_training_step_has_no_host_sync`, CPU'da Python tarafından görünen çağrıları (`item/tolist/numpy/__bool__/__float__/__int__/__index__`, `torch.tensor(device=…)`) sayar: eğitim adımı + geri + doğrulama adımı **0**, eski `_jacobi_cholesky` ≥ 1.
+Bu sayaç C++/kütüphane içindeki örtük senkronizasyonları (cuSPARSE, ayırıcı) **görmez**: GPU'da `training.sync_debug_steps=N` ilk batch'lerden sonraki N batch'te `torch.cuda.set_sync_debug_mode("warn")` açar ve her senkronize eden işlemin yığın izini uyarı olarak yazar (§11.8).
+
+### 11.3 `training.diag_metrics_every_n_steps` (yalnız `projection: false`)
+
+Varsayılan 1 = bugünkü davranış. N > 1: `train/span_rel_l2`, `span_rel_l2_energy`, `span_mode_k_rel_l2`, `mass_diag_ratio`, `grad_frac_lb`, `grad_frac_lb_max` yalnız `batch_idx % N == 0` batch'lerinde hesaplanır **ve** loglanır; `train/loss`, `train/span_loss`, `train/ortho_loss`, `lr` ve gradyan her adımda.
+`batch_idx` bütün DDP sıralarında aynıdır: aynı anahtarlar aynı adımlarda loglanır (epoch'un 0. batch'i her zaman loglanır, anahtar her epoch'ta vardır). `train/*` tanılarının epoch değeri bu durumda **yalnız loglanan batch'ler üzerinden ortalamadır** (686 örnek, N=10, accumulate 4 → ~69 örnek), tüm epoch üzerinden değil;
+doğrulama (`val/*`) her zaman her batch'te her şeyi loglar, yani `train/` ile `val/` tanıları artık örnek sayısı bakımından eşit ağırlıklı değildir. Projekteli yolda (`projection: true`) N > 1 `ValueError` verir (Ritz metrikleri her adımda loglanır). Kontrol noktasına yazılan `hyper_parameters`'a `diag_metrics_every_n_steps` eklenir; eski kontrol noktalarında anahtar yoktur (varsayılan 1), eski kod yenisini `**_legacy` ile yutar: `--resume` aynı yapılandırmayla çalışır.
+
+### 11.4 `training.gpu_prefetch` (varsayılan kapalı, **GPU'da denenmedi**)
+
+Sorun: batch'in seyrek operatörleri (M, K, C, Cᵀ; 23k tet'te ~0,8–1 GB: int64 indisler + float64 değerler) pinned yapılamaz, bu yüzden her adımda sayfalanabilir (fiilen senkron) kopyayla eğitim iş parçacığında GPU'ya gidiyor; Lightning 2.6'da bu kopya `next(data_fetcher)`'dan **sonra**, adımdan hemen önce yapılır (önceden getirme yalnız CPU tarafında bir batch).
+Yapılan: (1) collate (`field_collate_parts`, işçide) her CSR tensörünü üç yoğun parçaya (`SparseParts(crow, col, val, size)`, bir `NamedTuple`) böler; (2) `DataLoader(pin_memory=True)` NamedTuple'ı alan alan pinler — bu işi ve batch'in shm'den açılmasını kendi iş parçacığında yapar (ana iş parçacığının `next()` maliyeti düşer);
+(3) `CavityLightning.transfer_batch_to_device` parçaları `non_blocking=True` ile **yan CUDA akımında** kopyalar, CSR'leri GPU'da `torch.sparse_csr_tensor(..., check_invariants=False)` ile yeniden kurar ve olay kaydeder (`DeviceBatch`); (4) `training_step` / `validation_step` / `test_step` önce `wait_ready`: hesap akımı olayı bekler ve ayırıcıya bellek kullanımını bildirir (`record_stream`).
+Böylece adım N kuyruğa verildikten hemen sonra N+1'in kopyası başlar ve adım **senkronizasyonsuzsa** (§11.2) GPU'nun adım N işiyle üst üste biner — "bir batch önde" bu şekilde, Lightning'in kendi döngüsüne dokunmadan.
+Batch sayısal olarak aynıdır: parçalar CSR tensörünün kendi `crow_indices/col_indices/values`'udur (CPU'da bire bir eşitlik, `DataLoader` işçileriyle ve bir eğitim adımının kaybı/gradyanıyla testli). **Test edilmeyen:** CUDA dalları (yan akım, olay, `record_stream`, pinleme); `wait_ready`'nin çağrı sırası yalnız sahte akımlarla denetlendi.
+Bedeller: pinned RAM = `num_workers × prefetch_factor` batch'e kadar (≈ batch boyutu MB, `profile_loader` yazar; 16 işçi × 2 × ~0,8 GB ≈ 26 GB) ve PyTorch'un pinned ayırıcısı bunu önbelleğe alır — `prefetch_factor=1` önerilir. CUDA yoksa seçenek bildirimle yok sayılır. `/dev/shm` yerine RAM kullanır (pin iş parçacığı shm batch'ini kopyalayıp bırakır).
+Aç/kapa karşılaştırması: §11.8 komutları.
+
+### 11.5 Önbellek: daha hızlı çözme ve zlib'siz yazma
+
+- **Okuyucu** (`ops_cache.py`): K ve M üst üçgeninin tam CSR'ye açılması eskiden her matris için COO → CSR + satır içi sıralama idi (scipy `coo_tocsr` + `csr_sort_indices`); şimdi (`_upper_pattern`) kesin üst kısım scipy'nin O(nnz) CSR→CSC sayma sıralamasıyla devrilir ve kayıtlı üst kısımla CSR toplamıyla birleştirilir (sıralama yok), değerler tek bir `val[src]` toplamasıdır, ve **K ile M aynı desene sahip olduğundan desen dosya başına bir kez** hesaplanır (`_Patterns`, anahtar: kayıtlı `indptr/indices` dizilerinin eşitliği).
+  Sonuç bit düzeyinde aynı (baytlar, dtype'lar, indis dtype'ları; testte rastgele simetrik matrislerde ve üç gerçek dosyada: hwr nopot, pillbox nopot, spoke tam). `_unpack_csr` gereksiz `astype` kopyalarını atlar (`copy=False`).
+- **Yazma** (`dataset.cache_compress`): `true` (varsayılan, bugünkü ilke: zlib bir dizi için ≥ %10 kazandırıyorsa), `"fast"` (zlib yalnız diziyi ≤ %30'a küçültüyorsa: K değerleri ve indis farkları; sıkıştırılamayan float32 blokları — C değerleri, P — ham kalır), `false` (zlib yok, indis farkı yok: her dizi ham). İndis dizisi yalnız zlib tutulursa fark olarak saklanır (aksi halde okurken gereksiz kümülatif toplam).
+  **Biçim sürümü değişmedi** (`FORMAT = 2`, dosya adı `.ops2.pkl`): her dizi kendi `codec` / `delta` alanını taşır, okuyucu üçünü de okur; sahibin mevcut dosyaları yeniden kurulmadan çalışır (testte ve gerçek dosyalarda doğrulandı). Yazıcı `true` için eski baytlarla aynı boyutta dosya üretir (128 372 803 bayt, comp_adaptive nopot, belgelenen 128,4 MB).
+- **`scripts/recode_ops_cache.py SRC DST --compress false|fast|true --workers N`** mevcut önbelleği (H5 / mesh olmadan) yeniden yazar, her dosyayı bit düzeyinde doğrular (`--no_verify` atlar), `SRC = DST` ise yerinde (dosya başına atomik). z → ham → z gidiş-dönüşü özgün dosyayla bayt bayt aynı (comp_adaptive).
+
+Okuma süresi (comp_adaptive, 23 155 tet, nopot; aynı süreçte dönüşümlü 8 tekrar, sayfa önbelleği sıcak, **medyan [en küçük – en büyük]**; makine gürültülü: aynı iş art arda 1,9 – 3,1 s):
+
+| okuyucu / dosya | boyut | `read` | `unpack` | toplam, 3 ayrı koşunun medyanları (her koşu 8 tekrarın medyanı) |
+|---|---|---|---|---|
+| eski okuyucu (`e519ede`), zlib dosyası | 128,4 MB | 0,05 | 3,6 – 4,3 | 4,36 / 3,66 / 4,04 → **~4,0 s** |
+| yeni okuyucu, aynı zlib dosyası | 128,4 MB | 0,04 | 2,0 – 3,7 | 2,05 / 3,72 / 3,11 → **~3,1 s** (−%23; koşular arası yayılım büyük) |
+| yeni okuyucu, `fast` dosyası | 194,0 MB (1,51×) | 0,09 | 1,4 | 1,42 / 1,48 / 1,48 → **~1,45 s** (−%64) |
+| yeni okuyucu, `false` (ham) dosyası | 328,2 MB (2,56×) | 0,19 | 2,1 – 2,5 | 2,20 / 2,64 / 2,30 → **~2,3 s** (−%43; en küçük 0,97 – 2,16) |
+
+Ham dosya `fast`'tan **yavaş** çıktı (beklenmedi): bu sanal makinede büyük dizilerin ilk dokunuşu (sayfa hatası) pahalı ve ham dosya daha çok bellek yazıyor (328 MB okuma + float32→float64 kopyaları); aşağı yukarı aynı ham bayt sayısına sahip `fast`, K/M indislerini ve K değerlerini zlib'le
+küçük tutuyor. Gerçek Colab belleğinde sıralama farklı olabilir; **bu yüzden `fast` önerilir, `false` değil** — ama GPU makinesinde ölçülmedi. Kararlı durum mikro ölçümü (hwr, aynı süreçte): K/M açma (`_expand_upper`) eski 0,52–0,56 s/matris → yeni 0,61 s (ilk, desen hesaplanır) + 0,10 s (ikinci, desen paylaşılır): dosya başına 1,1 → 0,7 s;
+`_dec` toplamı 1,04 s, bunun 0,88'i zlib (C değerleri 0,37, K / M / C indisleri ~0,1'er, K değerleri 0,10, P 0,07).
+
+Disk büyümesi (nopot, 23k tet): `true` 128,4 MB → `fast` 194,0 MB (**1,51×**) → `false` 328,2 MB (**2,56×**). Sahibin ~110 GB'lık önbelleği için `fast` ≈ 166 GB, `false` ≈ 282 GB; **176 GB RAM'de `/dev/shm` (batch'ler) ve sayfa önbelleğiyle yarışır**: önbellek sayfa önbelleğine sığmazsa epoch başına diskten okunur
+(D durumu) ve zlib kazancı kaybolur. Bu yüzden varsayılan `true` kaldı; `fast` ve `false` yalnız RAM'e sığıyorsa ya da disk hızlıysa; **GPU makinesinde ölçülmedi**. `/dev/shm` boyutu ve sayfa önbelleği toplamı RAM'i aşmamalıdır.
+
+### 11.6 Yükleyici belleği
+
+`training.prefetch_factor` (2): her işçinin hazır tuttuğu batch; `/dev/shm` ≈ `num_workers × prefetch_factor × batch_MB` **her yükleyici için** (train + val, ikisi kalıcı) — sahibin 64 GB'ı: 16 × 2 × 2 yükleyici × ~1 GB. `training.val_num_workers` (null = `num_workers`) doğrulamaya daha az işçi verir;
+`training.val_persistent_workers: false` doğrulama işçilerini yalnız doğrulama sırasında yaşatır (arada onların hazır batch'leri `/dev/shm`'den çıkar; bedel: epoch başına işçi başlatma, ilk batch'in gecikmesi). Varsayılanlar bugünkü davranıştır. `make_loaders` / `loader_kwargs` (`train.py`) tek yerdir; `profile_loader.py` aynı kwargs'ı kullanır.
+
+### 11.7 Testler ve bit düzeyinde aynılık
+
+`tests/test_throughput.py` (26 test) + `tests/test_field_labels.py::test_cache_compress_policies_give_the_same_items_and_train_py_runs_with_the_throughput_options`: Cholesky yedeği (bayrak kapalı: bit düzeyinde aynı `C`, `d` ve gradyan; açık: eski uygulama ile aynı; ikisi de başarısız: NaN),
+senkron sayacı (eğitim + geri + doğrulama = 0; sayaç eski uygulamayı görür), tanı aralığı (aynı anahtarlar aynı adımlarda, kayıp/gradyan her adımda `torch.equal`, loglanan değerler `N=1` ile aynı, doğrulama seyrekleşmez, hata durumları, eski `hyper_parameters`), SparseParts gidiş-dönüş (CSR'ler, yoğun tensörler, kayıp + gradyan `torch.equal`; `DataLoader` işçileriyle; `wait_ready` çağrı sırası),
+Lightning'in gerçek çağrı yolunda (`fit`, CPU) `gpu_prefetch` batch'leri düz batch'lerle adım adım aynı kayıp ve aynı eğitilmiş ağırlıklar, `DataLoader` pinleme yürüyüşü (sahte `pin_memory`), üst üçgen deseni (5 boyut, boş satırlar, açık sıfırlar, yalnız köşegen; eski COO yolu ile bire bir; desen paylaşımı yalnız aynı desende), ham/hızlı/sıkıştırılmış dosyaların aynı içeriği, `uncompress`, `recode_ops_cache`, yükleyici seçenekleri, iki config'te yeni anahtarlar (varsayılanlar bugünkü davranış), `StepProfiler`, ve `train.py` 2 epoch uçtan uca (tüm seçenekler açık).
+**Projekteli (varsayılan) yol:** aynı sabit pillbox + kutu batch'inde (iki süreç, `scratchpad/speed/refcheck.py`, değişmemiş `e519ede` ile): kayıp, doğrulama kaybı, 28 gradyan, `eigenvalues/field/basis`, 40 log değeri hepsi `torch.equal`; tek fark `lr` logunun artık float32 tensör olması (0,001 → 0,0010000000474974513, Lightning'in zaten yaptığı dönüşüm).
+Projeksiyonsuz yol: kayıp, doğrulama kaybı, gradyanlar, `basis`, log değerleri aynı (Fidelity tablosu (1, 2) ile). Tam takım (`python -m pytest -q tests/`, 4 çekirdek, başka iş yok): ilk koşu **319 geçti, 1 kaldı** (15 dk 29 s): `test_noproj_fast_dev_run_train_py` içindeki casus `_compute_loss_3d_plain`'i sabit imzayla sarıyordu, yeni `diag=` anahtar kelimesini kabul etmiyordu; casus `**kw` alacak şekilde düzeltildi (davranış değişmedi). Düzeltmeden sonra ikinci tam koşu: **322 geçti** (15 dk 26 s; koşu başladıktan sonra eklenen `test_lightning_fit_with_gpu_prefetch_on_cpu_equals_the_plain_path` ayrıca geçti → 323); `ruff check .` ve `vulture` temiz.
+
+### 11.8 GPU'da sahibin ölçeceği (Colab) ve komutlar
+
+Ölçülmemiş: (a) adım başına senkronizasyon kaldırmanın GPU kullanımına etkisi; (b) `gpu_prefetch` açık/kapalı; (c) `diag_metrics_every_n_steps` ve ilerleme çubuğu aralığının adım süresine etkisi; (d) 8/16 işçide yükleyici kapasitesi ve ana süreç payı; (e) `cache_compress` `fast`/`false` ile epoch süresi ve disk/RAM etkisi; (f) kalan örtük senkronizasyonlar.
+
+```bash
+# 1. yükleyici (model yok): işçi sayısı, aşama süreleri, ana süreç payı, tahmini GPU kullanımı (önbellek hazırken)
+python scripts/profile_loader.py --config configs/field_3d_noproj.yaml --override 'dataset.data_path=[...]' dataset.cache_dir=/content/ops_cache \
+    --workers 4 8 16 --batch_size 1 --n_batches 60 --warmup 8 --step_time 0.3 --device cuda [--gpu_prefetch] --json /content/loader.json
+# 2. gerçek adımın dökümü (ilk 40 batch, sonra durur), gpu_prefetch false / true
+python train.py --config configs/field_3d_noproj.yaml --override 'dataset.data_path=[...]' dataset.cache_dir=/content/ops_cache training.log_dir=/content/runs_profile \
+    training.exp_name=profile training.batch_size=1 training.accumulate_grad_batches=4 training.num_workers=8 training.prefetch_factor=2 \
+    training.profile_steps=40 training.profile_only=true training.gpu_prefetch=false
+# 3. kalan senkronizasyonlar (stderr'e yığın izi): yukarıdakine training.sync_debug_steps=5 ekleyin
+# 4. önbelleği yeniden yaz (K/M desen paylaşımı için gerekmez; yalnız zlib'i azaltmak için), sonra aynı komutla ölçün
+python scripts/recode_ops_cache.py /content/ops_cache /content/ops_cache_fast --compress fast --workers 16
+# 5. A/B: bir epoch süresi — eski (training.diag_metrics_every_n_steps=1 training.progress_bar_refresh_rate=1) ve yeni (10 ve 20) değerlerle
+```
+`notebooks/colab_train_noproj.ipynb`: ayarlar hücresinde `DIAG_EVERY=10`, `PBAR_REFRESH=20`, `PREFETCH=2`, `VAL_PERSISTENT=True`, `GPU_PREFETCH=False`, `CACHE_COMPRESS='true'`; hücre 7b (1. ve 2. komutlar).
+Aşağıdakilerin tam hâli (CPU/GPU) yapılmadı: collate'in kendisi (batch 1'de bile `block_diag` ~46M nnz için indis/değer kopyaları; ~1,5 s/örnek bu makinede), int32 indisler (batch boyutunu ~%40 küçültür, GPU'da `torch.sparse.mm` ile denenmedi).

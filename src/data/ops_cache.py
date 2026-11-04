@@ -14,7 +14,17 @@ Compared with a plain pickle of the scipy matrices (int + float64 per entry):
     into float32 anyway (storing them narrow changes no item); K, M, C values are rounded to ~6·10⁻⁸ relative.
     narrow=False (the full variant, with G, Kp for the kernel projection and its float64 Kp CG) keeps every
     value in float64, bit for bit.
+  - `pack(..., compress=False)` (dataset.cache_compress: false) writes no zlib and no index differences: every array is
+    raw and the index arrays are stored as they are; compress='fast' keeps zlib only for the arrays it shrinks to 30 %
+    (K values, index differences) and stores the rest raw.  The reader reads all kinds (every array carries its own `codec` and
+    `delta` flag), so files written with and without it, and the files of earlier runs, mix freely and nothing is bumped
+    (FORMAT stays 2); `uncompress` turns a payload into the raw form (scripts/recode_ops_cache.py).
 Files are versioned (FORMAT, the name suffix `.ops2.pkl`): a file of another format is never read as this one.
+
+Reading (docs/38 §11): the upper triangle of K and M is expanded to the full CSR without a sort (`_upper_pattern`: the
+transposed strict part and the stored upper part are merged by scipy's O(nnz) CSR sum), and K and M share the
+pattern, so it is computed once per file (`_Patterns`); the values are one gather.  Bit for bit the matrix of the former
+COO → CSR route.
 """
 import os
 import pickle
@@ -30,6 +40,7 @@ NARROW_KEYS = ("P", "qx", "qw")               # dense arrays stored as float32 i
 _I32 = np.iinfo(np.int32).max
 _TRIAL = 1 << 20                              # bytes compressed to decide whether an array is worth zlib
 _GAIN = 0.9                                   # keep zlib only if the trial shrinks the data below this
+_GAIN_FAST = 0.3                              # the same for compress='fast'
 
 
 class OpsCacheError(ValueError):
@@ -46,29 +57,50 @@ def index_dtypes(n_rows, n_cols, nnz):
             np.dtype(np.int32) if max(n_cols, n_rows) <= _I32 else np.dtype(np.int64))
 
 
-def _enc(a, store=None, delta=False):
-    """Packed array: dict(dtype, orig, shape, delta, codec, buf).  store: the dtype written (default: as is)."""
+def _gain(compress):
+    """zlib is kept for an array only if it shrinks it below this fraction: True 0.9 (the default policy of format 2),
+    'fast' 0.3 (only the arrays zlib shrinks a lot: K values, index differences; the poorly compressible float32 blocks
+    stay raw and load without decompression), False/None never."""
+    if compress is True:
+        return _GAIN
+    if compress == "fast":
+        return _GAIN_FAST
+    if compress in (False, None):
+        return None
+    raise ValueError(f"cache compress must be true, false or 'fast', got {compress!r}")
+
+
+def _enc(a, store=None, delta=False, compress=True):
+    """Packed array: dict(dtype, orig, shape, delta, codec, buf).  store: the dtype written (default: as is).
+    compress: see _gain.  An index array is stored as differences only when zlib is kept (they exist to make it shrink);
+    otherwise as it is (no cumulative sum when reading)."""
+    gain = _gain(compress)
     a = np.asarray(a)
     orig = a.dtype
     st = np.dtype(store) if store is not None else orig
-    if delta:
+    plain = a
+    if delta and gain is not None:
         if a.ndim != 1 or st.kind not in "iu":
             raise TypeError("delta coding is for 1-d integer arrays")
         d = np.diff(a.astype(np.int64), prepend=0)
         if d.size and (d.max() > np.iinfo(st).max or d.min() < np.iinfo(st).min):
             raise OverflowError("index differences do not fit the storage dtype")
         a = d
+    else:
+        delta = False
     if st.kind == "f" and st.itemsize < orig.itemsize and a.size and np.nanmax(np.abs(a)) > np.finfo(st).max:
         raise OverflowError(f"values beyond the largest {st} number cannot be stored narrow")
     b = np.ascontiguousarray(a.astype(st, copy=False))
     raw = b.tobytes()
     codec = "raw"
-    if b.nbytes >= 4096:
+    if gain is not None and b.nbytes >= 4096:
         n = min(len(raw), _TRIAL)
-        if len(zlib.compress(raw[:n], 1)) < _GAIN * n:
+        if len(zlib.compress(raw[:n], 1)) < gain * n:
             z = zlib.compress(raw, 1)
-            if len(z) < _GAIN * len(raw):
+            if len(z) < gain * len(raw):
                 raw, codec = z, "zlib"
+    if delta and codec == "raw":                 # zlib was not worth it: keep the indices as they are
+        return _enc(plain, store, compress=False)
     return {"dtype": st.str, "orig": orig.str, "shape": tuple(b.shape), "delta": bool(delta), "codec": codec,
             "buf": raw}
 
@@ -91,16 +123,42 @@ def _upper(A):
     return ptr, A.indices[keep], A.data[keep]
 
 
-def _expand_upper(ptr, ind, val, n):
-    """Full canonical CSR (indptr, sorted indices, data) of the symmetric matrix whose upper triangle
-    (diagonal included) is given.  Only index arithmetic (scipy's COO → CSR counting sort and its per-row
-    sort): the values are moved, never summed, and explicit zeros stay."""
+def _upper_pattern(ptr, ind, n):
+    """(indptr, indices, src) of the full canonical CSR of the symmetric matrix whose upper triangle (diagonal included,
+    sorted columns) has the CSR arrays (ptr, ind): the full values are `val[src]`.  Row i of the full matrix is the
+    transposed strict upper part (the entries (j, i), j < i, ascending j) followed by the stored upper row i (columns
+    ≥ i): scipy's O(nnz) CSR → CSC counting sort transposes the strict part and its CSR sum merges the two, with the
+    positions in the upper array (+ 1, so that no entry is zero) as the values: no sort, no COO."""
     rows = np.repeat(np.arange(n, dtype=ind.dtype), np.diff(ptr))
-    strict = ind > rows
-    A = sp.coo_matrix((np.concatenate([val, val[strict]]),
-                       (np.concatenate([rows, ind[strict]]), np.concatenate([ind, rows[strict]]))),
-                      shape=(n, n)).tocsr()
-    return A.indptr, A.indices, A.data
+    pos = np.flatnonzero(ind > rows)                                     # strict upper entries, row-major
+    sptr = np.zeros(n + 1, np.int64)
+    np.cumsum(np.bincount(rows[pos], minlength=n), out=sptr[1:])
+    lower = sp.csr_matrix((pos + 1, ind[pos], sptr), shape=(n, n)).tocsc()      # CSC of S = CSR of Sᵀ
+    lower = sp.csr_matrix((lower.data, lower.indices, lower.indptr), shape=(n, n))
+    full = sp.csr_matrix((np.arange(1, ind.size + 1), ind, ptr), shape=(n, n)) + lower
+    return full.indptr, full.indices, full.data - 1
+
+
+class _Patterns:
+    """The last upper-triangle pattern expanded and its result: K and M of one file share it (assembled on the same
+    sparsity pattern), so the second matrix costs only the value gather.  Keyed by the stored arrays themselves."""
+
+    def __init__(self):
+        self.key = self.out = None
+
+    def expand(self, ptr, ind, n):
+        k = self.key
+        if k is None or k[0] != n or not (np.array_equal(k[1], ptr) and np.array_equal(k[2], ind)):
+            self.key, self.out = (n, ptr, ind), _upper_pattern(ptr, ind, n)
+        return self.out
+
+
+def _expand_upper(ptr, ind, val, n, patterns=None):
+    """Full canonical CSR (indptr, sorted indices, data) of the symmetric matrix whose upper triangle (diagonal
+    included) is given.  Only index arithmetic and one gather: the values are moved, never summed, and explicit zeros
+    stay."""
+    fptr, find, src = (patterns or _Patterns()).expand(ptr, ind, n)
+    return fptr, find, val[src]
 
 
 def _bits_equal(a, b):
@@ -111,7 +169,7 @@ def _bits_equal(a, b):
     return np.array_equal(a.view(u), b.view(u)) if u and a.dtype.kind == "f" else np.array_equal(a, b)
 
 
-def _pack_csr(A, narrow, allow_sym):
+def _pack_csr(A, narrow, allow_sym, compress=True):
     A = sp.csr_matrix(A)
     m, n = A.shape
     ipt, ixt = index_dtypes(m, n, A.nnz)
@@ -127,31 +185,32 @@ def _pack_csr(A, narrow, allow_sym):
     if not sym:
         ptr_, ind_, val_ = A.indptr, A.indices, A.data
     return {"kind": "csr", "shape": (m, n), "sym": sym,
-            "indptr": _enc(ptr_, ipt, delta=True), "indices": _enc(ind_, ixt, delta=True),
-            "data": _enc(val_, vst)}
+            "indptr": _enc(ptr_, ipt, delta=True, compress=compress),
+            "indices": _enc(ind_, ixt, delta=True, compress=compress), "data": _enc(val_, vst, compress=compress)}
 
 
-def _unpack_csr(p):
+def _unpack_csr(p, patterns=None):
     m, n = p["shape"]
     ptr, ind, val = _dec(p["indptr"]), _dec(p["indices"]), _dec(p["data"])
     if p["sym"]:
-        ptr, ind, val = _expand_upper(ptr, ind, val, m)
-    ptr = ptr.astype(np.int32 if ptr[-1] <= _I32 else np.int64)
-    A = sp.csr_matrix((val, ind.astype(ptr.dtype), ptr), shape=(m, n))
+        ptr, ind, val = _expand_upper(ptr, ind, val, m, patterns)
+    ptr = ptr.astype(np.int32 if ptr[-1] <= _I32 else np.int64, copy=False)
+    A = sp.csr_matrix((val, ind.astype(ptr.dtype, copy=False), ptr), shape=(m, n))
     if p["sym"]:
         A.has_sorted_indices = True        # _pack_csr verified the rebuilt matrix equals a canonical original
     return A
 
 
-def pack(ops, rec, narrow, symmetric=("K", "M")):
-    """Cacheable payload of an operator dict + label record (module docstring)."""
+def pack(ops, rec, narrow, symmetric=("K", "M"), compress=True):
+    """Cacheable payload of an operator dict + label record (module docstring).  compress=False: no zlib, no index
+    differences (bigger file, no decompression and no cumulative sums on reading)."""
     out = {}
     for k, v in ops.items():
         if sp.issparse(v):
-            out[k] = _pack_csr(v, narrow, k in symmetric)
+            out[k] = _pack_csr(v, narrow, k in symmetric, compress)
         elif isinstance(v, np.ndarray):
             st = np.float32 if narrow and k in NARROW_KEYS and v.dtype == np.float64 else None
-            out[k] = {"kind": "array", "p": _enc(v, st)}
+            out[k] = {"kind": "array", "p": _enc(v, st, compress=compress)}
         else:
             out[k] = {"kind": "plain", "v": v}
     r = dict(rec)
@@ -159,7 +218,7 @@ def pack(ops, rec, narrow, symmetric=("K", "M")):
     u32 = u.astype(np.float32)           # labels come from an float32 H5 dataset: float32 is then exact
     exact = u.dtype == np.float64 and np.array_equal(u32.astype(np.float64), u)
     return {"format": FORMAT, "narrow": bool(narrow), "potential": "G" in ops and "Kp" in ops,
-            "ops": out, "rec": r, "u_model": _enc(u, np.float32 if exact else None)}
+            "ops": out, "rec": r, "u_model": _enc(u, np.float32 if exact else None, compress=compress)}
 
 
 def unpack(payload):
@@ -168,14 +227,40 @@ def unpack(payload):
         raise OpsCacheError(f"operator cache format {payload.get('format') if isinstance(payload, dict) else '?'}, "
                             f"this code reads format {FORMAT}")
     try:
-        ops = {}
+        ops, patterns = {}, _Patterns()
         for k, p in payload["ops"].items():
-            ops[k] = _unpack_csr(p) if p["kind"] == "csr" else _dec(p["p"]) if p["kind"] == "array" else p["v"]
+            ops[k] = _unpack_csr(p, patterns) if p["kind"] == "csr" else _dec(p["p"]) if p["kind"] == "array" else p["v"]
         rec = dict(payload["rec"])
         rec["u_model"] = _dec(payload["u_model"])
     except (zlib.error, KeyError) as e:
         raise OpsCacheError(f"corrupt operator cache payload ({type(e).__name__}: {e})") from e
     return ops, rec
+
+
+def _uncompress_array(p):
+    """The array record `p` in raw form: decompressed, index differences summed (same values on reading)."""
+    if p["codec"] == "raw" and not p["delta"]:
+        return p
+    buf = zlib.decompress(p["buf"]) if p["codec"] == "zlib" else p["buf"]
+    st = np.dtype(p["dtype"])
+    a = np.frombuffer(buf, dtype=st).reshape(p["shape"])
+    if p["delta"]:
+        a = np.cumsum(a, dtype=np.int64).astype(st)      # the partial sums are the original values, which fit st
+    return dict(p, codec="raw", delta=False, buf=np.ascontiguousarray(a).tobytes())
+
+
+def uncompress(payload):
+    """A payload of pack() with every array raw (no zlib, no index differences): what pack(compress=False) writes, made
+    from an existing payload without the operators (scripts/recode_ops_cache.py).  unpack() of both is identical."""
+    ops = {}
+    for k, p in payload["ops"].items():
+        if p["kind"] == "csr":
+            ops[k] = dict(p, **{n: _uncompress_array(p[n]) for n in ("indptr", "indices", "data")})
+        elif p["kind"] == "array":
+            ops[k] = dict(p, p=_uncompress_array(p["p"]))
+        else:
+            ops[k] = p
+    return dict(payload, ops=ops, u_model=_uncompress_array(payload["u_model"]))
 
 
 def write(path, payload):

@@ -14,9 +14,10 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 
 from src.config import config_to_flat_dict, load_config
-from src.data.field_dataset import FieldDataset, field_collate, loader_worker_init
+from src.data.field_dataset import FieldDataset, field_collate, field_collate_parts, loader_worker_init
 from src.training.lightning_module import CavityLightning, count_near_degenerate, monitor_metric
 from src.training.progress import ProgressFile
+from src.training.step_profile import StepProfiler, SyncDebug
 
 
 def parse_args():
@@ -85,9 +86,48 @@ def _datasets_field(dc, random_seed, feature_indices, projection=True):
               n_modes=getattr(dc, 'n_modes', None), hf_repeat=getattr(dc, 'hf_repeat', 1),
               train_extra=getattr(dc, 'train_extra', None),
               require_label_ok=bool(getattr(dc, 'require_label_ok', False)),
-              max_tets=getattr(dc, 'max_tets', None))
+              max_tets=getattr(dc, 'max_tets', None), cache_compress=getattr(dc, 'cache_compress', True))
     return tuple(FieldDataset(dc.data_path, split=s, build_potential=projection or s == 'test', **kw)
                  for s in ('train', 'val', 'test'))
+
+
+def loader_kwargs(tc, workers, persistent, gpu):
+    """DataLoader keyword arguments of a loader with `workers` worker processes (training.prefetch_factor, default 2).
+    gpu (training.gpu_prefetch): the collate returns the sparse operators as dense parts (SparseParts) and
+    pin_memory=True pins the batches; otherwise the batches are plain and pin_memory is False (sparse tensors cannot
+    be pinned)."""
+    return dict(collate_fn=field_collate_parts if gpu else field_collate, num_workers=workers,
+                pin_memory=gpu, persistent_workers=persistent and workers > 0,
+                prefetch_factor=int(getattr(tc, 'prefetch_factor', 2) or 2) if workers > 0 else None,
+                worker_init_fn=loader_worker_init if workers > 0 else None)
+
+
+def gpu_prefetch_enabled(tc, announce=True):
+    """training.gpu_prefetch, which needs a CUDA device (otherwise a notice and the usual transfer)."""
+    on = bool(getattr(tc, 'gpu_prefetch', False))
+    if on and not torch.cuda.is_available():
+        if announce:
+            print("training.gpu_prefetch: no CUDA device, the batches are transferred as usual")
+        return False
+    return on
+
+
+def make_loaders(tc, train_dataset, val_dataset, test_dataset):
+    """(train, val, test) DataLoaders from the training config (docs/38 §11).
+
+    training.num_workers; prefetch_factor (default 2: batches held ready per worker, so each loader keeps up to
+    num_workers × prefetch_factor collated batches in /dev/shm); val_num_workers (null = num_workers);
+    val_persistent_workers (default true: the validation workers stay alive between epochs together with their
+    prefetched batches; false: they are started for each validation and freed after it).  The train workers are
+    persistent.  gpu_prefetch: see loader_kwargs."""
+    nw = int(tc.num_workers)
+    val_nw = getattr(tc, 'val_num_workers', None)
+    val_nw = nw if val_nw is None else int(val_nw)
+    gpu = gpu_prefetch_enabled(tc)
+    return (DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True, **loader_kwargs(tc, nw, True, gpu)),
+            DataLoader(val_dataset, batch_size=tc.batch_size,
+                       **loader_kwargs(tc, val_nw, bool(getattr(tc, 'val_persistent_workers', True)), gpu)),
+            DataLoader(test_dataset, batch_size=tc.batch_size, **loader_kwargs(tc, nw, True, gpu)))
 
 
 def _checkpoint_filename(monitor):
@@ -169,14 +209,7 @@ def main():
         raise ValueError(f"model.num_field_modes={mc.num_field_modes} but the dataset stores only "
                          f"{data_n_modes} modes per geometry.")
 
-    loader_kw = dict(collate_fn=field_collate, num_workers=tc.num_workers,
-                     pin_memory=False,                   # sparse batches cannot be pinned
-                     persistent_workers=tc.num_workers > 0,
-                     prefetch_factor=2 if tc.num_workers > 0 else None,
-                     worker_init_fn=loader_worker_init if tc.num_workers > 0 else None)
-    train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True, **loader_kw)
-    val_loader = DataLoader(val_dataset, batch_size=tc.batch_size, **loader_kw)
-    test_loader = DataLoader(test_dataset, batch_size=tc.batch_size, **loader_kw)
+    train_loader, val_loader, test_loader = make_loaders(tc, train_dataset, val_dataset, test_dataset)
 
     model = CavityLightning(
         val_dim=mc.val_dim, num_field_modes=mc.num_field_modes, hidden_dim=mc.embed_dim,
@@ -198,6 +231,7 @@ def main():
         near_deg_threshold=getattr(tc, 'near_deg_threshold', 0.05),
         near_deg_rel_threshold=getattr(tc, 'near_deg_rel_threshold', None),
         projection=projection,
+        diag_metrics_every_n_steps=getattr(tc, 'diag_metrics_every_n_steps', 1) or 1,
         fidelity_weights=getattr(tc, 'fidelity_weights', None) or (1.0, 1.0),
         fidelity_freq_scale=getattr(tc, 'fidelity_freq_scale', None) or (1.0, 1.0),
         data_cfg=dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
@@ -205,6 +239,7 @@ def main():
                       data_path=dc.data_path),
         model_type=model_type,
     )
+    model.gpu_prefetch = gpu_prefetch_enabled(tc, announce=False)
     if args.init_from:
         model.load_state_dict(torch.load(args.init_from, map_location="cpu", weights_only=False)["state_dict"])
     if train_dataset.stats:              # z-scored frequency targets ↔ GHz
@@ -229,17 +264,27 @@ def main():
     if strategy == "ddp" and n_gpus > 1:
         from pytorch_lightning.strategies import DDPStrategy
         strategy = DDPStrategy(find_unused_parameters=False)
+    profile_only = bool(getattr(tc, 'profile_only', False))
+    callbacks = [checkpoint_callback, LearningRateMonitor(logging_interval='step'),
+                 early_stopping,
+                 TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate), progress_file]
+    if int(getattr(tc, 'profile_steps', 0) or 0) > 0:            # step-time breakdown of the first N batches (docs/38 §11)
+        callbacks.append(StepProfiler(tc.profile_steps, path=f"{tc.log_dir}/{tc.exp_name}/step_profile.json",
+                                      stop=profile_only))
+    if int(getattr(tc, 'sync_debug_steps', 0) or 0) > 0:          # list the remaining host syncs on a GPU (docs/38 §11.2)
+        callbacks.append(SyncDebug(tc.sync_debug_steps))
     trainer = pl.Trainer(
         max_epochs=tc.max_epochs, check_val_every_n_epoch=getattr(tc, 'check_val_every_n_epoch', 1),
         accelerator="auto", devices=n_gpus if n_gpus > 0 else "auto", strategy=strategy,
         gradient_clip_val=tc.gradient_clip_val,
         accumulate_grad_batches=int(getattr(tc, 'accumulate_grad_batches', 1) or 1),
-        callbacks=[checkpoint_callback, LearningRateMonitor(logging_interval='step'),
-                   early_stopping,
-                   TQDMProgressBar(refresh_rate=tc.progress_bar_refresh_rate), progress_file],
-        logger=logger, log_every_n_steps=tc.log_every_n_steps, fast_dev_run=tc.fast_dev_run)
+        callbacks=callbacks, logger=logger, log_every_n_steps=tc.log_every_n_steps, fast_dev_run=tc.fast_dev_run)
 
     trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume)
+    if profile_only and int(getattr(tc, 'profile_steps', 0) or 0) > 0:      # the step profile was the point: no best checkpoint, no test
+        if rank0:
+            progress_file.finish()
+        return
     # fast_dev_run writes no checkpoint: test the in-memory model
     trainer.test(model if tc.fast_dev_run else None, dataloaders=test_loader,
                  ckpt_path=None if tc.fast_dev_run else "best")

@@ -169,6 +169,12 @@ def field_collate(batch):
     return out
 
 
+def field_collate_parts(batch):
+    """field_collate with the CSR operators as dense parts (training.gpu_prefetch: pinnable, src/data/gpu_transfer.py)."""
+    from src.data.gpu_transfer import split_sparse
+    return split_sparse(field_collate(batch))
+
+
 def loader_worker_init(_worker_id=0):
     """DataLoader worker_init_fn of the field datasets: one NGSolve thread per worker.  Every worker
     assembles its own operators; with NGSolve's default (all cores) N workers run N × cores busy-waiting
@@ -202,7 +208,8 @@ class FieldDataset(Dataset):
     data_path: one H5 file, a glob ("data/field/*.h5"), a directory or a list.  The split is by
     geometry (seeded permutation of the sorted (file, group) index).  cache_dir: keep the rebuilt
     operators on disk (one file per geometry, src/data/ops_cache.py, docs/38 §9: 128 MB (projection-free
-    variant) / 284 MB (full) at 23k tets, p2; the plain pickle was 672 / 725 MB) instead of reassembling them
+    variant) / 284 MB (full) at 23k tets, p2; the plain pickle was 672 / 725 MB; cache_compress False writes no zlib: about
+    twice that, nothing to decompress when reading, 'fast' compresses only what shrinks to 30 %) instead of reassembling them
     every epoch (~4–6 s per 13k-tet geometry at p2, docs/31 §3.6; 1–2 s to read back at 23k tets).
 
     Multi-fidelity (docs/34): every item carries Fidelity (LF 0 / HF 1, label_fidelity of the H5 attrs), so
@@ -231,7 +238,8 @@ class FieldDataset(Dataset):
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,
                  feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False, with_ct=None,
-                 hf_repeat=1, train_extra=None, require_label_ok=False, build_potential=True, max_tets=None):
+                 hf_repeat=1, train_extra=None, require_label_ok=False, build_potential=True, max_tets=None,
+                 cache_compress=True):
         if augment:
             raise ValueError("FieldDataset: rotation augmentation is not supported (the DOF maps C, QP "
                              "are built for the stored orientation)")
@@ -241,6 +249,7 @@ class FieldDataset(Dataset):
             self.paths = self.paths + [p for p in _expand(train_extra) if p not in self.paths]
         self.split, self.feature_indices, self.rq_rtol = split, feature_indices, float(rq_rtol)
         self.cache_dir = cache_dir
+        self.cache_compress = cache_compress          # True | 'fast' | False: ops_cache.pack(compress=)
         self.build_potential = bool(build_potential)
         self.with_ct = split == "train" if with_ct is None else bool(with_ct)      # Cᵀ for the backward (training only)
         index, freqs, nxt, Ks, types, fids = [], [], [], [], [], []
@@ -366,7 +375,7 @@ class FieldDataset(Dataset):
                              f"mismatch {err.max():.2e}): mesh, curving or deformation differ from the generator's")
         ops = {k: v for k, v in ops.items() if k not in ("bary", "X", "tets")}
         if cp:          # written once, atomically; what the next epoch reads is what this epoch uses
-            payload = ops_cache.pack(ops, rec, narrow=not self.build_potential)
+            payload = ops_cache.pack(ops, rec, narrow=not self.build_potential, compress=self.cache_compress)
             ops_cache.write(cp, payload)
             return ops_cache.unpack(payload)
         return ops, rec
@@ -384,6 +393,12 @@ class FieldDataset(Dataset):
     def __getitem__(self, idx):
         g_id = self.active_geoms[idx]
         ops, rec = self.load(g_id)
+        return self.make_item(g_id, ops, rec)
+
+    def make_item(self, g_id, ops, rec):
+        """The model item of geometry g_id from its operators and label record (load): field_item + z-scored
+        frequencies, FreqNext, geom_id, Fidelity, Y_qoi.  Separate from __getitem__ so that scripts/profile_loader.py
+        can time the stages."""
         K = self.n_modes
         item = field_item(ops, rec["u_model"][:, :K], rec["freqs"][:K], self.feature_indices,
                           rec.get("shape_type", self.shape_types[g_id]), check=False, with_ct=self.with_ct)
