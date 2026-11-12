@@ -14,7 +14,8 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 
 from src.config import config_to_flat_dict, load_config
-from src.data.field_dataset import FieldDataset, field_collate, field_collate_parts, loader_worker_init
+from src.data.field_dataset import (OPERATORS, FieldDataset, field_collate, field_collate_mf, field_collate_parts,
+                                    loader_worker_init)
 from src.training.lightning_module import CavityLightning, count_near_degenerate, monitor_metric
 from src.training.progress import ProgressFile
 from src.training.step_profile import StepProfiler, SyncDebug
@@ -80,24 +81,39 @@ def _datasets_field(dc, random_seed, feature_indices, projection=True):
     """train / val / test FieldDataset (field-label H5 files: a path, glob, directory or list).
     projection=False (training.projection, docs/38): the TRAIN and VAL splits do not build the kernel potentials
     G, Kp (their loss never projects); the TEST split always does (the test step projects: Ritz frequencies,
-    fields)."""
+    fields).  dataset.operators (default "assembled"): "matfree" (docs/40 §10) gives the TRAIN and VAL splits the matrix-free
+    items (compact element records, no global matrix) and needs training.projection: false (ValueError otherwise); the test
+    split is always assembled."""
+    operators = str(getattr(dc, 'operators', None) or 'assembled')
+    if operators not in OPERATORS:
+        raise ValueError(f"dataset.operators must be one of {OPERATORS}, got {operators!r}")
+    if operators == 'matfree' and projection:
+        raise ValueError("dataset.operators: matfree needs training.projection: false: the matrix-free operators serve the "
+                         "projection-free train / validation steps; the projected step needs the assembled G, Kp, M, K "
+                         "(docs/40 §10)")
     kw = dict(train_ratio=dc.train_ratio, val_ratio=dc.val_ratio, random_seed=random_seed,
               feature_indices=feature_indices, cache_dir=getattr(dc, 'cache_dir', None),
               n_modes=getattr(dc, 'n_modes', None), hf_repeat=getattr(dc, 'hf_repeat', 1),
               train_extra=getattr(dc, 'train_extra', None),
               require_label_ok=bool(getattr(dc, 'require_label_ok', False)),
               max_tets=getattr(dc, 'max_tets', None), cache_compress=getattr(dc, 'cache_compress', True))
-    return tuple(FieldDataset(dc.data_path, split=s, build_potential=projection or s == 'test', **kw)
+    return tuple(FieldDataset(dc.data_path, split=s, build_potential=projection or s == 'test',
+                              operators=operators if s != 'test' else 'assembled',
+                              **({'verify_labels': dc.verify_labels} if getattr(dc, 'verify_labels', None) is not None else {}),
+                              **kw)
                  for s in ('train', 'val', 'test'))
 
 
-def loader_kwargs(tc, workers, persistent, gpu):
+def loader_kwargs(tc, workers, persistent, gpu, matfree=False):
     """DataLoader keyword arguments of a loader with `workers` worker processes (training.prefetch_factor, default 2).
     gpu (training.gpu_prefetch): the collate returns the sparse operators as dense parts (SparseParts) and
     pin_memory=True pins the batches; otherwise the batches are plain and pin_memory is False (sparse tensors cannot
-    be pinned)."""
-    return dict(collate_fn=field_collate_parts if gpu else field_collate, num_workers=workers,
-                pin_memory=gpu, persistent_workers=persistent and workers > 0,
+    be pinned).  matfree (the dataset has operators: matfree, docs/40 §10): the batches hold dense tensors only
+    (field_collate_mf, no SparseParts needed), so pin_memory is True whenever a CUDA device exists, with or without
+    gpu_prefetch (which then only decides how the batch is copied: side stream or the default transfer)."""
+    return dict(collate_fn=field_collate_mf if matfree else field_collate_parts if gpu else field_collate,
+                num_workers=workers, pin_memory=bool(gpu or (matfree and torch.cuda.is_available())),
+                persistent_workers=persistent and workers > 0,
                 prefetch_factor=int(getattr(tc, 'prefetch_factor', 2) or 2) if workers > 0 else None,
                 worker_init_fn=loader_worker_init if workers > 0 else None)
 
@@ -124,10 +140,12 @@ def make_loaders(tc, train_dataset, val_dataset, test_dataset):
     val_nw = getattr(tc, 'val_num_workers', None)
     val_nw = nw if val_nw is None else int(val_nw)
     gpu = gpu_prefetch_enabled(tc)
-    return (DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True, **loader_kwargs(tc, nw, True, gpu)),
+    mf = lambda ds: getattr(ds, 'operators', 'assembled') == 'matfree'      # noqa: E731
+    return (DataLoader(train_dataset, batch_size=tc.batch_size, shuffle=True,
+                       **loader_kwargs(tc, nw, True, gpu, mf(train_dataset))),
             DataLoader(val_dataset, batch_size=tc.batch_size,
-                       **loader_kwargs(tc, val_nw, bool(getattr(tc, 'val_persistent_workers', True)), gpu)),
-            DataLoader(test_dataset, batch_size=tc.batch_size, **loader_kwargs(tc, nw, True, gpu)))
+                       **loader_kwargs(tc, val_nw, bool(getattr(tc, 'val_persistent_workers', True)), gpu, mf(val_dataset))),
+            DataLoader(test_dataset, batch_size=tc.batch_size, **loader_kwargs(tc, nw, True, gpu, mf(test_dataset))))
 
 
 def _checkpoint_filename(monitor):
@@ -240,6 +258,7 @@ def main():
         model_type=model_type,
     )
     model.gpu_prefetch = gpu_prefetch_enabled(tc, announce=False)
+    model.matfree_chunk = int(getattr(tc, 'matfree_chunk', 2048) or 2048)
     if args.init_from:
         model.load_state_dict(torch.load(args.init_from, map_location="cpu", weights_only=False)["state_dict"])
     if train_dataset.stats:              # z-scored frequency targets ↔ GHz

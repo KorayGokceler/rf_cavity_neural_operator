@@ -281,6 +281,7 @@ class CavityLightning(pl.LightningModule):
         self.projection = projection
         self.diag_every = diag_metrics_every_n_steps
         self.gpu_prefetch = False            # train.py: training.gpu_prefetch (src/data/gpu_transfer.py, docs/38 §11)
+        self.matfree_chunk = 2048            # train.py: training.matfree_chunk, elements per step of the matrix-free operators (docs/40 §10)
         self._copy_stream = None
         self._clock = None                   # training.profile_steps: StepProfiler sets a StepClock (docs/38 §11)
         self._tables = {}                    # device-resident constants (fidelity weight tables): built once
@@ -624,10 +625,21 @@ class CavityLightning(pl.LightningModule):
         No host synchronisation in this function (docs/38 §11; tests/test_throughput.py counts them).
         Returns the loss."""
         from src.models.hcurl import hcurl_grams_plain
-        V, T = (self.model.forward_basis(batch)['basis'] if basis is None else basis), batch['Y_field']
+        mf = batch.get('MF')
+        step_ops = None
+        if mf is not None:          # matrix-free batch (docs/40 §10): element matrices / ψ maps built here, freed with the step
+            if basis is not None:
+                raise ValueError("a matrix-free batch computes its own basis (no shared projected pass)")
+            from src.data import matfree
+            step_ops = matfree.StepOperators(mf, self.matfree_chunk, batch['X'].device)
+        V, T = (self.model.forward_basis(batch, step_ops)['basis'] if basis is None else basis), batch['Y_field']
         self._mark('trunk')
         B, _, m = V.shape
-        G_M, G_A, _ = hcurl_grams_plain(V, T, batch)
+        if mf is None:
+            G_M, G_A, _ = hcurl_grams_plain(V, T, batch)
+        else:
+            G_M, G_A, _ = matfree.grams_plain(step_ops.records(), V, T, step_ops.mats_list(), step_ops.chunk)
+            step_ops.free()
         self._mark('grams')
         if prefix is not None and diag:
             with torch.no_grad():

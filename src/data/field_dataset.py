@@ -12,6 +12,12 @@ Batch (field_collate): padded tensors, block-diagonal CSR operators on the padde
 b's DOF d is row b·n_max + d, its L2 coefficient c column b·L_max + c), DofMask, ElemMask, Kp_diag —
 the layout src.models.hcurl expects, with "edges" → DOFs and "vertices" → potentials.
 
+Matrix-free items (dataset.operators: matfree, docs/40 §10; projection-free train / val splits only): `field_item_matfree`
+carries no sparse matrix and no QP: the token arrays as above plus the compact element record under "MF"
+(src/data/matfree.py: dofs, cls, xc, x0, bnd, ~640 B/tet); `field_collate_mf` keeps the records as a list of per-sample dicts of
+dense tensors under batch["MF"]; the model and the loss build V (matfree.psi_to_dofs) and the Grams (matfree.grams_plain) on
+the device from them.
+
 FieldDataset reads the field-label H5 files of dataset_generator_3d (docs/29): per
 geometry the curved mesh is rebuilt from the stored .vol + BREP (+ deformation), the model-order
 operators are assembled (field_operators) and the stored projected labels are checked against them
@@ -28,10 +34,12 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
 from src.data import ops_cache
+from src.data.matfree import N_TOKEN
 from src.data.sparse import block_diag, length_mask
 
 
 C0 = 299792458.0
+OPERATORS = ("assembled", "matfree")          # FieldDataset(operators=)
 LF, HF = 0, 1          # label fidelity (docs/34): item["Fidelity"]
 # docs/24 §0.3 src.qoi.QOI_LABELS — fallback only when src.qoi cannot be imported (the dataset must load
 # without it).
@@ -87,6 +95,23 @@ def check_labels(ops, Y_field, Y_freq, rtol=1e-8):
                          "the same mesh, geometry order, polynomial order and integration rule")
     if np.abs(Y[np.asarray(ops["bnd"], dtype=bool)]).max(initial=0.0) > 1e-12 * np.abs(Y).max():
         raise ValueError("labels are nonzero on PEC wall DOFs")
+
+
+def check_labels_matfree(rec, U, rq_model, rtol=1e-5, where="", chunk=2048):
+    """The matrix-free counterpart of the dataset's label check: Rayleigh quotients yᵀKy / yᵀMy of the labels U [n, K] against
+    the stored rq_model·scale² (FieldDataset.load), with K and M from the record's element matrices — no assembly.  Raises
+    ValueError like the assembled check."""
+    import src.data.matfree as matfree
+    tr = matfree.to_torch(rec)
+    Me, Ke = matfree.element_matrices(tr, chunk)
+    Ut = torch.from_numpy(np.asarray(U, dtype=np.float64))
+    num = torch.diagonal(matfree.gram(Ke, tr["dofs"], Ut, chunk=chunk)).numpy()
+    den = torch.diagonal(matfree.gram(Me, tr["dofs"], Ut, chunk=chunk)).numpy()
+    err = np.abs(num / den / (np.asarray(rq_model, dtype=np.float64) * rec["scale"] ** 2) - 1.0)
+    if not np.all(err <= rtol):
+        raise ValueError(f"{where}: labels do not match the rebuilt operators (max Rayleigh-quotient mismatch "
+                         f"{err.max():.2e}; matrix-free check): mesh, curving or deformation differ from the generator's")
+    return float(err.max())
 
 
 def field_item(ops, Y_field=None, Y_freq=None, feature_indices=None, shape_type="", check=True, with_ct=False):
@@ -158,6 +183,12 @@ def field_collate(batch):
     if all("Ct" in it for it in batch):
         out["Ct"] = block_diag([it["Ct"] for it in batch], Nl, Nd)       # backward of V = C·coef
     out["SymmetricMK"] = True       # K, M are exactly symmetric (assembled from one triangle): hcurl.spmm's backward
+    _collate_labels(batch, out, pad)
+    return out
+
+
+def _collate_labels(batch, out, pad):
+    """The label / bookkeeping keys of a collated batch (shared by field_collate and field_collate_mf)."""
     if all("Y_field" in it for it in batch):
         out["Y_field"] = pad("Y_field")
         out["Y_freq"] = pad("Y_freq")
@@ -166,6 +197,56 @@ def field_collate(batch):
             out[k] = torch.stack([it[k] for it in batch])
     if all("Y_qoi" in it for it in batch):
         out["Y_qoi"] = pad_sequence([it["Y_qoi"] for it in batch], batch_first=True, padding_value=float("nan"))
+
+
+def field_item_matfree(bundle, Y_field=None, Y_freq=None, feature_indices=None, shape_type=""):
+    """Matrix-free model item (module docstring) from a bundle {"mf": matfree record, "qfeat": float32 [Nt·nq, F],
+    "qw": float32 [Nt·nq]} (FieldDataset.load_matfree).  Token arrays and labels are exactly those of field_item (X = the
+    float32 of the normalised token points = the first three feature columns); no M, K, G, Kp, C, QP.  Labels as in
+    field_item (wall rows 0)."""
+    mf = bundle["mf"]
+    nt, n = int(mf["n_tets"]), int(mf["n_dof"])
+    qfeat = np.asarray(bundle["qfeat"], dtype=np.float32).reshape(nt * N_TOKEN, -1)
+    feats = qfeat if feature_indices is None else qfeat[:, feature_indices]
+    qx = qfeat[:, :3]                                          # point_features: P (x, y, z) first
+    bnd = np.asarray(mf["bnd"], dtype=bool)
+    rec = {"dofs": torch.from_numpy(np.asarray(mf["dofs"], dtype=np.int32)),
+           "cls": torch.from_numpy(np.asarray(mf["cls"], dtype=np.uint8)),
+           "xc": torch.from_numpy(np.asarray(mf["xc"], dtype=np.float64)),
+           "x0": torch.from_numpy(np.asarray(mf["x0"], dtype=np.float64)), "bnd": torch.from_numpy(bnd),
+           "n_dof": n, "n_tets": nt, "scale": float(mf["scale"]),
+           "center": np.asarray(mf["center"], dtype=np.float64), "order": int(mf["order"])}
+    item = {"X": torch.from_numpy(qx.copy()), "Input_funcs": torch.from_numpy(np.ascontiguousarray(feats)),
+            "Area": torch.from_numpy(np.asarray(bundle["qw"], dtype=np.float32).reshape(-1)),
+            "QX": torch.from_numpy(qx.reshape(nt, N_TOKEN, 3).copy()), "BndDof": torch.from_numpy(bnd),
+            "Scale": torch.tensor(float(mf["scale"]), dtype=torch.float32), "shape_type": str(shape_type), "MF": rec}
+    if Y_field is not None:
+        Y = torch.as_tensor(np.asarray(Y_field), dtype=torch.float32).reshape(n, -1).clone()
+        Y[torch.from_numpy(bnd)] = 0.0
+        item["Y_field"] = Y
+        item["Y_freq"] = torch.as_tensor(np.asarray(Y_freq), dtype=torch.float32).reshape(-1)
+    return item
+
+
+def field_collate_mf(batch):
+    """Pad a list of field_item_matfree dicts (the dense part of field_collate): X, Input_funcs, Area, QX, BndDof, Y_field ...
+    padded as field_collate pads them (DofMask from the DOF counts), batch["MF"] = the list of the per-sample records
+    (dicts of dense tensors and scalars: no padding, no element offsets — every sample's operators are built and applied on
+    its own, B is small).  No sparse tensor: the batch can be pinned as it is."""
+    pad = lambda k: pad_sequence([it[k] for it in batch], batch_first=True)   # noqa: E731
+    nv = [it["X"].shape[0] for it in batch]
+    nt = [it["QX"].shape[0] for it in batch]
+    nd = [it["BndDof"].shape[0] for it in batch]
+    Nv, Nt, Nd = max(nv), max(nt), max(nd)
+    if Nv != Nt * N_TOKEN:
+        raise ValueError("field_collate_mf: tokens must be the Nt·nq quadrature points")
+    out = {k: pad(k) for k in ("X", "Input_funcs", "Area", "QX")}
+    out["Mask"], out["ElemMask"], out["DofMask"] = length_mask(nv, Nv), length_mask(nt, Nt), length_mask(nd, Nd)
+    out["BndDof"] = pad("BndDof").bool()
+    out["Scale"] = torch.stack([it["Scale"] for it in batch])
+    out["shape_type"] = [it["shape_type"] for it in batch]
+    out["MF"] = [it["MF"] for it in batch]
+    _collate_labels(batch, out, pad)
     return out
 
 
@@ -234,15 +315,34 @@ class FieldDataset(Dataset):
     geometry is reused (G / Kp dropped after loading), so a cache is never served to a split that needs
     what it lacks.  False also warns (train and val splits, once each) when some labels were transferred from another
     mesh (n_tets_label != n_tets) or have a lower order than the model space: their M-orthogonality to the
-    gradients, which the projection-free loss relies on, then holds only approximately (labels_are_model_eigenvectors)."""
+    gradients, which the projection-free loss relies on, then holds only approximately (labels_are_model_eigenvectors).
+
+    operators (default "assembled" = the items above): "matfree" (docs/40 §10) builds NO global matrix: the item is the compact
+    element record of the curved mesh (matfree.build_record, with the same normalisation) + the token arrays (the SAME
+    functions as the assembled path: highorder.token_inputs → token_features) + the labels; the model builds V and the Grams
+    from the record on the device.  Needs build_potential=False (the projection-free train / val splits; the test split of a
+    run stays "assembled" and projected).  Cache: `{tag}__{key}.mf1.pkl` (ops_cache.MF_SUFFIX; ~1.3 KB per tet, no zlib).
+    verify_labels (matfree only; default None = on when cache_dir is set): the labels' Rayleigh quotients are checked against the
+    record's element matrices when the item is built (once per geometry with a cache; not on cache hits) — the assembled path
+    always checks them against its assembled K, M (rq_rtol); the check costs the element matrices (~1.5 s at 21k tets on 4
+    threads, ~5 s in a one-thread worker)."""
 
     def __init__(self, data_path, split="train", train_ratio=0.8, val_ratio=0.1, random_seed=42,
                  feature_indices=None, cache_dir=None, n_modes=None, rq_rtol=1e-5, augment=False, with_ct=None,
                  hf_repeat=1, train_extra=None, require_label_ok=False, build_potential=True, max_tets=None,
-                 cache_compress=True):
+                 cache_compress=True, operators="assembled", verify_labels=None):
         if augment:
             raise ValueError("FieldDataset: rotation augmentation is not supported (the DOF maps C, QP "
                              "are built for the stored orientation)")
+        if operators not in OPERATORS:
+            raise ValueError(f"FieldDataset: operators must be one of {OPERATORS}, got {operators!r}")
+        if operators == "matfree" and build_potential:
+            raise ValueError("FieldDataset: operators='matfree' builds no kernel potentials G, Kp (the projected step needs "
+                             "them): use it for the projection-free train / val splits (build_potential=False); the test "
+                             "split stays 'assembled' (docs/40 §10)")
+        self.operators = operators
+        self.verify_labels = (cache_dir is not None) if verify_labels is None else bool(verify_labels)
+        self._verified = set()
         self.paths = _expand(data_path)
         n_main_files = len(self.paths)
         if train_extra:
@@ -329,15 +429,20 @@ class FieldDataset(Dataset):
         """Stored label frequencies [GHz] of geometry g_id (count_near_degenerate)."""
         return self._freqs[g_id][:self.n_modes]
 
-    def _cache_path(self, g_id, potential=True):
+    def _cache_path(self, g_id, potential=True, matfree=False):
         if not self.cache_dir:
             return None
         path, key = self.index[g_id]
         tag = os.path.splitext(os.path.basename(path))[0]
+        if matfree:             # its own name: never read as an operator cache (and the other way round)
+            return os.path.join(self.cache_dir, f"{tag}__{key}{ops_cache.MF_SUFFIX}")
         return os.path.join(self.cache_dir, f"{tag}__{key}{'' if potential else '.nopot'}{ops_cache.SUFFIX}")
 
     def load(self, g_id):
-        """(ops, record) of geometry g_id: field_operators of the rebuilt curved mesh + stored labels."""
+        """(ops, record) of geometry g_id: field_operators of the rebuilt curved mesh + stored labels.  operators="matfree":
+        (bundle, record) of load_matfree (no operator at all)."""
+        if self.operators == "matfree":
+            return self.load_matfree(g_id)
         from src.data_gen.field_labels import model_normalisation, read_field_group
         from src.data_gen.highorder import field_operators
         path, key = self.index[g_id]
@@ -380,6 +485,46 @@ class FieldDataset(Dataset):
             return ops_cache.unpack(payload)
         return ops, rec
 
+    def load_matfree(self, g_id):
+        """(bundle, rec) of geometry g_id without any global matrix (module docstring): bundle = {"mf": the matfree record of the
+        rebuilt curved mesh with the dataset's normalisation, "qfeat": float32 [Nt·nq, F], "qw": float32 [Nt·nq]} (the token
+        arrays of highorder.token_inputs: the same function field_operators uses), rec = the label record.  Read from
+        `{tag}__{key}.mf1.pkl` when it exists and is of this format / NGSolve version, else built and (cache_dir set) written
+        atomically."""
+        import src.data.matfree as matfree
+        from src.data_gen import highorder as ho
+        from src.data_gen.field_labels import model_normalisation, read_field_group
+        path, key = self.index[g_id]
+        cp = self._cache_path(g_id, matfree=True)
+        if cp and os.path.exists(cp):
+            try:
+                return ops_cache.unpack_mf(ops_cache.read_mf(cp))
+            except ops_cache.OpsCacheError as e:
+                warnings.warn(f"FieldDataset: {e}; rebuilding the matrix-free record", stacklevel=2)
+        with h5py.File(path, "r") as f:
+            mesh, rec = read_field_group(f[key])
+        center, scale = model_normalisation(mesh)
+        wf = rec.pop("wall_feat", None)
+        if wf is not None and wf.shape[0] != mesh.ne:
+            raise ValueError(f"{path}/{key}: qfeat_wall has {wf.shape[0]} elements, the mesh {mesh.ne}")
+        order = int(rec["model_order"])
+        mrec = matfree.build_record(mesh, order, scale, center)
+        U = rec["u_model"]
+        if U.shape[0] != mrec["n_dof"]:
+            raise ValueError(f"{path}/{key}: {U.shape[0]} label DOFs, the rebuilt HCurl(p={order}) "
+                             f"space has {mrec['n_dof']}")
+        _, qw, qfeat = ho.token_inputs(mesh, order, scale, center, wf)
+        bundle = {"mf": mrec, "qfeat": qfeat.reshape(mesh.ne * N_TOKEN, -1).astype(np.float32, copy=False),
+                  "qw": qw.reshape(-1).astype(np.float32)}
+        if self.verify_labels and (cp or g_id not in self._verified):
+            check_labels_matfree(mrec, U, rec["rq_model"], self.rq_rtol, f"{path}/{key}")
+            self._verified.add(g_id)
+        if cp:
+            payload = ops_cache.pack_mf(bundle, rec)
+            ops_cache.write(cp, payload)
+            return ops_cache.unpack_mf(payload)
+        return bundle, rec
+
     @staticmethod
     def _read_cache(cp):
         """(ops, rec) of a cache file, None (with a warning) if it is unreadable or of another format: the
@@ -400,8 +545,12 @@ class FieldDataset(Dataset):
         frequencies, FreqNext, geom_id, Fidelity, Y_qoi.  Separate from __getitem__ so that scripts/profile_loader.py
         can time the stages."""
         K = self.n_modes
-        item = field_item(ops, rec["u_model"][:, :K], rec["freqs"][:K], self.feature_indices,
-                          rec.get("shape_type", self.shape_types[g_id]), check=False, with_ct=self.with_ct)
+        if self.operators == "matfree":
+            item = field_item_matfree(ops, rec["u_model"][:, :K], rec["freqs"][:K], self.feature_indices,
+                                      rec.get("shape_type", self.shape_types[g_id]))
+        else:
+            item = field_item(ops, rec["u_model"][:, :K], rec["freqs"][:K], self.feature_indices,
+                              rec.get("shape_type", self.shape_types[g_id]), check=False, with_ct=self.with_ct)
         m, sd = self.stats["mean"], self.stats["std"]
         item["Y_freq"] = (item["Y_freq"] - m) / sd
         item["FreqNext"] = torch.tensor((self._next[g_id] - m) / sd, dtype=torch.float32)

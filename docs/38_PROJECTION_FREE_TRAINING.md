@@ -548,3 +548,8 @@ python scripts/recode_ops_cache.py /content/ops_cache /content/ops_cache_fast --
 ```
 `notebooks/colab_train_noproj.ipynb`: ayarlar hücresinde `DIAG_EVERY=10`, `PBAR_REFRESH=20`, `PREFETCH=2`, `VAL_PERSISTENT=True`, `GPU_PREFETCH=False`, `CACHE_COMPRESS='true'`; hücre 7b (1. ve 2. komutlar).
 Aşağıdakilerin tam hâli (CPU/GPU) yapılmadı: collate'in kendisi (batch 1'de bile `block_diag` ~46M nnz için indis/değer kopyaları; ~1,5 s/örnek bu makinede), int32 indisler (batch boyutunu ~%40 küçültür, GPU'da `torch.sparse.mm` ile denenmedi).
+
+### 11.x Matris-serbest operatörler (`dataset.operators: matfree`, docs/40 §10)
+
+> 2026-11-12, dal `claude/matfree-operators`, **commit edilmemiş**. Yukarıdaki darboğaz (örnek başına 285–1300 MB'lık assembled K, M, C'nin işçide çözülmesi, collate, `/dev/shm`, host→GPU kopya) izdüşümsüz **train / val** yolunda kaldırılabilir: `dataset.operators=matfree` ile öğe yalnız ~640 B/tet'lik eleman kaydı + token dizileri + etiketlerdir (batch ~45 MB; önbellek `.mf1.pkl` ~35 MB; sıcak okuma ~0,02 s; CPU ölçümü, 21,6k tet: assembled ~1,1 GB batch, 1,2–2,5 s okuma/çözme). V ve Gram'lar GPU'da adım içinde kurulan eleman matrislerinden hesaplanır (`matfree.py`; kayıp/gradyan assembled yolla ≤ 3e-7 bağıl farkla aynı). `projection: false` gerektirir; test split'i ve tüm çıkarım yolları assembled kalır; `gpu_prefetch` ile çakışmaz. Varsayılan `assembled` (bit düzeyinde değişmedi). GPU ölçümü yok. Ayrıntı, ölçümler ve sınırlar: docs/40 §10.
+

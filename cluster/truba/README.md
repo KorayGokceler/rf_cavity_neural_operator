@@ -95,6 +95,9 @@ Ayarları komut başına da değiştirebilirsin: `CPUS=112 TIME=1-00:00:00 clust
 `train.py` `ValueError` verir. Aynı EXP'yi yeniden göndermek `last.ckpt`'tan devam eder: `TRAIN_EXTRA` her gönderimde aynı verilmeli
 (devam, checkpoint'in `projection` değerinden farklıysa `train.py` hata verir; `--init_from` ile yeni koşu başlatın).
 
+**Matris-serbest train/val operatörleri** (docs/40 §10; yalnız `projection=false` ile): `TRAIN_EXTRA="training.projection=false training.selfsup_weight=0 training.freq_weight=0 dataset.operators=matfree"`
+(isteğe bağlı `training.matfree_chunk=2048`, `dataset.verify_labels=true`). Train/val batch'leri ~45 MB (assembled: ~1 GB), önbellek dosyası `.mf1.pkl` (~35 MB / 21k tet); test bölümü ve `predict.sh` assembled ve projekte kalır. Varsayılan `assembled`; GPU ölçümü yok, önce tek epoch ile adım süresini ve belleği kıyaslayın.
+
 ## Bir aileyi büyütmek, yeni aile eklemek
 
 - **Büyütmek:** `families.tsv`'de `n_total`'ı artır (ör. 10240 → 20480) ve `submit_family.sh <aile>`'yi

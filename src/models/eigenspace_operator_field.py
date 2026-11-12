@@ -34,6 +34,8 @@ REQUIRED_KEYS = ('X', 'Input_funcs', 'QX', 'QP', 'C', 'DofMask', 'BndDof', 'M', 
                  'Kp_diag', 'Scale')
 # forward_basis (projection-free training step): the trunk and the DOF map only, no G / Kp / Scale
 BASIS_KEYS = ('X', 'Input_funcs', 'QX', 'QP', 'C', 'DofMask', 'BndDof')
+# the matrix-free batch (dataset.operators: matfree, docs/40 §10) carries the element records ('MF') instead of QP / C
+BASIS_KEYS_MF = ('X', 'Input_funcs', 'QX', 'DofMask', 'BndDof', 'MF')
 
 
 class EigenspaceOperatorField(nn.Module):
@@ -95,19 +97,40 @@ class EigenspaceOperatorField(nn.Module):
                 h = blk(h, mask, w)
         return self.norm(h)
 
-    def field_basis(self, batch: dict) -> torch.Tensor:
+    def field_basis(self, batch: dict, step_ops=None) -> torch.Tensor:
         """V [B, Ndof, m]: ψ at the quadrature points → HCurl DOFs, 0 on the wall and padding.  The
-        trunk's tokens ARE the quadrature points (batch X / Input_funcs / Area = weights)."""
+        trunk's tokens ARE the quadrature points (batch X / Input_funcs / Area = weights).
+        A matrix-free batch (batch['MF'], docs/40 §10) maps ψ to the DOFs per sample with matfree.psi_to_dofs (float64, from the
+        element record; `step_ops`: the matfree.StepOperators of the step, whose ψ maps Ce are shared with the Grams' step) instead of
+        the sparse P / C: the same map, P rebuilt in float64."""
         qx = batch['QX']                                                 # [B, Nt, nq, 3]
         B, Nt, nq, _ = qx.shape
         z = self.embed(batch).view(B, Nt, nq, -1)                        # [B, Nt, nq, D]
         if self.edge_rff:
             z = torch.cat([z, self.rff(qx.to(z.dtype))], dim=-1)
         psi = self.edge_head(z).view(B, Nt, nq, self.n_basis, 3)
-        coef = torch.einsum('btlq,btqmc->btclm', batch['QP'].to(z.dtype), psi)   # [B, Nt, 3, nl, m]
-        V = spmm(batch['C'], coef.reshape(B, -1, self.n_basis).double(), batch.get('Ct'))
+        if batch.get('MF') is not None:
+            V = self._matfree_dofs(psi, batch, step_ops)
+        else:
+            coef = torch.einsum('btlq,btqmc->btclm', batch['QP'].to(z.dtype), psi)   # [B, Nt, 3, nl, m]
+            V = spmm(batch['C'], coef.reshape(B, -1, self.n_basis).double(), batch.get('Ct'))
         keep = batch['DofMask'] & ~batch['BndDof'].bool()
         return V * keep.unsqueeze(-1).to(V.dtype)
+
+    def _matfree_dofs(self, psi, batch, step_ops=None):
+        """V [B, Ndof, m] float64 from ψ [B, Nt, nq, m, 3] and the element records of a matrix-free batch (padded elements are
+        dropped, padded DOFs are 0)."""
+        from src.data import matfree
+        recs = batch['MF']
+        Nd = batch['DofMask'].shape[1]
+        if step_ops is None:
+            step_ops = matfree.StepOperators(recs, getattr(self, 'matfree_chunk', 2048), psi.device)
+        out = []
+        for b in range(len(recs)):
+            rec = step_ops.rec(b)
+            u = matfree.psi_to_dofs(rec, psi[b, :rec['n_tets']], step_ops.Ce(b), step_ops.chunk)
+            out.append(torch.nn.functional.pad(u, (0, 0, 0, Nd - rec['n_dof'])))
+        return torch.stack(out)
 
     @staticmethod
     def _require(batch: dict, keys) -> None:
@@ -116,14 +139,19 @@ class EigenspaceOperatorField(nn.Module):
             raise ValueError(f"EigenspaceOperatorField needs batch keys {missing}: use the field dataset "
                              "(src.data.field_dataset) and its collate.")
 
-    def forward_basis(self, batch: dict) -> dict:
+    def forward_basis(self, batch: dict, step_ops=None) -> dict:
         """Trunk + DOF map only: {'basis': V [B, Ndof, m]} (float32, as forward's 'basis'), with no kernel
         projection and no Rayleigh–Ritz (no Kp solve, no G / Kp / M / K needed).  The training step of a
-        projection-free run (training.projection: false, docs/38) builds its Grams from V alone."""
-        self._require(batch, BASIS_KEYS)
-        return {'basis': self.field_basis(batch).float()}
+        projection-free run (training.projection: false, docs/38) builds its Grams from V alone.  A matrix-free batch
+        (batch['MF']) needs the element records instead of QP / C; step_ops = its matfree.StepOperators (built here if None)."""
+        self._require(batch, BASIS_KEYS_MF if batch.get('MF') is not None else BASIS_KEYS)
+        V = self.field_basis(batch) if step_ops is None else self.field_basis(batch, step_ops)
+        return {'basis': V.float()}
 
     def forward(self, batch: dict) -> dict:
+        if batch.get('MF') is not None:
+            raise ValueError("EigenspaceOperatorField.forward (Ritz, kernel projection) needs the assembled operators: a "
+                             "matrix-free batch (dataset.operators: matfree) serves the projection-free train / val steps only")
         self._require(batch, REQUIRED_KEYS)
         basis = self.field_basis(batch).float()
         with torch.autocast(device_type=basis.device.type, enabled=False):

@@ -39,6 +39,8 @@ dataset:
   require_label_ok: true        # p2 labels (docs/37 §3.3, owner 2026-11-03): true drops samples with label_ok = 0 (frequency error estimate > tol_f_p2); files without the attr are kept
   max_tets: null                # drop samples with more model tets (GPU memory guard, applied before the split, so it changes the split; V100 16 GB: measure first, docs/38 §8)
   hf_repeat: 1                  # multi-fidelity (docs/34): list the HF geometries of the train split this many times per epoch
+  operators: assembled          # assembled (default) | matfree (docs/40 §10; needs training.projection: false): the TRAIN and VAL splits load a compact element record (~640 B/tet, ~1.3 KB/tet with the token features, cache file `.mf1.pkl`) instead of the assembled sparse K, M, C (0.3-1.3 GB per geometry); the model builds V and the Grams from it on the device. The TEST split stays assembled and projected. Loader and /dev/shm traffic drop from hundreds of MB to tens of MB per batch; the step gets heavier on the device (element matrices ~25 KB/tet/sample, built inside the step)
+  verify_labels: null           # matfree only: check the labels' Rayleigh quotients against the record's element matrices when an item is built (null = only when cache_dir is set, once per geometry; costs ~1.5 s at 21k tets, ~5 s in a one-thread worker)
 
 model:
   type: field3d
@@ -77,6 +79,7 @@ training:
   val_persistent_workers: true  # false: the validation workers exist only during validation (frees their prefetched batches in /dev/shm in between; costs a worker start per epoch)
   val_num_workers: null         # null = num_workers
   gpu_prefetch: false           # CUDA only: sparse operators travel as pinned dense parts, copied asynchronously on a side stream (src/data/gpu_transfer.py); untested on a GPU, pins up to num_workers x prefetch_factor batches in RAM
+  matfree_chunk: 2048           # dataset.operators: matfree: elements per chunk of the on-device element matrices / DOF maps (transient memory ~0.12 MB per element; the persistent part of a step is ~25 KB per tet and sample)
   profile_steps: 0              # N > 0: step-time breakdown of the first N training batches (loader wait, transfer, trunk, Grams, loss, backward, optimizer ...), printed and written to <log_dir>/<exp_name>/step_profile.json
   profile_only: false           # true (with profile_steps > 0): stop after the profile, skip the validation/test (a measuring run)
   sync_debug_steps: 0           # N > 0 (CUDA): torch.cuda.set_sync_debug_mode('warn') for N batches after the first 3 -> every host<->GPU sync of the step is reported with its Python stack (docs/38 section 11.2)

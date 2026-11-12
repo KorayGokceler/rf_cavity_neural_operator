@@ -574,14 +574,33 @@ def field_operators(mesh, order=2, quad_order=None, scale=None, center=None, wal
     P = np.linalg.solve(A, np.einsum("tqi,tq->tiq", Phi, W))                                  # [Nt, nl, nq]
     bary = np.column_stack([ref, 1.0 - ref.sum(1)])
     # NGSolve's reference tet: vertices (1,0,0), (0,1,0), (0,0,1), (0,0,0) ↔ the element's vertices
-    qxn = (qx - center) / s
-    feats = point_features(mesh, mips, qxn, W / s ** 3, center, s, order, wall=wall_feat)
+    qxn, qw, qfeat = token_features(mesh, mips, qx, W, center, s, order, wall_feat)
     ops = {"K": Ks, "M": Ms, **({"G": G, "Kp": Kp} if potential else {}), "C": C, "P": P, "bnd": bnd,
-           "qx": qxn, "qw": W / s ** 3, "qfeat": feats.reshape(nt, nq, -1), "bary": bary,
+           "qx": qxn, "qw": qw, "qfeat": qfeat, "bary": bary,
            "X": (Xv - center) / s, "tets": tets,
            "scale": s, "center": np.asarray(center, dtype=np.float64), "order": int(order),
            "n_dof": int(fes.ndof), "n_pot": int(G.shape[1]) if potential else None}
     return ops
+
+
+def token_features(mesh, mips, qx, W, center, scale, order=2, wall=None):
+    """The model's tokens on the normalised geometry ξ = (x − center)/scale, from the physical quadrature points
+    qx [Nt, nq, 3], the physical weights W = |detJ|·w [Nt, nq] and their NGSolve mapped points `mips`:
+    (qxn [Nt, nq, 3], qw [Nt, nq] = W / scale³, qfeat [Nt, nq, F] = point_features).  The ONE function that computes them:
+    field_operators (assembled path) and token_inputs (matrix-free path, docs/40) both call it, so the two give the same
+    arrays bit for bit.  wall: the stored wall_features (see point_features) or None."""
+    nt, nq = W.shape
+    qxn = (qx - center) / scale
+    qw = W / scale ** 3
+    feats = point_features(mesh, mips, qxn, qw, center, scale, order, wall=wall)
+    return qxn, qw, feats.reshape(nt, nq, -1)
+
+
+def token_inputs(mesh, order, scale, center, wall_feat=None, quad_order=None):
+    """(qxn, qw, qfeat) of the tokens of `mesh` (token_features) without any operator: the matrix-free item's inputs
+    (src.data.field_dataset.matfree_bundle).  scale / center: the dataset's normalisation, as passed to field_operators."""
+    _, _, wq, mips, qx, detJ = _quadrature(mesh, order, quad_order)
+    return token_features(mesh, mips, qx, detJ * wq[None, :], np.asarray(center), float(scale), order, wall_feat)
 
 
 WALL_FEATURES = ("dist_to_boundary", "dir_bnd_x", "dir_bnd_y", "dir_bnd_z", "torsion")

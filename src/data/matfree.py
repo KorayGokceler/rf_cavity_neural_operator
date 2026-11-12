@@ -26,6 +26,7 @@ Public API (shapes: nt tets, n = n_dof, m basis vectors, 30 local DOFs, 14 token
     grams_plain(rec, V, T)                     what hcurl.hcurl_grams_plain returns, for one geometry
     psi_map(rec) / psi_to_dofs(rec, psi)       ψ [nt, 14, m, 3] → u = C·vec(Pψ) [n, m]  (before DOF masking)
     token_points(rec) / token_weights(rec)     ops['qx'] / ops['qw'] [nt, 14, 3] / [nt, 14]
+    StepOperators(records, chunk, device)      per batch: records, (Me, Ke), Ce built on the device, shared by a step (docs/40 §10)
     check_against_ngsolve(mesh)                debug: the errors against highorder.field_operators
 """
 import itertools
@@ -390,13 +391,15 @@ def to_torch(rec, device=None):
             return rec
         return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in rec.items()}
     device = torch.device("cpu" if device is None else device)
-    cv = lambda a, dt: torch.as_tensor(np.asarray(a), dtype=dt).to(device)   # noqa: E731
+    cv = lambda a, dt: torch.as_tensor(a if torch.is_tensor(a) else np.asarray(a), dtype=dt).to(device)   # noqa: E731
     dofs = cv(rec["dofs"], torch.int64)
     return {"dofs": dofs, "cls": cv(rec["cls"], torch.int64), "xc": cv(rec["xc"], torch.float64),
             "x0": cv(rec["x0"], torch.float64), "bnd": cv(rec["bnd"], torch.bool),
-            "n_d": torch.bincount(dofs.reshape(-1), minlength=int(rec["n_dof"])).to(torch.float64),
+            "n_d": torch.zeros(int(rec["n_dof"]), dtype=torch.float64, device=device).index_add_(
+                0, dofs.reshape(-1), torch.ones(dofs.numel(), dtype=torch.float64, device=device)),   # bincount: a host sync on CUDA
             "n_dof": int(rec["n_dof"]), "n_tets": int(rec["n_tets"]), "scale": float(rec["scale"]),
-            "center": np.asarray(rec["center"], dtype=np.float64), "_torch": True}
+            "center": np.asarray(rec["center"].cpu() if torch.is_tensor(rec["center"]) else rec["center"], dtype=np.float64),
+            "_torch": True}
 
 
 def _chunks(n, chunk):
@@ -451,10 +454,10 @@ def _token_P(cls, J14):
     """P [b, 10, 14]: point values at the 14 token points → L2(2) coefficients, the |J|-weighted least-squares
     projection (ΦᵀWΦ)⁻¹ΦᵀW (what field_operators stores as ops['P']); Φ = L14[class]."""
     tab = _tables(cls.device)
-    W = torch.linalg.det(J14).abs() * tab["w14"][None, :]
+    W = _det_inv(J14)[0].abs() * tab["w14"][None, :]
     Phi = tab["L14"][cls]
     A = torch.einsum("tqi,tq,tqj->tij", Phi, W, Phi)
-    return torch.linalg.solve(A, torch.einsum("tqi,tq->tiq", Phi, W))
+    return torch.linalg.solve_ex(A, torch.einsum("tqi,tq->tiq", Phi, W))[0]       # no error check: no host sync on CUDA
 
 
 # ─────────────────────────── element operators ───────────────────────────
@@ -500,15 +503,42 @@ def apply(Ae, dofs, V, chunk=None):
     return out
 
 
-def gram(Ae, dofs, V, T=None, chunk=None):
-    """VᵀAV [m, m] (symmetrised), or with T [n, k] the block Gram of [V | T]: [[VᵀAV, VᵀAT], [TᵀAV, TᵀAT]]
-    [m + k, m + k] (symmetrised) — element sums Σ_e V_eᵀ A_e V_e, no scatter.  Differentiable w.r.t. V."""
-    W = V.to(torch.float64) if T is None else torch.cat([V.to(torch.float64), T.to(torch.float64)], dim=1)
+class _GramFn(torch.autograd.Function):
+    """WᵀAW [k, k] (unsymmetrised) for A = Σ_e scatter(Ae) with a constant A: the backward is dW = A W (ḡ + ḡᵀ), one chunked
+    `apply`.  Autograd through the gather / bmm would keep the gathered W_e and A_e W_e of every element for the backward
+    (2 × nt·30·k doubles per Gram: 0.35 GB at 21k tets and k = 30); this keeps W, Ae and dofs only (no graph of its own)."""
+
+    @staticmethod
+    def forward(ctx, W, Ae, dofs, chunk):
+        ctx.save_for_backward(W, Ae, dofs)
+        ctx.chunk = chunk
+        return _gram_sum(Ae, dofs, W, chunk)
+
+    @staticmethod
+    def backward(ctx, g):
+        W, Ae, dofs = ctx.saved_tensors
+        return apply(Ae, dofs, W, ctx.chunk) @ (g + g.T), None, None, None
+
+
+def _gram_sum(Ae, dofs, W, chunk):
     G = None
     for sl in _chunks(dofs.shape[0], chunk):
         We = W[dofs[sl]]
         g = We.reshape(-1, W.shape[1]).T @ torch.bmm(Ae[sl], We).reshape(-1, W.shape[1])
         G = g if G is None else G + g
+    return G
+
+
+def gram(Ae, dofs, V, T=None, chunk=None):
+    """VᵀAV [m, m] (symmetrised), or with T [n, k] the block Gram of [V | T]: [[VᵀAV, VᵀAT], [TᵀAV, TᵀAT]]
+    [m + k, m + k] (symmetrised) — element sums Σ_e V_eᵀ A_e V_e, no scatter.  Differentiable w.r.t. V.  When Ae carries no
+    gradient (the element matrices of a training step are constants) the backward is the O(n·m) product of _GramFn
+    instead of the graph of the element gathers; with an Ae that requires grad autograd runs through the sums."""
+    W = V.to(torch.float64) if T is None else torch.cat([V.to(torch.float64), T.to(torch.float64)], dim=1)
+    if torch.is_grad_enabled() and W.requires_grad and not Ae.requires_grad:
+        G = _GramFn.apply(W, Ae, dofs, chunk)
+    else:
+        G = _gram_sum(Ae, dofs, W, chunk)
     return 0.5 * (G + G.T)
 
 
@@ -579,8 +609,56 @@ def psi_to_dofs(rec, psi, Ce=None, chunk=1024):
         C = Ce[sl] if Ce is not None else _psi_map_chunk(rec["xc"][sl], rec["cls"][sl], tab,
                                                          rec["n_d"][rec["dofs"][sl]])
         u = torch.einsum("tdqc,tqmc->tdm", C, psi[sl])
-        out = out.index_add(0, rec["dofs"][sl].reshape(-1), u.reshape(-1, m))
+        out.index_add_(0, rec["dofs"][sl].reshape(-1), u.reshape(-1, m))
     return out
+
+
+# ─────────────────────────── one training / validation step ───────────────────────────
+
+class StepOperators:
+    """The constants of the geometries of ONE batch that the projection-free step needs, built on `device` on first use and
+    shared by the V and the Gram computations of the step: per sample the torch record (batch['MF'][b]), the element
+    matrices (Me, Ke) and the ψ map Ce.  Built without autograd (they depend on the geometry only); the graph of the step
+    keeps what its backward needs (Ce for ∂V/∂ψ, Ke / Me for ∂Gram/∂V) and frees it with the backward, so a step's peak is
+    ≈ 25 KB per tet and sample (Me + Ke 14.4 KB, Ce 10 KB) plus the transient of `chunk` elements (≈ 0.12 MB each).
+    `free()` drops this object's own references (the loss function calls it before returning)."""
+
+    def __init__(self, records, chunk=2048, device=None):
+        self.chunk = int(chunk) if chunk else None
+        self.device = device
+        self._src = list(records)
+        self._rec, self._mats, self._Ce = {}, {}, {}
+
+    def __len__(self):
+        return len(self._src)
+
+    def rec(self, b):
+        if b not in self._rec:
+            self._rec[b] = to_torch(self._src[b], self.device)
+        return self._rec[b]
+
+    def records(self):
+        return [self.rec(b) for b in range(len(self))]
+
+    def mats(self, b):
+        """(Me, Ke) of sample b (element_matrices)."""
+        if b not in self._mats:
+            with torch.no_grad():
+                self._mats[b] = element_matrices(self.rec(b), self.chunk)
+        return self._mats[b]
+
+    def mats_list(self):
+        return [self.mats(b) for b in range(len(self))]
+
+    def Ce(self, b):
+        """psi_map of sample b."""
+        if b not in self._Ce:
+            with torch.no_grad():
+                self._Ce[b] = psi_map(self.rec(b), self.chunk)
+        return self._Ce[b]
+
+    def free(self):
+        self._rec, self._mats, self._Ce = {}, {}, {}
 
 
 # ─────────────────────────── verification helper ───────────────────────────

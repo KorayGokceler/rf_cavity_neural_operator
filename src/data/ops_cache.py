@@ -21,6 +21,10 @@ Compared with a plain pickle of the scipy matrices (int + float64 per entry):
     (FORMAT stays 2); `uncompress` turns a payload into the raw form (scripts/recode_ops_cache.py).
 Files are versioned (FORMAT, the name suffix `.ops2.pkl`): a file of another format is never read as this one.
 
+The matrix-free variant (dataset.operators: matfree, docs/40 §10) has its own files, `{tag}__{key}.mf1.pkl` (`MF_SUFFIX`,
+`MF_FORMAT`): the compact element record of src/data/matfree.py + the token features + the labels as raw arrays of one
+pickle (no zlib, no index differences: nothing to decode), never read as an operator cache and vice versa.
+
 Reading (docs/38 §11): the upper triangle of K and M is expanded to the full CSR without a sort (`_upper_pattern`: the
 transposed strict part and the stored upper part are merged by scipy's O(nnz) CSR sum), and K and M share the
 pattern, so it is computed once per file (`_Patterns`); the values are one gather.  Bit for bit the matrix of the former
@@ -36,6 +40,8 @@ import scipy.sparse as sp
 
 FORMAT = 2
 SUFFIX = ".ops2.pkl"
+MF_FORMAT = 1
+MF_SUFFIX = ".mf1.pkl"
 NARROW_KEYS = ("P", "qx", "qw")               # dense arrays stored as float32 in the narrow variant
 _I32 = np.iinfo(np.int32).max
 _TRIAL = 1 << 20                              # bytes compressed to decide whether an array is worth zlib
@@ -288,4 +294,52 @@ def read(path):
         raise OpsCacheError(f"{path}: unreadable operator cache ({type(e).__name__}: {e})") from e
     if not isinstance(payload, dict) or payload.get("format") != FORMAT:
         raise OpsCacheError(f"{path}: operator cache of another format (this code reads format {FORMAT})")
+    return payload
+
+
+# ─────────────────────────── matrix-free variant (docs/40 §10) ───────────────────────────
+
+def pack_mf(bundle, rec):
+    """Payload of the matrix-free item data: bundle = {"mf": record of matfree.build_record, "qfeat": float32 [Nt·nq, F],
+    "qw": float32 [Nt·nq]}, rec = the label record of read_field_group (u_model, freqs, qoi, ...).  Every array is stored raw
+    (float32 labels when that is exact, as pack does)."""
+    import src.data.matfree as matfree
+    r = dict(rec)
+    u = r.pop("u_model")
+    exact = u.dtype == np.float64 and np.array_equal(u.astype(np.float32).astype(np.float64), u)
+    return {"kind": "matfree", "mf_format": MF_FORMAT, "matfree_format": matfree.FORMAT,
+            "ngsolve": matfree._ngsolve_version(), "mf": dict(bundle["mf"]),
+            "qfeat": np.ascontiguousarray(bundle["qfeat"], dtype=np.float32),
+            "qw": np.ascontiguousarray(bundle["qw"], dtype=np.float32), "rec": r,
+            "u_model": np.ascontiguousarray(u.astype(np.float32) if exact else u)}
+
+
+def unpack_mf(payload):
+    """(bundle, rec) of a payload from pack_mf; OpsCacheError if it is of another kind / format / NGSolve version (the
+    DOF numbering and the hierarchical basis belong to the build that wrote the record)."""
+    import src.data.matfree as matfree
+    if (not isinstance(payload, dict) or payload.get("kind") != "matfree" or payload.get("mf_format") != MF_FORMAT
+            or payload.get("matfree_format") != matfree.FORMAT):
+        raise OpsCacheError(f"matrix-free cache of another kind / format (this code reads mf_format {MF_FORMAT}, "
+                            f"matfree.FORMAT {matfree.FORMAT})")
+    if payload.get("ngsolve") != matfree._ngsolve_version():
+        raise OpsCacheError(f"matrix-free cache written with ngsolve {payload.get('ngsolve')}, this is "
+                            f"{matfree._ngsolve_version()}")
+    try:
+        rec = dict(payload["rec"])
+        rec["u_model"] = payload["u_model"].astype(np.float64)
+        return {"mf": payload["mf"], "qfeat": payload["qfeat"], "qw": payload["qw"]}, rec
+    except (KeyError, AttributeError) as e:
+        raise OpsCacheError(f"corrupt matrix-free cache payload ({type(e).__name__}: {e})") from e
+
+
+def read_mf(path):
+    """Payload of a matrix-free cache file (raw pickle); OpsCacheError if unreadable or not of this kind."""
+    try:
+        with open(path, "rb") as fh:
+            payload = pickle.load(fh)
+    except (EOFError, pickle.UnpicklingError, AttributeError, ImportError, IndexError, ValueError) as e:
+        raise OpsCacheError(f"{path}: unreadable matrix-free cache ({type(e).__name__}: {e})") from e
+    if not isinstance(payload, dict) or payload.get("kind") != "matfree":
+        raise OpsCacheError(f"{path}: not a matrix-free cache file")
     return payload

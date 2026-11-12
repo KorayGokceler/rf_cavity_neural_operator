@@ -31,7 +31,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import src.models.hcurl as hcurl  # noqa: E402
 from src.data.mesh_features import normalise  # noqa: E402
-from src.data.field_dataset import field_collate, field_item  # noqa: E402
+from src.data import matfree  # noqa: E402
+from src.data.field_dataset import field_collate, field_collate_mf, field_item, field_item_matfree  # noqa: E402
 from src.data_gen import highorder as ho  # noqa: E402
 from src.data_gen.field_labels import read_field_group  # noqa: E402
 from src.training.lightning_module import CavityLightning  # noqa: E402
@@ -51,6 +52,32 @@ class Clock:
         if self.cuda:
             torch.cuda.synchronize()
         return time.perf_counter()
+
+
+class OpMeter:
+    """Wraps matfree.element_matrices and matfree.psi_map (what StepOperators calls inside the step): time and calls."""
+
+    def __init__(self, clock):
+        self.clock, self.orig = clock, (matfree.element_matrices, matfree.psi_map)
+        self.reset()
+
+    def reset(self):
+        self.t, self.calls = 0.0, 0
+
+    def __enter__(self):
+        def timed(fn):
+            def wrapped(*a, **k):
+                t = self.clock()
+                out = fn(*a, **k)
+                self.t += self.clock() - t
+                self.calls += 1
+                return out
+            return wrapped
+        matfree.element_matrices, matfree.psi_map = (timed(f) for f in self.orig)
+        return self
+
+    def __exit__(self, *_exc):
+        matfree.element_matrices, matfree.psi_map = self.orig
 
 
 class CGMeter:
@@ -126,10 +153,15 @@ def main():
     ap.add_argument("--no_projection", action="store_true",
                     help="measure the projection-free training step (training.projection: false); the inference "
                          "pass still projects")
+    ap.add_argument("--matfree", action="store_true",
+                    help="the matrix-free projection-free step (dataset.operators: matfree, docs/40 §10); implies --no_projection")
+    ap.add_argument("--matfree_chunk", type=int, default=2048, help="training.matfree_chunk (elements per chunk)")
     ap.add_argument("--no_stored_features", action="store_true",
                     help="compute the token wall-distance / torsion features instead of reading qfeat_wall")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
+    if a.matfree:
+        a.no_projection = True
 
     import ngsolve
     torch.set_num_threads(a.threads)
@@ -137,7 +169,7 @@ def main():
     dev = torch.device(a.device)
     clock = Clock(dev)
     res = {"device": str(dev), "threads": a.threads, "grad_checkpoint": a.grad_checkpoint,
-           "projection": not a.no_projection}
+           "projection": not a.no_projection, "operators": "matfree" if a.matfree else "assembled"}
 
     with h5py.File(a.h5, "r") as f:
         keys = sorted(k for k in f.keys() if k.startswith("sample_"))
@@ -172,10 +204,41 @@ def main():
         batch = to_device(batch, dev)
         return ops, batch, {"t_operators": t_ops, "t_item": t_item, "t_collate": t_col, "t_to_device": clock() - t}
 
-    ops, batch, tm = prepare(not a.no_projection)
-    res.update(tm)
+    def prepare_matfree():
+        """(info, batch on the device, timings): the matrix-free item without any global matrix."""
+        t = clock()
+        mrec = matfree.build_record(mesh, rec["model_order"], scale, center)
+        t_rec = clock() - t
+        t = clock()
+        _, qw, qfeat = ho.token_inputs(mesh, rec["model_order"], scale, center, wall)
+        t_tok = clock() - t
+        t = clock()
+        bundle = {"mf": mrec, "qfeat": qfeat.reshape(mesh.ne * matfree.N_TOKEN, -1).astype(np.float32),
+                  "qw": qw.reshape(-1).astype(np.float32)}
+        item = field_item_matfree(bundle, rec["u_model"], rec["freqs"][:K], None, rec.get("shape_type", ""))
+        t_item = clock()
+        batch = field_collate_mf([item])
+        t_col = clock() - t_item
+        t_item -= t
+        t = clock()
+        batch = to_device(batch, dev)
+        batch["MF"] = [{k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in r.items()} for r in batch["MF"]]
+        info = {"n_dof": int(mrec["n_dof"]), "record_MB": matfree.record_nbytes(mrec) / 1e6,
+                "item_MB": sum(v.numel() * v.element_size() for v in item.values() if torch.is_tensor(v)) / 1e6
+                + sum(v.numel() * v.element_size() for v in item["MF"].values() if torch.is_tensor(v)) / 1e6}
+        return info, batch, {"t_operators": t_rec + t_tok, "t_record": t_rec, "t_tokens": t_tok, "t_item": t_item,
+                             "t_collate": t_col, "t_to_device": clock() - t}
+
+    if a.matfree:
+        mf_info, batch, tm = prepare_matfree()
+        ops = {"n_dof": mf_info["n_dof"], "n_pot": None}
+        res.update(tm)
+        res["record_MB"], res["item_MB"] = mf_info["record_MB"], mf_info["item_MB"]
+    else:
+        ops, batch, tm = prepare(not a.no_projection)
+        res.update(tm)
     res["rss_after_operators_gb"] = peak_rss_gb()
-    if a.cprofile:
+    if a.cprofile and not a.matfree:
         import cProfile
         import io
         import pstats
@@ -194,11 +257,12 @@ def main():
     lm = build_model(a.config, batch["Input_funcs"].shape[-1], K, projection=not a.no_projection,
                      **({"grad_checkpoint": True} if a.grad_checkpoint else {}))
     lm.to(dev)
+    lm.matfree_chunk = a.matfree_chunk
     model = lm.model
     res.update(n_tets=int(mesh.ne), n_tokens=int(batch["X"].shape[1]), n_dof=int(ops["n_dof"]),
                n_pot=None if ops["n_pot"] is None else int(ops["n_pot"]), n_modes=lm.num_field_modes,
                n_params=int(sum(p.numel() for p in model.parameters())),
-               nnz={k: int(ops[k].nnz) for k in ("K", "M", "G", "Kp", "C") if k in ops})
+               nnz={} if a.matfree else {k: int(ops[k].nnz) for k in ("K", "M", "G", "Kp", "C") if k in ops})
     res["gflop_forward"] = linear_flops(model, batch, model.forward_basis if a.no_projection else None) / 1e9
 
     def mem_reset():
@@ -220,12 +284,14 @@ def main():
             out.append({"t": clock() - t, "t_cg": cg.t, "cg_iters": cg.iters, "mem_gb": mem_peak()})
         return out
 
-    def train_pass(cg, batch):
+    def train_pass(cg, batch, om=None):
         model.train()
         out = []
         for _ in range(a.reps):
             lm.zero_grad(set_to_none=True)
             cg.reset()
+            if om is not None:
+                om.reset()
             mem_reset()
             t = clock()
             if a.no_projection:
@@ -237,11 +303,14 @@ def main():
             loss.backward()
             out.append({"t_forward": t1 - t, "t_backward": clock() - t1, "t_cg_forward": t_cg_fwd,
                         "t_cg_backward": cg.t - t_cg_fwd, "cg_iters": cg.iters, "calls_cg": cg.calls,
-                        "mem_gb": mem_peak()})
+                        "mem_gb": mem_peak(), **({"t_step_operators": om.t} if om is not None else {})})
         return out
 
-    with CGMeter(clock) as cg:
-        if a.no_projection:         # reduced batch first (its peak memory), then the projected inference pass
+    with CGMeter(clock) as cg, OpMeter(clock) as om:
+        if a.matfree:               # no assembled operator exists: no inference pass
+            res["train"] = train_pass(cg, batch, om)
+            res["infer"] = []
+        elif a.no_projection:         # reduced batch first (its peak memory), then the projected inference pass
             res["train"] = train_pass(cg, batch)
             del batch, ops
             ops, batch, tm = prepare(True)
@@ -255,13 +324,19 @@ def main():
     print(f"{key}: {res['n_tets']} tets, {res['n_tokens']} tokens, {res['n_dof']} DOF, "
           f"{'no' if res['n_pot'] is None else res['n_pot']} potentials, "
           f"{res['n_modes']} modes; {res['n_params'] / 1e6:.3f} M parameters; {res['device']}, {a.threads} threads; "
-          f"{'PROJECTION-FREE training step' if a.no_projection else 'projected training step'}")
-    print(f"nnz: " + ", ".join(f"{k} {v / 1e6:.2f}M" for k, v in res["nnz"].items()))
+          f"{'MATRIX-FREE projection-free training step' if a.matfree else 'PROJECTION-FREE training step' if a.no_projection else 'projected training step'}")
+    if not a.matfree:
+        print(f"nnz: " + ", ".join(f"{k} {v / 1e6:.2f}M" for k, v in res["nnz"].items()))
     print(f"data   mesh (generator, from CAD) {res['t_mesh_generator']:6.2f} s | rebuild from .vol {res['t_mesh_rebuild']:.2f} s")
-    print(f"       field_operators            {res['t_operators']:6.2f} s (token features "
-          f"{'read from the H5' if res['stored_features'] else 'computed'}) | peak RSS {res['rss_after_operators_gb']:.2f} GB")
+    if a.matfree:
+        print(f"       matfree record {res['t_record']:.2f} s + token inputs {res['t_tokens']:.2f} s (features "
+              f"{'read from the H5' if res['stored_features'] else 'computed'}) | record {res['record_MB']:.1f} MB, item "
+              f"{res['item_MB']:.1f} MB | peak RSS {res['rss_after_operators_gb']:.2f} GB")
+    else:
+        print(f"       field_operators            {res['t_operators']:6.2f} s (token features "
+              f"{'read from the H5' if res['stored_features'] else 'computed'}) | peak RSS {res['rss_after_operators_gb']:.2f} GB")
     print(f"       field_item / collate       {res['t_item']:6.2f} / {res['t_collate']:.2f} s | to {res['device']} {res['t_to_device']:.2f} s")
-    if a.no_projection:
+    if a.no_projection and not a.matfree:
         print(f"       full operators (G, Kp) for the inference pass: field_operators {res['t_operators_full']:.2f} s, "
               f"collate {res['t_collate_full']:.2f} s")
     for i, r in enumerate(res["infer"]):
@@ -270,7 +345,8 @@ def main():
     for i, r in enumerate(res["train"]):
         print(f"train  #{i} forward+loss {r['t_forward']:6.2f} s (CG {r['t_cg_forward']:.2f}), backward "
               f"{r['t_backward']:6.2f} s (CG {r['t_cg_backward']:.2f}), CG calls {r['calls_cg']}, iterations {r['cg_iters']} | "
-              f"peak {mem} {r['mem_gb']:.2f} GB")
+              f"peak {mem} {r['mem_gb']:.2f} GB"
+              + (f" | on-device element matrices + psi maps {r['t_step_operators']:.2f} s" if "t_step_operators" in r else ""))
     print(f"network dense FLOPs, forward: {res['gflop_forward']:.1f} GFLOP")
     if a.json:
         with open(a.json, "w") as fh:

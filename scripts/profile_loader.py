@@ -7,9 +7,12 @@ where does their time go, and what does the main process pay to receive and move
 
 For every worker count N the train loader of train.py (make_loaders' kwargs: collate, prefetch_factor, pinning) is iterated
 for `--warmup` + `--n_batches` batches.  Worker side (per sample, summed over the batch; measured inside the workers):
-cache_read (pickle.load of the .ops2.pkl), cache_decode (ops_cache.unpack: zlib, delta, upper triangle → K, M), load_build
+cache_read (pickle.load of the .ops2.pkl, or of the .mf1.pkl with dataset.operators=matfree), cache_decode (ops_cache.unpack: zlib,
+delta, upper triangle → K, M; matfree: ops_cache.unpack_mf, a type check and the float64 labels), load_build
 (no cache file: the operators are assembled, and written when cache_dir is set — the first epoch), field_item (field_item
-with Cᵀ), collate (field_collate: padding, block-diagonal CSR).  Main side: `wait` = time blocked in next() (the loader
+with Cᵀ; matfree: field_item_matfree, no sparse matrix), collate (field_collate: padding, block-diagonal CSR; matfree:
+field_collate_mf, dense tensors and the list of element records).  With dataset.operators=matfree (docs/40 §10; train / val
+splits of a projection-free config) the batches carry no sparse tensor and are pinned whenever CUDA exists.  Main side: `wait` = time blocked in next() (the loader
 does not keep up; includes receiving the batch: unpickling from shared memory), `to_device` = moving the batch to --device
 (synchronised; with --gpu_prefetch: the SparseParts path of src/data/gpu_transfer.py; 0 on cpu).  --step_time emulates the
 GPU step with a sleep (the CPU is free for the workers, as with an asynchronous GPU step): with 0 the result is the
@@ -49,12 +52,13 @@ class TimedDataset(torch.utils.data.Dataset):
         ds = self.ds
         g = ds.active_geoms[idx]
         tm = {}
-        cp = ds._cache_path(g, ds.build_potential)
+        mfree = ds.operators == 'matfree'
+        cp = ds._cache_path(g, ds.build_potential, matfree=mfree)
         t0 = time.perf_counter()
         if cp and os.path.exists(cp):
-            payload = ops_cache.read(cp)
+            payload = ops_cache.read_mf(cp) if mfree else ops_cache.read(cp)
             t1 = time.perf_counter()
-            ops, rec = ops_cache.unpack(payload)
+            ops, rec = (ops_cache.unpack_mf if mfree else ops_cache.unpack)(payload)
             t2 = time.perf_counter()
             tm['cache_read'], tm['cache_decode'] = t1 - t0, t2 - t1
         else:
@@ -102,8 +106,9 @@ def summarise(xs):
 
 
 def run(tc, ds, workers, args, gpu):
-    collate = TimedCollate(loader_kwargs(tc, workers, True, gpu)['collate_fn'])
-    kw = dict(loader_kwargs(tc, workers, True, gpu), collate_fn=collate)
+    lk = loader_kwargs(tc, workers, True, gpu, ds.operators == 'matfree')
+    collate = TimedCollate(lk['collate_fn'])
+    kw = dict(lk, collate_fn=collate)
     loader = torch.utils.data.DataLoader(TimedDataset(ds), batch_size=args.batch_size, shuffle=True, **kw)
     device = torch.device(args.device)
     n_total = args.warmup + args.n_batches
@@ -162,14 +167,19 @@ def main():
     if args.gpu_prefetch and not gpu:
         print("--gpu_prefetch: no CUDA device, plain batches")
     projection = getattr(tc, 'projection', True)
+    operators = (str(getattr(dc, 'operators', None) or 'assembled') if args.split != 'test' else 'assembled')
+    if operators == 'matfree' and projection:
+        raise SystemExit("dataset.operators: matfree needs training.projection: false")
     ds = FieldDataset(dc.data_path, split=args.split, train_ratio=dc.train_ratio, val_ratio=dc.val_ratio,
                       random_seed=getattr(dc, 'random_seed', 42), feature_indices=getattr(dc, 'feature_indices', None),
                       cache_dir=getattr(dc, 'cache_dir', None), n_modes=getattr(dc, 'n_modes', None),
                       hf_repeat=getattr(dc, 'hf_repeat', 1), train_extra=getattr(dc, 'train_extra', None),
                       require_label_ok=bool(getattr(dc, 'require_label_ok', False)),
-                      max_tets=getattr(dc, 'max_tets', None), build_potential=projection or args.split == 'test')
+                      max_tets=getattr(dc, 'max_tets', None), build_potential=projection or args.split == 'test',
+                      operators=operators, **({'verify_labels': dc.verify_labels}
+                                              if getattr(dc, 'verify_labels', None) is not None else {}))
     print(f"nproc={os.cpu_count()} torch_threads={torch.get_num_threads()} samples={len(ds)} split={args.split} "
-          f"batch_size={args.batch_size} cache_dir={getattr(dc, 'cache_dir', None)} step_time={args.step_time} "
+          f"batch_size={args.batch_size} operators={operators} cache_dir={getattr(dc, 'cache_dir', None)} step_time={args.step_time} "
           f"device={args.device} gpu_prefetch={gpu}")
     results = [run(tc, ds, w, args, gpu) for w in (args.workers or [int(tc.num_workers)])]
     for r in results:
