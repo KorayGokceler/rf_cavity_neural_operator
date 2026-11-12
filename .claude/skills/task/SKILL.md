@@ -22,7 +22,9 @@ description: Start a unit of work on this repository the agreed way - read the s
      behaviour without the owner's go-ahead" counts here.
    - acceptance criteria as checks with numbers: tests, analytic error bounds, timings, screenshots;
    - risks and how they will be detected;
-   - who does what. A subagent's work goes in its own context:
+   - who does what, decided now and written in the plan: how many agents, which parts run in parallel
+     (independent parts on different files) and which in sequence, each agent's task, model and files.
+     A subagent's work goes in its own context:
 
      | area | subagent |
      |---|---|
