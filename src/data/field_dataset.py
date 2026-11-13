@@ -322,8 +322,8 @@ class FieldDataset(Dataset):
     functions as the assembled path: highorder.token_inputs → token_features) + the labels; the model builds V and the Grams
     from the record on the device.  Needs build_potential=False (the projection-free train / val splits; the test split of a
     run stays "assembled" and projected).  Cache: `{tag}__{key}.mf1.pkl` (ops_cache.MF_SUFFIX; ~1.3 KB per tet, no zlib).
-    verify_labels (matfree only; default None = on when cache_dir is set): the labels' Rayleigh quotients are checked against the
-    record's element matrices when the item is built (once per geometry with a cache; not on cache hits) — the assembled path
+    verify_labels (matfree only; default None = on): the labels' Rayleigh quotients are checked against the
+    record's element matrices when the item is built (once per geometry and process; not on cache hits) — the assembled path
     always checks them against its assembled K, M (rq_rtol); the check costs the element matrices (~1.5 s at 21k tets on 4
     threads, ~5 s in a one-thread worker)."""
 
@@ -341,7 +341,7 @@ class FieldDataset(Dataset):
                              "them): use it for the projection-free train / val splits (build_potential=False); the test "
                              "split stays 'assembled' (docs/40 §10)")
         self.operators = operators
-        self.verify_labels = (cache_dir is not None) if verify_labels is None else bool(verify_labels)
+        self.verify_labels = True if verify_labels is None else bool(verify_labels)
         self._verified = set()
         self.paths = _expand(data_path)
         n_main_files = len(self.paths)

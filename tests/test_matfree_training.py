@@ -369,6 +369,10 @@ def test_verify_labels_catches_a_mismatching_label_record(field_h5, tmp_path):
     ds = FieldDataset(str(bad), split="train", operators="matfree", verify_labels=True, **BASE)
     with pytest.raises(ValueError, match="labels do not match"):
         ds[0]
+    ds = FieldDataset(str(bad), split="train", operators="matfree", **BASE)       # the default, without a cache_dir: checked too
+    assert ds.verify_labels
+    with pytest.raises(ValueError, match="labels do not match"):
+        ds[0]
     FieldDataset(str(bad), split="train", operators="matfree", verify_labels=False, **BASE)[0]       # unchecked: loads
 
 

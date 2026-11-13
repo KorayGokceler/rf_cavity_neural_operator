@@ -1,7 +1,7 @@
 # 40 — Matris-serbest HCurl p2 operatörleri (`src/data/matfree.py`)
 
 > 2026-11-12, dal `claude/matfree-operators` (`f9b386e` üzerine). Karar: sahip (3 fazlı değişiklik). **Faz 1** (§1–§9): çekirdek modül, testler, tablo betiği
-> (commit `3747b72`). **Faz 2** (§10, **commit edilmemiş**): izdüşümsüz eğitim/doğrulama yoluna bağlandı (`dataset.operators: matfree`); varsayılan
+> (commit `3747b72`). **Faz 2** (§10, commit `1fff0e2`; inceleme düzeltmeleri ve ilk GPU ölçümü §11): izdüşümsüz eğitim/doğrulama yoluna bağlandı (`dataset.operators: matfree`); varsayılan
 > (`assembled`) bit düzeyinde değişmedi. GPU'da ölçülmedi.
 
 ## 1. Neden
@@ -120,7 +120,7 @@ python -m pytest -q tests/test_matfree.py tests/test_field_model.py tests/test_p
 
 ## 10. Faz 2: izdüşümsüz eğitim/doğrulama yoluna entegrasyon
 
-> 2026-11-12, aynı dal, **commit edilmemiş**. Ölçümler CPU'da (4 çekirdek, 15 GB, GPU yok; `torch.get_num_threads()` 4 ya da işçi koşullarında 1, `ngsolve.GetNumThreads()` 1; ölçüm sırasında başka iş yok, yük ort. ~1). **GPU sayıları sahipten gelecek.**
+> 2026-11-12, aynı dal, commit `1fff0e2`. Ölçümler CPU'da (4 çekirdek, 15 GB, GPU yok; `torch.get_num_threads()` 4 ya da işçi koşullarında 1, `ngsolve.GetNumThreads()` 1; ölçüm sırasında başka iş yok, yük ort. ~1). **GPU sayıları sahipten gelecek.**
 
 ### 10.1 Seçenek ve ne nerede çalışır
 
@@ -135,9 +135,9 @@ python -m pytest -q tests/test_matfree.py tests/test_field_model.py tests/test_p
 
 `matfree` yalnız `training.projection: false` ile (aksi `ValueError`, `train.py`); `FieldDataset(operators="matfree", build_potential=True)` da `ValueError`. Çıkarım yolları (`src/service/model.py`, `scripts/predict_geometry.py`, değerlendirme betikleri) değişmedi. `forward()` (Ritz) matfree batch'i reddeder.
 
-**Öğe** (`FieldDataset.load_matfree`): `read_field_group` → `model_normalisation(mesh)` (merkez, ölçek: assembled yolla **aynı**) → `matfree.build_record(mesh, order, scale, center)` → token dizileri `highorder.token_inputs` ile. `field_operators` token özelliklerini artık `highorder.token_features` ile hesaplar ve `token_inputs` **aynı fonksiyonu** çağırır (formül kopyası yok); `field_operators`'ın çıktısı HEAD ile bit düzeyinde aynı (§10.4). `field_operators` çağrılmaz (testle korunur). Etiket doğrulaması (yᵀKy/yᵀMy ≈ `rq_model·s²`): assembled yol K, M ile her kurulumda yapar; matfree yol eleman matrisleriyle yapar (`check_labels_matfree`), ama bu eleman matrislerinin maliyetidir (21k tet: ~1,5 s 4 iş parçacığında, ~6 s tek iş parçacıklı işçide; aşağıdaki tabloda hwr, 1 iş parçacığı: 2,9 → 8,9 s) — bu yüzden `dataset.verify_labels` (null = yalnız `cache_dir` verilmişse, önbellek yazılırken **bir kez**; önbellek isabetinde yok; true/false zorlar).
+**Öğe** (`FieldDataset.load_matfree`): `read_field_group` → `model_normalisation(mesh)` (merkez, ölçek: assembled yolla **aynı**) → `matfree.build_record(mesh, order, scale, center)` → token dizileri `highorder.token_inputs` ile. `field_operators` token özelliklerini artık `highorder.token_features` ile hesaplar ve `token_inputs` **aynı fonksiyonu** çağırır (formül kopyası yok); `field_operators`'ın çıktısı HEAD ile bit düzeyinde aynı (§10.4). `field_operators` çağrılmaz (testle korunur). Etiket doğrulaması (yᵀKy/yᵀMy ≈ `rq_model·s²`): assembled yol K, M ile her kurulumda yapar; matfree yol eleman matrisleriyle yapar (`check_labels_matfree`), ama bu eleman matrislerinin maliyetidir (21k tet: ~1,5 s 4 iş parçacığında, ~6 s tek iş parçacıklı işçide; aşağıdaki tabloda hwr, 1 iş parçacığı: 2,9 → 8,9 s) — bu yüzden `dataset.verify_labels` (null = açık: öğe her kurulduğunda, geometri ve süreç başına **bir kez**; önbellek isabetinde yok; true/false zorlar; §11.1).
 
-**Önbellek**: `{tag}__{key}.mf1.pkl` (`ops_cache.MF_SUFFIX`; `.ops2.pkl` / `.nopot.ops2.pkl` ile **karışmaz**: ayrı ad, `kind: "matfree"` + `mf_format` + `matfree.FORMAT` + NGSolve sürümü alanı; başka biçim/sürüm/bozuk dosya uyarıyla yeniden kurulur ve üzerine yazılır). Ham dizilerin tek pickle'ı (zlib yok, indis farkı yok; atomik yazma `ops_cache.write`): kayıt + `qfeat` (float32 [Nt·14, 9]; `X` ve `QX` bunun ilk 3 sütunundan, bit düzeyinde aynı) + `qw` + etiketler (`u_model` float32 tam ise float32). Önbellek isabeti NGSolve'a hiç dokunmaz (testle korunur). `dataset.cache_dir` anlamı değişmedi.
+**Önbellek**: `{tag}__{key}.mf1.pkl` (`ops_cache.MF_SUFFIX`; `.ops2.pkl` / `.nopot.ops2.pkl` ile **karışmaz**: ayrı ad, `kind: "matfree"` + `mf_format` + `matfree.FORMAT` + NGSolve sürümü alanı; başka biçim/sürüm/bozuk dosya uyarıyla yeniden kurulur ve üzerine yazılır). Ham dizilerin tek pickle'ı (zlib yok, indis farkı yok; atomik yazma `ops_cache.write`): kayıt + `qfeat` (float32 [Nt·14, 9]; `X` ve `QX` bunun ilk 3 sütunundan, bit düzeyinde aynı) + `qw` + etiketler (`u_model` float32 tam ise float32). Önbellek isabetinde mesh, uzay ve operatör kurulmaz (testle korunur); yalnız sürüm karşılaştırması için `import ngsolve` yapılır, yani NGSolve kurulu olmalıdır. `dataset.cache_dir` anlamı değişmedi.
 
 **Adım içi** (`matfree.StepOperators`): `Me, Ke` (`element_matrices`) ve `Ce` (`psi_map`) aygıtta, `no_grad` altında, **adım başına bir kez** kurulur; V ve Gram'lar paylaşır. Kalıcı bellek ≈ 25 KB / (tet·örnek) (Me+Ke 14,4 KB, Ce 10 KB; 21,6k tet: 530 MB, 47k tet ve B = 2: ~2,4 GB) + geçici ≈ 0,12 MB × `training.matfree_chunk` (varsayılan 2048). Otograd grafiği Ce'yi (∂V/∂ψ) ve Ke/Me'yi (∂Gram/∂V) geri geçişe kadar tutar, sonra hepsi serbest kalır; `StepOperators.free()` kayıt/eleman matrisi referanslarını kayıp fonksiyonunun sonunda bırakır. Gram'ın geri geçişi için `matfree._GramFn` (özel autograd): saklanan yalnız W, Ae, dofs; `dW = A W (ḡ + ḡᵀ)` tek parçalı `apply` (eleman toplama grafiği Gram başına 2 × Nt·30·k çift = ~0,3 GB @ 21k tet, k = 30; iki Gram için ~0,6 GB: tutulmaz). Trunk `grad_checkpoint` etkilenmez (V hesabı `embed` dışında).
 
@@ -174,7 +174,7 @@ Bir eğitim adımı (`scripts/profile_field_step.py --grad_checkpoint --threads 
 | geri | 23,2k | 14,5–16,5 s | 14,4–15,5 s |
 | tepe RSS | 23,2k | 5,92 GB | **4,78 GB** |
 
-CPU'da adım matfree ile ≈ %10–18 yavaş (her adım eleman matrislerini ve ψ haritasını yeniden kurar; ~3 s, CPU'da bellek-bağlı gather); bellek ~1–1,1 GB az. Hedef GPU'da bu kurulumlar bellek-bağlı küçük çekirdekler; **GPU'da ölçülmedi**. Assembled sütununun tepe RSS'i operatör kurulumunu ve collate'i içerir (matfree'de yok): bellek farkı bunu da yansıtır, GPU belleği farklı olacaktır.
+CPU'da adım matfree ile ≈ %10–19 yavaş (bağımsız kontrol: ileri+geri %19, yalnız ileri+kayıp %55; §11.2) (her adım eleman matrislerini ve ψ haritasını yeniden kurar; ~3 s, CPU'da bellek-bağlı gather); bellek ~1–1,1 GB az. Hedef GPU'da bu kurulumlar bellek-bağlı küçük çekirdekler; **GPU'da ölçülmedi**. Assembled sütununun tepe RSS'i operatör kurulumunu ve collate'i içerir (matfree'de yok): bellek farkı bunu da yansıtır, GPU belleği farklı olacaktır.
 
 ### 10.3 Eşdeğerlik: ölçülen farklar
 
@@ -199,7 +199,7 @@ Test eşikleri (`tests/test_matfree_training.py`): V, kayıp, bileşenler, grady
 ### 10.6 Hâlâ assembled / yapılmayanlar / belirsizlikler
 
 - **Test bölümü** (Kp, G, CG, Ritz) ve tüm çıkarım yolları assembled; `forward()` matfree batch'i reddeder. Test split'inin önbelleği `.ops2.pkl` (284 MB @ 23k tet) kalır.
-- Etiket doğrulaması varsayılan olarak yalnız önbellek yazılırken (bkz. 10.1); önbelleksiz ve `verify_labels` verilmemişse **yok**.
+- Etiket doğrulaması önbellek isabetinde yapılmaz (assembled yol gibi); her kurulumda yapılır (§11.1).
 - Adım başına eleman matrisi/ψ haritası yeniden kurulumu CPU'da ~3 s (adımın ~%12'si); GPU'da ölçülmedi. `Me, Ke`'yi epoch'lar arası saklamak bellek maliyetli (311 MB/örnek) ve yapılmadı; chunk'a bağlı "kaynaşık" `apply`/`gram` da yapılmadı (§8).
 - `index_add_` float64 atomikleri (GPU) sıra-belirsiz: matfree adımı GPU'da bit düzeyinde tekrarlanabilir değil (1e-15 düzeyi).
 - CUDA kolları (pinleme, yan akım, `record_stream`, `non_blocking` kopya) bu makinede çalıştırılamadı; `to_torch` aygıt taşımalı kayıt (CPU testi var) CUDA'da denenmedi.
@@ -214,3 +214,46 @@ python train.py --config configs/field_3d_noproj.yaml --override "dataset.data_p
 python scripts/profile_field_step.py <h5> --sample 0 --matfree --grad_checkpoint --device cuda   # yan yana: --no_projection (ayrı süreçte)
 python scripts/profile_loader.py --config configs/field_3d_noproj.yaml --override dataset.data_path=<h5> dataset.operators=matfree dataset.cache_dir=<dir> --workers 4 8 --step_time 0.3 --device cuda
 ```
+
+## 11. Faz 3: bağımsız inceleme, düzeltmeler ve ilk GPU ölçümü
+
+> 2026-11-13, aynı dal. **Sonuç: sayısal olarak doğru, ama ölçülen GPU'da adım ~2 kat YAVAŞ; bu hâliyle eğitim hızlandırması değildir.** Varsayılan `assembled` kalır.
+
+### 11.1 Fizik incelemesi (taze bağlam) ve düzeltmeler
+
+Yanlış sonuç ya da bozulan AGENTS.md değişmezi bulunmadı (Piola eşlemeleri, işaretli det, 1/s ve s ölçekleri, 24 sınıf varsayımı yerel inceltilmiş ağda, ters yönelimli eleman, `_GramFn` geri formülü simetrik olmayan üst gradyanla 2e-16, varsayılan yolun değişmediği). Düzeltilenler:
+
+- **Etiket doğrulaması**: `cache_dir` yokken matfree yol etiketleri hiç denetlemiyordu (assembled yol her kurulumda denetler). `verify_labels: null` artık **açık** demektir: her kurulumda, geometri ve süreç başına bir kez; yalnız önbellek isabetinde atlanır. Test: varsayılanla, önbelleksiz, bozuk `rq_model` → `ValueError`.
+- **Tablo önbelleği**: kesik `.npz` (`zipfile.BadZipFile`, `EOFError`) artık yeniden kurulur; yazılamayan önbellek dizini (`OSError`) uyarı verir ve tablolar bellekte tutulur (eğitim düşmez).
+- Belgedeki "önbellek isabeti NGSolve'a dokunmaz" ifadesi düzeltildi (§10.1).
+
+Açık bırakılanlar (küçük): `RULE_DEGREE["mass"] = 8` sabit, `highorder.volume_measure(2)`'den türetilmiyor (karşılaştırma testi bir sapmayı yakalar); `matfree_chunk=0` 2048'e çevrilir.
+
+### 11.2 Bağımsız sayısal kontrol (CPU, kendi betikleriyle)
+
+| kontrol | sonuç |
+|---|---|
+| tam takım / ruff / vulture | 379 geçti / temiz / temiz |
+| operatörler, 13 aileden 14 gerçek örnek (8,4k–73,8k tet; ≥ 9'u deforme; 2 ya da 24 sınıf) | en kötü bağıl fark 6e-14 (`field_operators`'a karşı); negatif detJ yok |
+| etiketlerin Rayleigh oranı (matfree K, M) / saklı frekans | 1e-13 … 1,2e-11; ‖GᵀMT‖/‖MT‖ 4,5e-8 … 4,9e-8 (float32 etiket gürültüsü, assembled M ile aynı) |
+| eğitim adımı, assembled ↔ matfree, 5 durum (B = 1, 2; 24 sınıf dahil) | V ≤ 3,0e-7; kayıp bit-eşit; gradyan norm-bağıl ≤ 1,6e-7, maks-bağıl ≤ 2,1e-7 |
+| `train.py` 3 ve 12 epoch, 75 TensorBoard etiketi | ≤ 1,3e-7 fark, kayma yok; test aşaması (izdüşümlü) aynı; önbellek yaz/oku ve `--resume` temiz |
+| varsayılan yol, origin/main ↔ dal | 419 özetin 419'u bit-eşit |
+| CPU maliyeti (hwr 21,6k tet) | öğe okuma 2,2 s → 0,014 s; batch 1119 → 43 MB; adım (ileri+geri) 17,3 → 20,6 s (+%19) |
+
+### 11.3 İlk GPU ölçümü (sahip, Colab; GPU modeli kaydedilmedi, adım süreleri G4'ün ~6 katı: T4/L4 sınıfı)
+
+`profile_field_step.py --device cuda --threads 4 --reps 2 --grad_checkpoint`, küçük model (0,854 M), ikinci tekrar:
+
+| | 23 711 tet assembled | matfree | 51 038 tet assembled | matfree |
+|---|---|---|---|---|
+| ileri + kayıp | 0,53 s | 2,11 s | 1,17 s | 4,57 s |
+| ↳ eleman matrisleri + ψ haritaları | – | 1,44 s | – | 3,09 s |
+| geri | 1,14 s | 1,24 s | 2,55 s | 2,91 s |
+| **adım** | **1,67 s** | **3,35 s** | **3,72 s** | **7,48 s** |
+| GPU'ya taşıma | 0,33 s | 0,01 s | 0,68 s | 0,03 s |
+| öğe + collate (işçi) | 1,68 s | 0,03 s | 4,44 s | 0,08 s |
+| tepe GPU belleği | 4,74 GB | 3,65 GB | 10,18 GB | 7,82 GB |
+
+Veri tarafı beklendiği gibi (taşıma ve collate ~0, GPU belleği −%23), ama adım başına yeniden kurulum (61 µs/tet) kazancı fazlasıyla geri alıyor; kurulum hariç adım 1,91 s (assembled'dan ~%15 yavaş, CPU'daki oranla aynı). Kurulumun aritmetiği küçüktür (birkaç GFLOP); süre uygulamadan geliyor olmalı (doğrulanmadı). Adaylar: afin (eğri olmayan) elemanlarda 46 noktalı kuadratür yerine sınıf başına 6 referans matrisin bileşimi; float64 ara dizilerin ([nt, 46, 30, 3]) küçültülmesi. Eleman matrislerini GPU'da saklamak üretim setine sığmaz (175–340 MB/örnek). G4'te ve çok epoch'lu eğitimde ölçülmedi.
+

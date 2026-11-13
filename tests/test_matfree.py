@@ -323,3 +323,27 @@ def test_check_against_ngsolve_helper(cases):
     mesh, rec, ops = cases["pillbox"]
     err = mf.check_against_ngsolve(mesh, ops=ops, scale=rec["scale"], center=rec["center"])
     assert max(v for k, v in err.items() if k != "classes") < TOL_OP
+
+
+def test_tables_survive_a_truncated_cache_file_and_an_unwritable_cache_dir(tmp_path, monkeypatch):
+    import warnings as _w
+    monkeypatch.setenv("RFCAV_CACHE", str(tmp_path / "c"))
+    monkeypatch.setattr(mf, "_MEMO", {})
+    ref = mf.reference_tables()
+    path = mf.table_path()
+    with open(path, "rb") as f:
+        head = f.read(4096)
+    with open(path, "wb") as f:                                     # zip magic, no central directory: zipfile.BadZipFile
+        f.write(head)
+    mf._MEMO.clear()
+    tab = mf.reference_tables()                                # rebuilt, not raised
+    assert np.array_equal(tab["phi"], ref["phi"]) and np.array_equal(tab["T"], ref["T"])
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setenv("RFCAV_CACHE", str(blocker / "sub"))         # makedirs fails: a file is in the way
+    mf._MEMO.clear()
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter("always")
+        tab = mf.reference_tables()
+    assert np.array_equal(tab["phi"], ref["phi"])
+    assert any("not cached" in str(r.message) for r in rec)

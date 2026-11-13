@@ -33,6 +33,8 @@ import itertools
 import os
 import re
 import tempfile
+import warnings
+import zipfile
 import time
 
 import numpy as np
@@ -303,18 +305,21 @@ def reference_tables(order=2, rebuild=False, verbose=False):
             with np.load(path) as z:
                 if int(z["format"]) == FORMAT and str(z["ngsolve_version"]) == _ngsolve_version():
                     tab = {k: np.array(z[k]) for k in _TABLE_KEYS}
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
             tab = None                                  # unreadable / truncated: rebuilt below
     if tab is None:
         tab = _build_tables(verbose)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp.npz")
-        os.close(fd)
-        try:
+        tmp = None
+        try:                                            # the cache is an optimisation: an unwritable directory must not stop a run
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp.npz")
+            os.close(fd)
             np.savez(tmp, format=FORMAT, ngsolve_version=_ngsolve_version(), **tab)
             os.replace(tmp, path)
+        except OSError as e:
+            warnings.warn(f"matfree: reference tables not cached at {path} ({e}); kept in memory", stacklevel=2)
         finally:
-            if os.path.exists(tmp):
+            if tmp and os.path.exists(tmp):
                 os.remove(tmp)
     _MEMO[path] = _derive(tab)
     return _MEMO[path]
