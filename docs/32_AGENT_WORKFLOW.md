@@ -101,6 +101,10 @@ araçlarda bir şey yapmaz; kurallar zaten `AGENTS.md`'de.
 
 ## 4. Paralel çalışma
 
+Plan yapılırken ajan sayısı da belirlenir: iş paralelleştirilebiliyorsa ana ajan planın içinde kaç ajan gerektiğine,
+hangi parçaların paralel (bağımsız, farklı dosyalar) hangilerinin sırayla yürüyeceğine, her ajanın görevine,
+modeline ve dosyalarına karar verir (AGENTS.md "Working rules", `/task` 5. adım).
+
 Aynı dosyalarda iki ajan aynı anda çalışmaz. Her ajana ayrı dal ve ayrı çalışma kopyası:
 
 ```bash

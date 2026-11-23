@@ -16,6 +16,7 @@ pytest.importorskip("gmsh")
 from scipy.special import jn_zeros  # noqa: E402
 
 from src.data_gen import field_labels as fl  # noqa: E402
+from src.data_gen import highorder as ho  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 C0 = 299792458.0
@@ -40,14 +41,17 @@ def test_model_sized_mesh_lands_near_the_target_on_a_pillbox(tmp_path):
 
 
 def test_model_sized_mesh_on_a_small_feature_shape(tmp_path):
-    """TESLA cell with pipes (iris radii, small curvature radii): at least the minimum, curvaturesafety 2, single level."""
+    """TESLA cell with pipes (iris radii, small curvature radii): at least the minimum, a single level and no folded
+    element.  Whether the cs-2 mesh folds (and is retried at cs 3 / 4) depends on the NGSolve/netgen build: 6.2.2608
+    folds here, the CI build does not — accept either, but the stored mesh must be valid."""
     from src.data_gen import cavity_shapes as cs
     from tests import p2_reference as p2
     tesla = dict(Req=0.1033, Riris=0.035, L=0.0577, A=0.042, B=0.042, a=0.012, b=0.019, n_cells=1.0, Lpipe=0.08)
     brep = p2.write_brep(lambda occ: cs.build_elliptical(occ, None, dict(tesla)), tmp_path / "tesla.brep")
     s = {"model_min_elements": 1500, "model_target_elements": 3000}
-    mesh, _, info = fl.model_sized_mesh(str(brep), 0.03, None, s)   # folds at cs 2: retried at cs 3
-    assert mesh.ne >= 1500 and mesh.levels == 1 and info["curvaturesafety"] in (3.0, 4.0)
+    mesh, _, info = fl.model_sized_mesh(str(brep), 0.03, None, s)   # may fold at cs 2 (build-dependent): then cs 3 / 4
+    assert mesh.ne >= 1500 and mesh.levels == 1 and info["curvaturesafety"] in (2.0, 3.0, 4.0)
+    assert ho.jacobian_ratio(mesh) > 0                               # no folded element whatever cs was used
 
 
 def _fake_curved_mesh(counts, calls):

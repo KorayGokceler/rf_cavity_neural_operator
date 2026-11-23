@@ -76,6 +76,9 @@ bash cluster/truba/run.sh all LABELS=field ... --dry-run      # always dry-run T
 - Do not change the data generator's behaviour without the owner's go-ahead.
 - Never open public tunnels from a sandbox, never disable TLS verification, never commit data or
   checkpoints (`*.h5`, `*.pkl`, `*.ckpt` are ignored).
+- Planning includes staffing: when the main agent writes a plan, it also decides in the plan how many agents the
+  work needs and which parts run in parallel (independent parts, different files → parallel agents; dependent
+  parts → in sequence), with each agent's task, model and files. Do not leave this for after the plan.
 - One agent per branch or git worktree (`bash scripts/agent_worktree.sh <name>`); do not edit the same
   files in parallel. Claim an open item in docs/31 §6 (owner, branch) before starting it.
 - Docs: a change in behaviour updates the matching `docs/NN_*.md`; new topics get the next number and

@@ -548,3 +548,21 @@ python scripts/recode_ops_cache.py /content/ops_cache /content/ops_cache_fast --
 ```
 `notebooks/colab_train_noproj.ipynb`: ayarlar hücresinde `DIAG_EVERY=10`, `PBAR_REFRESH=20`, `PREFETCH=2`, `VAL_PERSISTENT=True`, `GPU_PREFETCH=False`, `CACHE_COMPRESS='true'`; hücre 7b (1. ve 2. komutlar).
 Aşağıdakilerin tam hâli (CPU/GPU) yapılmadı: collate'in kendisi (batch 1'de bile `block_diag` ~46M nnz için indis/değer kopyaları; ~1,5 s/örnek bu makinede), int32 indisler (batch boyutunu ~%40 küçültür, GPU'da `torch.sparse.mm` ile denenmedi).
+
+
+## 12. İlk pilot eğitimin test sonuçları (2026-11-04, Colab G4)
+
+Veri: TRUBA v3 `TEST=1` (8 eğitim ailesi; 686 / 85 / 87 geometri, `label_ok` = 0 olan 20 örnek düştü), small model (0,85 M), batch 1 × 4 biriktirme, lr 3e-4 kosinüs, 50 epoch, en iyi checkpoint epoch 49 (`val/span_loss` 0,2309). `progress.json`'dan:
+
+| epoch | train `span_loss` | val `span_loss` | val `span_rel_l2` (kütle, izdüşümsüz) | val `span_rel_l2_energy` |
+|---|---|---|---|---|
+| 0 | 0,616 | 0,509 | 0,415 | 0,585 |
+| 9 | 0,349 | 0,343 | 0,296 | 0,379 |
+| 24 | 0,271 | 0,270 | 0,224 | 0,304 |
+| 49 | 0,224 | 0,231 | 0,196 | 0,257 |
+
+Test (87 geometri; izdüşüm + Ritz): uzay hatası kütle normunda 0,084, enerji normunda 0,255; Ritz alan hatası (6 mod) 0,21–0,39, ortalama 0,277; frekans bağıl hatası %7,5 (ortalama mutlak 0,125 GHz); `grad_frac` 0,15; `test/loss_plain` 0,230, `test/loss` (izdüşümlü) 0,192.
+
+Yorum: eğitim ve doğrulama kayıpları aynı ve öğrenme hızı sıfıra inerken hâlâ düşüyordu: ezberleme yok, az öğrenme var (daha uzun eğitim / daha büyük model). Frekans hatasını enerji normundaki uzay hatası belirliyor (kütle %8, enerji %25). İzdüşümsüz eğitimin bedeli: bazın kütlesinin %15'i gradyan (izdüşüm tahminde siliyor, kapasite boşa gidiyor); eğitimdeki `grad_frac_lb` (≈ 0,0015) bunu yakalamadı — alt sınır zayıf bir gösterge. Sonraki kıyas: aynı veri ve bütçeyle izdüşümlü (frekans + selfsup kayıplı) eğitim ve `base` model.
+
+**OOD (box, coax_qw, pillbox_port, elliptical_long, junction):** arayüzde gözle belirgin şekilde kötü. Veri incelemesi (aile başına 3–4 üretilmiş geometri, `scripts/eval_by_family.py` ile ölçüm henüz yok): token özelliklerinin dağılım uzaklığı OOD aileleri için eğitim aileleri arasındakiyle aynı düzeyde (0,13–0,27 / 0,14–0,22, std ile ölçekli Wasserstein); belirgin kayma yalnız elliptical_long'da (6–9 hücre, 10 modun hepsi tek geçiş bandında, %0,1–2 aralıklı) ve coax_qw'de (temel mod diğerlerinin çok altında); box'ta nokta hacmi özelliği (ağ inceliğinin izi) kayıyor. Öncelikli açıklama: aile başına ~85 geometriyle öğrenilen alt uzay yeni şekil sınıflarına genişlemiyor (beklenen davranış). Teşhis: `scripts/eval_by_family.py` (aile başına izdüşümlü uzay hatası, Ritz alan / frekans hatası, mod eşleşmesi, `grad_frac`; `--split test|all`, `--ablate point_volume`).
