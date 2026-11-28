@@ -1,0 +1,71 @@
+1. Bir kavitenin yarıçapını değiştirirsek ne olur?
+00:00 – 01:10
+Merkezdeki rengi izle. Alan salınım boyunca yön değiştirirken duvarın ve merkezin yeri sabittir. Mod desenini ve zaman ölçeğini birlikte arıyoruz. Silindirde cevabı analitik olarak da bildiğimiz için elde edeceğimiz sayıyı kontrol edebileceğiz.
+
+2. Zayıf form hangi eşitliği korur?
+01:10 – 02:40
+Test alanını, aday çözümün denkleme uyumunu yoklayan bir desen gibi düşün. İntegrasyonla parçalama bir döneli test alanına aktarır. Yüzeydeki çarpanın teğetsel olduğunu göster. Test alanı duvara dik olduğu için iç çarpım sıfırdır.
+
+3. Dört yüzlülerden iki seyrek matrise
+02:40 – 04:00
+Bir elemanı işaret et. Yerel fonksiyonların bilinmeyen genliklerini u taşır. Her test fonksiyonu bir satır üretir. Komşularda paylaşılan serbestlikler için katkıları toplarız. PEC duvarındaki teğetsel serbestlikler kısıtlanır.
+
+4. Rayleigh oranı frekansı nasıl verir?
+04:00 – 05:25
+Adayı ikiyle çarparsak pay ve payda dörtle çarpılır. Bu yüzden oran alanın keyfî genliğinden bağımsızdır. Önemli istisna gradyanlardır: dönelleri sıfır olduğu için doğrudan en küçük oranı ararsak sıfır bulabiliriz.
+
+5. Çözücü ilk fiziksel modları nasıl bulur?
+05:25 – 07:00
+Başlangıçta duvar koşuluna uygun rastgele bir vektör seçilir ve gradyan bileşeni çıkarılır. Ters matris açıkça oluşturulmaz. Aynı çarpanlarla farklı sağ taraflar çözülür. Silindirde yüzde 0,039 fark bir FEM doğrulamasıdır. Bir sonraki tasarımda matrisleri yeniden kuracağız.
+
+6. Yeni geometrilerde hangi hedefi öğrenebiliriz?
+07:00 – 08:25
+Şeklin iki satırını karşılaştır. Aynı frekansta üstteki iki desenin toplamı ve farkı da birer moddur. Tam eşitlik ile yakınlığı ayır: yakın frekansta döndürülmüş her vektör tam özvektör olmaz. Eğitim için ortak uzayı hedeflemek ve değerlendirmede yakın çiftleri birlikte incelemek bu hassasiyeti yönetir.
+
+7. Sinir operatörü ne öğrenir?
+08:25 – 09:35
+Bir kavitenin ağını inceltip nokta sayısını ikiye katladığımızı hayal edelim. Konumların sayısı değişti ama aradığımız fiziksel alan aynı. Paylaşılan ağırlıklar ve sayısal integrasyon bu hedefi destekler. Farklı ağlarda eş doğruluk ayrıca ölçülmelidir.
+
+8. Dikkat, tek noktayı bütün kaviteye nasıl bağlar?
+09:35 – 11:00
+Önce yalnızca bir sorgu noktasını göster. Noktalar uygunluklarına ve temsil ettikleri hacme göre katkıda bulunur. Çarpımların sırası değiştirilebildiği için bütün nokta çiftlerinin tablosunu bellekte tutmak gerekmez.
+
+9. Yeni tasarım gelir: metal duvardan hacim ağına
+11:00 – 12:10
+Soldaki örneklerde geniş hücreyi ve dar boğazı göster. Bundan sonraki adımlarda yeni bir kavitenin önce bir noktasını, sonra bütün alanını takip edeceğiz. Eğitimin referans modları FEM çözümünden gelir. Tahminde yeni kaviteye ait referans mod gerekmiyor.
+
+10. Dar boğazdaki bir nokta ağa ne söyler?
+12:10 – 13:20
+Dar boğazda ve geniş hücrenin ortasında iki nokta seç. Koordinatlarının yanı sıra duvara uzaklıkları ve çevreleri de değişir. Torsiyon burada yardımcı bir geometrik skaler alandır.
+
+11. Dokuz sayı nasıl 128 kanala dönüşür?
+13:20 – 14:30
+Fourier kodunda farklı uzaysal ölçekler farklı fazlar üretir. Matris B sabittir. Öğrenilen doğrusal katmanlar geometriyi ve bu konum özelliklerini karıştırır. Henüz farklı noktalar birbirinden bilgi almadı.
+
+12. Dört dikkat bloğunda bilgi paylaşılır
+14:30 – 15:40
+İki farklı işlemi ayrı söyle: dikkat noktalar arasında haber taşır, ileri besleme ağı aynı noktadaki kanalları karıştırır. Toplamaların her ikisinde giriş bilgisi korunabilecek bir yol vardır.
+
+13. 72 çıktı neden 24 aday alan demek?
+15:40 – 16:50
+Birinci üçlüyü bir noktaya çizilen ok gibi düşün. Sonra aynı üçlüyü komşu noktada düşün. Bütün oklar birinci alanı oluşturur. Yirmi dört alanın her biri aynı altı fiziksel modu temsil etmeye katkı yapabilir.
+
+14. Nokta oklarını FEM katsayılarına aktarıyoruz
+16:50 – 18:00
+İlk bölümde sonlu eleman katsayılarını doğrudan çözmüştük. Şimdi ağın önerdiği alanları aynı matematiksel dile çevirdik. Bundan sonraki adımlarda sayısal çözücü ile ağ aynı matrisleri kullanabilir.
+
+15. Eğitimde hangi hatayı küçültüyoruz?
+18:00 – 19:20
+Kod küçük Gram problemini düzenlileştirerek çözer. Her sütunu bir etiket sütunuyla eşleştirmeye çalışmıyoruz. Sıfır hata durumunda tüm uzayın kapsanması baza bağlı değildir. Sıfırdan uzak hatalarda karekök sonrası mod ortalamasının her baz dönüşümünde bire bir aynı olduğunu iddia etmiyoruz. Bu eğitim seçeneğinde Ritz ve potansiyel çözümü atlanır.
+
+16. Tahminde aynı Rayleigh oranına geri dönüyoruz
+19:20 – 20:45
+Tam çözücüde oranı serbest FEM alanları üzerinde aradık. Burada aynı fiziksel soruyu ağın önerdiği daha küçük uzaya soruyoruz. Ritz frekanslarının kalitesini belirleyen, bu uzayın gerçek alanları ne kadar iyi içerdiğidir. Büyük ağda operatör kurulumu ve izdüşüm de toplam maliyete girer.
+
+17. Altı alan nasıl okunur ve nasıl karşılaştırılır?
+20:45 – 21:55
+Burada eğitimin hedefini testteki metrikten ayır. Eğitim ham deneme bazının kapsamasını soruyordu. Testte Ritz ile çıkarılmış alanlar değerlendiriliyor. Tek bir vektörün işaretini veya eş frekanslı iki modun keyfî sırasını doğru bulmayı başarı ölçüsü yapmıyoruz.
+
+18. Yeni bir kavite için neyi başardık?
+21:55 – 23:05
+Başlangıçtaki soruya dön. Silindirdeki yüzde 0,039 sayısı referans çözücünün analitik kontrolüydü. Buradaki yüzde 7,5 pilot modelin farklı geometrilerdeki test sonucudur. Dar boğazlı bir geometriye ait ölçülmüş bireysel hata sunmadık. Son cümleden sonra sorular için dur.
