@@ -1,0 +1,44 @@
+00:00 – 00:50  |  1. Bir metal boşluğun hangi frekansta çınlayacağını bulabilir miyiz?
+Dört hücreyi parmağınla izle. Demetin yolu boyunca elektrik alanının ne zaman ve nerede güçlü olduğunu bilmek istiyoruz.
+
+00:50 – 02:05  |  2. Salıncaktan rezonansa
+Elinle bir salıncağın ritmini tut. Bu benzetme yalnızca doğru zamanda enerji verme fikri içindir. Kavitede değişen büyüklük elektromanyetik alandır.
+
+02:05 – 03:35  |  3. Bir salınımı yavaşlatırsak ne görürüz?
+Animasyonu aç. Önce renklerin yönünü, sonra sağdaki zaman eğrisini göster. Çeyrek turda elektrik alanı sıfırdan geçerken enerji manyetik alanda depolanır. “Bir periyot ne kadar kısa olursa frekans o kadar yüksek” diyerek yarıçap grafiğine geç.
+
+03:35 – 04:40  |  4. Geometri değişince rezonans da değişir
+Karmaşık kaviteyi bir an için düz bir metal silindire indiriyorum. Vakumda temel hızlandırıcı modun frekansını yarıçap belirliyor. Formüldeki 2,4048, duvardaki sınır koşulunu sağlayan sıfırıncı mertebe Bessel fonksiyonunun ilk kökü. Burada ayrıntılı türetimini yapmamıza gerek yok. Grafikte yarıçap 8 santimetre olduğunda 1,43 gigahertz, 10 santimetrede yaklaşık 1,15 gigahertz, 12 santimetrede 0,96 gigahertz görüyoruz. Elektrik alan deseni daha geniş bir kesite sığdığında dalga boyu büyüyor ve rezonans düşüyor. Basit bir analitik kural üç noktayı da açıklıyor. Oysa silindire boru, bir burun veya birbirine bağlı birkaç hücre eklediğimizde aynı tek parametreli bağıntıyı kullanamıyoruz. Her aday için geometriye uyumlu bir alan çözümü gerekiyor. Hızlı tarama hedefini doğuran maliyet, bu çözümü bütün adaylarda tekrarlamak.
+
+04:40 – 06:10  |  5. Bilgisayar bu deseni nasıl bulur?
+Yüzeyde tek bir üçgeni göster, sonra iç hacmi düşünmelerini iste. Dört yüzlü komşuların ortak yüzlerindeki teğetsel alanı birleştirince tek bir küresel alan kurulur.
+
+06:10 – 07:50  |  6. Her geometri için aranan çift: alan ve frekans
+Slaydın solunda kapalı, kayıpsız, vakumlu kavite için elektrik alanı formülasyonu var. Elektrik alanının iki kez döneli alınmış hâli, aynı alanın bir katsayıyla çarpımına eşit. Geometride bu eşitliği sağlayan sıfırdan farklı desenler serbest rezonans modları. Duvarı ideal iletken aldığımız için yüzeye teğet elektrik alanı sıfır. Alan duvara dik olabilir. Sağda sonlu eleman ayrıklaştırması var. Alanı baz fonksiyonlarının bir toplamı olarak yazdığımızda bilinmeyenler bu toplamın katsayılarına dönüşüyor. K matrisi dönel enerji terimini, M matrisi hacim iç çarpımını topluyor. Fiziksel koordinatlarda pozitif özdeğer dalga sayısının karesi. Böylece bir tek hesap bize hem frekansı hem alan katsayılarını veriyor. Tasarım aracında da bu ikisini birlikte taşımak istiyorum. Yalnız frekansı tahmin ederek duvarda nerede tepe oluştuğunu öğrenemezdik.
+
+07:50 – 09:15  |  7. Referans çözücüyü analitik bir modla sınadım
+Bu slayt için projenin özmod çözücüsünü yeniden çalıştırdım. Yarıçapı ve uzunluğu onar santimetre olan, tamamı iletken duvarla kapalı bir silindir kullandım. Ağda 263 tetrahedron ve p2 uzayında toplam 3.255 serbestlik var. Soldaki kesitte elektrik alanın eksenel bileşeninin büyüklüğünü, sağda elektrik alanının dönelinden elde edilen manyetik akı yoğunluğunun büyüklüğünü görüyorsunuz. İkisi ayrı ayrı ölçeklendiği için renkler fiziksel birimler arasında genlik kıyası yapmıyor. Elektrik alanı ortada büyük. Manyetik alan eksende küçülüyor ve bir halka boyunca güçleniyor. Analitik frekans 1,14743 gigahertz, hesaplanan frekans 1,14787 gigahertz. Aradaki yaklaşık yüzde 0,039 fark, bu çözünürlükte ve bu modda elde edilen frekans farkı. Bu örnek çözücüyü ve alanın fiziksel yorumunu sınamak için. Sinir operatörünün genelleme hatasını pilot testte ayrıca göstereceğim.
+
+09:15 – 10:30  |  8. Dikkat katmanı her noktayı hacmiyle tartar
+Soldaki iki kare aynı alanı kaplıyor. Sağdaki karede sol tarafta daha çok nokta var, çünkü o bölge daha küçük hücrelere bölünmüş. Her noktayı bir oy gibi saysaydım ince ağlanan bölge, sadece daha fazla nokta içerdiği için gereğinden fazla etkili olabilirdi. Şemadaki küçük noktaların temsil ettiği alan da küçük. Bizde üç boyutlu karşılığı, kuadratür ağırlığıyla temsil edilen hacim. Doğrusal dikkat katmanında bu ağırlık hem anahtar-değer toplamına hem normalizasyona giriyor. Bu aynı geometride her ağın aynı sonucu vereceğini garanti etmez, ama toplama işlemini hacim integraline uygun kurar. Konumla birlikte duvarın ne kadar uzakta ve hangi yönde olduğu gibi bilgiler de kullanılıyor. Son aşamada sinir ağının verdiği vektörleri önce her elemanda ağırlıklı bir yerel polinom uyumuna, ardından kenar elemanı uzayına aktarıyorum. İletken duvarın teğetsel serbestliklerini sıfırlıyorum. Böylece sınır koşulu aday alanın temsiline işlenmiş oluyor.
+
+10:30 – 12:10  |  9. Bir noktadan 24 aday vektöre
+Bir noktayı takip et. 72 sayıyı 24 üçlüye ayır. Ardından tek bir adayın bütün noktalar üzerindeki oklarını hayal ettir. Böylece bir noktanın vektöründen tam bir alan desenine geç.
+
+12:10 – 13:40  |  10. Model aday alanları üretir, Ritz adayları birleştirir
+Bu şemayı soldan sağa bir kez okuyalım. Önce eğri ağ üzerinde, alan integrallerini yaklaşık hesapladığımız kuadratür noktalarını alıyorum. Sinir operatörü bu noktalarda birden fazla aday vektör alanı üretiyor. Bu adayların her birine bir rezonans ismi vermek gerekmiyor. Önemli olan, doğrusal birleşimleriyle hedef fiziksel modlara yakın alanlar kurabilmek. Sonra öğrenilmeyen, açıkça belirlenmiş bir sonlu eleman dönüşümü geliyor. Bu dönüşüm ağın verdiği nokta değerlerini Nédélec serbestliklerine taşıyor. Fiziksel altuzaya izdüşümün ardından küçük bir Ritz özproblemi çözüyorum. Düşük frekanslar ve bu frekanslara ait alanlar aynı problemden çıkıyor. İyi bir aday baz büyük bir özproblemin gerekli bölümünü daha küçük bir aramaya sığdırabilir. Kazancın miktarı, adayların kalitesine ve ağla operatörleri hazırlamanın süresine bağlı.
+
+13:40 – 15:35  |  11. İzdüşüm statik alanları ayırır
+Bir skaler potansiyelin gradyanını aldığımda döneli sıfırdır. Maxwell rijitlik matrisi bu tür bir alanı sıfıra gönderir. Dolayısıyla rastgele bir aday vektörün içinde fiziksel rezonansa ait olmayan statik bir bileşen bulunabilir. Şemadaki eğik adaydan kesikli doğrultudaki bileşeni çıkarınca yatay fiziksel bileşen kalıyor. Gerçek modelde bu diklik kütle matrisi M iç çarpımında tanımlı. G, ayrılması gereken çekirdek yönlerini temsil ediyor. Formüldeki ters, uygulamada bir potansiyel lineer sistemi çözmek demek. İzdüşmüş sütunlar W ile küçük rijitlik ve kütle matrisleri kurup Ritz problemini çözüyorum. Özvektör katsayılarını W ile çarparak alanı geri alıyorum. Tam izdüşüm ve yeterli etkin rank varsa min–maks ilkesi aynı FE uzayının pozitif özdeğerlerine üst sınır veriyor. Bu, sürekli gerçek kavitenin frekansına bir hata toleransı vermez. Yaklaşık lineer çözüm, eksik bir mod veya yetersiz aday rankı ayrıca kontrol gerektirir. Kodda uzaysal normalizasyon kullanıldığı için frekansa dönüşte geometri ölçeği de geri konur.
+
+15:35 – 17:05  |  12. Aynı mod ailesi farklı alan desenleriyle yazılabilir
+Üst sırada kare kesitli ideal bir kutunun iki farklı ama eş frekanslı modu var. Birinde alan bir eksende iki lob oluştururken diğerinde loblar öteki eksende. İkisinin toplamı ve farkı da aynı özdeğerin izin verdiği alanlardır. Alt sırada bu iki yeni doğrultuyu görüyorsunuz. Bir benzetim üstteki bazı, diğeri alttakini seçebilir. Fiziksel cevap yine aynı iki boyutlu uzay. Benzer biçimde bir özmodun işaretini değiştirmek onun frekansını veya depoladığı enerjiyi değiştirmez. Her tahmin sütununu sabit sırada bir etiket sütunuyla eşleştirip karesel fark almak gereksiz ceza üretebilir. Bu projede soruyu tersine çeviriyorum: Referans alan, adayların hangi birleşimiyle en iyi temsil ediliyor? İşaret seçimi böylece sorun olmaktan çıkıyor. Tam küme değişmezliği için hata ölçüsünün küme içinde nasıl ortalandığı da önemlidir. Uygulanan mod başına kök ve ortalama, bazı rotasyonlara duyarlılık bırakabilir.
+
+17:05 – 18:45  |  13. Pilot deneyde frekans hatası ortalama \%7,5
+Pilot sonuçlarını göster. 87 test geometrisinde altı modun ortalama frekans hatası yüzde 7,5. Alan hatası daha büyük. Sonlu eleman silindir doğrulamasındaki yüzde 0,039 başka bir soruyu ölçüyordu.
+
+18:45 – 20:20  |  14. Hız iddiası için kaba FE çözümü de kıyasa girmeli
+Bu tablo ayrı bir deneyden geliyor. Aynı geometri için eşlenmiş süreler bulunmadığından modelin daha hızlı olduğu sonucunu çıkaramıyoruz. Hedef, eş doğrulukta ağ üretimi ve operatör kurulumunu da içeren süreyi karşılaştırmak.
+
+20:20 – 21:20  |  15. Başladığımız metal boşluğa geri dönelim
+Açılış sorusunu yeniden sor. Bir cümlede cevapla. Sonra doğruluk ve toplam süreyi birlikte ölçmenin neden gerekli olduğunu hatırlat.
